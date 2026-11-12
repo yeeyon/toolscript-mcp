@@ -33,10 +33,10 @@ try {
     '../src/host/launch.ts'
   ))
 } catch (err) {
-  if (process.env.CODE_MODE_STRIP === '1' || err?.code !== 'ERR_UNKNOWN_FILE_EXTENSION') throw err
+  if (process.env.TOOLSCRIPT_STRIP === '1' || err?.code !== 'ERR_UNKNOWN_FILE_EXTENSION') throw err
   const again = spawnSync(process.execPath, ['--experimental-strip-types', fileURLToPath(import.meta.url)], {
     stdio: 'inherit',
-    env: { ...process.env, CODE_MODE_STRIP: '1' },
+    env: { ...process.env, TOOLSCRIPT_STRIP: '1' },
   })
   process.exit(again.status ?? 1)
 }

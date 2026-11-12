@@ -41,6 +41,7 @@ export type Ending =
   | { readonly kind: 'failed'; readonly error: Error }
 
 export type Sandbox = {
+  /** Read its stdout and stderr: `ended` settles only after both close. */
   readonly child: ChildProcessWithoutNullStreams
   /** Settles after the process ended and its stdout and stderr closed. Never rejects. */
   readonly ended: Promise<Ending>
@@ -137,8 +138,14 @@ export const makeExchangeDir = (): Promise<string> => fs.promises.mkdtemp(path.j
 export const removeExchangeDir = (xdir: string): Promise<void> =>
   fs.promises.rm(xdir, { recursive: true, force: true, maxRetries: 5 })
 
-/** Starts the sandbox process and its kill timer, and writes `input` to its stdin. */
+/**
+ * Starts the sandbox process and its kill timer, and writes `input` to its stdin.
+ * Throws when the runner or the exchange dir does not exist, or when spawn refuses the node path.
+ */
 export const launch = (o: LaunchOptions): Sandbox => {
+  // A NaN or Infinity limit would make `ulimit -t` fail, and the launch script goes on without a CPU limit.
+  if (!Number.isSafeInteger(o.timeoutMs) || o.timeoutMs <= 0)
+    throw new RangeError(`timeoutMs must be a positive whole number, not ${o.timeoutMs}`)
   // --allow-fs-read takes real paths: on macOS the temp dir is under a link, and
   // --permission stops a main script whose path goes through a link before it starts.
   const command = SANDBOX.command(o, fs.realpathSync(o.runner), fs.realpathSync(o.xdir))
