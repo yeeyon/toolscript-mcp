@@ -2,6 +2,23 @@
   "name": "toolscript-mcp",
   "version": "0.0.0",
   "private": true,
+  "description": "Standalone MCP server for code mode: the model writes one JavaScript program that calls your MCP tools in a sandbox.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-mode",
+    "sandbox"
+  ],
+  "author": "yeeyon (https://github.com/yeeyon)",
+  "contributors": [
+    "Gabriele Pavanello (https://github.com/gabe4coding)"
+  ],
+  "homepage": "https://github.com/yeeyon/toolscript-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yeeyon/toolscript-mcp.git"
+  },
+  "bugs": "https://github.com/yeeyon/toolscript-mcp/issues",
   "type": "module",
   "license": "MIT",
   "engines": {

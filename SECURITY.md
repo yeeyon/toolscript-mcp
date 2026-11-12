@@ -6,9 +6,9 @@ Nothing is released yet. Security fixes go on the default branch (`main`).
 
 ## Reporting a vulnerability
 
-Do not open a public GitHub issue for a security problem. Examples are a sandbox escape, a secret leak, and a permission bypass.
-
-Report privately through GitHub private vulnerability reporting on yeeyon/toolscript-mcp. Do not open a public issue.
+Do not open a public GitHub issue for a security problem, for example a sandbox escape, a secret leak or a permission
+bypass. Report it privately at
+[github.com/yeeyon/toolscript-mcp/security/advisories/new](https://github.com/yeeyon/toolscript-mcp/security/advisories/new).
 
 Include:
 
@@ -18,6 +18,9 @@ Include:
 
 ## Scope
 
-- The sandbox runner (`runtime/runner.mjs`) runs a program from the model. The Node `vm` module is not a security boundary by itself.
-- On Linux, the network block runs only when `unshare -rn` works. On macOS it uses `sandbox-exec`.
-- A nested MCP call leaves the sandbox. The host must check each call against its own permission rules.
+- The sandbox runner (`runtime/runner.mjs`) runs a program from the model. The Node `vm` module is not a security
+  boundary by itself. The sandbox limits accidents. It does not contain hostile code.
+- On Linux, the network block runs only when `unshare -rn` works. On macOS it uses `sandbox-exec`. Windows has no
+  network block and no CPU limit.
+- A nested MCP call leaves the sandbox. The server will check each call against your allow, deny and ask rules. That
+  check is not built yet.
