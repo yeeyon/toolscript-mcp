@@ -27,3 +27,19 @@ The first server (M3):
 - A stdio child gets only its config `env` and the SDK's short list of system variables, and `TOOLSCRIPT_MCP_DEPTH`. A copy of toolscript-mcp that sees this variable refuses to start.
 - The state folder is `.toolscript-mcp`, not `.claude/code-mode`. Model-facing text no longer names `ToolSearch`, `~/.claude/settings.json` or tools that the server does not list. The tool ids are `mcp__toolscript__<tool>`.
 - `tests/code.check.mjs` fails on a stdout write in `src/host`. `tests/server.e2e.mjs` runs the built server in CI on Linux, macOS and Windows.
+
+`run_code` and the policy (M4):
+
+- Added `run_code`. It runs one program in the sandbox and answers its nested calls through the downstream connections, at most 8 at a time. The server now lists `run_code` and `search_tools`.
+- Before a sandbox starts, the tool and argument names of the literal `call("…")`s are checked against the connected tools and their input schemas. A wrong name never starts a sandbox.
+- Added the `policy` config: ordered rules `{ "match": "<glob>", "action": "allow" | "deny" | "ask" }` over `mcp__<server>__<tool>`. The first match wins, and the default is `ask`. Each error names the rule, as `policy[2].action`.
+- A deny rule on a literal tool name refuses the run and names the rule. `ask` asks the person one time per run with MCP elicitation, and the answer covers that run only. A client without elicitation, or a decline, gets a refusal that names the allow rule to add.
+- Each nested call is checked again at call time. A tool name built at run time runs only with an allow rule. A refusal is an error that the program can catch.
+- Added `sandbox.timeoutSeconds` (5 to 86400, default 120). On Windows, a bare `sandbox.node` is refused, because the sandbox has no `PATH`.
+- `saveFile` writes in `~/.toolscript-mcp/files/<session>/` (mode 0700 and 0600), and `readFile` reads only those files. `recall(n)` and output projection work as in the plugin. `resources()` and `readResource()` answer that they are not available.
+- A run in flight when the server shuts down, or whose call the client cancels, gets its sandbox killed and its exchange dir removed. A busy loop ends at the limit, and the server stays usable. A SIGKILL from the CPU limit (Linux sets the soft and the hard limit to one value) reads as the time limit.
+- A reply file that cannot be written stops the run at once with the reason, not at the time limit, and never as an unhandled rejection.
+- A policy glob matches with no regular expression: `*` also matches a line break, and a long tool name that a program builds cannot stall the server.
+- `approvalNote` moved to `src/core/policy.ts` and names the rule to add in the config. The check before a run no longer says that a deny rule hides a tool.
+- `normalizePath` keeps a Windows drive, so `appPath` works with a Windows home folder.
+- `tests/run.test.ts` runs `run_code` with the real sandbox and fake servers: the run_code, files, check, output projection and approval cases of the plugin that apply. `tests/policy.test.ts` covers the rules and the config. `tests/server.e2e.mjs` covers paging, deny, ask with and without elicitation, a name built at run time, a busy loop, a wrong name, a secret probe, a cut result with recall, and the cleanup of the exchange dir.

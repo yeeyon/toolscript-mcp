@@ -24,5 +24,7 @@ Include:
   network block and no CPU limit.
 - On Windows, the sandbox process gets one variable from the host: `SYSTEMROOT`. Node does not start without it.
 - On every system, the host stops the sandbox process when the run is longer than its time limit.
-- A nested MCP call leaves the sandbox. The server will check each call against your allow, deny and ask rules. That
-  check is not built yet.
+- A nested MCP call leaves the sandbox. The server checks each call against the `policy` rules of the config, before
+  the run for the tool names the program writes as strings, and again at each call. A way past that check is in scope.
+- `saveFile` writes only in the session folder under `~/.toolscript-mcp/files/`, and `readFile` reads only files there.
+  The files stay after the session, with read access for your user only on Linux and macOS.

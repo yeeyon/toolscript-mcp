@@ -8,7 +8,7 @@ enforces; the others rely on discipline.
   pinned version. Turn on the pre-commit hook one time per clone: `git config core.hooksPath .githooks`.
   `[test: code.check.mjs]`
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
-  `config.ts` and `catalog.ts`. They import no Node module and no host package, so tests call them directly.
+  `config.ts`, `catalog.ts` and `policy.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
 - `src/host/` holds the code that runs in Node. It builds with `tsconfig.host.json`, which adds the Node types.
 - Parse the config only in `parseConfig` (`src/core/config.ts`). The host trusts a `Config`. Each error names the
@@ -36,12 +36,17 @@ enforces; the others rely on discipline.
 - To add a kind of message that the runner sends, add it to `RunnerMessage` and `RUNNER_FIELDS` in
   `src/core/protocol.ts`. A host drops a message of a kind that is not in `RUNNER_FIELDS`.
   `[test: runner.integration.mjs fails when the runner sends a kind that is not in RUNNER_FIELDS]`
-- Never weaken a sandbox layer, the guard of hint and function files or the approval of proposals to make a test
-  pass. Each one is a safety rule.
+- Every nested call of a program goes through `checkCall` (`src/core/policy.ts`) at call time, also when the check
+  before the run passed: a tool name built at run time is never asked. `[test: run.test.ts and server.e2e.mjs, case (e)]`
+- Every run removes its exchange dir, also after a timeout, a kill or a shutdown.
+  `[test: run.test.ts and server.e2e.mjs check the temp dir after the runs]`
+- Never weaken a sandbox layer, the policy check, the guard of hint and function files or the approval of proposals
+  to make a test pass. Each one is a safety rule.
 
 ## Tests and commits
 - The checks:
-  - `npm test`: the pure-core tests (`tests/*.test.ts`, `node:test`).
+  - `npm test`: the pure-core tests and `tests/run.test.ts`, which runs `run_code` with the real sandbox
+    (`tests/*.test.ts`, `node:test`).
   - `npm run typecheck` and `npm run build`: `tsc` with the pinned TypeScript.
   - `npm run check`: `tests/docs.check.mjs` (the doc rules below) and `tests/code.check.mjs` (the code rules).
   - `node tests/runner.integration.mjs`: the real sandbox under Node, on Linux, macOS and Windows.
@@ -59,7 +64,8 @@ The text the model reads is part of the product: the input schemas in `TOOLS` in
 `RUN_DESCRIPTION`, `SEARCH_DESCRIPTION` and `SERVER_INSTRUCTIONS` in `src/core/protocol.ts`, the `search_tools`
 result in `src/core/catalog.ts`, the hint descriptions, `TRANSFER_TEXT`, the
 transfer blocks and the hint preamble in `src/core/hints.ts`, `SAVE_FUNCTION_DESCRIPTION` and the fix note in
-`src/core/functions.ts`, tool results and deny messages, and the bundled hints in `hints/`.
+`src/core/functions.ts`, tool results, the refusal texts and the approval prompt in `src/core/policy.ts`, and the
+bundled hints in `hints/`.
 - Every sentence must change what the model does. Remove facts the model cannot act on.
 - Progressive disclosure: put in a description only what the model needs to choose and call the tool. Show the rest
   where the model needs it: argument types and hints in the `search_tools` result, server hints after a failed call,

@@ -5,8 +5,8 @@ servers in a sandbox. The program filters and joins the data there. Only the res
 
 The goal is a server that works with any MCP client, for example Claude Code, Claude Desktop, Cursor and Codex.
 
-> **Status: pre-release.** The server connects to your MCP servers and lists their tools with `search_tools`.
-> `run_code` is not built yet, and the package is not on npm. See [Roadmap](#roadmap).
+> **Status: pre-release.** The server lists `search_tools` and `run_code`, with allow, deny and ask rules. The
+> package is not on npm yet. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -14,13 +14,15 @@ When a model calls MCP tools one by one, every full result goes into its context
 raw JSON, and each step costs a round trip. With code mode, the loops, filters and joins run in a program. The model
 sees only the answer.
 
-## How it will work
+## How it works
 
 1. Your MCP client connects to toolscript-mcp. toolscript-mcp connects to your other MCP servers.
 2. The model finds tools with `search_tools`.
 3. The model sends one program to `run_code`.
 4. The program runs in a separate Node process. Each nested tool call goes through your allow, deny and ask rules.
 5. The return value of the program goes back to the model.
+
+Your MCP client sees only `search_tools` and `run_code`. It does not see the tools of your other servers.
 
 An example program:
 
@@ -49,7 +51,8 @@ You need Node 22.13 or later.
    npm run build
    ```
 
-2. Write a config file. It uses the `mcpServers` shape of Claude Desktop and Claude Code:
+2. Write a config file. It uses the `mcpServers` shape of Claude Desktop and Claude Code, with a `policy` for the
+   tool calls of programs:
 
    ```json
    {
@@ -60,7 +63,12 @@ You need Node 22.13 or later.
          "url": "https://mcp.example.com/mcp",
          "headers": { "Authorization": "Bearer ${TRACKER_TOKEN}" }
        }
-     }
+     },
+     "policy": [
+       { "match": "mcp__tracker__delete_*", "action": "deny" },
+       { "match": "mcp__tracker__*", "action": "allow" },
+       { "match": "mcp__files__read_*", "action": "allow" }
+     ]
    }
    ```
 
@@ -70,7 +78,33 @@ You need Node 22.13 or later.
    claude mcp add toolscript -- node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/config.json
    ```
 
-4. Ask the model to find a tool with `search_tools`.
+4. Ask the model for a task that needs your tools. It finds them with `search_tools` and runs one program with
+   `run_code`.
+
+### The policy
+
+Each tool call of a program goes through the rules in `policy`. A tool is `mcp__<server>__<tool>`, with the server key
+of your config.
+
+- `match` is a glob over the tool name. `*` matches any characters.
+- `action` is `allow`, `deny` or `ask`.
+- The first rule that matches decides. A tool that no rule matches is `ask`.
+- Before a program starts, toolscript-mcp reads the tool names that the program writes as strings in `call("…")`.
+- If a `deny` rule matches one of these names, the program does not start.
+- If some names need `ask`, toolscript-mcp asks you one time, with MCP elicitation. Your answer applies to that run only.
+- If your client cannot ask, the program does not start. The result names the `allow` rule to add.
+- toolscript-mcp checks each call again while the program runs. A tool name that the program builds at run time runs
+  only with an `allow` rule.
+
+A refused call throws an error in the program. The program can catch it.
+
+### Files of a program
+
+- `saveFile(name, data)` writes a file in `~/.toolscript-mcp/files/<session>/` and returns its path. On Linux and
+  macOS, only your user account can read it. toolscript-mcp does not delete these files.
+- `readFile(path)` reads only the files that `saveFile` wrote in the same session.
+- `recall(n)` returns result `#n` of an earlier call again, with no new call. The result of `run_code` shows these
+  numbers.
 
 ### The config file
 
@@ -82,6 +116,10 @@ You need Node 22.13 or later.
 - If a variable is not set, toolscript-mcp does not start. The error names the variable, not its value.
 - A server key contains letters, digits and hyphens, with single underscores between them. A tool is then `mcp__<key>__<tool>`.
 - `sandbox.node` sets the Node binary of the sandbox. The default is the Node that runs toolscript-mcp.
+- On Windows, `sandbox.node` must be a full path, because the sandbox process has no `PATH`.
+- `sandbox.timeoutSeconds` sets the time limit of one run. The default is 120 seconds. The minimum is 5, and the
+  maximum is 86400.
+- `policy` holds the rules for the tool calls of programs. See [The policy](#the-policy).
 
 A stdio server gets only its `env` from the config and a short list of system variables, for example `PATH` and
 `HOME`. Your other environment variables, and the secrets in them, stay out.
@@ -111,7 +149,7 @@ code. Read [SECURITY.md](SECURITY.md).
 - [x] Move the core and the sandbox runner out of the Claude Code plugin.
 - [x] Start the sandbox on Linux, macOS and Windows.
 - [x] Read a server config, connect to your MCP servers and add `search_tools`.
-- [ ] Add `run_code` with allow, deny and ask rules.
+- [x] Add `run_code` with allow, deny and ask rules.
 - [ ] Write the docs and publish 0.1.0 to npm.
 
 ## Credits
