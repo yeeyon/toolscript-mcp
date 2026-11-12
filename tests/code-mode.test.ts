@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { TOOL, TOOL_NAMES, parseInput, registration } from '../hooks/tools.ts'
-import { formatHints, parseHint } from '../hooks/hints.ts'
+import { TOOL, TOOL_NAMES, parseInput, registration } from '../src/core/tools.ts'
+import { formatHints, parseHint } from '../src/core/hints.ts'
 import {
   MARK,
   argNamesOf,
@@ -36,7 +36,7 @@ import {
   splitToolName,
   takeMessages,
   toValue,
-} from '../hooks/protocol.ts'
+} from '../src/core/protocol.ts'
 
 const has = (text: string | undefined, part: string) => typeof text === 'string' && text.includes(part)
 

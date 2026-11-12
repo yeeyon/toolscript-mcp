@@ -1,6 +1,6 @@
 // Writes the bundled list: the SHA-256 of each bundled hint file, by file
 // name. A bundled hint loads only when the list has the hash of its text
-// (BUNDLED_LIST in hooks/hints.ts). Run it after each change to a bundled
+// (BUNDLED_LIST in src/core/hints.ts). Run it after each change to a bundled
 // hint; tests/docs.check.mjs fails when the list is out of date.
 //
 //   node scripts/bundled-hints.mjs          write the list

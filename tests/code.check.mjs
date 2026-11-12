@@ -2,11 +2,11 @@
 // of the hooks can see.
 //
 // Checked here: the hooks read the time only through $.clock, so a test can
-// set it with mock.clock. Only hooks/paths.ts types out a path into
+// set it with mock.clock. Only src/core/paths.ts types out a path into
 // .claude/code-mode, so the loaders and the hint-file guard name the same
-// folders. Only hooks/tools.ts types out the full id of a tool of this
+// folders. Only src/core/tools.ts types out the full id of a tool of this
 // plugin, in the hooks and in the tests that the engine runs. Only
-// hooks/hints.ts types out the `bundled:` prefix of a hint ref. The .mjs tests
+// src/core/hints.ts types out the `bundled:` prefix of a hint ref. The .mjs tests
 // are not scanned. Only scripts/format.sh names a Prettier version, so the hook and CI format alike.
 //
 //   node tests/code.check.mjs
@@ -25,9 +25,9 @@ const filesIn = (dir, pattern) =>
     .filter(f => pattern.test(f))
     .sort()
     .map(f => `${dir}/${f}`)
-const FILES = [...filesIn('hooks', /\.tsx?$/), ...filesIn('tests', /\.ts$/)]
+const FILES = [...filesIn('src/core', /\.ts$/), ...filesIn('tests', /\.ts$/)]
 
-const inHooks = rel => rel.startsWith('hooks/')
+const inHooks = rel => rel.startsWith('src/core/')
 
 // Each rule and the files it applies to. Date.now(), Date() and new Date()
 // read the time. new Date(ms) only formats it.
@@ -39,18 +39,18 @@ const RULES = [
   },
   {
     pattern: /code-mode\\?\/|codeModePath\(.*['"`](hints|functions)['"`]/,
-    message: 'types out a path into .claude/code-mode: use a helper from hooks/paths.ts',
-    applies: rel => inHooks(rel) && rel !== 'hooks/paths.ts',
+    message: 'types out a path into .claude/code-mode: use a helper from src/core/paths.ts',
+    applies: rel => inHooks(rel) && rel !== 'src/core/paths.ts',
   },
   {
     pattern: /mcp__code-mode__/,
-    message: 'types out the id of a code-mode tool: use TOOL from hooks/tools.ts',
-    applies: rel => rel !== 'hooks/tools.ts',
+    message: 'types out the id of a code-mode tool: use TOOL from src/core/tools.ts',
+    applies: rel => rel !== 'src/core/tools.ts',
   },
   {
     pattern: /['"`]bundled:/,
-    message: 'reads or makes a hint ref by hand: use hintRef, bundledRef or refTarget from hooks/hints.ts',
-    applies: rel => inHooks(rel) && rel !== 'hooks/hints.ts',
+    message: 'reads or makes a hint ref by hand: use hintRef, bundledRef or refTarget from src/core/hints.ts',
+    applies: rel => inHooks(rel) && rel !== 'src/core/hints.ts',
   },
 ]
 
@@ -80,10 +80,10 @@ const tests = {
       ' * Date.now()',
       '/** Date.now() */',
     ]
-    assert.deepEqual(flagged('hooks/x.ts', code), [1, 2, 3, 4, 5])
+    assert.deepEqual(flagged('src/core/x.ts', code), [1, 2, 3, 4, 5])
     assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests may read the time')
   },
-  'only hooks/paths.ts types out a code-mode path': () => {
+  'only src/core/paths.ts types out a code-mode path': () => {
     const code = [
       'const d = `${home}/.claude/code-mode/hints`',
       '/code-mode\\/+(hints)/.test(c)',
@@ -91,30 +91,30 @@ const tests = {
       '// ~/.claude/code-mode/metrics',
       "codeModePath(home, 'metrics')",
     ]
-    assert.deepEqual(flagged('hooks/x.ts', code), [1, 2, 3])
-    assert.deepEqual(flagged('hooks/paths.ts', code), [])
+    assert.deepEqual(flagged('src/core/x.ts', code), [1, 2, 3])
+    assert.deepEqual(flagged('src/core/paths.ts', code), [])
     assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests name the guarded folders')
   },
-  'only hooks/tools.ts types out a tool id': () => {
+  'only src/core/tools.ts types out a tool id': () => {
     const code = [
       "on('tool.call', { tool: 'mcp__code-mode__run_code' })",
       'const t = `mcp__code-mode__${name}`',
       "const s = 'mcp__fake__echo'",
       '// mcp__code-mode__run_code',
     ]
-    assert.deepEqual(flagged('hooks/x.ts', code), [1, 2])
+    assert.deepEqual(flagged('src/core/x.ts', code), [1, 2])
     assert.deepEqual(flagged('tests/x.test.ts', code), [1, 2])
-    assert.deepEqual(flagged('hooks/tools.ts', code), [])
+    assert.deepEqual(flagged('src/core/tools.ts', code), [])
   },
-  'only hooks/hints.ts types out a bundled hint ref': () => {
+  'only src/core/hints.ts types out a bundled hint ref': () => {
     const code = [
       "if (ref.startsWith('bundled:')) {",
       'const r = `bundled:${file}`',
       "if (hint.scope === 'bundled') {",
       '// bundled:<name>',
     ]
-    assert.deepEqual(flagged('hooks/x.ts', code), [1, 2])
-    assert.deepEqual(flagged('hooks/hints.ts', code), [])
+    assert.deepEqual(flagged('src/core/x.ts', code), [1, 2])
+    assert.deepEqual(flagged('src/core/hints.ts', code), [])
     assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests check the refs')
   },
   'only scripts/format.sh names a Prettier version': () => {

@@ -194,7 +194,7 @@ const tests = {
     assert.deepEqual(problems, [], problems.join('\n'))
   },
   'the bundled list has the hash of each bundled hint': () => {
-    // A bundled hint that is not in the list does not load (BUNDLED_LIST in hooks/hints.ts).
+    // A bundled hint that is not in the list does not load (BUNDLED_LIST in src/core/hints.ts).
     assert.equal(
       bundledListOnDisk(),
       bundledListText(),

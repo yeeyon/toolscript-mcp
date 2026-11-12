@@ -15,7 +15,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const RUNNER = path.join(ROOT, 'runtime', 'runner.mjs')
 
 // LAUNCH, NO_NETWORK and MKTEMP are how a host starts the runner. MARK is a
-// copy of the one in the runner and hooks/protocol.ts. The first case fails when a copy differs.
+// copy of the one in the runner and src/core/protocol.ts. The first case fails when a copy differs.
 const NO_NETWORK = '(version 1)(allow default)(deny network*)'
 const LAUNCH = [
   'ulimit -t "$1"',
@@ -38,7 +38,7 @@ const MARK = '\u0001cm '
 // type stripping, so ask for it once and load the real helper.
 let takeMessages
 try {
-  ;({ takeMessages } = await import('../hooks/protocol.ts'))
+  ;({ takeMessages } = await import('../src/core/protocol.ts'))
 } catch (err) {
   if (process.env.CODE_MODE_STRIP === '1' || err?.code !== 'ERR_UNKNOWN_FILE_EXTENSION') throw err
   const again = spawnSync(process.execPath, ['--experimental-strip-types', fileURLToPath(import.meta.url)], {
@@ -203,14 +203,14 @@ const wholeThroughPipe = async n => {
 const cases = {
   'the copies of MARK match': () => {
     assert.equal(MARK, '\u0001cm ')
-    for (const file of ['runtime/runner.mjs', 'hooks/protocol.ts'])
+    for (const file of ['runtime/runner.mjs', 'src/core/protocol.ts'])
       assert.match(read(file), /const MARK = '\\u0001cm '/, `MARK differs in ${file}`)
   },
 
-  // The host reads only the kinds in RUNNER_FIELDS (hooks/protocol.ts) and drops any other.
+  // The host reads only the kinds in RUNNER_FIELDS (src/core/protocol.ts) and drops any other.
   'the runner sends the kinds the host reads': () => {
-    const table = read('hooks/protocol.ts').match(/const RUNNER_FIELDS = \{\n([\s\S]*?)\n\}/)
-    assert.ok(table, 'RUNNER_FIELDS not found in hooks/protocol.ts')
+    const table = read('src/core/protocol.ts').match(/const RUNNER_FIELDS = \{\n([\s\S]*?)\n\}/)
+    assert.ok(table, 'RUNNER_FIELDS not found in src/core/protocol.ts')
     const known = table[1].split('\n').map(l => l.match(/^\s+(\w+):/)?.[1])
     const sent = [...read('runtime/runner.mjs').matchAll(/\bt: '(\w+)'/g)].map(m => m[1])
     assert.deepEqual([...new Set(sent)].sort(), [...known].sort())

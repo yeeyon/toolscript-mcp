@@ -35,8 +35,8 @@ import {
   textFlags,
   withReview,
   withoutReview,
-} from '../hooks/hints.ts'
-import { guardedDirs } from '../hooks/paths.ts'
+} from '../src/core/hints.ts'
+import { guardedDirs } from '../src/core/paths.ts'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`

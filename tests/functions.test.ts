@@ -12,7 +12,7 @@ import {
   signatureOf,
   usedFunctions,
   type SavedFunction,
-} from '../hooks/functions.ts'
+} from '../src/core/functions.ts'
 
 const HOME = '/home/test'
 const DIR = `${HOME}/.claude/code-mode/functions`

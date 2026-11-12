@@ -1,0 +1,27 @@
+{
+  "name": "toolscript-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "files": [
+    "dist",
+    "runtime",
+    "hints",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test \"tests/*.test.ts\"",
+    "check": "node tests/docs.check.mjs && node tests/code.check.mjs",
+    "format": "sh scripts/format.sh --write ."
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
