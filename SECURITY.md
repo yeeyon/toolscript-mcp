@@ -22,5 +22,7 @@ Include:
   boundary by itself. The sandbox limits accidents. It does not contain hostile code.
 - On Linux, the network block runs only when `unshare -rn` works. On macOS it uses `sandbox-exec`. Windows has no
   network block and no CPU limit.
+- On Windows, the sandbox process gets one variable from the host: `SYSTEMROOT`. Node does not start without it.
+- On every system, the host stops the sandbox process when the run is longer than its time limit.
 - A nested MCP call leaves the sandbox. The server will check each call against your allow, deny and ask rules. That
   check is not built yet.

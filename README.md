@@ -6,7 +6,7 @@ servers in a sandbox. The program filters and joins the data there. Only the res
 The goal is a server that works with any MCP client, for example Claude Code, Claude Desktop, Cursor and Codex.
 
 > **Status: pre-release.** The server is not built yet, and the package is not on npm. This repository holds the
-> core and the sandbox runner. See [Roadmap](#roadmap).
+> core, the sandbox runner and its launcher. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -41,9 +41,14 @@ The model sees a short list of keys and titles, not every full issue.
 | Layer | Linux | macOS | Windows |
 | --- | --- | --- | --- |
 | Node `vm` context: no `require`, `process`, `fetch` or file system | Yes | Yes | Yes |
-| Node permission model and an empty environment | Yes | Yes | Planned |
+| Node permission model: no file writes, no reads outside the runner, no processes or workers | Yes | Yes | Yes |
+| No environment variables from the host | Yes, `env -i` | Yes, `env -i` | Yes, except `SYSTEMROOT` |
 | No network access | `unshare -rn`, when the kernel allows it | `sandbox-exec` | No |
-| CPU limit | `ulimit -t` | `ulimit -t` | No, wall-clock limit only |
+| CPU limit | `ulimit -t` | `ulimit -t` | No |
+| Wall-clock limit: the host stops the process | Yes | Yes | Yes |
+
+Node does not start on Windows without `SYSTEMROOT`. A busy loop in a program blocks the timer of the runner. Then the
+CPU limit or the host stops the process.
 
 The Node `vm` module is not a security boundary by itself. The sandbox limits accidents. It does not contain hostile
 code. Read [SECURITY.md](SECURITY.md).
@@ -51,7 +56,7 @@ code. Read [SECURITY.md](SECURITY.md).
 ## Roadmap
 
 - [x] Move the core and the sandbox runner out of the Claude Code plugin.
-- [ ] Start the sandbox on Linux, macOS and Windows.
+- [x] Start the sandbox on Linux, macOS and Windows.
 - [ ] Read a server config, connect to your MCP servers and add `search_tools`.
 - [ ] Add `run_code` with allow, deny and ask rules.
 - [ ] Write the docs and publish 0.1.0 to npm.

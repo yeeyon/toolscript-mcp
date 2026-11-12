@@ -10,6 +10,9 @@ enforces; the others rely on discipline.
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts` and `tools.ts`. They
   import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
+- `src/host/` holds the code that runs in Node. It builds with `tsconfig.host.json`, which adds the Node types.
+- `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there
+  and in the sandbox table of `README.md`. `[test: runner.integration.mjs checks each layer that LAYERS names]`
 - Imports between files use the `.ts` extension, so Node can run the sources and `tsc` rewrites them. Use only
   syntax that Node can strip: no enums, no parameter properties, no namespaces. `[test: tsc, erasableSyntaxOnly]`
 - Make each path into `.claude/code-mode` with a helper from `src/core/paths.ts`: `hintsFolder`, `functionsFolder`
@@ -19,7 +22,7 @@ enforces; the others rely on discipline.
 - Add or change a tool in `TOOLS` in `src/core/tools.ts`: the registration, the full ids (`TOOL`) and the typed
   input (`parseInput`) come from there. `[test: code.check.mjs]`
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
-  the launch script passes `--permission`.
+  the launcher passes `--permission`.
   `[test: runner.integration.mjs loads the runner with Node alone, so an import of a package fails]`
 - `MARK` exists in `runtime/runner.mjs`, `src/core/protocol.ts` and `tests/runner.integration.mjs`. Change all
   copies. `[test: runner.integration.mjs fails when a copy differs]`
@@ -34,10 +37,11 @@ enforces; the others rely on discipline.
   - `npm test`: the pure-core tests (`tests/*.test.ts`, `node:test`).
   - `npm run typecheck` and `npm run build`: `tsc` with the pinned TypeScript.
   - `npm run check`: `tests/docs.check.mjs` (the doc rules below) and `tests/code.check.mjs` (the code rules).
-  - `node tests/runner.integration.mjs`: the real sandbox under Node. It needs a POSIX system.
+  - `node tests/runner.integration.mjs`: the real sandbox under Node, on Linux, macOS and Windows.
   - `sh scripts/format.sh --check .`: the format of code, JSON and YAML.
-- CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS, each with its network block
-  (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail where neither works.
+- CI (`.github/workflows/test.yml`) runs the sandbox test on Linux, macOS and Windows. Linux and macOS each have
+  a network block (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail
+  where neither works. On Windows the test checks that the network block is absent.
 - Never put real MCP data, company names, ticket keys, user ids or tokens in tests, hints or docs: this repo is
   public. Use `fake`, `example.atlassian.net` and similar.
 
