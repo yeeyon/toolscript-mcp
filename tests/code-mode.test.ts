@@ -17,7 +17,6 @@ import {
   mergeArgNames,
   parseArgNames,
   problemReport,
-  approvalNote,
   hintNudge,
   isCallable,
   isSessionResult,
@@ -35,18 +34,12 @@ import {
   splitToolName,
   takeMessages,
   toValue,
+  SERVER_INSTRUCTIONS,
 } from '../src/core/protocol.ts'
 
 const has = (text: string | undefined, part: string) => typeof text === 'string' && text.includes(part)
 
 describe('protocol', () => {
-  test('approvalNote names every refused tool, and nothing when none was refused', () => {
-    assert.equal(approvalNote([]), '')
-    const note = approvalNote(['mcp__a__x', 'mcp__b__y'])
-    assert.ok(has(note, 'No allow rule matches mcp__a__x, mcp__b__y, and their calls were refused.'), note)
-    assert.ok(has(note, 'call these tools, ask them to add mcp__a__x, mcp__b__y to the allow rules'), note)
-  })
-
   test('takeMessages keeps partial lines and skips foreign output', () => {
     const line = `${MARK}${JSON.stringify({ t: 'call', id: 1, tool: 'mcp__a__b', args: {} })}\n`
     const { messages, rest } = takeMessages(`noise\n${line}${MARK}{"t":"do`)
@@ -493,7 +486,7 @@ describe('protocol', () => {
     assert.deepEqual(
       problems.map(p => `${p.line} ${p.text} ${p.isGuess}`),
       [
-        '1 no tool "mcp__j__serch" on the connected server "j" (did you mean "mcp__j__search"?); if the name is right, a deny rule hides it false',
+        '1 no tool "mcp__j__serch" on the connected server "j" (did you mean "mcp__j__search"?) false',
         '2 mcp__j__get: unknown argument "issuekey" (did you mean "issueKey"?) false',
         '2 mcp__j__get: unknown argument "expand" false',
         '2 mcp__j__get: missing required argument "issueKey" false',
@@ -605,7 +598,7 @@ describe('the tool table', () => {
       assert.equal(parseInput('search_tools', { query: 'q', limit }).limit, undefined)
   })
 
-  test('each schema requires only its own properties, and the server lists only search_tools', () => {
+  test('each schema requires only its own properties, and the server lists run_code and search_tools', () => {
     for (const name of TOOL_NAMES) {
       const { inputSchema } = registration(name)
       assert.equal(
@@ -613,19 +606,21 @@ describe('the tool table', () => {
         true,
       )
     }
-    assert.deepEqual(SERVED, ['search_tools'])
+    assert.deepEqual(SERVED, ['run_code', 'search_tools'])
   })
 
   // The listed tools load in every session, so each word costs tokens in
   // every session. Raise the limit only for text that changes what the model does.
+  // M4: run_code 1542, search_tools 550 (it names run_code).
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 524, `size ${size} is over 524`)
+    assert.ok(size <= 2092, `size ${size} is over 2092`)
   })
 
   // A served tool must not send the model to a tool that this server does not list.
   test('the listed text names no Claude Code tool and no tool that is not listed', () => {
-    const text = SERVED.map(n => JSON.stringify(registration(n))).join('\n')
+    const text = [...SERVED.map(n => JSON.stringify(registration(n))), SERVER_INSTRUCTIONS].join('\n')
+    for (const name of SERVED) assert.ok(SERVER_INSTRUCTIONS.includes(name), `the instructions do not name ${name}`)
     for (const name of TOOL_NAMES.filter(n => !(SERVED as readonly string[]).includes(n)))
       assert.ok(!text.includes(name), `a listed tool names ${name}`)
     assert.ok(!/ToolSearch|\.claude|settings\.json/.test(text), text)

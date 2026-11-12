@@ -1,6 +1,9 @@
 // The config file of toolscript-mcp: the `mcpServers` shape of Claude Desktop
-// and Claude Code, and the sandbox's Node. Parsed here, at the boundary, so
-// the host trusts a Config. Also where the file is and the self-loop guard.
+// and Claude Code, the sandbox's Node and time limit, and the policy rules.
+// Parsed here, at the boundary, so the host trusts a Config. Also where the
+// file is and the self-loop guard.
+
+import { ACTIONS, type Action, type Policy, type Rule } from './policy.ts'
 
 /** A server key that makes `mcp__<key>__<tool>` split back into the key and the tool. */
 export type ServerKey = string & { readonly __brand: 'ServerKey' }
@@ -21,11 +24,24 @@ export type HttpServer = {
 
 export type ServerConfig = StdioServer | HttpServer
 
+export type Sandbox = {
+  /** The Node binary that starts the sandbox. */
+  readonly node: string
+  /** The wall-clock limit of one run, and on Linux and macOS its CPU limit. */
+  readonly timeoutSeconds: number
+}
+
 export type Config = {
   readonly servers: ReadonlyMap<ServerKey, ServerConfig>
-  /** The Node binary that starts the sandbox. */
-  readonly sandbox: { readonly node: string }
+  readonly sandbox: Sandbox
+  readonly policy: Policy
 }
+
+/** The time limit of a run without `sandbox.timeoutSeconds`, and the least it can be, as in the plugin. */
+export const DEFAULT_TIMEOUT_SECONDS = 120
+export const MIN_TIMEOUT_SECONDS = 5
+// One day. A longer limit overflows the host kill timer (setTimeout), which then fires at once.
+export const MAX_TIMEOUT_SECONDS = 86_400
 
 export type Env = Readonly<Record<string, string | undefined>>
 
@@ -142,11 +158,64 @@ const parseServer = (raw: unknown, path: string, env: Env, errors: string[]): Se
   return undefined
 }
 
+const parseSandbox = (raw: unknown, execPath: string, platform: string, errors: string[]): Sandbox => {
+  const sandbox = { node: execPath, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }
+  if (raw === undefined) return sandbox
+  if (!isObject(raw)) {
+    errors.push('sandbox: must be an object')
+    return sandbox
+  }
+  unknownKeys(raw, ['node', 'timeoutSeconds'], 'sandbox', errors)
+  if (raw.node !== undefined) {
+    sandbox.node = nonEmpty(raw.node, 'sandbox.node', errors)
+    // The sandbox process gets an empty PATH on Windows, so a bare name finds nothing.
+    if (platform === 'win32' && sandbox.node !== '' && !/[\\/]/.test(sandbox.node))
+      errors.push(
+        `sandbox.node: on Windows, give the full path of node.exe, such as "C:\\\\Program Files\\\\nodejs\\\\node.exe", not "${sandbox.node}": the sandbox has no PATH`,
+      )
+  }
+  const t = raw.timeoutSeconds
+  if (t !== undefined) {
+    if (typeof t === 'number' && Number.isInteger(t) && t >= MIN_TIMEOUT_SECONDS && t <= MAX_TIMEOUT_SECONDS)
+      sandbox.timeoutSeconds = t
+    else
+      errors.push(
+        `sandbox.timeoutSeconds: must be a whole number of seconds from ${MIN_TIMEOUT_SECONDS} to ${MAX_TIMEOUT_SECONDS}, not ${JSON.stringify(t)}`,
+      )
+  }
+  return sandbox
+}
+
+const MATCH = 'a glob over mcp__<server>__<tool>, such as "mcp__github__*"'
+
+const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) {
+    errors.push(`policy: must be an array of rules, such as [{ "match": "mcp__github__*", "action": "allow" }]`)
+    return []
+  }
+  return raw.flatMap((entry, index): Rule[] => {
+    const path = `policy[${index}]`
+    if (!isObject(entry)) {
+      errors.push(`${path}: must be an object with "match" and "action"`)
+      return []
+    }
+    unknownKeys(entry, ['match', 'action'], path, errors)
+    const { match, action } = entry
+    const okMatch = typeof match === 'string' && /^(mcp__|\*)/.test(match)
+    if (!okMatch) errors.push(`${path}.match: must be ${MATCH}, not ${JSON.stringify(match)}`)
+    const okAction = typeof action === 'string' && (ACTIONS as readonly string[]).includes(action)
+    if (!okAction) errors.push(`${path}.action: must be "allow", "deny" or "ask", not ${JSON.stringify(action)}`)
+    return okMatch && okAction ? [{ match: match as string, action: action as Action, index }] : []
+  })
+}
+
 /**
- * The config in `text`. `execPath` is the default Node of the sandbox. Every
- * error names the key it is about, as `mcpServers.github.env.TOKEN`.
+ * The config in `text`. `execPath` is the default Node of the sandbox and
+ * `platform` the host's process.platform. Every error names the key it is
+ * about, as `mcpServers.github.env.TOKEN` or `policy[2].action`.
  */
-export const parseConfig = (text: string, env: Env, execPath: string): Parsed => {
+export const parseConfig = (text: string, env: Env, execPath: string, platform: string): Parsed => {
   let raw: unknown
   try {
     raw = JSON.parse(text)
@@ -157,7 +226,7 @@ export const parseConfig = (text: string, env: Env, execPath: string): Parsed =>
   }
   if (!isObject(raw)) return { ok: false, errors: ['the config must be a JSON object with an mcpServers object'] }
   const errors: string[] = []
-  unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox'], 'config', errors)
+  unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox', 'policy'], 'config', errors)
 
   const servers = new Map<ServerKey, ServerConfig>()
   if (!isObject(raw.mcpServers)) errors.push('mcpServers: must be an object')
@@ -175,16 +244,10 @@ export const parseConfig = (text: string, env: Env, execPath: string): Parsed =>
       if (server) servers.set(key, server)
     }
 
-  let node = execPath
-  if (raw.sandbox !== undefined) {
-    if (!isObject(raw.sandbox)) errors.push('sandbox: must be an object')
-    else {
-      unknownKeys(raw.sandbox, ['node'], 'sandbox', errors)
-      if (raw.sandbox.node !== undefined) node = nonEmpty(raw.sandbox.node, 'sandbox.node', errors)
-    }
-  }
+  const sandbox = parseSandbox(raw.sandbox, execPath, platform, errors)
+  const policy = parsePolicy(raw.policy, errors)
 
-  return errors.length > 0 ? { ok: false, errors } : { ok: true, config: { servers, sandbox: { node } } }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, config: { servers, sandbox, policy } }
 }
 
 /**

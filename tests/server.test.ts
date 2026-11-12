@@ -16,13 +16,13 @@ import { argsText, catalogOf, searchResult, toolName, type ServerState } from '.
 import { splitToolName } from '../src/core/protocol.ts'
 
 const NODE = '/usr/bin/node'
-const ok = (value: unknown, env: Record<string, string> = {}): Config => {
-  const parsed = parseConfig(JSON.stringify(value), env, NODE)
+const ok = (value: unknown, env: Record<string, string> = {}, platform = 'linux'): Config => {
+  const parsed = parseConfig(JSON.stringify(value), env, NODE, platform)
   assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
   return parsed.config
 }
-const errors = (text: string, env: Record<string, string> = {}): string[] => {
-  const parsed = parseConfig(text, env, NODE)
+const errors = (text: string, env: Record<string, string> = {}, platform = 'linux'): string[] => {
+  const parsed = parseConfig(text, env, NODE, platform)
   assert.equal(parsed.ok, false)
   return parsed.ok ? [] : parsed.errors
 }
@@ -118,7 +118,7 @@ describe('the config', () => {
       extra: true,
     })
     assert.deepEqual(errors(text), [
-      'config.extra: unknown key (known: $schema, mcpServers, sandbox)',
+      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy)',
       'mcpServers.a.command: must be a non-empty string',
       'mcpServers.a.args: must be an array of strings',
       'mcpServers.b.type: must be "stdio" or "http", not "sse"',

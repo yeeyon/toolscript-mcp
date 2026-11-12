@@ -351,6 +351,51 @@ export type Projection = {
   wholeRef?: number
 }
 
+/**
+ * The results one session keeps for recall(n), by number, each as JSON with
+ * the time it came. `seen` maps a call's key (callKey) to the number of its
+ * first result that worked, 0 when that result was not kept.
+ */
+export type Kept = {
+  next: number
+  readonly results: Map<number, { readonly json: string; readonly at: number }>
+  chars: number
+  readonly seen: Map<string, number>
+}
+
+export const newKept = (): Kept => ({ next: 1, results: new Map(), chars: 0, seen: new Map() })
+
+// The newest results, up to these limits: about 10 MB per session.
+export const MAX_KEPT = 50
+export const MAX_KEPT_CHARS = 8_000_000
+export const MAX_SEEN = 2000
+
+/** Keeps a result from time `at` and returns its number. The oldest go first. A result larger than the whole limit is not kept. */
+export const keep = (kept: Kept, json: string, at: number): number | undefined => {
+  if (json.length > MAX_KEPT_CHARS) return undefined
+  const ref = kept.next++
+  kept.results.set(ref, { json, at })
+  kept.chars += json.length
+  for (const [old, r] of kept.results) {
+    if (kept.results.size <= MAX_KEPT && kept.chars <= MAX_KEPT_CHARS) break
+    if (old === ref) break
+    kept.results.delete(old)
+    kept.chars -= r.json.length
+  }
+  return ref
+}
+
+/** The reply file for recall(ref): the kept JSON as it is, with no parse and no copy of the value. */
+export const recallReply = (kept: Kept, ref: number): string => {
+  const found = kept.results.get(ref)
+  if (found !== undefined) return `{"ok":true,"value":${found.json}}`
+  const error =
+    ref > 0 && ref < kept.next
+      ? `result #${ref} is no longer kept: call the tool again`
+      : `no result #${ref} in this session`
+  return JSON.stringify({ ok: false, error } satisfies Reply)
+}
+
 const MAX_SHAPE_CHARS = 200
 const MAX_KEYS = 8
 const SAMPLE = 20
@@ -773,9 +818,7 @@ export type CallProblem = { line: number; text: string; isGuess: boolean }
 /**
  * The wrong names in the literal calls of a program: a tool that is not
  * connected, and with a declaration, an unknown or a missing argument. With
- * only the names of earlier calls, a name close to one of them. A deny rule
- * takes a tool out of the session, and the engine cannot check a tool that is
- * not there: so for a server that is connected, the result names both causes.
+ * only the names of earlier calls, a name close to one of them.
  */
 export const checkCalls = (
   calls: readonly LiteralCall[],
@@ -790,7 +833,7 @@ export const checkCalls = (
       const guess = near === undefined ? '' : ` (did you mean "${near}"?)`
       const server = splitToolName(c.tool)!.server
       const text = [...tools].some(t => splitToolName(t)?.server === server)
-        ? `no tool "${c.tool}" on the connected server "${server}"${guess}; if the name is right, a deny rule hides it`
+        ? `no tool "${c.tool}" on the connected server "${server}"${guess}`
         : `no MCP tool "${c.tool}" is connected${guess}`
       problems.push({ line: c.line, text, isGuess: false })
       continue
@@ -1009,12 +1052,13 @@ The program is the body of an async function. Available:
 - await call("mcp__<server>__<tool>", args) -> the tool result (parsed JSON when the tool returns JSON, else text)
 - await sleep(ms) -> waits, to poll a slow job; the time limit of the run still applies
 - await saveFile(name, data) -> writes data to a file and returns its path: text as it is, CSV or JSON lines for an array with a .csv or .jsonl name, else JSON; use it for data too large to return
-- await readFile(path) -> the text of a file in the project, or of a file from saveFile
-- await resources(server?) -> the MCP resources, each with its server and uri; await readResource(server, uri) -> its contents
+- await readFile(path) -> the text of a file from saveFile
 - console.log(...) -> shown after the result
 - return <value> -> the result, as JSON
 
 A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process or setTimeout: only these functions.
+
+Write each tool name as a string in call("…"): a name built at run time is refused unless the config allows it.
 
 Find tools and their argument types with search_tools first.
 
@@ -1023,10 +1067,10 @@ const issues = await call("mcp__linear__list_issues", { assignee: "me" })
 const open = issues.filter(i => i.state !== "Done")
 return open.map(i => ({ id: i.id, title: i.title }))`
 
-export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools.`
+export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools.`
 
 /** The server's instructions: what toolscript-mcp is for, read by the model at the start of a session. */
-export const SERVER_INSTRUCTIONS = `toolscript connects to other MCP servers. Find their tools with search_tools: give keywords, or an empty query to list all tools.`
+export const SERVER_INSTRUCTIONS = `toolscript connects to other MCP servers. Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back.`
 
 /**
  * The note after a run that worked where earlier tries did not: the servers
@@ -1060,15 +1104,3 @@ export const hintNudge = (
  */
 export const functionNudge = (calls: number, tools: readonly string[]): string =>
   `## Worth a saved function\n\nThis program made ${calls} call${calls === 1 ? '' : 's'} to ${tools.join(', ')}. If the person can ask for this task again, propose the program with save_function now: pass ids, dates and queries as arguments.`
-
-/**
- * The note after nested calls that needed an approval (no rule decided them)
- * and were refused. Without an allow rule they are refused each time (claude -p,
- * and auto mode in some Claude Code versions); only the person can add the rule.
- */
-export const approvalNote = (tools: readonly string[]): string => {
-  if (tools.length === 0) return ''
-  const names = tools.join(', ')
-  const one = tools.length === 1
-  return `## No allow rule\n\nNo allow rule matches ${names}, and ${one ? 'its call was' : 'their calls were'} refused. Without an allow rule, the same call is refused again. If the person wants programs to call ${one ? 'this tool' : 'these tools'}, ask them to add ${names} to the allow rules in the toolscript-mcp config. Do not change the config yourself.`
-}

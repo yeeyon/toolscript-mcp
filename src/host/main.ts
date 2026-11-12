@@ -39,7 +39,7 @@ try {
 } catch (err) {
   fail([`cannot read the config ${file}: ${errorText(err)}`])
 }
-const parsed = parseConfig(text, process.env, process.execPath)
+const parsed = parseConfig(text, process.env, process.execPath, process.platform)
 if (!parsed.ok) fail([`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)])
 const { config } = parsed
 
@@ -47,11 +47,12 @@ const { version } = JSON.parse(fs.readFileSync(new URL('../../package.json', imp
   version: string
 }
 const downstream = connectAll(config.servers, version, log)
-const server = createServer(downstream, version)
+const { server, stopRuns } = createServer(downstream, config, version, log)
 
+// A run in flight gets its sandbox killed and its exchange dir removed before the exit.
 let closing: Promise<void> | undefined
 const shutdown = () =>
-  (closing ??= Promise.allSettled([server.close(), downstream.close()]).then(() => process.exit(0)))
+  (closing ??= Promise.allSettled([stopRuns(), server.close(), downstream.close()]).then(() => process.exit(0)))
 
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)

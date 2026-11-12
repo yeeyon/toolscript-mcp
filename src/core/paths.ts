@@ -7,15 +7,21 @@ const APP = '.toolscript-mcp'
 const HINTS = 'hints'
 const FUNCTIONS = 'functions'
 
-/** An absolute path with empty, `.` and `..` parts resolved. */
+/**
+ * An absolute path with empty, `.` and `..` parts resolved. A Windows path
+ * with a drive (`C:\Users\u` or `C:/Users/u`) keeps its drive and comes back
+ * with forward slashes.
+ */
 export const normalizePath = (path: string): string => {
+  const drive = /^[A-Za-z]:(?=[\\/]|$)/.exec(path)?.[0]
+  const rest = drive === undefined ? path : path.slice(drive.length).replaceAll('\\', '/')
   const parts: string[] = []
-  for (const part of path.split('/')) {
+  for (const part of rest.split('/')) {
     if (part === '' || part === '.') continue
     if (part === '..') parts.pop()
     else parts.push(part)
   }
-  return `/${parts.join('/')}`
+  return `${drive ?? ''}/${parts.join('/')}`
 }
 
 /**

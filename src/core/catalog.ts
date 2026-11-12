@@ -2,7 +2,7 @@
 // entry per tool, named mcp__<server>__<tool>, and the servers that failed.
 
 import type { ServerKey } from './config.ts'
-import { rankTools, type ToolEntry } from './protocol.ts'
+import { rankTools, type ArgSpec, type ToolEntry } from './protocol.ts'
 
 /** A tool as a downstream server lists it. */
 export type DownstreamTool = { readonly name: string; readonly description?: string; readonly inputSchema?: unknown }
@@ -72,6 +72,23 @@ export const argsText = (inputSchema: unknown): string => {
 }
 
 const MAX_ARGS = 500
+
+/**
+ * What an input schema says of a tool's arguments, for the check before a run.
+ * A schema with no properties allows any names, as does one that sets
+ * `additionalProperties` to anything but false. Without it, other names are
+ * typos, as in the generated types of the plugin. Undefined when the schema
+ * has no properties object.
+ */
+export const argSpec = (inputSchema: unknown): ArgSpec | undefined => {
+  if (!isObject(inputSchema) || !isObject(inputSchema.properties)) return undefined
+  const names = Object.keys(inputSchema.properties)
+  const required = Array.isArray(inputSchema.required)
+    ? inputSchema.required.filter((n): n is string => typeof n === 'string')
+    : []
+  const extra = inputSchema.additionalProperties
+  return { names, required, isOpen: names.length === 0 || (extra !== undefined && extra !== false) }
+}
 
 const notConnectedText = (states: readonly ServerState[]): string => {
   const lines = states.flatMap(s =>

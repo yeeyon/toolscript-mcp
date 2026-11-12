@@ -93,8 +93,8 @@ export type ToolName = keyof typeof TOOLS
 /** The short names, as the model reads them in text. */
 export const TOOL_NAMES = Object.keys(TOOLS) as ToolName[]
 
-/** The tools that the server lists now. run_code comes in M4, hints and functions after it. */
-export const SERVED = ['search_tools'] as const satisfies readonly ToolName[]
+/** The tools that the server lists now. Hints and functions come after 0.1. */
+export const SERVED = ['run_code', 'search_tools'] as const satisfies readonly ToolName[]
 
 export type ServedName = (typeof SERVED)[number]
 
