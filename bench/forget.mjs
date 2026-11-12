@@ -1,25 +1,45 @@
-// Removes what runs against the fake server saved in ~/.claude/code-mode: the
-// result shapes and argument names of the tools that `isRunTool` matches, and
-// the files and metrics of the given sessions. The bench, the smoke test and
-// the /verify drive script give each run its own server name, so a later run
-// sees nothing of an earlier one.
+// Removes the Claude Code project folder of a bench run. Runs use
+// --no-session-persistence, so no transcript is written, but Claude Code still
+// saves an MCP result too large to show in ~/.claude/projects/<cwd>/<session>/.
+// A folder is removed only when its name is exactly the name Claude Code gives
+// one of the given run cwds and it is a direct child of ~/.claude/projects.
+//
+//   node bench/forget.mjs <out dir>    removes the folders of every run in <out dir>
 
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const DIR = path.join(os.homedir(), '.claude', 'code-mode')
+const PROJECTS = path.join(os.homedir(), '.claude', 'projects')
 
-export const forgetRuns = (isRunTool, sessionIds = []) => {
-  for (const file of ['shapes.json', 'args.json'].map(f => path.join(DIR, f)).filter(f => fs.existsSync(f))) {
-    const learned = JSON.parse(fs.readFileSync(file, 'utf8'))
-    fs.writeFileSync(
-      file,
-      `${JSON.stringify(Object.fromEntries(Object.entries(learned).filter(([tool]) => !isRunTool(tool))), null, 2)}\n`,
-    )
+const projectName = cwd => cwd.replace(/[^a-zA-Z0-9]/g, '-')
+
+/** Removes the project folder of each run cwd, and returns the folders it removed. */
+export const forgetRuns = cwds => {
+  const removed = []
+  for (const cwd of cwds) {
+    if (path.basename(cwd) !== 'cwd' || !path.isAbsolute(cwd)) throw new Error(`not a bench run cwd: ${cwd}`)
+    const names = new Set([projectName(cwd)])
+    if (fs.existsSync(cwd)) names.add(projectName(fs.realpathSync.native(cwd)))
+    for (const name of names) {
+      const dir = path.join(PROJECTS, name)
+      if (path.dirname(dir) !== PROJECTS || !fs.existsSync(dir)) continue
+      fs.rmSync(dir, { recursive: true, force: true })
+      removed.push(dir)
+    }
   }
-  for (const id of sessionIds) {
-    fs.rmSync(path.join(DIR, 'files', id), { recursive: true, force: true })
-    fs.rmSync(path.join(DIR, 'metrics', `${id}.jsonl`), { force: true })
-  }
+  return removed
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const out = process.argv[2]
+  const cwds = fs
+    .readdirSync(out, { withFileTypes: true })
+    .filter(d => d.isDirectory() && fs.existsSync(path.join(out, d.name, 'cwd')))
+    .flatMap(d => {
+      const cwd = path.join(out, d.name, 'cwd')
+      return [cwd, path.join(fs.realpathSync.native(out), d.name, 'cwd')]
+    })
+  for (const removed of forgetRuns(cwds)) console.log(`removed ${removed}`)
 }

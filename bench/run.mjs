@@ -1,25 +1,23 @@
-// Output projection bench: runs each task in headless Claude Code with the
-// option `projection` off and on, against the fake MCP server, and compares.
+// Token and cost bench: runs each task in headless Claude Code in two arms and
+// compares them.
+//   direct      the fake server's tools, listed to the model as mcp__bench__*
+//   toolscript  only toolscript-mcp, whose config lists the fake server as bench
 //
-//   node bench/run.mjs                         3 reps of every task, both arms
-//   node bench/run.mjs --reps 1 --tasks logs,issues
-//   node bench/run.mjs --model sonnet --parallel 4
-//   node bench/run.mjs --report <out dir>      the table again, with no new runs
+//   node bench/run.mjs                              5 reps of every task, both arms
+//   node bench/run.mjs --reps 1 --tasks logs,ticket --arms toolscript
+//   node bench/run.mjs --model haiku --parallel 3 --max-spend 3
+//   node bench/run.mjs --report <out dir>           the tables again, with no new runs
 //
-// Direct calls: --allow-direct turns blockDirectMcp off, so the model can call
-// MCP tools directly. --plugin-dir runs another copy of the plugin (default:
-// this repo), and --label names that column. Two runs into one --out compare:
-//   node bench/run.mjs --arms on --allow-direct --plugin-dir /tmp/old --label old --out /tmp/b
-//   node bench/run.mjs --arms on --allow-direct --label new --out /tmp/b
-//   node bench/run.mjs --report /tmp/b
-//
-// Each run costs API usage (about $0.11 with Opus 5.5, $0.005 with Haiku 5.5). A run is
-// `claude -p --restricted --strict-mcp-config`: no user settings, plugins,
-// hooks or other MCP servers; Bash is off; direct MCP calls are blocked unless
-// --allow-direct. Output: <out>/results.jsonl, one row per run.
+// Run `npm run build` first. A run is `claude -p --restricted --strict-mcp-config`
+// with `--no-session-persistence`: no user, project or local settings (so no
+// user hooks and no user plugins), no other MCP servers, no Bash, and no
+// transcript. --allowedTools lists exactly the arm's MCP tools. Each run has its
+// own temp cwd, MCP config and BENCH_LOG. The stream of each run is kept in
+// <out>/<run>/stream.jsonl, and <out>/results.jsonl holds one row per run.
+// Claude Code still saves an MCP result that is too large to show in
+// ~/.claude/projects/<cwd>/; forget.mjs removes that folder after each run.
 
 import { spawn } from 'node:child_process'
-import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -28,26 +26,51 @@ import { TASKS } from './data.mjs'
 import { forgetRuns } from './forget.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+const FAKE_SERVER = path.join(REPO, 'bench', 'fake-server.mjs')
+const TOOLSCRIPT = path.join(REPO, 'dist', 'host', 'main.js')
+const NODE = process.execPath
+
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(name)
   return i > 0 ? process.argv[i + 1] : fallback
 }
-const reps = Number(arg('--reps', 3))
+const reps = Number(arg('--reps', 5))
 const parallel = Number(arg('--parallel', 3))
+const maxSpend = Number(arg('--max-spend', 3))
 const model = arg('--model')
 const taskIds = arg('--tasks')?.split(',') ?? TASKS.map(t => t.id)
-const arms = arg('--arms', 'off,on').split(',')
+const armIds = arg('--arms', 'direct,toolscript').split(',')
 const reportOnly = arg('--report')
-const pluginDir = path.resolve(arg('--plugin-dir', REPO))
-const allowDirect = process.argv.includes('--allow-direct')
-const label = arg('--label', '')
-const out =
+const outArg =
   reportOnly ??
-  arg('--out', path.join(os.tmpdir(), `code-mode-bench-${new Date().toISOString().replace(/[:.]/g, '-')}`))
-const METRICS = path.join(os.homedir(), '.claude', 'code-mode', 'metrics')
-// Each run has its own server name, so no run sees the result shapes and the
-// argument names that an earlier run saved. The end of the bench removes them.
-const BENCH_SERVER = /^mcp__bench_[0-9a-f]{8}__/
+  arg('--out', path.join(os.tmpdir(), `toolscript-bench-${new Date().toISOString().replace(/[:.]/g, '-')}`))
+fs.mkdirSync(outArg, { recursive: true })
+// The long form of the path: Claude Code's file tools refuse a cwd with a Windows short name such as USERNA~1.
+const out = fs.realpathSync.native(outArg)
+
+const benchServer = log => ({ command: NODE, args: [FAKE_SERVER], env: { BENCH_LOG: log } })
+
+// What each arm puts in front of the model. `allowed` is the whole --allowedTools list.
+const ARMS = {
+  direct: {
+    servers: ({ log }) => ({ bench: benchServer(log) }),
+    allowed: benchTools => benchTools.map(t => `mcp__bench__${t}`),
+  },
+  toolscript: {
+    servers: ({ dir, log }) => {
+      const config = path.join(dir, 'toolscript.json')
+      fs.writeFileSync(
+        config,
+        JSON.stringify({
+          mcpServers: { bench: benchServer(log) },
+          policy: [{ match: 'mcp__bench__*', action: 'allow' }],
+        }),
+      )
+      return { toolscript: { command: NODE, args: [TOOLSCRIPT, '--config', config] } }
+    },
+    allowed: () => ['mcp__toolscript__run_code', 'mcp__toolscript__search_tools'],
+  },
+}
 
 const readLines = file =>
   fs.existsSync(file)
@@ -58,35 +81,110 @@ const readLines = file =>
         .map(l => JSON.parse(l))
     : []
 
-// The names of the tools the model called, in order, from the session's transcript.
-const transcriptUses = (cwd, sessionId) => {
-  const dir = path.join(os.homedir(), '.claude', 'projects', fs.realpathSync(cwd).replace(/[^a-zA-Z0-9]/g, '-'))
-  return readLines(path.join(dir, `${sessionId}.jsonl`)).flatMap(row =>
-    Array.isArray(row.message?.content) ? row.message.content.filter(b => b.type === 'tool_use').map(b => b.name) : [],
+// The tools and instructions an MCP server lists, from initialize and tools/list over stdio.
+const listServer = ({ command, args, env }) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'ignore'] })
+    const replies = new Map()
+    let buffer = ''
+    child.stdout.on('data', d => {
+      buffer += d
+      for (let i; (i = buffer.indexOf('\n')) >= 0; buffer = buffer.slice(i + 1)) {
+        const msg = JSON.parse(buffer.slice(0, i))
+        replies.set(msg.id, msg.result)
+        if (msg.id === 2) {
+          child.stdin.end()
+          resolve({ instructions: replies.get(1)?.instructions ?? '', tools: msg.result.tools })
+        }
+      }
+    })
+    child.on('error', reject)
+    const send = msg => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...msg })}\n`)
+    send({
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'bench', version: '1' } },
+    })
+    send({ method: 'notifications/initialized' })
+    send({ id: 2, method: 'tools/list' })
+  })
+
+const sumUsage = u => (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0)
+
+// The row of one run, from its stream-json events and its BENCH_LOG.
+const measure = ({ task, arm, rep, events, calls, ms }) => {
+  const result = events.findLast(e => e.type === 'result') ?? {}
+  const init = events.find(e => e.type === 'system' && e.subtype === 'init') ?? {}
+  // A message with several content blocks comes as several events with the same id and usage.
+  const apiCalls = new Map()
+  for (const e of events)
+    if (e.type === 'assistant' && e.message?.id && !apiCalls.has(e.message.id)) apiCalls.set(e.message.id, e.message)
+  const useBlocks = events.flatMap(e =>
+    e.type === 'assistant' ? (e.message?.content ?? []).filter(b => b.type === 'tool_use') : [],
   )
+  const uses = useBlocks.map(b => b.name)
+  const toolOf = new Map(useBlocks.map(b => [b.id, b.name]))
+  const results = events
+    .flatMap(e => (e.type === 'user' && Array.isArray(e.message?.content) ? e.message.content : []))
+    .filter(b => b.type === 'tool_result')
+  const toolResultChars = results.reduce(
+    (n, b) => n + (typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '')).length,
+    0,
+  )
+  const usage = result.usage ?? {}
+  const answer = String(result.result ?? '')
+  const perCall = [...apiCalls.values()].map(m => ({
+    input: sumUsage(m.usage),
+    cacheRead: m.usage?.cache_read_input_tokens ?? 0,
+    cacheCreation: m.usage?.cache_creation_input_tokens ?? 0,
+  }))
+  return {
+    task: task.id,
+    arm,
+    rep,
+    correct: result.is_error !== true && task.check(answer, calls),
+    error: result.is_error === true ? String(result.subtype ?? 'error') : result.type ? '' : 'no result event',
+    costUsd: result.total_cost_usd ?? 0,
+    inputTokens: sumUsage(usage),
+    freshInputTokens: usage.input_tokens ?? 0,
+    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+    cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+    outputTokens: usage.output_tokens ?? 0,
+    firstCallInputTokens: perCall[0]?.input ?? 0,
+    // The context every API call re-reads (system prompt, tool list, prompt), against what the turns added.
+    fixedInputTokens: (perCall[0]?.input ?? 0) * perCall.length,
+    thinkingTokens: Object.values(result.modelUsage ?? {}).reduce((n, m) => n + (m.thinkingTokens ?? 0), 0),
+    apiCalls: apiCalls.size,
+    perCall,
+    turns: result.num_turns ?? 0,
+    seconds: ms / 1000,
+    mcpCalls: calls.length,
+    runCode: uses.filter(n => n === 'mcp__toolscript__run_code').length,
+    failedRunCode: results.filter(b => b.is_error === true && toolOf.get(b.tool_use_id) === 'mcp__toolscript__run_code')
+      .length,
+    searchTools: uses.filter(n => n === 'mcp__toolscript__search_tools').length,
+    directBench: uses.filter(n => n.startsWith('mcp__bench__')).length,
+    toolSearch: uses.filter(n => n === 'ToolSearch').length,
+    otherTools: uses.filter(n => !/^mcp__(bench|toolscript)__/.test(n)),
+    permissionDenied: events.filter(e => e.type === 'system' && e.subtype === 'permission_denied').length,
+    serverChars: calls.reduce((n, c) => n + c.chars, 0),
+    toolResultChars,
+    hookEvents: events.filter(e => e.type === 'system' && /hook/i.test(String(e.subtype))).length,
+    initTools: init.tools ?? [],
+    initMcp: (init.mcp_servers ?? []).map(s => `${s.name}:${s.status}`),
+    initPlugins: (init.plugins ?? []).map(p => p.name ?? p),
+    models: Object.keys(result.modelUsage ?? {}),
+    answer: answer.slice(0, 400),
+  }
 }
 
-const runOne = async ({ task, arm, rep }) => {
-  const dir = path.join(out, `${task.id}-${label || arm}-${rep}`)
+const runOne = async ({ task, arm, rep, benchTools }) => {
+  const dir = path.join(out, `${task.id}-${arm}-${rep}`)
   const cwd = path.join(dir, 'cwd')
   fs.mkdirSync(cwd, { recursive: true })
   const log = path.join(dir, 'calls.jsonl')
   const mcp = path.join(dir, 'mcp.json')
-  const server = `bench_${crypto.randomUUID().slice(0, 8)}`
-  fs.writeFileSync(
-    mcp,
-    JSON.stringify({
-      mcpServers: {
-        [server]: { command: 'node', args: [path.join(REPO, 'bench', 'fake-server.mjs')], env: { BENCH_LOG: log } },
-      },
-    }),
-  )
-  const settings = {
-    pluginConfigs: {
-      'code-mode': { options: { projection: arm === 'on', metrics: true, blockDirectMcp: !allowDirect } },
-    },
-  }
-  const sessionId = crypto.randomUUID()
+  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: ARMS[arm].servers({ dir, log }) }))
   const argv = [
     '-p',
     task.prompt,
@@ -94,18 +192,15 @@ const runOne = async ({ task, arm, rep }) => {
     '--strict-mcp-config',
     '--mcp-config',
     mcp,
-    '--plugin-dir',
-    pluginDir,
-    '--settings',
-    JSON.stringify(settings),
     '--allowedTools',
-    `mcp__code-mode__run_code,mcp__code-mode__search_tools,mcp__${server}__*`,
+    ARMS[arm].allowed(benchTools).join(','),
+    '--no-session-persistence',
     '--output-format',
-    'json',
-    '--session-id',
-    sessionId,
+    'stream-json',
+    '--verbose',
+    '--include-hook-events',
     '--max-budget-usd',
-    '1',
+    '0.5',
     ...(model ? ['--model', model] : []),
   ]
   const started = Date.now()
@@ -116,148 +211,195 @@ const runOne = async ({ task, arm, rep }) => {
     child.stderr.on('data', d => fs.appendFileSync(path.join(dir, 'stderr.txt'), d))
     child.on('close', () => resolve(text))
   })
-  fs.writeFileSync(path.join(dir, 'out.json'), stdout)
-  let result = {}
-  try {
-    result = JSON.parse(stdout)
-  } catch {
-    // a run that crashed: graded as wrong
-  }
-  const calls = readLines(log)
-  const runs = readLines(path.join(METRICS, `${sessionId}.jsonl`))
-  const seen = new Set()
-  let duplicates = 0
-  for (const c of calls) {
-    const key = `${c.tool}\n${JSON.stringify(c.args, Object.keys(c.args).sort())}`
-    if (seen.has(key)) duplicates++
-    seen.add(key)
-  }
-  // The model's own tool calls, from the transcript: an MCP tool it called
-  // directly, run_code, and ToolSearch (which loads a tool for a direct call).
-  const uses = transcriptUses(cwd, sessionId)
-  const answer = String(result.result ?? '')
-  const usage = result.usage ?? {}
-  return {
-    task: task.id,
-    arm,
-    label,
-    rep,
-    sessionId,
-    correct: task.check(answer, calls),
-    mcpCalls: calls.length,
-    directCalls: uses.filter(n => n.startsWith(`mcp__${server}__`)).length,
-    programs: uses.filter(n => n === 'mcp__code-mode__run_code').length,
-    toolSearches: uses.filter(n => n === 'ToolSearch').length,
-    duplicates,
-    creates: calls.filter(c => c.tool === 'create_ticket').length,
-    runs: runs.length,
-    failedRuns: runs.filter(r => !r.ok).length,
-    recalls: runs.reduce((n, r) => n + r.recalls, 0),
-    cutRuns: runs.filter(r => r.cut).length,
-    emptyRuns: runs.filter(r => r.empty).length,
-    turns: result.num_turns ?? 0,
-    costUsd: result.total_cost_usd ?? 0,
-    inputTokens:
-      (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
-    outputTokens: usage.output_tokens ?? 0,
-    ms: Date.now() - started,
-    answer: answer.slice(0, 400),
-  }
+  const ms = Date.now() - started
+  fs.writeFileSync(path.join(dir, 'stream.jsonl'), stdout)
+  return { cwd, row: measureDir({ task, arm, rep, dir, ms }) }
 }
 
+const measureDir = ({ task, arm, rep, dir, ms }) => {
+  const events = fs
+    .readFileSync(path.join(dir, 'stream.jsonl'), 'utf8')
+    .split('\n')
+    .flatMap(line => {
+      try {
+        return line.trim() ? [JSON.parse(line)] : []
+      } catch {
+        return []
+      }
+    })
+  return measure({ task, arm, rep, events, calls: readLines(path.join(dir, 'calls.jsonl')), ms })
+}
+
+// The rows again from each run's stream and BENCH_LOG, so a metric added later covers old runs.
+// Wall time is not in the stream, so it comes from the saved row.
+const remeasure = rows =>
+  rows.map(r =>
+    measureDir({
+      task: TASKS.find(t => t.id === r.task),
+      arm: r.arm,
+      rep: r.rep,
+      dir: path.join(out, `${r.task}-${r.arm}-${r.rep}`),
+      ms: r.seconds * 1000,
+    }),
+  )
+
+const METRICS = [
+  ['correct', r => (r.correct ? 1 : 0)],
+  ['cost USD', r => r.costUsd, 4],
+  ['input tokens (all)', r => r.inputTokens, 0],
+  ['  fresh input', r => r.freshInputTokens, 0],
+  ['  cache read', r => r.cacheReadTokens, 0],
+  ['  cache creation', r => r.cacheCreationTokens, 0],
+  ['first-call input', r => r.firstCallInputTokens, 0],
+  ['fixed input (first call x API calls)', r => r.fixedInputTokens, 0],
+  ['added input (all minus fixed)', r => r.inputTokens - r.fixedInputTokens, 0],
+  ['output tokens', r => r.outputTokens, 0],
+  ['  of which thinking', r => r.thinkingTokens, 0],
+  ['turns', r => r.turns],
+  ['API calls', r => r.apiCalls],
+  ['seconds', r => r.seconds, 1],
+  ['MCP calls (BENCH_LOG)', r => r.mcpCalls],
+  ['server result chars (BENCH_LOG)', r => r.serverChars, 0],
+  ['tool result chars in context', r => r.toolResultChars, 0],
+  ['run_code calls', r => r.runCode],
+  ['failed run_code calls', r => r.failedRunCode],
+  ['search_tools calls', r => r.searchTools],
+  ['direct mcp__bench__ calls', r => r.directBench],
+  ['ToolSearch calls', r => r.toolSearch],
+  ['built-in tool calls (ToolSearch too)', r => r.otherTools.length],
+  ['permission denials', r => r.permissionDenied],
+]
+
+const sorted = xs => [...xs].sort((a, b) => a - b)
+const median = xs => {
+  const s = sorted(xs)
+  const m = Math.floor(s.length / 2)
+  return s.length === 0 ? NaN : s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+}
+const mean = xs => (xs.length === 0 ? NaN : xs.reduce((a, b) => a + b, 0) / xs.length)
+const fmt = (v, d = 1) => (Number.isNaN(v) ? '-' : Number.isInteger(v) ? String(v) : v.toFixed(d))
+
 const report = rows => {
-  const mean = (xs, f) => (xs.length === 0 ? 0 : xs.reduce((n, x) => n + Number(f(x)), 0) / xs.length)
-  const fmt = (v, d = 2) => (Number.isInteger(v) ? String(v) : v.toFixed(d))
-  const metrics = [
-    ['runs of the bench', rs => rs.length, 0],
-    ['correct answers', rs => `${rs.filter(r => r.correct).length}/${rs.length}`],
-    ['MCP calls per task', rs => mean(rs, r => r.mcpCalls)],
-    ['direct MCP calls per task', rs => mean(rs, r => r.directCalls ?? 0)],
-    [
-      'share of MCP calls made directly',
-      rs =>
-        `${(
-          (100 * rs.reduce((n, r) => n + (r.directCalls ?? 0), 0)) /
-          Math.max(
-            1,
-            rs.reduce((n, r) => n + r.mcpCalls, 0),
-          )
-        ).toFixed(0)}%`,
-    ],
-    ['tasks with a direct call', rs => `${rs.filter(r => (r.directCalls ?? 0) > 0).length}/${rs.length}`],
-    ['tasks with no run_code', rs => `${rs.filter(r => (r.programs ?? r.runs) === 0).length}/${rs.length}`],
-    ['duplicate MCP calls per task', rs => mean(rs, r => r.duplicates)],
-    [
-      'tickets created (ticket task)',
-      rs =>
-        mean(
-          rs.filter(r => r.task === 'ticket'),
-          r => r.creates,
-        ),
-    ],
-    ['run_code runs per task', rs => mean(rs, r => r.runs)],
-    ['failed runs per task', rs => mean(rs, r => r.failedRuns)],
-    ['recalls per task', rs => mean(rs, r => r.recalls)],
-    ['cut results per task', rs => mean(rs, r => r.cutRuns)],
-    ['turns per task', rs => mean(rs, r => r.turns)],
-    ['input tokens per task', rs => mean(rs, r => r.inputTokens), 0],
-    ['output tokens per task', rs => mean(rs, r => r.outputTokens), 0],
-    ['cost per task (USD)', rs => mean(rs, r => r.costUsd), 3],
-    ['seconds per task', rs => mean(rs, r => r.ms / 1000), 1],
-  ]
-  // A column for each label, or for each arm when the runs have no label.
-  const keyOf = r => r.label || r.arm
-  const cols = [...new Set(rows.map(keyOf))]
-  const byArm = Object.fromEntries(cols.map(a => [a, rows.filter(r => keyOf(r) === a)]))
-  const w = Math.max(...metrics.map(m => m[0].length))
-  console.log(`${''.padEnd(w)}  ${cols.map(a => a.padStart(9)).join('  ')}`)
-  for (const [name, f, d] of metrics)
-    console.log(
-      `${name.padEnd(w)}  ${cols
-        .map(a => {
-          const v = f(byArm[a])
-          return (typeof v === 'number' ? fmt(v, d) : v).padStart(9)
-        })
-        .join('  ')}`,
-    )
-  console.log('\ncorrect answers by task')
-  for (const id of [...new Set(rows.map(r => r.task))]) {
-    console.log(
-      `  ${id.padEnd(10)} ${cols
-        .map(a => {
-          const rs = byArm[a].filter(r => r.task === id)
-          return `${a} ${rs.filter(r => r.correct).length}/${rs.length}`
-        })
-        .join('   ')}`,
-    )
+  const arms = Object.keys(ARMS).filter(a => rows.some(r => r.arm === a))
+  const tasks = [...new Set(rows.map(r => r.task))]
+  const of = (arm, task) => rows.filter(r => r.arm === arm && (task === undefined || r.task === task))
+  console.log(`runs: ${arms.map(a => `${a} ${of(a).length}`).join(', ')}`)
+  console.log(`total spend: $${rows.reduce((n, r) => n + r.costUsd, 0).toFixed(4)}`)
+  console.log(`models: ${[...new Set(rows.flatMap(r => r.models))].join(', ')}`)
+  for (const arm of arms) {
+    const rs = of(arm)
+    console.log(`\n### ${arm} (${rs.length} runs, ${rs.filter(r => r.correct).length} correct)\n`)
+    console.log('| metric | mean | median | min | max |')
+    console.log('|---|---:|---:|---:|---:|')
+    for (const [name, f, d] of METRICS.slice(1)) {
+      const xs = rs.map(f)
+      console.log(
+        `| ${name.trim()} | ${fmt(mean(xs), d ?? 1)} | ${fmt(median(xs), d ?? 1)} | ${fmt(Math.min(...xs), d ?? 1)} | ${fmt(Math.max(...xs), d ?? 1)} |`,
+      )
+    }
   }
+  if (arms.length === 2) {
+    const [a, b] = arms
+    console.log(`\n### per task: median (min to max), ${b} against ${a}\n`)
+    console.log(
+      `| task | correct ${a} | correct ${b} | cost ${a} | cost ${b} | cost change | input ${a} | input ${b} | output ${a} | output ${b} |`,
+    )
+    console.log('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|')
+    const cell = (rs, f, d) => {
+      const xs = rs.map(f)
+      return `${fmt(median(xs), d)} (${fmt(Math.min(...xs), d)} to ${fmt(Math.max(...xs), d)})`
+    }
+    for (const task of [...tasks, undefined]) {
+      const ra = of(a, task)
+      const rb = of(b, task)
+      const change = median(rb.map(r => r.costUsd)) / median(ra.map(r => r.costUsd)) - 1
+      console.log(
+        `| ${task ?? 'all'} | ${ra.filter(r => r.correct).length}/${ra.length} | ${rb.filter(r => r.correct).length}/${rb.length} | ${cell(ra, r => r.costUsd, 4)} | ${cell(rb, r => r.costUsd, 4)} | ${(100 * change).toFixed(0)}% | ${cell(ra, r => r.inputTokens, 0)} | ${cell(rb, r => r.inputTokens, 0)} | ${cell(ra, r => r.outputTokens, 0)} | ${cell(rb, r => r.outputTokens, 0)} |`,
+      )
+    }
+    const behavior = [
+      ['turns', r => r.turns],
+      ['MCP calls', r => r.mcpCalls],
+      ['search_tools', r => r.searchTools],
+      ['run_code', r => r.runCode],
+      ['failed run_code', r => r.failedRunCode],
+      ['ToolSearch', r => r.toolSearch],
+      ['server chars', r => r.serverChars],
+      ['chars in context', r => r.toolResultChars],
+    ]
+    console.log(`\n### per task: median per run, ${a} / ${b}\n`)
+    console.log(`| task | ${behavior.map(([name]) => name).join(' | ')} |`)
+    console.log(`|---|${behavior.map(() => '---:').join('|')}|`)
+    for (const task of [...tasks, undefined]) {
+      const cells = behavior.map(
+        ([, f]) => `${fmt(median(of(a, task).map(f)), 0)} / ${fmt(median(of(b, task).map(f)), 0)}`,
+      )
+      console.log(`| ${task ?? 'all'} | ${cells.join(' | ')} |`)
+    }
+  }
+  const wrong = rows.filter(r => !r.correct)
+  if (wrong.length > 0) {
+    console.log('\n### wrong answers\n')
+    for (const r of wrong)
+      console.log(`- ${r.task}-${r.arm}-${r.rep}${r.error ? ` (${r.error})` : ''}: ${r.answer.replace(/\s+/g, ' ')}`)
+  }
+  const others = {}
+  for (const name of rows.flatMap(r => r.otherTools)) others[name] = (others[name] ?? 0) + 1
+  const counted = Object.entries(others).map(([n, k]) => `${n} ${k}`)
+  console.log(`\nbuilt-in tools called: ${counted.join(', ') || 'none'}`)
+  console.log(`plugins: ${[...new Set(rows.flatMap(r => r.initPlugins))].join(', ') || 'none'}`)
+  const odd = rows.filter(r => r.hookEvents > 0 || r.initMcp.some(s => !s.endsWith(':connected')))
+  for (const r of odd)
+    console.log(`CHECK ${r.task}-${r.arm}-${r.rep}: ${r.hookEvents} hook events, MCP servers [${r.initMcp}]`)
   console.log(`\nrows: ${path.join(out, 'results.jsonl')}`)
 }
 
 if (reportOnly) {
-  report(readLines(path.join(out, 'results.jsonl')))
+  report(remeasure(readLines(path.join(out, 'results.jsonl'))))
 } else {
-  fs.mkdirSync(out, { recursive: true })
-  // Arms alternate inside each rep, so a change of model load over time hits both.
+  const probeDir = path.join(out, 'probe')
+  fs.mkdirSync(probeDir, { recursive: true })
+  const defs = {}
+  for (const arm of armIds) {
+    const servers = ARMS[arm].servers({ dir: probeDir, log: path.join(probeDir, 'calls.jsonl') })
+    const listed = await Promise.all(Object.values(servers).map(listServer))
+    defs[arm] = {
+      tools: listed.flatMap(l => l.tools.map(t => t.name)),
+      toolChars: listed.reduce((n, l) => n + JSON.stringify(l.tools).length, 0),
+      instructionChars: listed.reduce((n, l) => n + l.instructions.length, 0),
+    }
+  }
+  const benchTools = (await listServer(benchServer(path.join(probeDir, 'calls.jsonl')))).tools.map(t => t.name)
+  fs.writeFileSync(path.join(out, 'definitions.json'), `${JSON.stringify(defs, null, 2)}\n`)
+  for (const [arm, d] of Object.entries(defs))
+    console.log(
+      `${arm}: ${d.tools.join(', ')}: ${d.toolChars} chars of tool JSON, ${d.instructionChars} of instructions`,
+    )
+
+  // Arms alternate inside each rep, and their order flips every rep, so drift in model load hits both.
   const jobs = []
   for (let rep = 1; rep <= reps; rep++)
-    for (const task of TASKS.filter(t => taskIds.includes(t.id))) for (const arm of arms) jobs.push({ task, arm, rep })
-  console.log(`${jobs.length} runs, ${parallel} at a time, into ${out}`)
+    for (const task of TASKS.filter(t => taskIds.includes(t.id)))
+      for (const arm of rep % 2 ? armIds : [...armIds].reverse()) jobs.push({ task, arm, rep, benchTools })
+  console.log(`${jobs.length} runs, ${parallel} at a time, stop after $${maxSpend}, into ${out}`)
   const rows = []
+  let spent = 0
   let next = 0
   await Promise.all(
     Array.from({ length: parallel }, async () => {
-      while (next < jobs.length) {
+      while (next < jobs.length && spent < maxSpend) {
         const job = jobs[next++]
-        const row = await runOne(job)
+        const { cwd, row } = await runOne(job)
+        for (const removed of forgetRuns([cwd])) console.log(`removed ${removed}`)
         rows.push(row)
+        spent += row.costUsd
         fs.appendFileSync(path.join(out, 'results.jsonl'), `${JSON.stringify(row)}\n`)
         console.log(
-          `${String(rows.length).padStart(3)}/${jobs.length} ${row.task}-${label || row.arm}-${row.rep} ${row.correct ? 'ok   ' : 'WRONG'} calls=${row.mcpCalls} direct=${row.directCalls} dup=${row.duplicates} runs=${row.runs} recalls=${row.recalls} $${row.costUsd.toFixed(3)}`,
+          `${String(rows.length).padStart(3)}/${jobs.length} ${row.task}-${row.arm}-${row.rep} ${row.correct ? 'ok   ' : 'WRONG'} calls=${row.mcpCalls} run_code=${row.runCode} direct=${row.directBench} turns=${row.turns} in=${row.inputTokens} $${row.costUsd.toFixed(4)} total $${spent.toFixed(4)}`,
         )
       }
     }),
   )
-  forgetRuns(tool => BENCH_SERVER.test(tool))
+  if (next < jobs.length) console.log(`stopped after $${spent.toFixed(4)}: ${jobs.length - next} runs not started`)
   report(rows)
 }

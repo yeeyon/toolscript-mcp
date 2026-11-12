@@ -1,4 +1,4 @@
-// Fixed data for the output projection bench. Each task has traps that make a
+// Fixed data for the token and cost bench. Each task has traps that make a
 // first filter miss: pages, nested fields, null fields, bots, text results,
 // a sum that is not the largest row, results larger than 20,000 characters.
 // All names are fake.

@@ -20,7 +20,8 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   - `downstream.ts`: connects to the servers of the config in parallel. A failed server stays failed.
   - `launch.ts`: starts the runner with the sandbox layers of each OS, the host kill timer and the exchange dir.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
-- `hints/` holds the bundled hints and `hints/sha256.json`. `bench/` holds the output projection bench.
+- `hints/` holds the bundled hints and `hints/sha256.json`. `bench/` holds the token and cost bench, direct MCP tools
+  against toolscript-mcp in headless Claude Code (`bench/run.mjs`, results in `bench/RESULTS.md`).
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake
   servers. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
 

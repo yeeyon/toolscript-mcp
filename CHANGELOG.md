@@ -43,3 +43,9 @@ The first server (M3):
 - `approvalNote` moved to `src/core/policy.ts` and names the rule to add in the config. The check before a run no longer says that a deny rule hides a tool.
 - `normalizePath` keeps a Windows drive, so `appPath` works with a Windows home folder.
 - `tests/run.test.ts` runs `run_code` with the real sandbox and fake servers: the run_code, files, check, output projection and approval cases of the plugin that apply. `tests/policy.test.ts` covers the rules and the config. `tests/server.e2e.mjs` covers paging, deny, ask with and without elicitation, a name built at run time, a busy loop, a wrong name, a secret probe, a cut result with recall, and the cleanup of the exchange dir.
+
+The bench:
+
+- `bench/run.mjs` compares two arms in headless Claude Code: the fake server's tools called directly, and the same server behind toolscript-mcp. It records correctness, cost, the token kinds, turns, wall time and the calls of each run, and prints the median and range per arm and per task. Removed the plugin-only parts and `scripts/projection-report.mjs`.
+- `bench/forget.mjs` removes only the Claude Code project folder of each run's temp cwd, where Claude Code saves a large MCP result.
+- `bench/RESULTS.md` holds the first measurement with Haiku 5.5 and its limits.

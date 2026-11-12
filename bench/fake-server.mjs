@@ -1,4 +1,4 @@
-// A fake MCP server (stdio, JSON-RPC lines) for the output projection bench.
+// A fake MCP server (stdio, JSON-RPC lines) for the token and cost bench.
 // Every tools/call is appended to $BENCH_LOG as one JSON line.
 //
 //   BENCH_LOG=/tmp/calls.jsonl node bench/fake-server.mjs
