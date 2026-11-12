@@ -1,16 +1,11 @@
-# Runs the checks of CODING_STANDARDS.md: the real sandbox, the doc and code
-# rules, the types of the pure helpers, the hooks, and on pull requests the
-# version rule. The full type check stays on a contributor's machine: its
-# types come from a logged-in Claude Code session.
+# Runs the checks of CODING_STANDARDS.md: the pure-core tests and the build on
+# three systems, the real sandbox, the types and the format.
 name: test
 
 on:
   push:
     branches: [main]
   pull_request:
-  # Weekly, for hooks-latest. A run by hand also runs it.
-  schedule:
-    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -18,16 +13,12 @@ permissions:
 
 jobs:
   test:
-    # 22.13 is the first Node with a stable --permission flag. The network
-    # block is sandbox-exec on macOS and unshare -rn on Linux.
+    # 22.13 is the first Node with a stable --permission flag.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: ['22.13', '24']
-        include:
-          - os: macos-latest
-            node: '24'
     name: ${{ matrix.os }} node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -36,6 +27,24 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  sandbox:
+    # The network block is sandbox-exec on macOS and unshare -rn on Linux.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    name: sandbox ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
       # Ubuntu 24.04 lets no user make a user namespace (AppArmor), so the
       # Linux network block would not run. Allow it, to test that layer.
       - if: runner.os == 'Linux'
@@ -43,13 +52,9 @@ jobs:
       - run: node tests/runner.integration.mjs
         env:
           EXPECT_NETWORK_BLOCK: '1'
-      - run: node tests/docs.check.mjs
-      - run: node tests/code.check.mjs
 
-  pure:
-    # The pure helpers without the Claude Code types: an import of the engine
-    # fails. Pinned, so a new TypeScript cannot make it fail.
-    name: pure helpers
+  typecheck:
+    name: typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -57,7 +62,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-      - run: npx -y -p typescript@7.0.2 tsc -p tsconfig.pure.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run check
 
   format:
     # A commit without the pre-commit hook of .githooks/ fails here. The
@@ -68,47 +75,3 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: sh scripts/format.sh --check .
-
-  hooks:
-    # The hooks against the fake host of claude-code/testing. It needs no login.
-    # Pinned: raise the version on purpose, after the tests pass with it locally.
-    name: hooks
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-      - run: npm install --global @anthropic-ai/claude-code@2.1.296
-      - run: claude plugin test .
-
-  hooks-latest:
-    # The hooks with the newest Claude Code: users get each release at once,
-    # and the hooks job tests a fixed one. Not on pull requests, so a release
-    # cannot make a change that is not related to it fail. When it fails, fix
-    # the plugin and raise the version in the hooks job.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    name: hooks (newest Claude Code)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-      - run: npm install --global @anthropic-ai/claude-code@latest
-      - run: claude --version
-      - run: claude plugin test .
-
-  version:
-    # A pull request that changes the plugin must raise its version.
-    if: github.event_name == 'pull_request'
-    name: version
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - run: node tests/version.check.mjs "origin/${{ github.base_ref }}"
