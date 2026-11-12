@@ -5,8 +5,8 @@ servers in a sandbox. The program filters and joins the data there. Only the res
 
 The goal is a server that works with any MCP client, for example Claude Code, Claude Desktop, Cursor and Codex.
 
-> **Status: pre-release.** The server is not built yet, and the package is not on npm. This repository holds the
-> core, the sandbox runner and its launcher. See [Roadmap](#roadmap).
+> **Status: pre-release.** The server connects to your MCP servers and lists their tools with `search_tools`.
+> `run_code` is not built yet, and the package is not on npm. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -36,6 +36,59 @@ return issues.issues
 
 The model sees a short list of keys and titles, not every full issue.
 
+## Try it (from source)
+
+You need Node 22.13 or later.
+
+1. Build the server:
+
+   ```sh
+   git clone https://github.com/yeeyon/toolscript-mcp.git
+   cd toolscript-mcp
+   npm ci
+   npm run build
+   ```
+
+2. Write a config file. It uses the `mcpServers` shape of Claude Desktop and Claude Code:
+
+   ```json
+   {
+     "mcpServers": {
+       "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "${NOTES_DIR}"] },
+       "tracker": {
+         "type": "http",
+         "url": "https://mcp.example.com/mcp",
+         "headers": { "Authorization": "Bearer ${TRACKER_TOKEN}" }
+       }
+     }
+   }
+   ```
+
+3. Add toolscript-mcp to your MCP client, with the server name `toolscript`. For example, in Claude Code:
+
+   ```sh
+   claude mcp add toolscript -- node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/config.json
+   ```
+
+4. Ask the model to find a tool with `search_tools`.
+
+### The config file
+
+- toolscript-mcp reads the file from `--config`, else from `TOOLSCRIPT_CONFIG`.
+- Without both, it reads `%APPDATA%\toolscript-mcp\config.json` on Windows.
+- On other systems, it reads `$XDG_CONFIG_HOME/toolscript-mcp/config.json`, else `~/.config/toolscript-mcp/config.json`.
+- A stdio server has `command`, `args` and `env`. An HTTP server has `"type": "http"`, `url` and `headers`.
+- `${VAR}` in `args`, `env`, `url` and `headers` gets the value of `VAR` from the environment of toolscript-mcp.
+- If a variable is not set, toolscript-mcp does not start. The error names the variable, not its value.
+- A server key contains letters, digits and hyphens, with single underscores between them. A tool is then `mcp__<key>__<tool>`.
+- `sandbox.node` sets the Node binary of the sandbox. The default is the Node that runs toolscript-mcp.
+
+A stdio server gets only its `env` from the config and a short list of system variables, for example `PATH` and
+`HOME`. Your other environment variables, and the secrets in them, stay out.
+
+If a server does not connect, the other servers still work. `search_tools` shows the failed server and the reason.
+toolscript-mcp refuses to start from its own config, so it cannot start copies of itself in a loop.
+
 ## Sandbox
 
 | Layer | Linux | macOS | Windows |
@@ -57,7 +110,7 @@ code. Read [SECURITY.md](SECURITY.md).
 
 - [x] Move the core and the sandbox runner out of the Claude Code plugin.
 - [x] Start the sandbox on Linux, macOS and Windows.
-- [ ] Read a server config, connect to your MCP servers and add `search_tools`.
+- [x] Read a server config, connect to your MCP servers and add `search_tools`.
 - [ ] Add `run_code` with allow, deny and ask rules.
 - [ ] Write the docs and publish 0.1.0 to npm.
 
@@ -76,3 +129,6 @@ endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic.
 ## Licence
 
 MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+The one runtime dependency is the MCP TypeScript SDK, `@modelcontextprotocol/sdk` 1.32.2, under the MIT License.
+The packages it installs are under the MIT, ISC, BSD-2-Clause and BSD-3-Clause licences.
