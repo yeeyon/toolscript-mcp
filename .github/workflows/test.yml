@@ -1,5 +1,6 @@
-# Runs the checks of CODING_STANDARDS.md: the pure-core tests and the build on
-# three systems, the real sandbox, the types and the format.
+# Runs the checks of CODING_STANDARDS.md: the pure-core tests, the build and
+# the server end to end on three systems, the real sandbox, the types and the
+# format.
 name: test
 
 on:
@@ -30,6 +31,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - run: node tests/server.e2e.mjs
 
   sandbox:
     # The network block is sandbox-exec on macOS and unshare -rn on Linux.

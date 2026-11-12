@@ -1,13 +1,14 @@
 // The code follows the rules in CODING_STANDARDS.md that no type and no test
 // of the hooks can see.
 //
-// Checked here: the hooks read the time only through $.clock, so a test can
+// Checked here: the core reads the time only through $.clock, so a test can
 // set it with mock.clock. Only src/core/paths.ts types out a path into
-// .claude/code-mode, so the loaders and the hint-file guard name the same
+// .toolscript-mcp, so the loaders and the hint-file guard name the same
 // folders. Only src/core/tools.ts types out the full id of a tool of this
-// plugin, in the hooks and in the tests that the engine runs. Only
-// src/core/hints.ts types out the `bundled:` prefix of a hint ref. The .mjs tests
-// are not scanned. Only scripts/format.sh names a Prettier version, so the hook and CI format alike.
+// server. Only src/core/hints.ts types out the `bundled:` prefix of a hint
+// ref. No file in src/host writes to stdout, which carries only MCP JSON-RPC.
+// The .mjs tests are not scanned. Only scripts/format.sh names a Prettier
+// version, so the hook and CI format alike.
 //
 //   node tests/code.check.mjs
 
@@ -25,7 +26,7 @@ const filesIn = (dir, pattern) =>
     .filter(f => pattern.test(f))
     .sort()
     .map(f => `${dir}/${f}`)
-const FILES = [...filesIn('src/core', /\.ts$/), ...filesIn('tests', /\.ts$/)]
+const FILES = [...filesIn('src/core', /\.ts$/), ...filesIn('src/host', /\.ts$/), ...filesIn('tests', /\.ts$/)]
 
 const inHooks = rel => rel.startsWith('src/core/')
 
@@ -38,14 +39,23 @@ const RULES = [
     applies: inHooks,
   },
   {
-    pattern: /code-mode\\?\/|codeModePath\(.*['"`](hints|functions)['"`]/,
-    message: 'types out a path into .claude/code-mode: use a helper from src/core/paths.ts',
+    pattern: /\.toolscript-mcp\\?\/|appPath\(.*['"`](hints|functions)['"`]/,
+    message: 'types out a path into .toolscript-mcp: use a helper from src/core/paths.ts',
     applies: rel => inHooks(rel) && rel !== 'src/core/paths.ts',
   },
   {
-    pattern: /mcp__code-mode__/,
-    message: 'types out the id of a code-mode tool: use TOOL from src/core/tools.ts',
+    pattern: /mcp__toolscript__/,
+    message: 'types out the id of a toolscript tool: use TOOL from src/core/tools.ts',
     applies: rel => rel !== 'src/core/tools.ts',
+  },
+  {
+    // console.error, warn, trace and assert write to stderr. Every other
+    // console method writes to stdout. In src/core, tsc already fails on
+    // console and process (no Node types), and RUN_DESCRIPTION names the
+    // sandbox's console.log.
+    pattern: /\bprocess\.stdout\b|\bconsole\.(?!(error|warn|trace|assert)\b)\w+/,
+    message: 'writes to stdout, which carries only MCP JSON-RPC: log with console.error',
+    applies: rel => rel.startsWith('src/host/'),
   },
   {
     pattern: /['"`]bundled:/,
@@ -83,13 +93,14 @@ const tests = {
     assert.deepEqual(flagged('src/core/x.ts', code), [1, 2, 3, 4, 5])
     assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests may read the time')
   },
-  'only src/core/paths.ts types out a code-mode path': () => {
+  'only src/core/paths.ts types out a .toolscript-mcp path': () => {
     const code = [
-      'const d = `${home}/.claude/code-mode/hints`',
-      '/code-mode\\/+(hints)/.test(c)',
-      "codeModePath(await $.session.root(), 'hints')",
-      '// ~/.claude/code-mode/metrics',
-      "codeModePath(home, 'metrics')",
+      'const d = `${home}/.toolscript-mcp/hints`',
+      '/\\.toolscript-mcp\\/+(hints)/.test(c)',
+      "appPath(await $.session.root(), 'hints')",
+      '// ~/.toolscript-mcp/metrics',
+      "appPath(home, 'metrics')",
+      'const c = `${base}/toolscript-mcp/config.json`',
     ]
     assert.deepEqual(flagged('src/core/x.ts', code), [1, 2, 3])
     assert.deepEqual(flagged('src/core/paths.ts', code), [])
@@ -97,14 +108,28 @@ const tests = {
   },
   'only src/core/tools.ts types out a tool id': () => {
     const code = [
-      "on('tool.call', { tool: 'mcp__code-mode__run_code' })",
-      'const t = `mcp__code-mode__${name}`',
+      "const run = { tool: 'mcp__toolscript__run_code' }",
+      'const t = `mcp__toolscript__${name}`',
       "const s = 'mcp__fake__echo'",
-      '// mcp__code-mode__run_code',
+      '// mcp__toolscript__run_code',
     ]
     assert.deepEqual(flagged('src/core/x.ts', code), [1, 2])
     assert.deepEqual(flagged('tests/x.test.ts', code), [1, 2])
     assert.deepEqual(flagged('src/core/tools.ts', code), [])
+  },
+  'no file in src/host writes to stdout': () => {
+    const code = [
+      "console.log('connected')",
+      "process.stdout.write('x')",
+      'const { stdout } = process; console.info(stdout)',
+      'console.table(rows)',
+      "console.error('toolscript-mcp: connected')",
+      'console.warn(w); console.trace(t); console.assert(ok)',
+      "// console.log('debug')",
+    ]
+    assert.deepEqual(flagged('src/host/x.ts', code), [1, 2, 3, 4])
+    assert.deepEqual(flagged('src/core/x.ts', code), [], 'tsc rejects console and process in src/core')
+    assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests print their results')
   },
   'only src/core/hints.ts types out a bundled hint ref': () => {
     const code = [

@@ -1,9 +1,12 @@
 {
   // The host code runs in Node, so it gets the Node types. It can import from
   // src/core, but tsconfig.json alone checks that src/core stays pure.
+  // skipLibCheck: the SDK's .d.ts files name DOM types (HeadersInit) that
+  // the Node types do not declare.
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["node"]
+    "types": ["node"],
+    "skipLibCheck": true
   },
   "include": ["src/host"]
 }
