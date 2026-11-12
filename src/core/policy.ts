@@ -17,16 +17,28 @@ export type Policy = readonly Rule[]
 /** What the policy says of one tool, and the rule that says it. No rule: the default, ask. */
 export type Verdict = { readonly action: Action; readonly rule?: Rule }
 
-const ESCAPE = /[.+?^${}()|[\]\\]/g
-
-/** True when the glob matches the whole name. `*` matches any characters, `__` too. */
-export const matches = (glob: string, tool: string): boolean =>
-  new RegExp(
-    `^${glob
-      .split('*')
-      .map(part => part.replace(ESCAPE, '\\$&'))
-      .join('.*')}$`,
-  ).test(tool)
+/**
+ * True when the glob matches the whole name. `*` matches any characters,
+ * `__` and line breaks too. No regular expression: the program picks the
+ * name, and a long one must not stall the server.
+ */
+export const matches = (glob: string, tool: string): boolean => {
+  const parts = glob.split('*')
+  if (parts.length === 1) return glob === tool
+  const first = parts[0]!
+  const last = parts.at(-1)!
+  if (tool.length < first.length + last.length || !tool.startsWith(first) || !tool.endsWith(last)) return false
+  // Each middle part at its first place after the one before: the leftmost
+  // place leaves the most room for the rest, so it never misses a match.
+  const end = tool.length - last.length
+  let at = first.length
+  for (const part of parts.slice(1, -1)) {
+    const found = tool.indexOf(part, at)
+    if (found < 0 || found + part.length > end) return false
+    at = found + part.length
+  }
+  return true
+}
 
 export const decide = (policy: Policy, tool: string): Verdict => {
   const rule = policy.find(r => matches(r.match, tool))

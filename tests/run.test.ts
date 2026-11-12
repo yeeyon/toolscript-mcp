@@ -187,6 +187,33 @@ describe('run_code', () => {
   })
 })
 
+describe('a reply that cannot be written', () => {
+  test('make it fail: the run stops at once, with no unhandled rejection, and the dir is removed', async () => {
+    const write = fs.promises.writeFile
+    fs.promises.writeFile = (async (file: fs.PathLike, ...rest: unknown[]) => {
+      if (/[\\/]r\d+\.json$/.test(String(file))) throw new Error('EPERM: fake write failure')
+      return (write as (...a: unknown[]) => Promise<void>)(file, ...rest)
+    }) as typeof write
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => unhandled.push(err)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const started = performance.now()
+      const r = await setup({ timeoutSeconds: 20 }).run('return await call("mcp__f__echo", { n: 1 })')
+      assert.ok(performance.now() - started < 5000, 'the run does not wait for the time limit')
+      assert.equal(r.isError, true)
+      assert.ok(r.text.includes('could not answer message 1 of the program: EPERM: fake write failure'), r.text)
+      assert.ok(!r.text.includes('time limit'), r.text)
+    } finally {
+      fs.promises.writeFile = write
+      await new Promise(res => setTimeout(res, 50))
+      process.off('unhandledRejection', onUnhandled)
+    }
+    assert.deepEqual(unhandled, [])
+    assert.deepEqual(leftDirs(), [])
+  })
+})
+
 describe('files', () => {
   test('saveFile writes in the session folder and returns the path', async () => {
     const r = await setup().run(

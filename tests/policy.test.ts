@@ -41,6 +41,23 @@ describe('policy rules', () => {
     assert.equal(matches('mcp__a__get', 'mcp__a__get_all'), false)
     assert.equal(matches('mcp__a.b__x', 'mcp__aXb__x'), false, 'a dot is a dot')
     assert.equal(matches('mcp__a__(x|y)', 'mcp__a__x'), false, 'no regular expression')
+    assert.equal(matches('mcp__a__*_*_x', 'mcp__a__b_c_x'), true)
+    assert.equal(matches('mcp__a__*_*_x', 'mcp__a___x'), false, 'two stars do not share one underscore')
+    assert.equal(matches('mcp__ab*ba', 'mcp__aba'), false, 'the parts do not overlap')
+    assert.equal(matches('mcp__a**', 'mcp__a'), true)
+  })
+
+  test('make it fail: * matches a line break, so a deny rule still decides', () => {
+    const p = policy(['mcp__x__delete*', 'deny'], ['*', 'allow'])
+    for (const tool of ['mcp__x__delete\n', 'mcp__x__delete a', 'mcp__x__delete_\r'])
+      assert.equal(decide(p, tool).action, 'deny', JSON.stringify(tool))
+  })
+
+  test('make it fail: a long name that a program builds does not stall the decision', () => {
+    const p = policy(['mcp__*__delete_*__confirm', 'deny'])
+    const started = performance.now()
+    assert.equal(decide(p, `mcp__${'__delete_'.repeat(20_000)}`).action, 'ask')
+    assert.ok(performance.now() - started < 200, `${performance.now() - started} ms`)
   })
 
   test('the first rule that matches wins, in config order', () => {

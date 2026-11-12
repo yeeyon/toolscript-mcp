@@ -109,11 +109,12 @@ const saveFile = async (dir: string, name: string, data: unknown): Promise<Reply
   const text = fileText(name, data)
   if (text.length > MAX_FILE_CHARS)
     return { ok: false, error: `saveFile: ${text.length} characters is more than ${MAX_FILE_CHARS}; save less data` }
-  await fs.promises.mkdir(dir, { recursive: true })
+  // Only the person can read the saved data: a program can save what its calls returned.
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
   const file = path.join(dir, name)
   const old = await fs.promises.lstat(file).catch(() => undefined)
   if (old !== undefined && !old.isFile()) return { ok: false, error: `saveFile: ${name} exists and is not a file` }
-  await fs.promises.writeFile(file, text)
+  await fs.promises.writeFile(file, text, { mode: 0o600 })
   return { ok: true, value: file }
 }
 
@@ -137,10 +138,12 @@ const NO_RESOURCES: Reply = { ok: false, error: 'resources() and readResource() 
 
 // The runner reports its own time limit. With no message from it, a busy loop
 // blocked its timer, and the CPU limit or the host kill timer ended it.
-const stoppedOutcome = (ending: Ending, limitSeconds: number): RunnerError | undefined => {
+// `ulimit -t` sets the soft and the hard limit to one value, so Linux sends
+// SIGKILL, not SIGXCPU. A SIGKILL that the run sent itself (an abort) is no limit.
+const stoppedOutcome = (ending: Ending, limitSeconds: number, aborted: boolean): RunnerError | undefined => {
   const past = `the program ran past the time limit of ${limitSeconds} s and was stopped`
   if (ending.kind === 'timeout') return { t: 'error', message: past, logs: [] }
-  if (ending.kind === 'exit' && ending.signal === 'SIGXCPU')
+  if (ending.kind === 'exit' && !aborted && (ending.signal === 'SIGXCPU' || ending.signal === 'SIGKILL'))
     return { t: 'error', message: `${past} (CPU limit)`, logs: [] }
   return undefined
 }
@@ -176,6 +179,20 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   let outcome: RunnerDone | RunnerError | undefined
   let stderr = ''
   let ending: Ending | undefined
+  // Set by the run's own kill (an abort or a lost reply), so the ending is not read as the time limit.
+  let killedByUs = false
+  let kill = () => {}
+
+  // A reply that cannot be written leaves the program waiting until the limit:
+  // stop the sandbox at once. The catch also keeps the rejection handled.
+  const answer = (task: Promise<void>, id: number): void => {
+    answers.push(
+      task.catch(err => {
+        stderr += `\ncould not answer message ${id} of the program: ${errorText(err)}`
+        kill()
+      }),
+    )
+  }
 
   const reply = async (id: number, r: Reply | string): Promise<void> => {
     if (closed) return
@@ -246,20 +263,32 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     switch (m.t) {
       case 'call':
         started.set(m.id, m.tool)
-        answers.push(limit(() => answerCall(m.id, m.tool, m.args)))
+        answer(
+          limit(() => answerCall(m.id, m.tool, m.args)),
+          m.id,
+        )
         break
       case 'recall':
-        answers.push(answerRecall(m.id, m.ref))
+        answer(answerRecall(m.id, m.ref), m.id)
         break
       case 'save':
-        answers.push(answerLocal(m.id, () => saveFile(ctx.filesDir, m.name, m.data)))
+        answer(
+          answerLocal(m.id, () => saveFile(ctx.filesDir, m.name, m.data)),
+          m.id,
+        )
         break
       case 'read':
-        answers.push(answerLocal(m.id, () => readFile(ctx.filesDir, m.path)))
+        answer(
+          answerLocal(m.id, () => readFile(ctx.filesDir, m.path)),
+          m.id,
+        )
         break
       case 'resources':
       case 'resource':
-        answers.push(answerLocal(m.id, async () => NO_RESOURCES))
+        answer(
+          answerLocal(m.id, async () => NO_RESOURCES),
+          m.id,
+        )
         break
       case 'done':
       case 'error':
@@ -278,7 +307,10 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
       timeoutMs,
       input: JSON.stringify({ code, timeoutMs, lib: {} }),
     })
-    const kill = () => sandbox.child.kill('SIGKILL')
+    kill = () => {
+      killedByUs = true
+      sandbox.child.kill('SIGKILL')
+    }
     ctx.signal.addEventListener('abort', kill, { once: true })
     if (ctx.signal.aborted) kill()
     let buffer = ''
@@ -307,7 +339,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
 
   // Trust the runner's own message: a run that ends at the limit can still have sent its result.
   if (outcome === undefined && ending !== undefined) {
-    outcome = stoppedOutcome(ending, limitSeconds)
+    outcome = stoppedOutcome(ending, limitSeconds, killedByUs)
     if (outcome === undefined) stderr = `${stderr}\n${endingText(ending, config.sandbox.node)}`
   }
   for (const [id, tool] of started) if (!records.has(id)) records.set(id, { tool, status: 'unfinished', chars: 0 })
