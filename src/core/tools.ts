@@ -1,9 +1,8 @@
-// The tools this plugin registers: each one's description, input schema and
-// place (isDeferred: behind ToolSearch until the model loads it). The
-// registration, the full ids that hooks match on (TOOL) and the typed input
-// of a call (parseInput) all come from this table.
-// tests/code.check.mjs fails when a file in hooks/ or tests/ types out a
-// full id.
+// The tools of toolscript-mcp: each one's description and input schema. The
+// registration (tools/list), the full ids (TOOL) and the typed input of a
+// call (parseInput) all come from this table. SERVED names the tools the
+// server lists now: the others ship in a later milestone.
+// tests/code.check.mjs fails when another file types out a full id.
 
 import { SAVE_FUNCTION_DESCRIPTION } from './functions.ts'
 import { ADD_HINT_DESCRIPTION, EDIT_HINT_DESCRIPTION, REMOVE_HINT_DESCRIPTION } from './hints.ts'
@@ -12,6 +11,9 @@ import { RUN_DESCRIPTION, SEARCH_DESCRIPTION } from './protocol.ts'
 /** The tools search_tools returns when the model gives no limit. */
 export const SEARCH_LIMIT = 15
 
+/** The server key that the README gives toolscript-mcp in a client config. */
+export const SERVER_NAME = 'toolscript'
+
 type Property =
   | { type: 'string'; description: string; enum?: readonly string[] }
   | { type: 'number'; description: string }
@@ -19,7 +21,6 @@ type Property =
 
 type ToolSpec = {
   description: string
-  isDeferred: boolean
   properties: Record<string, Property>
   required: readonly string[]
 }
@@ -32,13 +33,11 @@ const HINT_WHY = str('What the hint says and what the tool does now, in one sent
 export const TOOLS = {
   run_code: {
     description: RUN_DESCRIPTION,
-    isDeferred: false,
     properties: { code: str('Body of an async JavaScript function.') },
     required: ['code'],
   },
   search_tools: {
     description: SEARCH_DESCRIPTION,
-    isDeferred: false,
     properties: {
       query: str('Keywords; empty lists every MCP tool.'),
       limit: { type: 'number', description: `Most tools to return (default ${SEARCH_LIMIT}).` },
@@ -47,11 +46,8 @@ export const TOOLS = {
   },
   add_hint: {
     description: ADD_HINT_DESCRIPTION,
-    isDeferred: true,
     properties: {
-      server: str(
-        'The MCP server: its name as /mcp lists it ("claude.ai Datadog") or the <server> part of mcp__<server>__<tool>.',
-      ),
+      server: str('The <server> part of mcp__<server>__<tool>.'),
       text: str('The hint: one short, factual sentence.'),
       why: str('What failed before and what worked, in one sentence.'),
       tools: {
@@ -65,13 +61,11 @@ export const TOOLS = {
   },
   remove_hint: {
     description: REMOVE_HINT_DESCRIPTION,
-    isDeferred: true,
     properties: { path: HINT_PATH, text: str('The hint to remove, as shown.'), why: HINT_WHY },
     required: ['path', 'text', 'why'],
   },
   edit_hint: {
     description: EDIT_HINT_DESCRIPTION,
-    isDeferred: true,
     properties: {
       path: HINT_PATH,
       text: str('The hint to change, as shown.'),
@@ -82,7 +76,6 @@ export const TOOLS = {
   },
   save_function: {
     description: SAVE_FUNCTION_DESCRIPTION,
-    isDeferred: true,
     properties: {
       name: str('A JavaScript name: programs call it as lib.<name>(args).'),
       description: str('What it returns, in one sentence.'),
@@ -100,15 +93,20 @@ export type ToolName = keyof typeof TOOLS
 /** The short names, as the model reads them in text. */
 export const TOOL_NAMES = Object.keys(TOOLS) as ToolName[]
 
-/** The full id of each tool, as a tool.call or ui.render hook matches it. */
-export const TOOL = Object.fromEntries(TOOL_NAMES.map(name => [name, `mcp__code-mode__${name}`])) as {
-  readonly [N in ToolName]: `mcp__code-mode__${N}`
+/** The tools that the server lists now. run_code comes in M4, hints and functions after it. */
+export const SERVED = ['search_tools'] as const satisfies readonly ToolName[]
+
+export type ServedName = (typeof SERVED)[number]
+
+/** The full id of each tool, when the client names the server SERVER_NAME. */
+export const TOOL = Object.fromEntries(TOOL_NAMES.map(name => [name, `mcp__toolscript__${name}`])) as {
+  readonly [N in ToolName]: `mcp__toolscript__${N}`
 }
 
-/** The spec of `$.tool.register` for one tool. */
+/** One tool as tools/list shows it. */
 export const registration = (name: ToolName) => {
-  const { description, isDeferred, properties, required } = TOOLS[name]
-  return { name, description, isDeferred, inputSchema: { type: 'object', properties, required } } as const
+  const { description, properties, required } = TOOLS[name]
+  return { name, description, inputSchema: { type: 'object', properties, required } } as const
 }
 
 type ValueOf<P> = P extends { type: 'number' } ? number | undefined : P extends { type: 'array' } ? string[] : string

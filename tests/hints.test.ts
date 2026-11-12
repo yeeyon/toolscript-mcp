@@ -39,7 +39,7 @@ import {
 import { guardedDirs } from '../src/core/paths.ts'
 
 const HOME = '/home/test'
-const USER_DIR = `${HOME}/.claude/code-mode/hints`
+const USER_DIR = `${HOME}/.toolscript-mcp/hints`
 const FILE = '---\nservers: [Mail]\n---\n- Mail returns JSON.\n- Pass ids as strings.\n'
 const WHY = 'Numbers failed with error 400, strings worked.'
 
@@ -119,13 +119,13 @@ describe('hint files', () => {
   test('the decision key of a pending file fits the store limit', () => {
     const short = `${USER_DIR}/pending/gmail--abcdef234567.md`
     assert.equal(decisionKey(short), `decision:${short}`)
-    const deep = `/${'d'.repeat(300)}/.claude/code-mode/hints/pending/gmail--abcdef234567.md`
+    const deep = `/${'d'.repeat(300)}/.toolscript-mcp/hints/pending/gmail--abcdef234567.md`
     assert.equal(decisionKey(deep), 'decision:gmail--abcdef234567.md')
   })
 
   // The key comes from the SHA-256 of the whole path: 9 + 64 characters for any path.
   test('the approval key of an active file fits the store limit', () => {
-    const deep = `/${'d'.repeat(300)}/.claude/code-mode/hints/gmail.md`
+    const deep = `/${'d'.repeat(300)}/.toolscript-mcp/hints/gmail.md`
     assert.equal(approvalKey(sha256(deep)), `approved:${sha256(deep)}`)
     assert.equal(approvalKey(sha256(deep)).length, 73)
   })
@@ -377,7 +377,7 @@ describe('the hint-file guard', () => {
   })
 
   test('guardedDirs skips an empty root', () => {
-    assert.deepEqual(guardedDirs('', '/repo'), ['/repo/.claude/code-mode/hints'])
+    assert.deepEqual(guardedDirs('', '/repo'), ['/repo/.toolscript-mcp/hints'])
     assert.equal(guardedDirs(HOME, '').length, 2)
   })
 
@@ -416,9 +416,9 @@ describe('the hint-file guard', () => {
   test('guardedDirs normalizes its roots', () => {
     const plugin = '/home/u/.claude/plugins/cache/code-mode/1.0.0'
     assert.deepEqual(guardedDirs('/home//u/', '/repo/', `${plugin}/`), [
-      '/home/u/.claude/code-mode/hints',
-      '/home/u/.claude/code-mode/functions',
-      '/repo/.claude/code-mode/hints',
+      '/home/u/.toolscript-mcp/hints',
+      '/home/u/.toolscript-mcp/functions',
+      '/repo/.toolscript-mcp/hints',
       plugin,
     ])
   })

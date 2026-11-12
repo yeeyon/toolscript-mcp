@@ -1,7 +1,6 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { TOOL, TOOL_NAMES, parseInput, registration } from '../src/core/tools.ts'
-import { formatHints, parseHint } from '../src/core/hints.ts'
+import { SERVED, SERVER_NAME, TOOL, TOOL_NAMES, parseInput, registration } from '../src/core/tools.ts'
 import {
   MARK,
   argNamesOf,
@@ -45,7 +44,7 @@ describe('protocol', () => {
     assert.equal(approvalNote([]), '')
     const note = approvalNote(['mcp__a__x', 'mcp__b__y'])
     assert.ok(has(note, 'No allow rule matches mcp__a__x, mcp__b__y, and their calls were refused.'), note)
-    assert.ok(has(note, 'call these tools, ask them to add mcp__a__x, mcp__b__y to permissions.allow'), note)
+    assert.ok(has(note, 'call these tools, ask them to add mcp__a__x, mcp__b__y to the allow rules'), note)
   })
 
   test('takeMessages keeps partial lines and skips foreign output', () => {
@@ -71,10 +70,10 @@ describe('protocol', () => {
     )
   })
 
-  test('isCallable allows MCP tools but not this plugin or built-ins', () => {
-    assert.equal(isCallable('mcp__linear__list', 'code-mode'), true)
-    assert.equal(isCallable(TOOL.run_code, 'code-mode'), false)
-    assert.equal(isCallable('Bash', 'code-mode'), false)
+  test('isCallable allows MCP tools but not this server or built-ins', () => {
+    assert.equal(isCallable('mcp__linear__list', SERVER_NAME), true)
+    assert.equal(isCallable(TOOL.run_code, SERVER_NAME), false)
+    assert.equal(isCallable('Bash', SERVER_NAME), false)
   })
 
   test('toValue prefers structured content, then JSON text', () => {
@@ -593,8 +592,6 @@ describe('output projection', () => {
 })
 
 describe('the tool table', () => {
-  const inFront = TOOL_NAMES.filter(n => !registration(n).isDeferred)
-
   test('parseInput gives each value the type of its schema', () => {
     assert.deepEqual(parseInput('add_hint', { server: ' s ', text: 1, tools: ['a', 2, 'b'], scope: 'project' }), {
       server: ' s ',
@@ -608,7 +605,7 @@ describe('the tool table', () => {
       assert.equal(parseInput('search_tools', { query: 'q', limit }).limit, undefined)
   })
 
-  test('each schema requires only its own properties, and only run_code and search_tools are in front', () => {
+  test('each schema requires only its own properties, and the server lists only search_tools', () => {
     for (const name of TOOL_NAMES) {
       const { inputSchema } = registration(name)
       assert.equal(
@@ -616,24 +613,21 @@ describe('the tool table', () => {
         true,
       )
     }
-    assert.deepEqual(inFront, ['run_code', 'search_tools'])
+    assert.deepEqual(SERVED, ['search_tools'])
   })
 
-  // A deferred tool is behind ToolSearch, so the model finds it only by a name
-  // in text it sees without a search: a tool in front, or the hint preamble.
-  test('the text in front names each deferred tool', () => {
-    const seen = [
-      ...inFront.map(n => registration(n).description),
-      formatHints([parseHint('- x', '/h.md', 'user')]),
-    ].join('\n')
-    for (const name of TOOL_NAMES.filter(n => !inFront.includes(n)))
-      assert.ok(seen.includes(name), `the text in front does not name ${name}`)
-  })
-
-  // The tools in front load in every session, so each word costs tokens in
+  // The listed tools load in every session, so each word costs tokens in
   // every session. Raise the limit only for text that changes what the model does.
-  test('the tools in front do not grow', () => {
-    const size = inFront.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 2568, `size ${size} is over 2568`)
+  test('the listed tools do not grow', () => {
+    const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
+    assert.ok(size <= 524, `size ${size} is over 524`)
+  })
+
+  // A served tool must not send the model to a tool that this server does not list.
+  test('the listed text names no Claude Code tool and no tool that is not listed', () => {
+    const text = SERVED.map(n => JSON.stringify(registration(n))).join('\n')
+    for (const name of TOOL_NAMES.filter(n => !(SERVED as readonly string[]).includes(n)))
+      assert.ok(!text.includes(name), `a listed tool names ${name}`)
+    assert.ok(!/ToolSearch|\.claude|settings\.json/.test(text), text)
   })
 })

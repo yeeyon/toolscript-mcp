@@ -1,9 +1,9 @@
-// Where code-mode keeps its files: the folder .claude/code-mode in HOME (the
-// person's) and in the project root. Every path into it is made here, so the
-// loaders and the hint-file guard always name the same folders.
-// tests/code.check.mjs fails when another file in hooks/ types one out.
+// Where toolscript-mcp keeps its files: the folder .toolscript-mcp in HOME
+// (the person's) and in the project root. Every path into it is made here, so
+// the loaders and the hint-file guard always name the same folders.
+// tests/code.check.mjs fails when another file in src/core types one out.
 
-const APP = 'code-mode'
+const APP = '.toolscript-mcp'
 const HINTS = 'hints'
 const FUNCTIONS = 'functions'
 
@@ -19,17 +19,16 @@ export const normalizePath = (path: string): string => {
 }
 
 /**
- * A path in code-mode's folder under `root`: HOME or the project root. It is
- * normalized, as isUnder needs: HOME can end in a slash or hold a double one.
+ * A path in toolscript-mcp's folder under `root`: HOME or the project root. It
+ * is normalized, as isUnder needs: HOME can end in a slash or hold a double one.
  */
-export const codeModePath = (root: string, ...parts: string[]): string =>
-  normalizePath([root, '.claude', APP, ...parts].join('/'))
+export const appPath = (root: string, ...parts: string[]): string => normalizePath([root, APP, ...parts].join('/'))
 
 /** The hint folder under HOME or the project root. */
-export const hintsFolder = (root: string): string => codeModePath(root, HINTS)
+export const hintsFolder = (root: string): string => appPath(root, HINTS)
 
 /** The saved-function folder under HOME. */
-export const functionsFolder = (home: string): string => codeModePath(home, FUNCTIONS)
+export const functionsFolder = (home: string): string => appPath(home, FUNCTIONS)
 
 /**
  * The folders whose files steer the model, as written: the person's and the

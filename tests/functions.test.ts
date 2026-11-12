@@ -15,7 +15,7 @@ import {
 } from '../src/core/functions.ts'
 
 const HOME = '/home/test'
-const DIR = `${HOME}/.claude/code-mode/functions`
+const DIR = `${HOME}/.toolscript-mcp/functions`
 const CODE =
   'async ({ cloudId, jql }) => {\n  const r = await call("mcp__jira__search", { cloudId, jql })\n  return r.issues\n}'
 

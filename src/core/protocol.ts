@@ -949,7 +949,7 @@ const words = (text: string): string[] =>
     .filter(w => w.length > 1)
 
 /** Ranks tools by how many query words their name and description hold. */
-export const rankTools = (tools: readonly ToolEntry[], query: string, limit: number): ToolEntry[] => {
+export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const wanted = words(query)
   const scored = tools.map(tool => {
     const name = tool.name.toLowerCase()
@@ -1011,23 +1011,22 @@ The program is the body of an async function. Available:
 - await saveFile(name, data) -> writes data to a file and returns its path: text as it is, CSV or JSON lines for an array with a .csv or .jsonl name, else JSON; use it for data too large to return
 - await readFile(path) -> the text of a file in the project, or of a file from saveFile
 - await resources(server?) -> the MCP resources, each with its server and uri; await readResource(server, uri) -> its contents
-- await lib.<name>(args) -> a saved function; search_tools lists them
 - console.log(...) -> shown after the result
 - return <value> -> the result, as JSON
 
 A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process or setTimeout: only these functions.
 
-Find tools, their argument types, result shapes, usage hints and saved functions with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time. When a working program does a task that comes back (all pages of a search, a join of two tools), propose it with save_function. Do not wait for the person to ask.
+Find tools and their argument types with search_tools first.
 
 Example:
 const issues = await call("mcp__linear__list_issues", { assignee: "me" })
 const open = issues.filter(i => i.state !== "Done")
 return open.map(i => ({ id: i.id, title: i.title }))`
 
-export const SEARCH_DESCRIPTION = `Find MCP tools to use from run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and, when known, their argument types and result shapes. Use an empty query to list all MCP tools.`
+export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools.`
 
-/** After the header of a search_tools result with a tool that has no argument types: said once, not in each block. */
-export const UNTYPED_NOTE = `\nWhere args has no types, ToolSearch "select:<name>" shows the schema.`
+/** The server's instructions: what toolscript-mcp is for, read by the model at the start of a session. */
+export const SERVER_INSTRUCTIONS = `toolscript connects to other MCP servers. Find their tools with search_tools: give keywords, or an empty query to list all tools.`
 
 /**
  * The note after a run that worked where earlier tries did not: the servers
@@ -1071,5 +1070,5 @@ export const approvalNote = (tools: readonly string[]): string => {
   if (tools.length === 0) return ''
   const names = tools.join(', ')
   const one = tools.length === 1
-  return `## No allow rule\n\nNo allow rule matches ${names}, and ${one ? 'its call was' : 'their calls were'} refused. Without an allow rule, the same call is refused again. If the person wants programs to call ${one ? 'this tool' : 'these tools'}, ask them to add ${names} to permissions.allow in ~/.claude/settings.json. Do not change the settings yourself.`
+  return `## No allow rule\n\nNo allow rule matches ${names}, and ${one ? 'its call was' : 'their calls were'} refused. Without an allow rule, the same call is refused again. If the person wants programs to call ${one ? 'this tool' : 'these tools'}, ask them to add ${names} to the allow rules in the toolscript-mcp config. Do not change the config yourself.`
 }
