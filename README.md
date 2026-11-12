@@ -14,6 +14,22 @@ When a model calls MCP tools one by one, every full result goes into its context
 raw JSON, and each step costs a round trip. With code mode, the loops, filters and joins run in a program. The model
 sees only the answer.
 
+## Measured
+
+We ran 6 bench tasks in headless Claude Code 2.1.322 with Haiku 5.5, 5 runs per task. One arm called the MCP tools
+directly. The other arm used toolscript-mcp.
+
+| | Direct tool calls | toolscript-mcp |
+| --- | --- | --- |
+| Correct answers | 30/30 | 30/30 |
+| Mean cost per task | $0.0060 | $0.0033 |
+| Tool result characters in the context, mean | 41,595 | 8,133 |
+| Turns, mean | 4.7 | 5.8 |
+
+The saving comes from tasks with large tool results: 27% to 69% lower cost. On the 2 tasks with small results,
+toolscript-mcp cost more (38% and 91%), because it adds a search step. Only one model, one operating system and 5
+tools were measured. Read [bench/RESULTS.md](bench/RESULTS.md) for the method and the limits.
+
 ## How it works
 
 1. Your MCP client connects to toolscript-mcp. toolscript-mcp connects to your other MCP servers.
