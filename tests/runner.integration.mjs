@@ -1,10 +1,12 @@
-// Integration test for the real sandbox, under Node. Starts runtime/runner.mjs
-// under the launch script below and answers its calls by writing reply files.
+// Integration test for the real sandbox, under Node, on Linux, macOS and
+// Windows. Starts runtime/runner.mjs with the host launcher (src/host/launch.ts)
+// and answers its calls by writing reply files.
 //
 //   node tests/runner.integration.mjs
 
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -12,33 +14,24 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const RUNNER = path.join(ROOT, 'runtime', 'runner.mjs')
+const WINDOWS = process.platform === 'win32'
 
-// LAUNCH, NO_NETWORK and MKTEMP are how a host starts the runner. MARK is a
-// copy of the one in the runner and src/core/protocol.ts. The first case fails when a copy differs.
-const NO_NETWORK = '(version 1)(allow default)(deny network*)'
-const LAUNCH = [
-  'ulimit -t "$1"',
-  'profile=$2',
-  'node=$(command -v "$3") || { echo "code-mode: $3: not found" >&2; exit 127; }',
-  'case $(head -c 2 "$node") in "#!") node=$("$node" -p process.execPath) || exit 127 ;; esac',
-  'set -- env -i "$node" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
-  'if [ -x /usr/bin/sandbox-exec ]; then',
-  '  exec /usr/bin/sandbox-exec -p "$profile" "$@"',
-  'fi',
-  'if unshare -rn true 2>/dev/null; then',
-  '  exec unshare -rn "$@"',
-  'fi',
-  'exec "$@"',
-].join('\n')
-const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
+// MARK is a copy of the one in the runner and src/core/protocol.ts. The first case fails when a copy differs.
 const MARK = '\u0001cm '
 
-// The host reads stdout with takeMessages. Node 22.13 runs this file with no
-// type stripping, so ask for it once and load the real helper.
-let takeMessages
+// The host gets this variable, and the sandbox process must not see it.
+const SECRET = `fake-${randomUUID()}`
+process.env.TOOLSCRIPT_TEST_SECRET = SECRET
+
+// The host reads stdout with takeMessages and starts the runner with launch.
+// Node 22.13 runs this file with no type stripping, so ask for it once and
+// load the real modules.
+let takeMessages, launch, makeExchangeDir, removeExchangeDir, LAYERS, KILL_GRACE_MS, RUNNER
 try {
   ;({ takeMessages } = await import('../src/core/protocol.ts'))
+  ;({ launch, makeExchangeDir, removeExchangeDir, LAYERS, KILL_GRACE_MS, RUNNER } = await import(
+    '../src/host/launch.ts'
+  ))
 } catch (err) {
   if (process.env.CODE_MODE_STRIP === '1' || err?.code !== 'ERR_UNKNOWN_FILE_EXTENSION') throw err
   const again = spawnSync(process.execPath, ['--experimental-strip-types', fileURLToPath(import.meta.url)], {
@@ -65,58 +58,64 @@ const echo = m =>
               ? { ok: false, error: 'boom' }
               : { ok: true, value: { tool: m.tool, args: m.args } }
 
-// `script` replaces the runner, to test what the launch allows the process.
-// `node` is the option of the same name: a name on PATH or a path.
+// `runner` replaces the runner, to test what the launch allows the process.
+// `node` and `env` are the launch options of the same name.
 // An `answer` that returns undefined writes no reply: a call that never finishes.
-const run = (
+const run = async (
   code,
-  {
-    timeoutMs = 5000,
-    cpuSeconds = 10,
-    answer = echo,
-    script = RUNNER,
-    env = process.env,
-    node = process.execPath,
-    lib,
-  } = {},
+  { timeoutMs = 5000, answer = echo, runner = RUNNER, env, node = process.execPath, lib } = {},
 ) => {
-  // The plugin's own command, so CI runs it on Linux and on macOS.
-  const xdir = execFileSync(MKTEMP[0], MKTEMP.slice(1), { encoding: 'utf8' }).trim()
-  return new Promise(resolve => {
-    const child = spawn('/bin/sh', ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, node, script, xdir], {
-      env,
-    })
-    child.stdin.on('error', () => {}) // a launch that ends early does not read stdin
-    child.stdin.end(JSON.stringify({ code, timeoutMs, lib }))
-    let buffer = ''
-    let stdout = ''
-    let stderr = ''
-    let calls = 0
-    let outcome
-    child.stderr.on('data', d => (stderr += d))
-    child.stdout.on('data', d => {
-      stdout += d
-      buffer += d
-      let i
-      while ((i = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, i)
-        buffer = buffer.slice(i + 1)
-        if (!line.startsWith(MARK)) continue
-        const m = JSON.parse(line.slice(MARK.length))
-        if (m.t === 'done' || m.t === 'error') outcome = m
-        else {
-          calls++
-          const reply = answer(m)
-          if (reply !== undefined)
-            setTimeout(() => fs.writeFileSync(path.join(xdir, `r${m.id}.json`), JSON.stringify(reply)), 10)
-        }
-      }
-    })
-    child.on('close', (exit, signal) => {
-      fs.rmSync(xdir, { recursive: true, force: true })
-      resolve({ exit, signal, calls, outcome, stderr, stdout })
-    })
+  const xdir = await makeExchangeDir()
+  const started = performance.now()
+  const { child, ended } = launch({
+    node,
+    runner,
+    xdir,
+    timeoutMs,
+    input: JSON.stringify({ code, timeoutMs, lib }),
+    env,
   })
+  let buffer = ''
+  let stdout = ''
+  let stderr = ''
+  let calls = 0
+  let outcome
+  let closed = false
+  child.stderr.on('data', d => (stderr += d))
+  child.stdout.on('data', d => {
+    stdout += d
+    buffer += d
+    let i
+    while ((i = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, i)
+      buffer = buffer.slice(i + 1)
+      if (!line.startsWith(MARK)) continue
+      const m = JSON.parse(line.slice(MARK.length))
+      if (m.t === 'done' || m.t === 'error') outcome = m
+      else {
+        calls++
+        const reply = answer(m)
+        if (reply !== undefined)
+          setTimeout(() => closed || fs.writeFileSync(path.join(xdir, `r${m.id}.json`), JSON.stringify(reply)), 10)
+      }
+    }
+  })
+  const ending = await ended
+  closed = true
+  const ms = performance.now() - started
+  await removeExchangeDir(xdir)
+  return { ending, ms, calls, outcome, stderr, stdout }
+}
+
+// Writes a script that replaces the runner to a temp dir, and gives f its path.
+const withScript = async (source, f) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-script-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'script.mjs'), source)
+    return await f(path.join(dir, 'script.mjs'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 // Runs in place of the runner, with the same launch: it tries what a program
@@ -127,39 +126,32 @@ import net from 'node:net'
 import cp from 'node:child_process'
 import { Worker } from 'node:worker_threads'
 const xdir = process.argv[2]
-// The port comes in place of the program: the process has no environment variables.
-const port = Number(JSON.parse(fs.readFileSync(0, 'utf8')).code)
+const { port, other } = JSON.parse(JSON.parse(fs.readFileSync(0, 'utf8')).code)
 const attempt = async f => { try { await f(); return 'allowed' } catch (e) { return e.code ?? e.message } }
 const result = {
   write: await attempt(() => fs.writeFileSync(xdir + '/probe.txt', 'x')),
-  read: await attempt(() => fs.readFileSync('/etc/hosts')),
-  spawn: await attempt(() => cp.execFileSync('/bin/echo', ['x'])),
+  read: await attempt(() => fs.readFileSync(other)),
+  spawn: await attempt(() => cp.execFileSync(process.execPath, ['-e', '1'])),
   worker: await attempt(() => new Worker('1', { eval: true }).terminate()),
   connect: await attempt(() => new Promise((resolve, reject) => {
     const socket = net.connect(port, '127.0.0.1', () => { socket.end(); resolve() })
     socket.on('error', reject)
   })),
-  env: Object.keys(process.env),
+  env: { ...process.env },
 }
 process.stdout.write('\u0001cm ' + JSON.stringify({ t: 'done', value: JSON.stringify(result), logs: [] }) + '\n')
 `
 
 const runProbe = async () => {
-  // The real path: on macOS the temp dir is under a link, and --allow-fs-read takes real paths.
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-probe-')))
   const server = net.createServer(socket => socket.end())
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   try {
-    fs.writeFileSync(path.join(dir, 'probe.mjs'), PROBE)
-    const r = await run(String(server.address().port), {
-      script: path.join(dir, 'probe.mjs'),
-      env: { ...process.env, CODE_MODE_SECRET: 'fake' },
-    })
-    assert.equal(r.outcome?.t, 'done', `the probe did not finish: exit ${r.exit}`)
+    const input = JSON.stringify({ port: server.address().port, other: path.join(ROOT, 'package.json') })
+    const r = await withScript(PROBE, runner => run(input, { runner }))
+    assert.equal(r.outcome?.t, 'done', `the probe did not finish: ${JSON.stringify(r.ending)} ${r.stderr}`)
     return JSON.parse(r.outcome.value)
   } finally {
     server.close()
-    fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 
@@ -167,10 +159,13 @@ const runProbe = async () => {
 let probed
 const probe = () => (probed ??= runProbe())
 
-// The network block exists where sandbox-exec does (macOS), and on Linux
-// where unshare can make a user and network namespace. CI sets
-// EXPECT_NETWORK_BLOCK, so a runner with neither fails instead of skipping.
-const HAS_SANDBOX_EXEC = fs.existsSync('/usr/bin/sandbox-exec')
+// One busy loop answers the cases about how it ends.
+let spun
+const busyLoop = () => (spun ??= run('while (true) {}', { timeoutMs: 1000 }))
+
+// LAYERS (src/host/launch.ts) says which network block this OS has. On Linux
+// it needs a kernel that lets unshare make a user and network namespace. CI
+// sets EXPECT_NETWORK_BLOCK, so a runner without the block fails.
 const HAS_UNSHARE = (() => {
   try {
     execFileSync('unshare', ['-rn', 'true'], { stdio: 'ignore' })
@@ -179,7 +174,14 @@ const HAS_UNSHARE = (() => {
     return false
   }
 })()
-const HAS_NETWORK_BLOCK = HAS_SANDBOX_EXEC || HAS_UNSHARE
+const NETWORK_BLOCK =
+  LAYERS.network === 'sandbox-exec'
+    ? { name: 'sandbox-exec', code: 'EPERM' }
+    : LAYERS.network !== 'none' && HAS_UNSHARE
+      ? { name: 'unshare -rn', code: 'ENETUNREACH' }
+      : undefined
+const NO_BLOCK_REASON =
+  LAYERS.network === 'none' ? 'Windows has no network block' : 'unshare -rn does not work on this kernel'
 
 /** A file of the repo, as text. */
 const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8')
@@ -195,9 +197,17 @@ const wholeThroughPipe = async n => {
   assert.equal(
     done.length,
     1,
-    `exit ${r.exit} stdout ${r.stdout.length} rest ${rest.length} newline ${r.stdout.endsWith('\n')}`,
+    `${JSON.stringify(r.ending)} stdout ${r.stdout.length} rest ${rest.length} newline ${r.stdout.endsWith('\n')}`,
   )
   assert.equal(JSON.parse(done[0].value).length, n)
+}
+
+// Cases that test the Linux and macOS launch script. Windows starts Node with no script.
+const skipped = []
+const posixOnly = (name, fn) => {
+  if (!WINDOWS) return { [name]: fn }
+  skipped.push(`${name}: Windows starts Node with no launch script`)
+  return {}
 }
 
 const cases = {
@@ -357,10 +367,33 @@ const cases = {
     assert.equal(r.calls, 2)
   },
 
-  'cpu limit kills busy loops': async () => {
-    const r = await run('while (true) {}', { cpuSeconds: 1, timeoutMs: 60_000 })
-    assert.equal(r.outcome, undefined)
-    assert.notEqual(r.exit, 0)
+  // A busy loop blocks the runner's own timer, so only a layer outside the process stops it.
+  'a busy loop ends within the time limit': async () => {
+    const r = await busyLoop()
+    assert.equal(r.outcome, undefined, 'the busy loop sent a result')
+    assert.notEqual(r.ending.kind, 'failed')
+    assert.ok(r.ms < 1000 + KILL_GRACE_MS + 2000, `the busy loop ran ${Math.round(r.ms)} ms`)
+  },
+
+  ...(LAYERS.cpuLimit
+    ? {
+        'the CPU limit stops a busy loop (ulimit -t)': async () => {
+          const { ending } = await busyLoop()
+          assert.ok(ending.kind === 'exit' && ['SIGXCPU', 'SIGKILL'].includes(ending.signal), JSON.stringify(ending))
+        },
+      }
+    : {
+        'absent: no CPU limit here, so the host kill timer stops a busy loop': async () =>
+          assert.deepEqual((await busyLoop()).ending, { kind: 'timeout', limitMs: 1000 }),
+      }),
+
+  'the host kill timer stops a process that ignores its own timer': async () => {
+    const r = await withScript('setInterval(() => {}, 1000)', runner => run('', { runner, timeoutMs: 500 }))
+    assert.deepEqual(r.ending, { kind: 'timeout', limitMs: 500 })
+    assert.ok(
+      r.ms >= 500 + KILL_GRACE_MS - 50 && r.ms < 500 + KILL_GRACE_MS + 2000,
+      `ended after ${Math.round(r.ms)} ms`,
+    )
   },
 
   'syntax error': async () => assert.match(failure(await run('return )(')), /SyntaxError/),
@@ -378,21 +411,40 @@ const cases = {
     )
   },
 
-  // macOS adds __CF_USER_TEXT_ENCODING (the uid and a text encoding) to each process at start.
-  'the process gets no environment variables': async () =>
-    assert.deepEqual(
-      (await probe()).env.filter(name => name !== '__CF_USER_TEXT_ENCODING'),
-      [],
-    ),
+  'the process cannot see the secrets of the host environment': async () => {
+    const { env } = await probe()
+    assert.ok(!JSON.stringify(env).includes(SECRET), 'the secret of the host reached the process')
+    // macOS adds __CF_USER_TEXT_ENCODING (the uid and a text encoding) to each process at start.
+    if (LAYERS.env === 'none')
+      assert.deepEqual(
+        Object.keys(env).filter(name => name !== '__CF_USER_TEXT_ENCODING'),
+        [],
+      )
+    // Windows: the variables that libuv adds are there, with no value.
+    else
+      assert.deepEqual(
+        Object.entries(env).filter(([, text]) => text !== ''),
+        [['SYSTEMROOT', process.env.SYSTEMROOT]],
+      )
+  },
 
-  ...(HAS_SANDBOX_EXEC
-    ? { 'the process has no network (sandbox-exec)': async () => assert.equal((await probe()).connect, 'EPERM') }
-    : {}),
+  ...(NETWORK_BLOCK
+    ? {
+        [`the process has no network (${NETWORK_BLOCK.name})`]: async () =>
+          assert.equal((await probe()).connect, NETWORK_BLOCK.code),
+      }
+    : {
+        [`absent: ${NO_BLOCK_REASON}, so the process can connect`]: async () => {
+          assert.ok(!process.env.EXPECT_NETWORK_BLOCK, `EXPECT_NETWORK_BLOCK is set, but ${NO_BLOCK_REASON}`)
+          const { connect } = await probe()
+          assert.equal(connect, 'allowed', 'a network block works here: update LAYERS, README.md and SECURITY.md')
+        },
+      }),
 
   // Where unshare cannot make the namespaces (Ubuntu 24.04 by default), the
   // launch goes on without the network block.
-  'a failing unshare does not stop the program': async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-path-'))
+  ...posixOnly('a failing unshare does not stop the program', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-path-'))
     try {
       fs.writeFileSync(path.join(dir, 'unshare'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
       const r = await run('return 1 + 1', { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } })
@@ -400,10 +452,10 @@ const cases = {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
-  },
+  }),
 
-  'the launch finds node on PATH, also behind a version-manager shim': async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-shim-'))
+  ...posixOnly('the launch finds node on PATH, also behind a version-manager shim', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-shim-'))
     try {
       // Like an asdf shim: it finds the real node only through the environment.
       fs.writeFileSync(path.join(dir, 'node'), '#!/bin/sh\nexec "$REAL_NODE" "$@"\n', { mode: 0o755 })
@@ -412,27 +464,19 @@ const cases = {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
-  },
+  }),
 
   'the launch says when it cannot find node': async () => {
-    const r = await run('return 1', { node: 'code-mode-no-such-node' })
-    assert.equal(r.exit, 127)
-    assert.match(r.stderr, /code-mode-no-such-node: not found/)
+    const r = await run('return 1', { node: path.join(os.tmpdir(), 'toolscript-no-such-node') })
+    if (WINDOWS) assert.equal(r.ending.kind === 'failed' && r.ending.error.code, 'ENOENT', JSON.stringify(r.ending))
+    else {
+      assert.deepEqual(r.ending, { kind: 'exit', code: 127, signal: null })
+      assert.match(r.stderr, /toolscript-no-such-node: not found/)
+    }
   },
-
-  ...(!HAS_SANDBOX_EXEC && HAS_UNSHARE
-    ? { 'the process has no network (unshare)': async () => assert.equal((await probe()).connect, 'ENETUNREACH') }
-    : {}),
-
-  ...(process.env.EXPECT_NETWORK_BLOCK && !HAS_NETWORK_BLOCK
-    ? {
-        'this machine has a network block': () =>
-          assert.fail('EXPECT_NETWORK_BLOCK is set, but neither sandbox-exec nor unshare -rn works here'),
-      }
-    : {}),
 }
 
-if (!HAS_NETWORK_BLOCK) console.log('skip  the process has no network: no sandbox-exec or unshare -rn here')
+for (const line of skipped) console.log(`skip  ${line}`)
 
 let failed = 0
 for (const [name, fn] of Object.entries(cases)) {
