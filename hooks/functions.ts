@@ -5,7 +5,7 @@
 // A function file is markdown: front matter with the name and description,
 // then one js code block with an async function expression.
 
-import { oneLine, transferBlock } from './hints'
+import { oneLine, transferBlock } from './hints.ts'
 
 /** A saved function, or a proposal of one (`why`, only while it is pending). */
 export type SavedFunction = { name: string; description: string; code: string; path: string; why?: string }

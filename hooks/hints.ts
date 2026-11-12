@@ -13,8 +13,8 @@
 // its body is that one hint. A change proposal is a removal with the new
 // text of the hint in `replace`.
 
-import { normalizePath } from './paths'
-import { splitToolName } from './protocol'
+import { normalizePath } from './paths.ts'
+import { splitToolName } from './protocol.ts'
 
 export type HintScope = 'bundled' | 'user' | 'project'
 

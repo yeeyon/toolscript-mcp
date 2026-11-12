@@ -5,9 +5,9 @@
 // tests/code.check.mjs fails when a file in hooks/ or tests/ types out a
 // full id.
 
-import { SAVE_FUNCTION_DESCRIPTION } from './functions'
-import { ADD_HINT_DESCRIPTION, EDIT_HINT_DESCRIPTION, REMOVE_HINT_DESCRIPTION } from './hints'
-import { RUN_DESCRIPTION, SEARCH_DESCRIPTION } from './protocol'
+import { SAVE_FUNCTION_DESCRIPTION } from './functions.ts'
+import { ADD_HINT_DESCRIPTION, EDIT_HINT_DESCRIPTION, REMOVE_HINT_DESCRIPTION } from './hints.ts'
+import { RUN_DESCRIPTION, SEARCH_DESCRIPTION } from './protocol.ts'
 
 /** The tools search_tools returns when the model gives no limit. */
 export const SEARCH_LIMIT = 15
