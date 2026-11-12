@@ -1,4 +1,4 @@
-// The user docs (README.md and docs/*.mdx) follow the rules in
+// The user docs (README.md) follow the rules in
 // CODING_STANDARDS.md, section "Docs".
 //
 // Checked here: front matter and H1, GitHub-safe MDX, the mechanical
@@ -16,14 +16,8 @@ import { bundledListOnDisk, bundledListText } from '../scripts/bundled-hints.mjs
 import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const docsIn = dir =>
-  fs
-    .readdirSync(path.join(dir, 'docs'))
-    .filter(f => f.endsWith('.mdx'))
-    .sort()
-    .map(f => path.join(dir, 'docs', f))
-const USER_DOCS = [path.join(ROOT, 'README.md'), ...docsIn(ROOT)]
-// Not written to the STE rules, but their links into the docs must keep working.
+const USER_DOCS = [path.join(ROOT, 'README.md')]
+// Not written to the STE rules, but their links must keep working.
 const LINK_ONLY = ['AGENTS.md', 'CODING_STANDARDS.md', 'CONTRIBUTING.md', 'SECURITY.md'].map(f => path.join(ROOT, f))
 
 const MAX_WORDS = 25
@@ -181,7 +175,7 @@ const tests = {
     assert.deepEqual(problems, [], `${problems.join('\n')}\n\nThe rules are in CODING_STANDARDS.md, section "Docs".`)
   },
   'bundled hints name their server and have bullets': () => {
-    // The format of docs/hints.mdx. A file that breaks it loads for no server, and nothing else reports it.
+    // The hint file format. A file that breaks it loads for no server, and nothing else reports it.
     const dir = path.join(ROOT, 'hints')
     const problems = fs
       .readdirSync(dir)

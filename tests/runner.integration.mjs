@@ -1,6 +1,5 @@
-// Integration test for the real sandbox, under Node (the plugin test kit has
-// no processes). Starts runtime/runner.mjs the way hooks/register.tsx does and
-// answers its calls by writing reply files.
+// Integration test for the real sandbox, under Node. Starts runtime/runner.mjs
+// under the launch script below and answers its calls by writing reply files.
 //
 //   node tests/runner.integration.mjs
 
@@ -15,8 +14,8 @@ import { fileURLToPath } from 'node:url'
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const RUNNER = path.join(ROOT, 'runtime', 'runner.mjs')
 
-// Copies of LAUNCH, NO_NETWORK and MKTEMP in hooks/register.tsx and of MARK in the
-// runner and hooks/protocol.ts. The first case fails when a copy differs.
+// LAUNCH, NO_NETWORK and MKTEMP are how a host starts the runner. MARK is a
+// copy of the one in the runner and hooks/protocol.ts. The first case fails when a copy differs.
 const NO_NETWORK = '(version 1)(allow default)(deny network*)'
 const LAUNCH = [
   'ulimit -t "$1"',
@@ -202,20 +201,7 @@ const wholeThroughPipe = async n => {
 }
 
 const cases = {
-  'the copies match the plugin': () => {
-    const src = read('hooks/register.tsx')
-    const block = src.match(/const LAUNCH = \[\n([\s\S]*?)\n\]\.join\('\\n'\)/)
-    assert.ok(block, 'LAUNCH not found in hooks/register.tsx')
-    assert.deepEqual(
-      block[1].split('\n').map(l => l.trim().replace(/^'(.*)',?$/, '$1')),
-      LAUNCH.split('\n'),
-      'LAUNCH differs',
-    )
-    assert.ok(src.includes(`const NO_NETWORK = '${NO_NETWORK}'`), 'NO_NETWORK differs')
-    assert.ok(
-      src.includes(`const MKTEMP = ${JSON.stringify(MKTEMP).replaceAll('"', "'").replaceAll(',', ', ')}`),
-      'MKTEMP differs',
-    )
+  'the copies of MARK match': () => {
     assert.equal(MARK, '\u0001cm ')
     for (const file of ['runtime/runner.mjs', 'hooks/protocol.ts'])
       assert.match(read(file), /const MARK = '\\u0001cm '/, `MARK differs in ${file}`)
@@ -228,26 +214,6 @@ const cases = {
     const known = table[1].split('\n').map(l => l.match(/^\s+(\w+):/)?.[1])
     const sent = [...read('runtime/runner.mjs').matchAll(/\bt: '(\w+)'/g)].map(m => m[1])
     assert.deepEqual([...new Set(sent)].sort(), [...known].sort())
-  },
-
-  // Claude Code skips a hooks module's classic.SessionStart, so the context is a command hook.
-  'the SessionStart hook tells the model to use run_code': () => {
-    const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'))
-    assert.match(hooks.hooks.SessionStart[0].hooks[0].command, /hooks\/session-start\.sh/)
-    const context = env => {
-      const out = execFileSync('/bin/sh', [path.join(ROOT, 'hooks', 'session-start.sh')], {
-        env: { PATH: process.env.PATH, ...env },
-      })
-      const parsed = JSON.parse(String(out))
-      assert.equal(parsed.hookSpecificOutput.hookEventName, 'SessionStart')
-      return parsed.hookSpecificOutput.additionalContext
-    }
-    const byDefault = context({})
-    assert.match(byDefault, /use run_code for MCP tool calls/)
-    assert.match(byDefault, /directly only when run_code fails/)
-    const blocked = context({ CLAUDE_PLUGIN_OPTION_BLOCKDIRECTMCP: 'true' })
-    assert.match(blocked, /call MCP tools only from run_code/)
-    assert.doesNotMatch(blocked, /directly only when/)
   },
 
   'returns a value': async () => assert.equal(value(await run('return 1 + 1')), 2),

@@ -7,9 +7,7 @@
 // folders. Only hooks/tools.ts types out the full id of a tool of this
 // plugin, in the hooks and in the tests that the engine runs. Only
 // hooks/hints.ts types out the `bundled:` prefix of a hint ref. The .mjs tests
-// run in plain Node, which cannot import hooks/tools.ts, so they are not
-// scanned: smoke.e2e.mjs fails at once when an id changes. Only
-// scripts/format.sh names a Prettier version, so the hook and CI format alike.
+// are not scanned. Only scripts/format.sh names a Prettier version, so the hook and CI format alike.
 //
 //   node tests/code.check.mjs
 
@@ -118,14 +116,6 @@ const tests = {
     assert.deepEqual(flagged('hooks/x.ts', code), [1, 2])
     assert.deepEqual(flagged('hooks/hints.ts', code), [])
     assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests check the refs')
-  },
-  // TOOL in hooks/tools.ts types out the plugin name; Claude Code takes it from the manifest.
-  'hooks/tools.ts builds the ids with the name in plugin.json': () => {
-    const { name } = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude-plugin/plugin.json'), 'utf8'))
-    assert.ok(
-      fs.readFileSync(path.join(ROOT, 'hooks/tools.ts'), 'utf8').includes(`\`mcp__${name}__\${name}\``),
-      `TOOL must build mcp__${name}__<tool>`,
-    )
   },
   'only scripts/format.sh names a Prettier version': () => {
     // New files too, so the check works before git add.

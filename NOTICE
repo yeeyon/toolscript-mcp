@@ -1,0 +1,1 @@
+toolscript-mcp is derived from claude-code-mode by Gabriele Pavanello (https://github.com/gabe4coding/claude-code-mode), MIT License, at commit eea4077. The sandbox runner, its protocol, tool search, output projection and the hint format are his work. toolscript-mcp is an independent project and is not endorsed by him. It is not affiliated with or endorsed by Anthropic.

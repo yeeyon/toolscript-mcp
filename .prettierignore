@@ -2,3 +2,4 @@
 # tests/docs.check.mjs checks it. Prettier would rewrite its tables and lists.
 *.md
 *.mdx
+dist/

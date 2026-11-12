@@ -1,25 +1,22 @@
-# code-mode
+# toolscript-mcp
 
-A Claude Code plugin: the model writes one JavaScript program that calls MCP tools in a sandbox, and only the return
-value goes back into the context. The whole repo is the plugin (marketplace source `./`).
+A standalone MCP server in progress (pre-release): the model writes one JavaScript program that calls the tools of
+other MCP servers in a sandbox, and only the return value goes back into the context. It is derived from the MIT
+project claude-code-mode (see `NOTICE`). The server itself is not written yet.
 
-## Read first, by task
-- Any change to code, tests, model-facing text or docs → `CODING_STANDARDS.md`.
-- The tools, their results and the permission path → `hooks/register.tsx`. Pure helpers: `hooks/protocol.ts`
-  (runner protocol, results, search), `hooks/hints.ts` (hint files and matching), `hooks/functions.ts` (saved
-  functions), `hooks/paths.ts` (the folders in `.claude/code-mode` and the guarded ones), `hooks/tools.ts`
-  (the table of the plugin's tools: schemas, ids, typed input).
-- The sandbox → `runtime/runner.mjs`, then `docs/how-it-works.mdx`.
-- Hints, proposals, the band, the hint-file guard → `docs/hints.mdx`. Saved functions → `docs/functions.mdx`.
-- Permission modes, allow rules, the auto mode "no verdict" error → `docs/permissions.mdx`.
-- The engine API (`$`, events, `claude-code/testing`) → `.claude-plugin/types/claude-code/index.d.ts`. Claude Code
-  writes it when the plugin loads from a folder. It is not in git.
+## Layout
+- `src/core/` holds the pure helpers, with no Node modules and no host types: `protocol.ts` (runner protocol,
+  results, search), `hints.ts` (hint files and matching), `functions.ts` (saved functions), `paths.ts` (folders and
+  guarded ones), `tools.ts` (the tool table). Imports between them use `.ts` extensions.
+- `runtime/runner.mjs` is the sandbox. Node built-ins only.
+- `hints/` holds the bundled hints and `hints/sha256.json`. `bench/` holds the output projection bench.
+- `tests/*.test.ts` run with `node:test`. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
+
+## How to test
+- `npm test`, `npm run typecheck`, `npm run build`, `npm run check`.
+- `node tests/runner.integration.mjs` needs a POSIX system (sh, ulimit).
+- After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
 
 ## Rules
-- A user or project hint file and a saved function load only when the approval ledger in `$.store` has the hash of
-  their text (`docs/hints.mdx`, "Files that you write or change"). Write, Edit and NotebookEdit on these folders
-  are denied. A file written another way does not load until the person approves it in the band, so never write
-  one to make a test or a run work: use the bundled `hints/`, or the fakes `fakeHome` and `approvedHome` in
-  `tests/fakes.ts`.
-- Before every commit, do the verification loop in `CODING_STANDARDS.md`: `/simplify`, `/code-review`, the
-  checks, then `/verify`.
+- Read `CODING_STANDARDS.md` before a change to code, tests or model-facing text.
+- Never weaken a sandbox layer to make a test pass.
