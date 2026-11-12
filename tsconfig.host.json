@@ -1,0 +1,9 @@
+{
+  // The host code runs in Node, so it gets the Node types. It can import from
+  // src/core, but tsconfig.json alone checks that src/core stays pure.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/host"]
+}

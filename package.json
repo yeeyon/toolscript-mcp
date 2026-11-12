@@ -32,13 +32,14 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.host.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.host.json --noEmit",
     "test": "node --experimental-strip-types --test \"tests/*.test.ts\"",
     "check": "node tests/docs.check.mjs && node tests/code.check.mjs",
     "format": "sh scripts/format.sh --write ."
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
     "typescript": "7.0.2"
   }
 }
