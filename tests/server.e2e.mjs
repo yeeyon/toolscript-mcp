@@ -180,6 +180,8 @@ test('(a) tools/list shows run_code and search_tools, and no downstream tool', a
     ['run_code', 'search_tools'],
   )
   assert.match(client.getInstructions() ?? '', /search_tools.*run_code/)
+  assert.match(client.getInstructions() ?? '', /\bbench, missing, probe, passed, nested, crash, hang\b/)
+  for (const tool of tools) assert.equal(tool._meta?.['anthropic/alwaysLoad'], true, tool.name)
 })
 
 test('(b) an empty query lists the 5 fake tools as mcp__bench__<name>', async () => {

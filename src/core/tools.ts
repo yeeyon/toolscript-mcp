@@ -106,7 +106,13 @@ export const TOOL = Object.fromEntries(TOOL_NAMES.map(name => [name, `mcp__tools
 /** One tool as tools/list shows it. */
 export const registration = (name: ToolName) => {
   const { description, properties, required } = TOOLS[name]
-  return { name, description, inputSchema: { type: 'object', properties, required } } as const
+  return {
+    name,
+    description,
+    inputSchema: { type: 'object', properties, required },
+    // A client with tool search (Claude Code) otherwise defers both tools, which costs a search turn per session.
+    _meta: { 'anthropic/alwaysLoad': true },
+  } as const
 }
 
 type ValueOf<P> = P extends { type: 'number' } ? number | undefined : P extends { type: 'array' } ? string[] : string
