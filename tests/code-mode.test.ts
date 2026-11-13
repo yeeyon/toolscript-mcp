@@ -34,7 +34,7 @@ import {
   splitToolName,
   takeMessages,
   toValue,
-  SERVER_INSTRUCTIONS,
+  serverInstructions,
 } from '../src/core/protocol.ts'
 
 const has = (text: string | undefined, part: string) => typeof text === 'string' && text.includes(part)
@@ -611,16 +611,40 @@ describe('the tool table', () => {
 
   // The listed tools load in every session, so each word costs tokens in
   // every session. Raise the limit only for text that changes what the model does.
-  // M4: run_code 1542, search_tools 550 (it names run_code).
+  // M4: run_code 1542, search_tools 550 (it names run_code). v0.1: + alwaysLoad 41 on each.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 2092, `size ${size} is over 2092`)
+    assert.ok(size <= 2174, `size ${size} is over 2174`)
+  })
+
+  // A client with tool search (Claude Code) otherwise hides both tools until the model searches for them.
+  test('each listed tool asks the client to load it without a tool search', () => {
+    for (const name of SERVED) assert.deepEqual(registration(name)._meta, { 'anthropic/alwaysLoad': true })
+  })
+
+  test('the instructions name the servers behind toolscript', () => {
+    const text = serverInstructions(['jira', 'grafana'])
+    assert.match(text, /\bjira, grafana\b/)
+    assert.match(text, /search_tools.*run_code/)
+    assert.doesNotMatch(serverInstructions([]), /:\s*\./)
+  })
+
+  // Claude Code cuts server instructions at 4,096 characters.
+  test('the instructions stay under 4,096 characters with many servers', () => {
+    const keys = Array.from({ length: 400 }, (_, i) => `server-number-${i}`)
+    const text = serverInstructions(keys)
+    assert.ok(text.length <= 4096, `length ${text.length}`)
+    assert.match(text, /search_tools.*run_code/)
+    const listed = keys.filter(k => new RegExp(`\\b${k}\\b`).test(text)).length
+    assert.ok(listed > 10 && listed < keys.length, `listed ${listed}`)
+    assert.match(text, new RegExp(`and ${keys.length - listed} more`))
   })
 
   // A served tool must not send the model to a tool that this server does not list.
   test('the listed text names no Claude Code tool and no tool that is not listed', () => {
-    const text = [...SERVED.map(n => JSON.stringify(registration(n))), SERVER_INSTRUCTIONS].join('\n')
-    for (const name of SERVED) assert.ok(SERVER_INSTRUCTIONS.includes(name), `the instructions do not name ${name}`)
+    const instructions = serverInstructions(['bench'])
+    const text = [...SERVED.map(n => JSON.stringify(registration(n))), instructions].join('\n')
+    for (const name of SERVED) assert.ok(instructions.includes(name), `the instructions do not name ${name}`)
     for (const name of TOOL_NAMES.filter(n => !(SERVED as readonly string[]).includes(n)))
       assert.ok(!text.includes(name), `a listed tool names ${name}`)
     assert.ok(!/ToolSearch|\.claude|settings\.json/.test(text), text)
