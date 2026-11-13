@@ -47,6 +47,11 @@ const outArg =
 fs.mkdirSync(outArg, { recursive: true })
 // The long form of the path: Claude Code's file tools refuse a cwd with a Windows short name such as USERNA~1.
 const out = fs.realpathSync.native(outArg)
+// A second run would write over the run folders of the first, and the report would count each new stream twice.
+if (!reportOnly && fs.existsSync(path.join(out, 'results.jsonl'))) {
+  console.error(`${path.join(out, 'results.jsonl')} exists: give --out a new folder, or use --report ${out}`)
+  process.exit(1)
+}
 
 const benchServer = log => ({ command: NODE, args: [FAKE_SERVER], env: { BENCH_LOG: log } })
 

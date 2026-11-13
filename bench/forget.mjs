@@ -33,7 +33,7 @@ export const forgetRuns = cwds => {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const out = process.argv[2]
+  const out = path.resolve(process.argv[2])
   const cwds = fs
     .readdirSync(out, { withFileTypes: true })
     .filter(d => d.isDirectory() && fs.existsSync(path.join(out, d.name, 'cwd')))
