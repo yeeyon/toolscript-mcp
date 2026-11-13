@@ -61,7 +61,7 @@ enforces; the others rely on discipline.
 
 ## Model-facing text
 The text the model reads is part of the product: the input schemas in `TOOLS` in `src/core/tools.ts`,
-`RUN_DESCRIPTION`, `SEARCH_DESCRIPTION` and `SERVER_INSTRUCTIONS` in `src/core/protocol.ts`, the `search_tools`
+`RUN_DESCRIPTION`, `SEARCH_DESCRIPTION` and `serverInstructions` in `src/core/protocol.ts`, the `search_tools`
 result in `src/core/catalog.ts`, the hint descriptions, `TRANSFER_TEXT`, the
 transfer blocks and the hint preamble in `src/core/hints.ts`, `SAVE_FUNCTION_DESCRIPTION` and the fix note in
 `src/core/functions.ts`, tool results, the refusal texts and the approval prompt in `src/core/policy.ts`, and the

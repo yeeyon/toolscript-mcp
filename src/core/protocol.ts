@@ -1069,8 +1069,26 @@ return open.map(i => ({ id: i.id, title: i.title }))`
 
 export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools.`
 
-/** The server's instructions: what toolscript-mcp is for, read by the model at the start of a session. */
-export const SERVER_INSTRUCTIONS = `toolscript connects to other MCP servers. Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back.`
+// Claude Code cuts the instructions of a server at this length.
+const INSTRUCTIONS_MAX = 4096
+const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back.`
+
+/**
+ * The server's instructions, read by the model at the start of a session. They
+ * name the servers of the config, so a task that names only a product finds
+ * toolscript. Names that do not fit in INSTRUCTIONS_MAX become "and N more".
+ */
+export const serverInstructions = (servers: readonly string[]): string => {
+  const text = (shown: number) => {
+    const more = servers.length - shown
+    if (shown === 0) return `toolscript connects to other MCP servers. ${INSTRUCTIONS_USE}`
+    const names = `${servers.slice(0, shown).join(', ')}${more > 0 ? `, and ${more} more` : ''}`
+    return `toolscript connects to these MCP servers: ${names}. ${INSTRUCTIONS_USE}`
+  }
+  let shown = servers.length
+  while (shown > 0 && text(shown).length > INSTRUCTIONS_MAX) shown--
+  return text(shown)
+}
 
 /**
  * The note after a run that worked where earlier tries did not: the servers

@@ -12,7 +12,7 @@ import { searchResult } from '../core/catalog.ts'
 import type { Config } from '../core/config.ts'
 import { appPath } from '../core/paths.ts'
 import { askText } from '../core/policy.ts'
-import { SERVER_INSTRUCTIONS, errorText, newKept } from '../core/protocol.ts'
+import { errorText, newKept, serverInstructions } from '../core/protocol.ts'
 import { SEARCH_LIMIT, SERVED, parseInput, registration, type ServedName } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { runCode, type Approval, type RunContext } from './run.ts'
@@ -58,7 +58,7 @@ export const createServer = (
 ): Served => {
   const mcp = new McpServer(
     { name: 'toolscript-mcp', version },
-    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+    { capabilities: { tools: {} }, instructions: serverInstructions([...config.servers.keys()]) },
   )
   // One server process serves one client session: its kept results and its saveFile folder.
   const kept = newKept()
