@@ -138,12 +138,8 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     const reason = notConnected(s)
     if (reason !== undefined) down.set(s.key, reason)
   }
-  const refuse = (text: string) =>
-    refused(
-      text,
-      known,
-      named.map(c => notMade(ctx.config.policy, c.tool)),
-    )
+  const notRun = named.map(c => notMade(ctx.config.policy, c.tool))
+  const refuse = (text: string) => refused(text, known, notRun)
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
 
