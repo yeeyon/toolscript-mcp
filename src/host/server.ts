@@ -27,6 +27,7 @@ type Extra = { readonly signal: AbortSignal; readonly requestId: string | number
 
 type Context = {
   readonly downstream: Downstream
+  readonly shapes: ReadonlyMap<string, string>
   readonly run: (code: string, extra: Extra) => Promise<CallToolResult>
   readonly extra: Extra
 }
@@ -34,12 +35,12 @@ type Context = {
 type Handler = (args: object, ctx: Context) => Promise<CallToolResult>
 
 const HANDLERS: Record<ServedName, Handler> = {
-  search_tools: async (args, { downstream }) => {
+  search_tools: async (args, { downstream, shapes }) => {
     const { query, limit: asked } = parseInput('search_tools', args)
     const limit = Math.min(100, Math.max(1, asked || SEARCH_LIMIT))
     await downstream.settled
     await downstream.retry()
-    return text(searchResult(downstream.states(), query, limit))
+    return text(searchResult(downstream.states(), query, limit, shapes))
   },
   run_code: async (args, { run, extra }) => run(parseInput('run_code', args).code, extra),
 }
@@ -65,6 +66,7 @@ export const createServer = (
   )
   // One server process serves one client session: its kept results and its saveFile folder.
   const kept = newKept()
+  const shapes = new Map<string, string>()
   const filesDir = path.resolve(appPath(os.homedir(), 'files', randomUUID()))
   const stopping = new AbortController()
   const runs = new Set<Promise<unknown>>()
@@ -107,6 +109,7 @@ export const createServer = (
       downstream,
       config: { ...config, policy: fresh.policy },
       kept,
+      shapes,
       filesDir,
       ask: ask(extra),
       canAsk,
@@ -127,7 +130,9 @@ export const createServer = (
   mcp.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: SERVED.map(registration) }))
   mcp.server.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     const { name, arguments: args = {} } = req.params
-    return isServed(name) ? HANDLERS[name](args, { downstream, run, extra }) : text(`Unknown tool: ${name}`, true)
+    return isServed(name)
+      ? HANDLERS[name](args, { downstream, shapes, run, extra })
+      : text(`Unknown tool: ${name}`, true)
   })
   return {
     server: mcp,
