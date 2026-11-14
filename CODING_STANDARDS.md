@@ -42,6 +42,9 @@ enforces; the others rely on discipline.
   `[test: runner.integration.mjs fails when the runner sends a kind that is not in RUNNER_FIELDS]`
 - Every nested call of a program goes through `checkCall` (`src/core/policy.ts`) at call time, also when the check
   before the run passed: a tool name built at run time is never asked. `[test: run.test.ts and server.e2e.mjs, case (e)]`
+- A program can write the config file through a tool. So a policy read at a run that lets a tool run with less
+  approval applies only after the person approves it, or at a restart. A stricter one applies at once.
+  `[test: policy.test.ts and server.e2e.mjs, cases run (m) and run (n)]`
 - Every run removes its exchange dir, also after a timeout, a kill or a shutdown.
   `[test: run.test.ts and server.e2e.mjs check the temp dir after the runs]`
 - Never weaken a sandbox layer, the policy check, the guard of hint and function files or the approval of proposals
