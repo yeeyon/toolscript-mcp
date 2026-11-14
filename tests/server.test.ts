@@ -5,6 +5,7 @@ import {
   childEnv,
   configPath,
   hideArgSecrets,
+  hideUrlSecrets,
   nestedStart,
   parseConfig,
   policyOf,
@@ -256,6 +257,219 @@ describe('redact', () => {
   test('hides the password of a URL also when it shows without the user', () => {
     const http = { kind: 'http', url: 'https://fake-user:fake-password-2@example.com/mcp', headers: {} } as const
     assert.equal(redact('authentication failed: fake-password-2', http), 'authentication failed: ***')
+  })
+})
+
+describe('the secrets of a server', () => {
+  const stdio = (args: string[], env: Record<string, string> = {}): StdioServer => ({
+    kind: 'stdio',
+    command: 'x',
+    args,
+    env,
+  })
+  const http = (url: string, headers: Record<string, string> = {}) => ({ kind: 'http', url, headers }) as const
+  const fetchError = async (url: string): Promise<string> => {
+    try {
+      await fetch(new URL(url))
+      return ''
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  test('a URL password with a space, or with characters that the URL encodes, is hidden', async () => {
+    for (const password of ['fake pass w0rd', 'fa^ke|pass{1}']) {
+      const url = `https://fake-user:${password}@h.example/mcp`
+      assert.equal(hideUrlSecrets(url).url, 'https://***@h.example/mcp')
+      // Node fetch refuses a URL with credentials and names the URL, encoded.
+      const reason = await fetchError(url)
+      assert.match(reason, /includes credentials/)
+      assert.equal(
+        redact(reason, http(url)),
+        'Request cannot be constructed from a URL that includes credentials: https://***@h.example/mcp',
+      )
+      assert.equal(redact(`denied: ${password}`, http(url)), 'denied: ***')
+    }
+  })
+
+  test('the user and password of any URL in a reason are hidden', () => {
+    const reason = 'GET https://fake-other:fake-other-pw@h.example/x failed, and ws://a@b.example/ too'
+    assert.equal(
+      redact(reason, http('https://h.example/mcp')),
+      'GET https://***@h.example/x failed, and ws://***@b.example/ too',
+    )
+  })
+
+  test('a secret inside an argument of several words is hidden, and the other words stay', () => {
+    const token = `ghp_fake${'0'.repeat(32)}`
+    const script = ['-c', `export GITHUB_TOKEN=${token}; npx fake-server --api-key sk-fake-12345`]
+    assert.deepEqual(hideArgSecrets(script).args, ['-c', 'export GITHUB_TOKEN=***; npx fake-server --api-key ***'])
+    const echoed = `fake-server exited: ${script.join(' ')}`
+    assert.equal(
+      redact(echoed, stdio(script)),
+      'fake-server exited: -c export GITHUB_TOKEN=***; npx fake-server --api-key ***',
+    )
+    assert.deepEqual(hideArgSecrets(['run --url "postgres://u:fake-db-pw@db.example/x" -H "X-Api-Key: fk1"']).args, [
+      'run --url "postgres://***@db.example/x" -H "X-Api-Key: ***"',
+    ])
+  })
+
+  test('JWTs, base64 keys and bot tokens are secret words', () => {
+    const words = [
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.fakeSig0123456789abcDEF',
+      'fakeAwsSecret0/K7MDENG+bPxRfiCYFAKEKEY=',
+      '123456789:AAfakeTelegramToken0123456789xyz',
+      'fake%2Fencoded%2BToken0123456789',
+      'fake~Token.With~Tilde0123456789',
+    ]
+    assert.deepEqual(
+      hideArgSecrets(words).args,
+      words.map(() => '***'),
+    )
+  })
+
+  test('the values of pwd, pat, cookie, session, sig, dsn and sas are hidden', () => {
+    assert.deepEqual(
+      hideArgSecrets([
+        'DB_PWD=fakepw1',
+        '--pat',
+        'fakepat1',
+        'COOKIE=fake1',
+        '--session',
+        'fake-session-1',
+        '--sig=fakesig1',
+        'SENTRY_DSN=https://fakekey@o0.ingest.example/1',
+        'AZURE_SAS=sv=2020&fakesas',
+        'X-Sig: fakesig2',
+      ]).args,
+      [
+        'DB_PWD=***',
+        '--pat',
+        '***',
+        'COOKIE=***',
+        '--session',
+        '***',
+        '--sig=***',
+        'SENTRY_DSN=***',
+        'AZURE_SAS=***',
+        'X-Sig: ***',
+      ],
+    )
+  })
+
+  test('a query part without = is hidden', () => {
+    assert.deepEqual(
+      hideArgSecrets(['https://h.example/mcp?fakeBareToken1', 'https://h.example/mcp?a=1&fakeBareToken2#x']).args,
+      ['https://h.example/mcp?***', 'https://h.example/mcp?a=***&***#***'],
+    )
+    assert.equal(hideUrlSecrets('https://h.example/mcp?fakeBareToken3').url, 'https://h.example/mcp?***')
+  })
+
+  test('the value after -t, -p and -H is hidden, and a number, a scoped package or a plain header stays', () => {
+    assert.deepEqual(
+      hideArgSecrets([
+        '-t',
+        'fake-token-x',
+        '-p',
+        'Fake2pw',
+        '-H',
+        'X-Api-Key: fake-key-1',
+        '-H',
+        'X-Custom: fakeHeaderSecret0123456789',
+        '-H',
+        'Accept: application/json',
+        '-p',
+        '8080',
+        '-p',
+        '@fake-scope/fake-pkg',
+        '-t',
+        '30',
+      ]).args,
+      [
+        '-t',
+        '***',
+        '-p',
+        '***',
+        '-H',
+        'X-Api-Key: ***',
+        '-H',
+        'X-Custom: ***',
+        '-H',
+        'Accept: application/json',
+        '-p',
+        '8080',
+        '-p',
+        '@fake-scope/fake-pkg',
+        '-t',
+        '30',
+      ],
+    )
+  })
+
+  test('the secret values of a connection string are hidden', () => {
+    assert.deepEqual(
+      hideArgSecrets([
+        'Server=db;Password=Hunter2pw;',
+        'host=db.example,user=fake,password=fakepw2',
+        '--conn',
+        'Data Source=db;User Id=fake;Pwd=fake pw3;Encrypt=true',
+      ]).args,
+      [
+        'Server=db;Password=***;',
+        'host=db.example,user=fake,password=***',
+        '--conn',
+        'Data Source=db;User Id=fake;Pwd=***;Encrypt=true',
+      ],
+    )
+  })
+
+  test('normal arguments stay readable', () => {
+    const args = [
+      '-y',
+      '@fake-scope/fake-server@1.2.3',
+      'fake-server',
+      '/srv/data/notes',
+      'C:\\data\\notes2024\\server.js',
+      '/home/fake/projects/app2024/server-v2/dist/index.js',
+      'packages/server-v2/dist/index.js',
+      'node_modules/.bin/fake-server2',
+      '--port',
+      '8080',
+      '--path',
+      '/srv/x',
+      'PATH=/usr/bin',
+      '--log-level=debug',
+      '--transport',
+      'stdio',
+      'https://mcp.example.com/api/v1/mcp',
+      'sub2.mcp.example.com',
+      '--allowed-hosts=a.example,b.example',
+      'run --port 3000 --host localhost',
+      'run',
+      '-i',
+      '-t',
+      '-p',
+      '127.0.0.1:8080:80',
+      '-e',
+      'GITHUB_PERSONAL_ACCESS_TOKEN',
+      'ghcr.io/fake/fake-mcp-server:1.2.3',
+    ]
+    assert.deepEqual(hideArgSecrets(args).args, args)
+  })
+
+  test('a common word or number in env is not replaced, a token is', () => {
+    const env = { LOG_LEVEL: 'error', HOST: 'localhost', PORT: '3000', MODE: 'Error' }
+    const reason = 'connect ECONNREFUSED localhost:3000: Error'
+    assert.equal(redact(reason, stdio([], env)), reason)
+    const headers = { 'X-Region': 'europe', Accept: 'json' }
+    assert.equal(redact('europe json', http('https://h.example/mcp', headers)), 'europe json')
+
+    const secret = stdio([], { REGION: 'fakeTok3n0abc', API_KEY: 'fk3y', PASSWORD: 'letmein', SESSION_TTL: '3000' })
+    assert.equal(
+      redact('bad fakeTok3n0abc, fk3y, letmein, letmein123, letmeinside at localhost:3000', secret),
+      'bad ***, ***, ***, ***123, letmeinside at localhost:3000',
+    )
+    assert.equal(redact('bad x9fake0token', stdio([], { X: 'x9fake0token' })), 'bad ***')
   })
 })
 

@@ -2,9 +2,9 @@
 // Claude Desktop and Cursor, merged into one toolscript-mcp config, and the
 // steps that move each client to toolscript. The host reads the client files
 // and writes the config. Nothing here prints a value of env or headers, or a
-// secret that hideArgSecrets finds in args and URLs.
+// secret that hideArgSecrets finds in args or hideUrlSecrets in URLs.
 
-import { hideArgSecrets, parseJson, serverKey, type Env, type ServerKey } from './config.ts'
+import { hideArgSecrets, hideUrlSecrets, parseJson, serverKey, type Env, type ServerKey } from './config.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor'
 
@@ -167,7 +167,7 @@ const masked = (entry: Entry): Entry => {
   if ('type' in entry)
     return {
       ...entry,
-      url: hideArgSecrets([entry.url]).args[0] ?? '',
+      url: hideUrlSecrets(entry.url).url,
       ...(entry.headers && { headers: hide(entry.headers) }),
     }
   return {

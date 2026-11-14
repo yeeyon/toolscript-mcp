@@ -286,8 +286,62 @@ describe('toolscript-mcp init', () => {
       '"https://mcp.example.com/mcp/***/sse#***"',
     ])
       assert.ok(out.includes(kept), `missing ${kept}:\n${out}`)
-    assert.match(out, /key, token, secret, pass, auth, bearer, header or credential/)
+    assert.match(
+      out,
+      /key, token, secret, pass, pwd, auth, bearer, header, credential, cookie, session or dsn, or the part pat, sig or sas/,
+    )
     assert.match(out, /do not share this output/)
+  })
+
+  test('--dry-run hides a URL password with a space, and a secret inside an argument of several words', async () => {
+    const home = homeWith({
+      '.cursor/mcp.json': {
+        mcpServers: {
+          api: { url: 'https://fake-user:fake pass w0rd@h.example/mcp?fakeBareToken1' },
+          shell: {
+            command: 'sh',
+            args: ['-c', `export GITHUB_TOKEN=ghp_fake${'0'.repeat(32)}; npx fake-server --api-key sk-fake-12345`],
+          },
+        },
+      },
+    })
+    const { code, out } = await init(home, ['--dry-run'])
+    assert.equal(code, 0, out)
+    assert.doesNotMatch(out, /fake pass|w0rd|ghp_fake|sk-fake|fakeBareToken/)
+    assert.ok(out.includes('"url": "https://***@h.example/mcp?***"'), out)
+    assert.ok(out.includes('"export GITHUB_TOKEN=***; npx fake-server --api-key ***"'), out)
+  })
+
+  test('the mode of the .bak file is named only on Linux and macOS', async () => {
+    for (const [platform, mode] of [
+      ['linux', true],
+      ['win32', false],
+    ] as const) {
+      const home = homeWith({ ...CLIENTS, '.config/toolscript-mcp/config.json': '{"mcpServers": {}}' })
+      const { code, out } = await init(home, ['--force'], platform)
+      assert.equal(code, 0, out)
+      assert.match(out, /config\.json\.bak holds the old config/)
+      assert.equal(out.includes('0600'), mode, out)
+    }
+  })
+
+  test('on a file system without hard links, init copies the temp file and still never replaces a config', async t => {
+    t.mock.method(fs.promises, 'link', async () => {
+      throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' })
+    })
+    const home = homeWith(CLIENTS)
+    const first = await init(home)
+    assert.equal(first.code, 0, first.out)
+    assert.match(fs.readFileSync(first.file, 'utf8'), /"tracker"/)
+    if (process.platform !== 'win32') assert.equal(fs.statSync(first.file).mode & 0o777, 0o600)
+    assert.deepEqual(fs.readdirSync(path.dirname(first.file)), ['config.json'])
+
+    fs.writeFileSync(first.file, '{"mcpServers": {}}')
+    const refused = await init(home)
+    assert.equal(refused.code, 1, refused.out)
+    assert.match(refused.out, /--force/)
+    assert.equal(fs.readFileSync(first.file, 'utf8'), '{"mcpServers": {}}')
+    assert.deepEqual(fs.readdirSync(path.dirname(first.file)), ['config.json'])
   })
 
   test('--dry-run says what init does with an existing config, with and without --force', async () => {
