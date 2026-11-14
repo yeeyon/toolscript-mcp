@@ -72,7 +72,8 @@ const run = async (
     runner,
     xdir,
     timeoutMs,
-    input: JSON.stringify({ code, timeoutMs, lib }),
+    code,
+    lib,
     env,
   })
   let buffer = ''
@@ -394,6 +395,22 @@ const cases = {
       r.ms >= 500 + KILL_GRACE_MS - 50 && r.ms < 500 + KILL_GRACE_MS + 2000,
       `ended after ${Math.round(r.ms)} ms`,
     )
+  },
+
+  // On a busy machine Node can take longer than KILL_GRACE_MS to start the runner.
+  'a runner that starts slowly reports its timeout and console lines': async () => {
+    const slow = `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${KILL_GRACE_MS + 200})\n`
+    const answer = m => (m.tool === 'mcp__s__hang' ? undefined : echo(m))
+    const code = 'console.log("before the call")\nawait call("mcp__s__hang")'
+    const r = await withScript(slow + fs.readFileSync(RUNNER, 'utf8'), runner =>
+      run(code, { runner, timeoutMs: 2000, answer }),
+    )
+    assert.deepEqual(r.outcome, {
+      t: 'error',
+      message: 'timeout after 2000 ms',
+      logs: ['before the call'],
+      timedOut: true,
+    })
   },
 
   'syntax error': async () => assert.match(failure(await run('return )(')), /SyntaxError/),
