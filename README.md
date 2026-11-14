@@ -151,10 +151,19 @@ Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/con
   Desktop, Cursor.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
 - On Linux and macOS, only your user account can read the config that init writes.
-- `--dry-run` shows the config and the steps, and writes nothing. The values of `env` and `headers` show as `***`.
-  The user, password and query of a URL also show as `***`. Other arguments show as they are. If an argument holds a
-  secret, do not share the output.
-- `--force` replaces a config that exists. Without it, init does not change an existing config.
+- `--dry-run` shows the config and the steps, and writes nothing. These values show as `***`:
+  - the values of `env` and `headers`
+  - the user, password, query values and fragment of a URL
+  - a URL path segment or an argument of 20 or more letters, digits, `_` and `-`, with letters and digits
+  - the value of an argument whose name holds `key`, `token`, `secret`, `pass`, `auth`, `bearer`, `header` or `credential`
+  - the word after `Bearer` or `Basic`
+
+  The forms are `--name value`, `--name=value`, `NAME=value` and `Name: value`. Other arguments show as they are.
+  If an argument holds a secret in a different form, do not share the output.
+- `--force` replaces a config that exists. Before it does, init keeps the old config as `<config>.bak`, with mode
+  0600. It replaces an older `.bak` file. init lists the top-level keys and the servers of the old config that the new
+  config leaves out or changes. Copy the parts that you need from the `.bak` file. Without `--force`, init does not
+  change an existing config. With `--force`, `--dry-run` says what init replaces.
 - `--config <path>` writes the config to a different path.
 - The config from init has an empty `policy`, so each tool is `ask`.
 
