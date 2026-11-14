@@ -338,6 +338,13 @@ describe('output projection', () => {
     assert.ok(r.text.includes('--- console (1 lines) ---\nbefore the call'), r.text)
   })
 
+  test('a timeout is reported when the console lines cannot be sent as JSON', async () => {
+    const r = await setup({ timeoutSeconds: 1 }).run(
+      'console.log("x")\nArray.prototype.toJSON = () => { throw new Error("no") }\nawait call("mcp__f__hang", {})',
+    )
+    assert.ok(r.text.startsWith('Error: timeout after 1000 ms'), r.text)
+  })
+
   test('a call still in the queue when the sandbox ends does not start', async () => {
     const { run, called } = setup()
     const r = await run(

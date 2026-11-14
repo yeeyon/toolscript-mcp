@@ -300,10 +300,16 @@ try {
     if (finished) clearInterval(timer)
   }, POLL_MS)
 
-  setTimeout(
-    () => finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: JSON.parse(String(logsOf())) }),
-    timeoutMs,
-  )
+  // The program can make its console lines throw in JSON (a toJSON that
+  // throws). The timeout must still be reported, so the lines go then.
+  const logsSoFar = () => {
+    try {
+      return JSON.parse(String(logsOf()))
+    } catch {
+      return []
+    }
+  }
+  setTimeout(() => finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: logsSoFar() }), timeoutMs)
 } catch (err) {
   finish({ t: 'error', message: String(err?.stack ?? err), logs: [] })
 }
