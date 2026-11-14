@@ -170,6 +170,16 @@ describe('run_code', () => {
     assert.ok(r.text.startsWith('"caught: '), r.text)
   })
 
+  test('code that waits on an answer after the program returned does not hold the result', async () => {
+    const started = performance.now()
+    const r = await setup({ timeoutSeconds: 3 }).run(
+      'sleep(0).then(() => { while (true) {} })\nreturn "x".repeat(1_000_000)',
+    )
+    assert.equal(r.isError, false, r.text.slice(0, 300))
+    assert.ok(r.text.startsWith('"xxx'), r.text.slice(0, 300))
+    assert.ok(performance.now() - started < 3000, 'the run does not wait for the time limit')
+  })
+
   test('a busy loop ends at the time limit, and the next run works', async () => {
     const { run } = setup({ timeoutSeconds: 1 })
     const started = performance.now()

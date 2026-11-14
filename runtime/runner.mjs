@@ -236,7 +236,12 @@ const runSync = (src, filename) => new vm.Script(src, { filename }).runInContext
 try {
   runSync(BOOTSTRAP, 'code-mode-bootstrap.js')
   // Keep the bootstrap's helpers away from the script.
-  deliver = runSync('globalThis.__deliver', 'x.js')
+  const toContext = runSync('globalThis.__deliver', 'x.js')
+  // After finish, no answer reaches the program: a callback of the program
+  // that loops would block the drain of the result line and the exit.
+  deliver = (id, text) => {
+    if (!finished) toContext(id, text)
+  }
   const start = runSync('globalThis.__start', 'x.js')
   runSync('delete globalThis.__deliver; delete globalThis.__start', 'x.js')
 
