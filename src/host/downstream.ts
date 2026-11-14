@@ -1,14 +1,14 @@
 // The connections to the downstream MCP servers of the config. All connect in
-// parallel. A server that fails, or whose connection closes, is logged to
-// stderr and kept as failed, and the others still work. A failed server
-// connects again on next use (a search or a call), at most MAX_ATTEMPTS times
-// in ATTEMPT_WINDOW_MS, and never after close.
+// parallel. A server that fails, whose connection closes, or whose HTTP
+// session ends, is logged to stderr and kept as failed, and the others still
+// work. A failed server connects again on next use (a search or a call), at
+// most MAX_ATTEMPTS times in ATTEMPT_WINDOW_MS, and never after close.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { DownstreamTool, ServerState } from '../core/catalog.ts'
+import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import { childEnv, invalidReason, redact, type ServerConfig, type ServerEntry, type ServerKey } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
 
@@ -92,6 +92,14 @@ const transportOf = (server: ServerConfig): { transport: Transport; lastError: (
   return { transport, lastError }
 }
 
+/**
+ * True for an error of the HTTP transport that ends the session: the server
+ * cannot be reached (fetch throws a TypeError), or it does not know the
+ * session (404, as the spec says, or 400 from an SDK server that restarted).
+ */
+const sessionEnded = (err: Error): boolean =>
+  err instanceof TypeError || (err instanceof StreamableHTTPError && (err.code === 400 || err.code === 404))
+
 const listAll = async (client: Client): Promise<DownstreamTool[]> => {
   const tools: DownstreamTool[] = []
   let cursor: string | undefined
@@ -126,25 +134,43 @@ export const connectAll = (
   const connect = async (key: ServerKey, server: ServerConfig): Promise<void> => {
     const client = new Client({ name: 'toolscript-mcp', version })
     opened.add(client)
-    const { transport, lastError } = transportOf(server)
+    let lastError = () => ''
     try {
-      await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS })
+      // Inside the try: a transport that cannot be made fails this server only.
+      const made = transportOf(server)
+      lastError = made.lastError
+      await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const tools = await listAll(client)
       links.set(key, { status: 'connected', client, tools })
       log(`${key}: connected, ${tools.length} tools`)
+      // Only while this client is still the link of `key`: a late event of an old client changes nothing.
+      const lost = (reason: string) => {
+        const link = links.get(key)
+        if (!closing && link?.status === 'connected' && link.client === client) fail(key, server, reason)
+      }
       client.onclose = () => {
         opened.delete(client)
-        if (closing) return
         const stderr = lastError()
-        fail(key, server, `the connection closed${stderr === '' ? '' : `. Its stderr ends with: ${stderr}`}`)
+        lost(`the connection closed${stderr === '' ? '' : `. Its stderr ends with: ${stderr}`}`)
+      }
+      // The SDK HTTP transport fires onclose only from close(). A server that
+      // restarted shows only as an error of a request, reported here before
+      // the request rejects, so the next use connects again.
+      client.onerror = err => {
+        if (server.kind !== 'http' || !sessionEnded(err)) return
+        lost(`the HTTP session ended: ${errorText(err)}`)
+        // Later, so the failed request rejects with this error first: close()
+        // rejects each open request with "Connection closed".
+        setImmediate(() => void client.close().catch(() => {}))
       }
     } catch (err) {
       // A child that exits gives only "Connection closed": its stderr says
       // why (on Windows, also for a command that is not found).
       const stderr = lastError()
-      fail(key, server, stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`)
+      // After an await: a failure that comes at once must not come before `attempt` marks the link connecting.
       await client.close().catch(() => {})
       opened.delete(client)
+      fail(key, server, stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`)
     }
   }
 
@@ -217,9 +243,7 @@ export const connectAll = (
       await pending(key)
       const after = links.get(key) ?? link
       if (after.status === 'connected') return { ok: true, client: after.client }
-      const state = stateOf(key, after)
-      const why = state.status === 'failed' ? state.reason : 'it is still connecting'
-      return { ok: false, reason: `the MCP server "${key}" is not connected: ${why}` }
+      return { ok: false, reason: notConnected(stateOf(key, after))! }
     },
     close: () => (closing ??= Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})),
   }

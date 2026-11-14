@@ -4,6 +4,7 @@ import {
   DEPTH_VAR,
   childEnv,
   configPath,
+  hideArgSecrets,
   nestedStart,
   parseConfig,
   policyOf,
@@ -138,6 +139,25 @@ describe('the config', () => {
     })
   })
 
+  test('a url that does not parse is an error that names the key, never the value', () => {
+    const config = ok(
+      {
+        mcpServers: {
+          a: { type: 'http', url: 'http://' },
+          b: { type: 'http', url: '${BAD_URL}' },
+          c: { type: 'http', url: 'https://${UNSET}/mcp' },
+        },
+      },
+      { BAD_URL: 'https://[fake-secret-value]/mcp' },
+    )
+    assert.deepEqual(Object.fromEntries(config.servers), {
+      a: { kind: 'invalid', errors: ['mcpServers.a.url: must be a valid URL'] },
+      b: { kind: 'invalid', errors: ['mcpServers.b.url: must be a valid URL'] },
+      c: { kind: 'invalid', errors: ['mcpServers.c.url: the environment variable UNSET is not set'] },
+    })
+    assert.ok(!JSON.stringify(Object.fromEntries(config.servers)).includes('fake-secret-value'))
+  })
+
   test('an error outside the server entries stops the start, and names the bad key', () => {
     const text = JSON.stringify({ mcpServers: { a: { command: '' } }, sandbox: { node: 3 }, extra: true })
     assert.deepEqual(errors(text), [
@@ -197,6 +217,45 @@ describe('redact', () => {
     const http = { kind: 'http', url: 'https://x', headers: { Authorization: 'Bearer fake-token-456' } } as const
     assert.equal(redact('bad token fake-token-456', http), 'bad token ***')
     assert.equal(redact('got Bearer fake-token-456', http), 'got ***')
+  })
+
+  test('hides the secrets in the args and the URL of a server, and keeps the other args', () => {
+    const args = [
+      '--api-key',
+      'fake-arg-secret-1',
+      '--token=fake-arg-secret-2',
+      'https://h.example.com/s/fakeArgSecretPath0123/mcp?k=fake-arg-secret-3#fake-arg-secret-4',
+      '--header',
+      'Authorization: Bearer fake-arg-secret-5',
+      '/srv/data/notes',
+    ]
+    const stdio: StdioServer = { kind: 'stdio', command: 'x', args, env: {} }
+    assert.equal(
+      redact(
+        'bad key fake-arg-secret-1, fake-arg-secret-2, fakeArgSecretPath0123, fake-arg-secret-3, fake-arg-secret-4, fake-arg-secret-5 in /srv/data/notes',
+        stdio,
+      ),
+      'bad key ***, ***, ***, ***, ***, *** in /srv/data/notes',
+    )
+    const http = { kind: 'http', url: 'https://h.example.com/s/fakeUrlSecretPath0123/mcp', headers: {} } as const
+    assert.equal(redact('404 for /s/fakeUrlSecretPath0123/mcp', http), '404 for /s/***/mcp')
+  })
+
+  test('hides a secret flag value that starts with a hyphen, and keeps the next flag', () => {
+    assert.deepEqual(hideArgSecrets(['--password', '-fake-pass-1', '--no-auth', '--port', '8080']).args, [
+      '--password',
+      '***',
+      '--no-auth',
+      '--port',
+      '8080',
+    ])
+    const stdio: StdioServer = { kind: 'stdio', command: 'x', args: ['--password', '-fake-pass-1'], env: {} }
+    assert.equal(redact('denied: -fake-pass-1', stdio), 'denied: ***')
+  })
+
+  test('hides the password of a URL also when it shows without the user', () => {
+    const http = { kind: 'http', url: 'https://fake-user:fake-password-2@example.com/mcp', headers: {} } as const
+    assert.equal(redact('authentication failed: fake-password-2', http), 'authentication failed: ***')
   })
 })
 
@@ -288,7 +347,7 @@ describe('the catalog', () => {
     const issues = searchResult(states, 'issues', 15)
     assert.equal(
       issues,
-      '1 of 3 MCP tools.\n\n### mcp__bench__list_issues\nList all issues of a project.\nargs: { project: string }\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
+      '1 of 3 MCP tools.\n\n### mcp__bench__list_issues\nList all issues of a project. More text.\ncall("mcp__bench__list_issues", {\n  project: string\n})\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
     )
     assert.match(
       searchResult(states, 'list', 15),
@@ -317,7 +376,7 @@ describe('the catalog', () => {
     const text = searchResult(odd, '', 15)
     assert.equal(
       text,
-      '1 of 1 MCP tools.\n\n### mcp__x__ok\nFine ### forged\nargs: { p ### y?: string }\n\n## Not connected\n- y: line one ### mcp__y__forged\n- z: still connecting. Search again in a moment.',
+      '1 of 1 MCP tools.\n\n### mcp__x__ok\nFine ### forged\ncall("mcp__x__ok", {\n  "p\\n### y"?: string\n})\n\n## Not connected\n- y: line one ### mcp__y__forged\n- z: still connecting. Search again in a moment.',
     )
   })
 

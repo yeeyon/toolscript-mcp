@@ -10,7 +10,7 @@
 //           {"t":"resources","id":5,"server":"docs"}
 //           {"t":"resource","id":6,"server":"docs","uri":"file:///a.md"}
 //           {"t":"done","value":"<json>","logs":[...]}
-//           {"t":"error","message":"...","logs":[...]}
+//           {"t":"error","message":"...","logs":[...]}  ("timedOut":true when the time limit ended it)
 // The host answers each message with an <id> by writing <exchange dir>/r<id>.json:
 //           {"ok":true,"value":...} or {"ok":false,"error":"..."}
 // sleep(ms) never reaches the host: this process answers it with its own timer.
@@ -49,6 +49,18 @@ const finish = msg => {
   process.stdout.write(lineOf(msg), () => process.exit(0))
 }
 
+// The console lines from their JSON text. A program that changes
+// Array.prototype.toJSON can make that text hold some other value: then the
+// lines are lost, and the result still goes.
+const linesOf = text => {
+  try {
+    const lines = JSON.parse(text)
+    return Array.isArray(lines) ? lines.map(String) : []
+  } catch {
+    return []
+  }
+}
+
 // Host side of the bridge: the context calls post(kind, a, b, c) with strings.
 // `deliver` is the context's answer function, set after the bootstrap runs.
 const waiting = new Set()
@@ -84,9 +96,9 @@ const post = (kind, a, b, c) => {
       const id = Number(a)
       setTimeout(() => deliver(id, '{"ok":true,"value":null}'), Math.min(Number(b), timeoutMs))
     } else if (kind === 'done') {
-      finish({ t: 'done', value: String(a), logs: JSON.parse(String(b)) })
+      finish({ t: 'done', value: String(a), logs: linesOf(String(b)) })
     } else if (kind === 'error') {
-      finish({ t: 'error', message: String(a), logs: JSON.parse(String(b)) })
+      finish({ t: 'error', message: String(a), logs: linesOf(String(b)) })
     }
   } catch (err) {
     finish({ t: 'error', message: `bridge: ${err?.message ?? err}`, logs: [] })
@@ -113,7 +125,11 @@ const BOOTSTRAP = String.raw`
   const waiting = new Map()
   let nextId = 0
   const logs = []
-  globalThis.__logs = () => stringify(logs)
+  // A toJSON of the program can throw here: the result still goes, with no lines.
+  const logsText = () => {
+    try { return stringify(logs) } catch { return '[]' }
+  }
+  globalThis.__logs = logsText
   const fmt = v => {
     if (typeof v === 'string') return v
     try { return JSON.stringify(v) } catch { return String(v) }
@@ -228,15 +244,15 @@ const BOOTSTRAP = String.raw`
       v => {
         let out
         try {
-          out = v === undefined ? 'null' : JSON.stringify(v)
+          out = v === undefined ? 'null' : stringify(v)
         } catch (e) {
           // A cycle, a BigInt or a toJSON that throws. String(v) would give "[object Object]" as a result.
           const why = e instanceof Error ? e.message : 'a toJSON method threw'
-          return post('error', 'TypeError: the return value cannot be sent as JSON: ' + why, JSON.stringify(logs))
+          return post('error', 'TypeError: the return value cannot be sent as JSON: ' + why, logsText())
         }
-        post('done', out ?? 'null', JSON.stringify(logs))
+        post('done', out ?? 'null', logsText())
       },
-      e => post('error', describe(e), JSON.stringify(logs)),
+      e => post('error', describe(e), logsText()),
     )
   }
 })()
@@ -300,16 +316,11 @@ try {
     if (finished) clearInterval(timer)
   }, POLL_MS)
 
-  // The program can make its console lines throw in JSON (a toJSON that
-  // throws). The timeout must still be reported, so the lines go then.
-  const logsSoFar = () => {
-    try {
-      return JSON.parse(String(logsOf()))
-    } catch {
-      return []
-    }
-  }
-  setTimeout(() => finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: logsSoFar() }), timeoutMs)
+  setTimeout(
+    () =>
+      finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: linesOf(String(logsOf())), timedOut: true }),
+    timeoutMs,
+  )
 } catch (err) {
   finish({ t: 'error', message: String(err?.stack ?? err), logs: [] })
 }

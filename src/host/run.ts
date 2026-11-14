@@ -6,9 +6,9 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { argSpec, catalogOf } from '../core/catalog.ts'
+import { argSpec, catalogOf, learnShape, notConnected } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
-import { approvalNote, askText, checkCall, deniedReport, planRun, refusedReport } from '../core/policy.ts'
+import { approvalNote, askText, checkCall, deniedReport, planRun, refusedReport, type Policy } from '../core/policy.ts'
 import {
   MAX_SEEN,
   callKey,
@@ -62,6 +62,8 @@ export type RunContext = {
   readonly config: Config
   /** The results kept for recall(n), for the whole session. */
   readonly kept: Kept
+  /** The shape of each tool's result, by tool name, for search_tools. */
+  readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
   readonly filesDir: string
   /** Asks the person to approve the tools for one run. */
@@ -78,16 +80,30 @@ export type RunContext = {
 export type RunResult = { readonly text: string; readonly isError: boolean }
 
 /** A result with what the run log needs to know about it. */
-type Attempt = { readonly result: RunResult; readonly ending: RunEnding; readonly calls: readonly CallLog[] }
+type Ran = { readonly result: RunResult; readonly ending: RunEnding; readonly calls: readonly CallLog[] }
 
-const refused = (text: string): Attempt => ({ result: { text, isError: true }, ending: 'refused', calls: [] })
+/** `known`: the tool names of the catalog before the run. A server that closes during the run has none at its end. */
+type Attempt = Ran & { readonly known: ReadonlySet<string> }
+
+const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallLog[]): Attempt => ({
+  result: { text, isError: true },
+  ending: 'refused',
+  calls,
+  known,
+})
+
+/** A call that a refused program names. It never started; `error` says why the policy stops it. */
+const notMade = (policy: Policy, tool: string): CallLog => {
+  const decision = callDecision(policy, new Set(), tool)
+  return { tool, decision, ms: 0, ok: false, ...(decision === 'allow' ? {} : { error: decision }) }
+}
 
 /** One run_code call, and one line in the run log unless the config turns it off. */
 export const runCode = async (ctx: RunContext, code: string): Promise<RunResult> => {
   const startedAt = performance.now()
-  const { result, ending, calls } = await attempt(ctx, code)
+  const { result, ending, calls, known: before } = await attempt(ctx, code)
   if (ctx.config.log) {
-    const known = new Set(catalogOf(ctx.downstream.states()).map(t => t.name))
+    const known = new Set([...before, ...catalogOf(ctx.downstream.states()).map(t => t.name)])
     const record = runRecord({
       now: new Date(),
       id: randomUUID(),
@@ -108,24 +124,33 @@ export const runCode = async (ctx: RunContext, code: string): Promise<RunResult>
  * prompt comes before the run's timer starts.
  */
 const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
-  if (code.trim() === '') return refused('Error: code is empty.')
+  if (code.trim() === '') return refused('Error: code is empty.', new Set(), [])
   await ctx.downstream.settled
-  const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
+  const named = literalCalls(code)
+  const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
   // A failed server that the program names connects again before the check.
   await ctx.downstream.retry([...new Set(literal.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[])
-  const catalog = catalogOf(ctx.downstream.states())
-  const specs = new Map(catalog.map(t => [t.name, argSpec(t.inputSchema)]))
-  const problems = checkCalls(literal, new Set(specs.keys()), tool => specs.get(tool), {})
-  if (problems.length > 0) return refused(problemReport(problems))
+  const states = ctx.downstream.states()
+  const specs = new Map(catalogOf(states).map(t => [t.name, argSpec(t.inputSchema)]))
+  const known = new Set(specs.keys())
+  const down = new Map<string, string>()
+  for (const s of states) {
+    const reason = notConnected(s)
+    if (reason !== undefined) down.set(s.key, reason)
+  }
+  const notRun = named.map(c => notMade(ctx.config.policy, c.tool))
+  const refuse = (text: string) => refused(text, known, notRun)
+  const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
+  if (problems.length > 0) return refuse(problemReport(problems))
 
   const plan = planRun(ctx.config.policy, literal)
-  if (plan.kind === 'refused') return refused(deniedReport(plan.denied))
+  if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
   if (plan.ask.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan.ask, code) : 'unsupported'
-    if (answer !== 'accept') return refused(refusedReport(plan.ask, answer))
+    if (answer !== 'accept') return refuse(refusedReport(plan.ask, answer))
   }
-  if (ctx.signal.aborted) return refused('Error: the server is shutting down. The program did not run.')
-  return execute(ctx, code, new Set(plan.ask))
+  if (ctx.signal.aborted) return refuse('Error: the server is shutting down. The program did not run.')
+  return { ...(await execute(ctx, code, new Set(plan.ask))), known }
 }
 
 /** True when `file` is inside `dir`. Both are real paths. */
@@ -174,9 +199,9 @@ const NO_RESOURCES: Reply = { ok: false, error: 'resources() and readResource() 
 // SIGKILL, not SIGXCPU. A SIGKILL that the run sent itself (an abort) is no limit.
 const stoppedOutcome = (ending: Ending, limitSeconds: number, aborted: boolean): RunnerError | undefined => {
   const past = `the program ran past the time limit of ${limitSeconds} s and was stopped`
-  if (ending.kind === 'timeout') return { t: 'error', message: past, logs: [] }
+  if (ending.kind === 'timeout') return { t: 'error', message: past, logs: [], timedOut: true }
   if (ending.kind === 'exit' && !aborted && (ending.signal === 'SIGXCPU' || ending.signal === 'SIGKILL'))
-    return { t: 'error', message: `${past} (CPU limit)`, logs: [] }
+    return { t: 'error', message: `${past} (CPU limit)`, logs: [], timedOut: true }
   return undefined
 }
 
@@ -187,7 +212,7 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
-const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<string>): Promise<Attempt> => {
+const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<string>): Promise<Ran> => {
   const { config, downstream, kept } = ctx
   const limitSeconds = config.sandbox.timeoutSeconds
   const timeoutMs = limitSeconds * 1000
@@ -302,6 +327,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
     const ref = r.ok ? keep(kept, json, Date.now()) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
+    if (r.ok) learnShape(ctx.shapes, tool, r.value)
     records.set(id, {
       ref,
       tool,
@@ -408,9 +434,10 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     outcome = stoppedOutcome(ending, limitSeconds, killedByUs)
     if (outcome === undefined) stderr = `${stderr}\n${endingText(ending, config.sandbox.node)}`
   }
+  // A call can have its audit entry and no record: its reply was still being written at the end.
   for (const [id, tool] of started) {
-    if (records.has(id)) continue
-    records.set(id, { tool, status: 'unfinished', chars: 0 })
+    if (!records.has(id)) records.set(id, { tool, status: 'unfinished', chars: 0 })
+    if (audits.has(id)) continue
     audits.set(id, {
       tool,
       decision: callDecision(config.policy, approved, tool),
@@ -437,11 +464,9 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   }
 }
 
-const TIMED_OUT = /^timeout after|ran past the time limit/
-
 const endingOf = (outcome: RunnerDone | RunnerError | undefined, aborted: boolean): RunEnding => {
   if (outcome?.t === 'done') return 'done'
   if (aborted) return 'cancelled'
   if (outcome === undefined) return 'failed'
-  return TIMED_OUT.test(outcome.message) ? 'timeout' : 'error'
+  return outcome.timedOut === true ? 'timeout' : 'error'
 }

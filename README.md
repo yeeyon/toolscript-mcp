@@ -33,7 +33,8 @@ tools were measured. The bench ran at commit `cce6ea0`, before the changes of 0.
 ## How it works
 
 1. Your MCP client connects to toolscript-mcp. toolscript-mcp connects to your other MCP servers.
-2. The model finds tools with `search_tools`.
+2. The model finds tools with `search_tools`. A search with 3 or fewer matches shows each tool in full, with a
+   TypeScript declaration of its `call()`: the nested types and the note of each argument.
 3. The model sends one program to `run_code`.
 4. The program runs in a separate Node process. Each nested tool call goes through your allow, deny and ask rules.
 5. The return value of the program goes back to the model.
@@ -58,8 +59,17 @@ The model sees a short list of keys and titles, not every full issue.
 
 You need Node 22.13 or later. npm installs toolscript-mcp when your client starts it with `npx`.
 
-1. Write a config file. It uses the `mcpServers` shape of Claude Desktop and Claude Code, with a `policy` for the
-   tool calls of programs:
+1. Import the MCP servers of your clients into a config file:
+
+   ```sh
+   npx -y toolscript-mcp init
+   ```
+
+   init reads the MCP servers of Claude Code, Claude Desktop and Cursor. It does not change these files. It writes
+   the config to the default place, and it prints the lines to change in each client. See [init](#init).
+
+   You can also write the config by hand. It uses the `mcpServers` shape of Claude Desktop and Claude Code, with a
+   `policy` for the tool calls of programs:
 
    ```json
    {
@@ -83,7 +93,9 @@ You need Node 22.13 or later. npm installs toolscript-mcp when your client start
 
 3. Remove the servers of your config from your client. Then your client sees only `search_tools` and `run_code`.
 
-4. Ask the model for a task that needs your tools. It finds them with `search_tools` and runs one program with
+4. Add `allow` rules for the tools that programs use. See [The policy](#the-policy).
+
+5. Ask the model for a task that needs your tools. It finds them with `search_tools` and runs one program with
    `run_code`.
 
 ### Client setup
@@ -131,6 +143,30 @@ npm run build
 
 Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/config.json` in your client.
 
+### init
+
+- `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code. It does not import the servers of a
+  project.
+- If two clients have a server with the same name, init keeps the first one. The order is Claude Code, Claude
+  Desktop, Cursor.
+- init does not import an SSE server, a disabled server, or toolscript-mcp itself.
+- On Linux and macOS, only your user account can read the config that init writes.
+- `--dry-run` shows the config and the steps, and writes nothing. These values show as `***`:
+  - the values of `env` and `headers`
+  - the user, password, query values and fragment of a URL
+  - a URL path segment or an argument of 20 or more letters, digits, `_` and `-`, with letters and digits
+  - the value of an argument whose name holds `key`, `token`, `secret`, `pass`, `auth`, `bearer`, `header` or `credential`
+  - the word after `Bearer` or `Basic`
+
+  The forms are `--name value`, `--name=value`, `NAME=value` and `Name: value`. Other arguments show as they are.
+  If an argument holds a secret in a different form, do not share the output.
+- `--force` replaces a config that exists. Before it does, init keeps the old config as `<config>.bak`, with mode
+  0600. It replaces an older `.bak` file. init lists the top-level keys and the servers of the old config that the new
+  config leaves out or changes. Copy the parts that you need from the `.bak` file. Without `--force`, init does not
+  change an existing config. With `--force`, `--dry-run` says what init replaces.
+- `--config <path>` writes the config to a different path.
+- The config from init has an empty `policy`, so each tool is `ask`.
+
 ## Configuration
 
 ### The policy
@@ -150,6 +186,16 @@ of your config.
 
 A refused call throws an error in the program. The program can catch it.
 
+toolscript-mcp reads `policy` again at the start of each run. If the config has errors at that time, the run uses the
+last valid policy, and the result tells you so.
+
+A stricter policy applies at once. If a change lets a tool run with less approval, toolscript-mcp asks you before the
+run. If your client cannot ask, restart toolscript-mcp to apply that change. Do not let a tool that the policy allows
+write the config file.
+
+If a tool does not answer in the call time limit, the call throws an error. toolscript-mcp cancels the request on the
+server. The program can catch the error and continue.
+
 ### Files of a program
 
 - `saveFile(name, data)` writes a file in `~/.toolscript-mcp/files/<session>/` and returns its path. On Linux and
@@ -164,20 +210,41 @@ A refused call throws an error in the program. The program can catch it.
 - Without both, it reads `%APPDATA%\toolscript-mcp\config.json` on Windows.
 - On other systems, it reads `$XDG_CONFIG_HOME/toolscript-mcp/config.json`, else `~/.config/toolscript-mcp/config.json`.
 - A stdio server has `command`, `args` and `env`. An HTTP server has `"type": "http"`, `url` and `headers`.
+- The `url` of an HTTP server must be a valid URL that starts with `http://` or `https://`.
 - `${VAR}` in `args`, `env`, `url` and `headers` gets the value of `VAR` from the environment of toolscript-mcp.
-- If a variable is not set, toolscript-mcp does not start. The error names the variable, not its value.
+- If a server entry has an error, for example a variable that is not set, only that server fails.
+- `search_tools` shows the error of the server. The error names the variable, not its value.
+- An error outside `mcpServers` stops toolscript-mcp at the start.
 - A server key contains letters, digits and hyphens, with single underscores between them. A tool is then `mcp__<key>__<tool>`.
 - `sandbox.node` sets the Node binary of the sandbox. The default is the Node that runs toolscript-mcp.
 - On Windows, `sandbox.node` must be a full path, because the sandbox process has no `PATH`.
 - `sandbox.timeoutSeconds` sets the time limit of one run. The default is 120 seconds. The minimum is 5, and the
   maximum is 86400.
+- `sandbox.callTimeoutSeconds` sets the time limit of one call of a program. The default is 60 seconds, or
+  `sandbox.timeoutSeconds` if that is shorter. The minimum is 1. The value must not be more than
+  `sandbox.timeoutSeconds`.
 - `policy` holds the rules for the tool calls of programs. See [The policy](#the-policy).
+- `"log": false` turns off the run log. See [Run log](#run-log).
 
 A stdio server gets only its `env` from the config and a short list of system variables, for example `PATH` and
 `HOME`. Your other environment variables, and the secrets in them, stay out.
 
 If a server does not connect, the other servers still work. `search_tools` shows the failed server and the reason.
 toolscript-mcp refuses to start from its own config, so it cannot start copies of itself in a loop.
+
+If a server fails or stops, toolscript-mcp connects to it again on the next search or call. It tries at most 3 times
+in 60 seconds for each server. Then `search_tools` shows the time until the next attempt.
+
+### Run log
+
+toolscript-mcp writes one line to `~/.toolscript-mcp/runs.jsonl` for each `run_code` call.
+
+- Each line shows the time, a run id, the duration and how the run ended. It also shows the size of the result.
+- For each call of the program, the line shows the tool name, the policy decision, the duration and a short error code.
+- The log never holds arguments, results, program text or error messages.
+- On Linux and macOS, only your user account can read the file.
+- When the file passes 5 MB, toolscript-mcp renames it to `runs.1.jsonl`. It keeps one old file.
+- To turn the log off, add `"log": false` to the config.
 
 ## Sandbox
 
@@ -204,6 +271,8 @@ code. Read [SECURITY.md](SECURITY.md).
 - Elicitation is tested with the client of the MCP TypeScript SDK. It is not yet tested in the user interface of each
   client.
 - toolscript-mcp has no OAuth login. A remote server that needs an OAuth login does not connect.
+- If an HTTP server restarts or loses the session, one call to it can fail. The next use of the server connects
+  again.
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
 - Each `run_code` call starts a new program. No state stays between two calls, except the files of `saveFile`.
 

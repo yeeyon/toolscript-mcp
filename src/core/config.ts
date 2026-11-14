@@ -5,6 +5,9 @@
 
 import { ACTIONS, type Action, type Policy, type Rule } from './policy.ts'
 
+// The WHATWG URL of every JavaScript runtime. The core loads no DOM or Node types, so it declares the one method it uses.
+declare const URL: { canParse(url: string): boolean }
+
 /** A server key that makes `mcp__<key>__<tool>` split back into the key and the tool. */
 export type ServerKey = string & { readonly __brand: 'ServerKey' }
 
@@ -165,8 +168,14 @@ const parseServer = (raw: unknown, path: string, env: Env, errors: string[]): Se
   }
   if (type === 'http') {
     unknownKeys(raw, ['type', 'url', 'headers'], path, errors)
+    const found = errors.length
     const url = expand(nonEmpty(raw.url, `${path}.url`, errors), env, `${path}.url`, errors)
-    if (url !== '' && !/^https?:\/\//i.test(url)) errors.push(`${path}.url: must start with http:// or https://`)
+    // An empty or unexpanded url has its error already. The text names only the
+    // key: the URL can come from a variable and hold a token.
+    if (errors.length === found) {
+      if (!/^https?:\/\//i.test(url)) errors.push(`${path}.url: must start with http:// or https://`)
+      else if (!URL.canParse(url)) errors.push(`${path}.url: must be a valid URL`)
+    }
     return { kind: 'http', url, headers: stringMap(raw.headers, `${path}.headers`, env, errors) }
   }
   errors.push(`${path}.type: must be "stdio" or "http", not ${JSON.stringify(type)}`)
@@ -311,13 +320,75 @@ export const childEnv = (server: StdioServer): Record<string, string> => ({
   [DEPTH_VAR]: '1',
 })
 
+/** A name with one of these in it, in any case, holds a secret: `--api-key <value>`, `--token=<value>`, `TOKEN=<value>`. */
+export const SECRET_NAMES = ['key', 'token', 'secret', 'pass', 'auth', 'bearer', 'header', 'credential'] as const
+/** A word of at least this many letters, digits, `_` and `-`, with both letters and digits, is a secret. */
+export const SECRET_WORD_LENGTH = 20
+
+const SECRET_NAME = new RegExp(SECRET_NAMES.join('|'), 'i')
+const SECRET_WORD = new RegExp(`^(?=.*\\d)(?=.*[A-Za-z])[\\w-]{${SECRET_WORD_LENGTH},}$`)
+const FLAG = /^--?[A-Za-z][\w.-]*$/
+// `name=value` or `Name: value`, and not the `://` of a URL.
+const ASSIGN = /^(-{0,2}[A-Za-z][\w.-]*)(=|:(?!\/\/)\s*)([\s\S]*)$/
+const HEADER = /^([\w-]+:\s+)([\s\S]+)$/
+const URL_TEXT = /[A-Za-z][\w+.-]*:\/\/\S+/g
+
+/** A URL with its user and password, each query value, its fragment and each secret word of its path hidden. */
+const hideUrl = (url: string, hide: (secret: string) => string): string =>
+  url
+    .replace(/#([\s\S]+)$/, (_, fragment: string) => `#${hide(fragment)}`)
+    // All text up to the last `@` is user and password, because a password can hold `@` or `/`. An error can
+    // show the password without the user, so it is a secret of its own too.
+    .replace(/^([^:]*:\/\/)([\s\S]*)@/, (_, scheme: string, user: string) => {
+      const colon = user.indexOf(':')
+      if (colon >= 0) hide(user.slice(colon + 1))
+      return `${scheme}${hide(user)}@`
+    })
+    .replace(/([?&][^=&#]*=)([^&#]+)/g, (_, name: string, value: string) => `${name}${hide(value)}`)
+    .replace(/\/([\w-]+)(?=[/?#]|$)/g, (whole, part: string) => (SECRET_WORD.test(part) ? `/${hide(part)}` : whole))
+
 /**
- * `text` with each `env` and `headers` value of the server (4 characters or
- * more), and each word of 8 or more in one ("Bearer <token>"), replaced by
- * `***`: a failed child's stderr can echo a token, and the reason goes to the model.
+ * The args of a server with each secret in them as `***`, and the secrets. A secret is the value after a flag
+ * with a secret name (the name of a header stays), the value of `name=value` or `Name: value` with a secret name,
+ * the word after Bearer or Basic, the user, password, query values, fragment and secret path words of a URL, and an
+ * arg that is one secret word. Other args stay as they are.
+ */
+export const hideArgSecrets = (args: readonly string[]): { args: string[]; secrets: string[] } => {
+  const secrets: string[] = []
+  const hide = (secret: string) => {
+    secrets.push(secret)
+    return '***'
+  }
+  const hidden = args.map((arg, i) => {
+    const flag = args[i - 1]
+    // A value can start with `-`. Only a `--` arg after a secret flag is taken for the next flag.
+    if (flag !== undefined && FLAG.test(flag) && SECRET_NAME.test(flag) && !arg.startsWith('--')) {
+      const header = HEADER.exec(arg)
+      return header ? `${header[1]}${hide(header[2] ?? '')}` : hide(arg)
+    }
+    const assign = ASSIGN.exec(arg)
+    if (assign && SECRET_NAME.test(assign[1] ?? '')) return `${assign[1]}${assign[2]}${hide(assign[3] ?? '')}`
+    const text = arg
+      .replace(
+        /\b(Bearer|Basic)(\s+)(\S+)/gi,
+        (_, word: string, space: string, token: string) => word + space + hide(token),
+      )
+      .replace(URL_TEXT, url => hideUrl(url, hide))
+    return SECRET_WORD.test(text) ? hide(text) : text
+  })
+  return { args: hidden, secrets: secrets.filter(s => s !== '') }
+}
+
+/**
+ * `text` with each `env` and `headers` value of the server, and each secret that hideArgSecrets finds in its args or
+ * URL (4 characters or more), and each word of 8 or more in one ("Bearer <token>"), replaced by `***`: a failed
+ * child's stderr can echo a token, and the reason goes to the model.
  */
 export const redact = (text: string, server: ServerConfig): string => {
-  const values = Object.values(server.kind === 'stdio' ? server.env : server.headers)
+  const values = [
+    ...Object.values(server.kind === 'stdio' ? server.env : server.headers),
+    ...hideArgSecrets(server.kind === 'stdio' ? server.args : [server.url]).secrets,
+  ]
   const secrets = [
     ...values.filter(v => v.length >= 4),
     ...values.flatMap(v => v.split(/\s+/).filter(w => w.length >= 8)),

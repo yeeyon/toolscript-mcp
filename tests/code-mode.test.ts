@@ -484,6 +484,7 @@ describe('protocol', () => {
       tools,
       spec,
       learned,
+      new Map(),
     )
     assert.deepEqual(
       problems.map(p => `${p.line} ${p.text} ${p.isGuess}`),
@@ -497,9 +498,9 @@ describe('protocol', () => {
     )
     assert.ok(has(problemReport(problems), 'pass the arguments as a variable'))
     assert.ok(!has(problemReport(problems.slice(0, 1)), 'as a variable'))
-    assert.deepEqual(checkCalls([{ tool: 'mcp__j__x', line: 1, keys: [] }], new Set(), spec, {}), [])
+    assert.deepEqual(checkCalls([{ tool: 'mcp__j__x', line: 1, keys: [] }], new Set(), spec, {}, new Map()), [])
     assert.deepEqual(
-      checkCalls([{ tool: 'mcp__k__x', line: 1, keys: [] }], tools, spec, {}).map(p => p.text),
+      checkCalls([{ tool: 'mcp__k__x', line: 1, keys: [] }], tools, spec, {}, new Map()).map(p => p.text),
       ['no MCP tool "mcp__k__x" is connected'],
     )
   })

@@ -7,8 +7,12 @@ import {
   checkCall,
   decide,
   deniedReport,
+  keptPolicyNote,
+  loosenText,
+  loosened,
   matches,
   planRun,
+  policyChange,
   refusedReport,
   type Policy,
 } from '../src/core/policy.ts'
@@ -218,6 +222,75 @@ describe('the check of each nested call', () => {
   })
 })
 
+describe('a change of the policy in the config file', () => {
+  const names = ['mcp__bench__create_ticket', 'mcp__bench__list_issues', 'mcp__fs__write_file']
+  const current = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask'])
+
+  test('a deny or ask that turns into allow, a new allow rule and a removed deny are looser', () => {
+    const allowTicket = policy(
+      ['mcp__bench__create_ticket', 'allow'],
+      ['mcp__fs__*', 'allow'],
+      ['mcp__bench__*', 'ask'],
+    )
+    assert.deepEqual(loosened(current, allowTicket, names), ['mcp__bench__create_ticket'])
+    const noDeny = policy(['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask'])
+    assert.deepEqual(loosened(current, noDeny, names), ['mcp__bench__create_ticket'], 'deny to ask')
+    const newAllow = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__*', 'allow'])
+    assert.deepEqual(loosened(current, newAllow, names), ['mcp__*', 'mcp__bench__*', 'mcp__bench__list_issues'])
+  })
+
+  test('more deny or ask rules, and a new order with the same decisions, are not looser', () => {
+    const tighter = policy(['mcp__fs__write_*', 'deny'], ['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'ask'])
+    assert.deepEqual(loosened(current, tighter, names), [])
+    const reordered = policy(['mcp__fs__*', 'allow'], ['mcp__bench__create_ticket', 'deny'], ['mcp__bench__*', 'ask'])
+    assert.deepEqual(loosened(current, reordered, names), [])
+    assert.deepEqual(loosened(current, current, names), [])
+  })
+
+  test('make it fail: a rule over tools of no connected server counts, by its match', () => {
+    assert.deepEqual(loosened(policy(['mcp__gone__*', 'deny']), [], []), ['mcp__gone__*'])
+    assert.deepEqual(loosened(policy(['mcp__gone__x', 'deny']), [], []), ['mcp__gone__x'])
+    assert.deepEqual(loosened([], policy(['mcp__*', 'allow']), []), ['mcp__*'])
+    assert.deepEqual(loosened(policy(['mcp__a__*', 'allow']), policy(['mcp__*', 'allow']), []), ['mcp__*'])
+  })
+
+  test('policyChange names the rules added and removed, and nothing when the rules are the same', () => {
+    const next = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'ask'], ['mcp__bench__*', 'ask'])
+    assert.equal(
+      policyChange(current, next),
+      'added {"match": "mcp__fs__*", "action": "ask"}; removed {"match": "mcp__fs__*", "action": "allow"}',
+    )
+    assert.equal(
+      policyChange(current, policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow'])),
+      'removed {"match": "mcp__bench__*", "action": "ask"}',
+    )
+    assert.equal(policyChange(current, [...current].reverse()), 'the order of the rules changed')
+    assert.equal(
+      policyChange(
+        current,
+        policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask']),
+      ),
+      '',
+    )
+  })
+
+  test('the prompt and the note name the file and the tools that the new policy allows', () => {
+    assert.equal(
+      loosenText('/home/u/.config/toolscript-mcp/config.json', ['mcp__a__x', 'mcp__b__*']),
+      'The toolscript-mcp policy in /home/u/.config/toolscript-mcp/config.json changed to allow: mcp__a__x, mcp__b__*. Apply the new policy?',
+    )
+    const many = Array.from({ length: 25 }, (_, i) => `mcp__a__t${i}`)
+    assert.ok(loosenText('c.json', many).includes('mcp__a__t19 and 5 more.'), loosenText('c.json', many))
+    const restart = keptPolicyNote('c.json', ['mcp__a__x'], 'unsupported')
+    assert.ok(
+      restart.startsWith('## Policy not reloaded\n\nThe toolscript-mcp policy in c.json now allows mcp__a__x.'),
+      restart,
+    )
+    assert.ok(restart.includes('restart toolscript-mcp'), restart)
+    assert.ok(keptPolicyNote('c.json', ['mcp__a__x'], 'decline').includes('The person did not approve it'))
+  })
+})
+
 describe('kept results', () => {
   test('recall gives a kept result back as it is, and says why one is missing', () => {
     const kept = newKept()
@@ -246,6 +319,13 @@ describe('the argument check from an input schema', () => {
     assert.equal(argSpec({ ...schema, additionalProperties: false })?.isOpen, false)
     assert.equal(argSpec({ type: 'object', properties: {} })?.isOpen, true)
     assert.equal(argSpec({ type: 'object' }), undefined)
+  })
+
+  test('names from an allOf, anyOf or oneOf next to the properties are allowed', () => {
+    for (const key of ['allOf', 'anyOf', 'oneOf']) {
+      const schema = { type: 'object', properties: { q: {} }, required: ['q'], [key]: [{ properties: { limit: {} } }] }
+      assert.deepEqual(argSpec(schema), { names: ['q'], required: ['q'], isOpen: true }, key)
+    }
   })
 })
 
