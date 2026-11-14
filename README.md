@@ -5,8 +5,8 @@ servers in a sandbox. The program filters and joins the data there. Only the res
 
 The goal is a server that works with any MCP client, for example Claude Code, Claude Desktop, Cursor and Codex.
 
-> **Status: pre-release.** The server lists `search_tools` and `run_code`, with allow, deny and ask rules. The
-> package is not on npm yet. See [Roadmap](#roadmap).
+> **Status: 0.1.0, the first release.** The server lists `search_tools` and `run_code`, with allow, deny and ask
+> rules. Read [Limits](#limits) before you use it.
 
 ## Why
 
@@ -54,20 +54,11 @@ return issues.issues
 
 The model sees a short list of keys and titles, not every full issue.
 
-## Try it (from source)
+## Install
 
-You need Node 22.13 or later.
+You need Node 22.13 or later. npm installs toolscript-mcp when your client starts it with `npx`.
 
-1. Build the server:
-
-   ```sh
-   git clone https://github.com/yeeyon/toolscript-mcp.git
-   cd toolscript-mcp
-   npm ci
-   npm run build
-   ```
-
-2. Write a config file. It uses the `mcpServers` shape of Claude Desktop and Claude Code, with a `policy` for the
+1. Write a config file. It uses the `mcpServers` shape of Claude Desktop and Claude Code, with a `policy` for the
    tool calls of programs:
 
    ```json
@@ -88,14 +79,53 @@ You need Node 22.13 or later.
    }
    ```
 
-3. Add toolscript-mcp to your MCP client, with the server name `toolscript`. For example, in Claude Code:
+2. Add toolscript-mcp to your MCP client, with the server name `toolscript`. See [Client setup](#client-setup).
 
-   ```sh
-   claude mcp add toolscript -- node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/config.json
-   ```
+3. Remove the servers of your config from your client. Then your client sees only `search_tools` and `run_code`.
 
 4. Ask the model for a task that needs your tools. It finds them with `search_tools` and runs one program with
    `run_code`.
+
+### Client setup
+
+Claude Code:
+
+```sh
+claude mcp add toolscript -- npx -y toolscript-mcp --config /path/to/config.json
+```
+
+Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "toolscript": { "command": "npx", "args": ["-y", "toolscript-mcp", "--config", "/path/to/config.json"] }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.toolscript]
+command = "npx"
+args = ["-y", "toolscript-mcp", "--config", "/path/to/config.json"]
+```
+
+If you put the config file in the default place, you can omit `--config`. See [The config file](#the-config-file).
+
+### From source
+
+```sh
+git clone https://github.com/yeeyon/toolscript-mcp.git
+cd toolscript-mcp
+npm ci
+npm run build
+```
+
+Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/config.json` in your client.
+
+## Configuration
 
 ### The policy
 
@@ -160,13 +190,42 @@ CPU limit or the host stops the process.
 The Node `vm` module is not a security boundary by itself. The sandbox limits accidents. It does not contain hostile
 code. Read [SECURITY.md](SECURITY.md).
 
+## Limits
+
+- On Windows, the sandbox has no network block and no CPU limit. The host stops the process at the time limit.
+- `ask` rules need a client with MCP elicitation. If your client cannot ask, write `allow` rules for the tools that
+  programs use.
+- Elicitation is tested with the client of the MCP TypeScript SDK. It is not yet tested in the user interface of each
+  client.
+- toolscript-mcp has no OAuth login. A remote server that needs an OAuth login does not connect.
+- Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
+- Each `run_code` call starts a new program. No state stays between two calls, except the files of `saveFile`.
+
+## toolscript-mcp and Claude Code Code Mode
+
+Claude Code 2.1.323 added Code Mode, an experimental option. With it, Claude writes JavaScript that calls its tools.
+It solves the same problem inside Claude Code.
+
+- Code Mode works only in Claude Code. It is off by default, and it has more conditions, for example the interactive
+  terminal and the Anthropic API.
+- Code Mode also reaches the built-in tools of Claude Code and the shell. toolscript-mcp reaches only MCP tools.
+- toolscript-mcp works with each MCP client that can start a stdio server. It is open source, with a documented
+  sandbox and allow, deny and ask rules.
+
+If you use only Claude Code, try Code Mode or the [claude-code-mode](https://github.com/gabe4coding/claude-code-mode)
+plugin first. The bench in [Measured](#measured) ran on Claude Code 2.1.322, the release before Code Mode.
+
 ## Roadmap
 
 - [x] Move the core and the sandbox runner out of the Claude Code plugin.
 - [x] Start the sandbox on Linux, macOS and Windows.
 - [x] Read a server config, connect to your MCP servers and add `search_tools`.
 - [x] Add `run_code` with allow, deny and ask rules.
-- [ ] Write the docs and publish 0.1.0 to npm.
+- [x] Write the docs and publish 0.1.0 to npm.
+- [ ] Keep state between `run_code` calls, as an option.
+- [ ] Serve hint files and saved functions as tools.
+- [ ] Log in to remote servers with OAuth.
+- [ ] Compare toolscript-mcp with Claude Code Code Mode in the bench.
 
 ## Credits
 

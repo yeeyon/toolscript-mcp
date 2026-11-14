@@ -149,7 +149,7 @@ const tests = {
       encoding: 'utf8',
     })
       .split('\n')
-      .filter(rel => rel && fs.existsSync(path.join(ROOT, rel)))
+      .filter(rel => rel && fs.statSync(path.join(ROOT, rel), { throwIfNoEntry: false })?.isFile())
     const pinned = files.filter(rel => /prettier@\d/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')))
     assert.deepEqual(pinned, ['scripts/format.sh'], 'call Prettier through scripts/format.sh')
   },

@@ -3,3 +3,5 @@
 *.md
 *.mdx
 dist/
+# Local agent settings and worktrees, not part of the repo.
+.claude/

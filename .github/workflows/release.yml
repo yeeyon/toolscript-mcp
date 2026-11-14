@@ -1,0 +1,78 @@
+# Publishes the version in package.json to npm with provenance, then tags that
+# commit v<version> and makes the GitHub release with the tarball and the
+# CHANGELOG.md section of the version. Start it from the Actions tab: Run
+# workflow, branch main. It runs every job of test.yml first. A rerun after a
+# partial failure skips the steps that are done already.
+#
+# npm auth: the NPM_TOKEN secret, or npm trusted publishing (OIDC) for this
+# file once it is set up on npmjs.com. npm tries OIDC first.
+name: release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@11.21.2
+      - name: Read the version and its release notes
+        id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "$(node -p "require('./package.json').private === true")" = true ]; then
+            echo "::error::package.json has \"private\": true"
+            exit 1
+          fi
+          awk -v h="## $version" '$0 == h { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if [ -z "$(tr -d '[:space:]' < "$RUNNER_TEMP/notes.md")" ]; then
+            echo "::error::CHANGELOG.md has no section \"## $version\""
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/pack-check.mjs --out "$RUNNER_TEMP/pkg"
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$(npm view "toolscript-mcp@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+            echo "toolscript-mcp@$VERSION is on npm already"
+          else
+            npm publish "$RUNNER_TEMP/pkg/toolscript-mcp-$VERSION.tgz" --provenance --access public
+          fi
+      - name: Tag and make the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "the release v$VERSION exists already"
+          else
+            gh release create "v$VERSION" "$RUNNER_TEMP/pkg/toolscript-mcp-$VERSION.tgz" \
+              --target "$GITHUB_SHA" --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
