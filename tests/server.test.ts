@@ -6,6 +6,7 @@ import {
   configPath,
   nestedStart,
   parseConfig,
+  policyOf,
   redact,
   serverKey,
   type Config,
@@ -74,23 +75,30 @@ describe('the config', () => {
   })
 
   test('a variable that is not set is an error that names the variable and the key, never a value', () => {
-    const text = JSON.stringify({
-      mcpServers: { gh: { command: 'gh-mcp', env: { TOKEN: '${GITHUB_TOKEN}', OTHER: '${SET_ONE}' } } },
+    const config = ok(
+      { mcpServers: { gh: { command: 'gh-mcp', env: { TOKEN: '${GITHUB_TOKEN}', OTHER: '${SET_ONE}' } } } },
+      { SET_ONE: 'fake-secret-value' },
+    )
+    const gh = config.servers.get(key('gh'))
+    assert.deepEqual(gh, {
+      kind: 'invalid',
+      errors: ['mcpServers.gh.env.TOKEN: the environment variable GITHUB_TOKEN is not set'],
     })
-    const found = errors(text, { SET_ONE: 'fake-secret-value' })
-    assert.deepEqual(found, ['mcpServers.gh.env.TOKEN: the environment variable GITHUB_TOKEN is not set'])
-    assert.ok(!found.join('\n').includes('fake-secret-value'))
+    assert.ok(!JSON.stringify(gh).includes('fake-secret-value'))
   })
 
   test('only ${NAME} expands: no inherited names, and other ${...} forms are errors', () => {
-    const text = JSON.stringify({
+    const config = ok({
       mcpServers: { s: { command: 'x', args: ['${constructor}', '${TOKEN:-none}', '${}', '$HOME'] } },
     })
-    assert.deepEqual(errors(text, {}), [
-      'mcpServers.s.args[0]: the environment variable constructor is not set',
-      'mcpServers.s.args[1]: ${TOKEN:-none} is not a variable: write ${NAME} with letters, digits and underscores',
-      'mcpServers.s.args[2]: ${} is not a variable: write ${NAME} with letters, digits and underscores',
-    ])
+    assert.deepEqual(config.servers.get(key('s')), {
+      kind: 'invalid',
+      errors: [
+        'mcpServers.s.args[0]: the environment variable constructor is not set',
+        'mcpServers.s.args[1]: ${TOKEN:-none} is not a variable: write ${NAME} with letters, digits and underscores',
+        'mcpServers.s.args[2]: ${} is not a variable: write ${NAME} with letters, digits and underscores',
+      ],
+    })
   })
 
   test('an env key named __proto__ stays a plain key', () => {
@@ -105,28 +113,35 @@ describe('the config', () => {
     assert.ok(!error!.includes('fake-secret'), error)
   })
 
-  test('each error points to the bad key', () => {
-    const text = JSON.stringify({
+  test('a bad server entry fails alone, with errors that point to the bad key', () => {
+    const config = ok({
       mcpServers: {
         a: { command: '', args: 'x' },
+        good: { command: 'fake' },
         b: { type: 'sse', url: 'https://x' },
         c: { type: 'http', url: 'ftp://x', header: {} },
         d: { command: 'x', args: [1], env: { N: 2 } },
         e: 'npx server',
       },
-      sandbox: { node: 3 },
-      extra: true,
     })
+    const invalid = (...errors: string[]) => ({ kind: 'invalid', errors })
+    assert.deepEqual(Object.fromEntries(config.servers), {
+      a: invalid('mcpServers.a.command: must be a non-empty string', 'mcpServers.a.args: must be an array of strings'),
+      good: { kind: 'stdio', command: 'fake', args: [], env: {} },
+      b: invalid('mcpServers.b.type: must be "stdio" or "http", not "sse"'),
+      c: invalid(
+        'mcpServers.c.header: unknown key (known: type, url, headers)',
+        'mcpServers.c.url: must start with http:// or https://',
+      ),
+      d: invalid('mcpServers.d.args[0]: must be a string', 'mcpServers.d.env.N: must be a string'),
+      e: invalid('mcpServers.e: must be an object'),
+    })
+  })
+
+  test('an error outside the server entries stops the start, and names the bad key', () => {
+    const text = JSON.stringify({ mcpServers: { a: { command: '' } }, sandbox: { node: 3 }, extra: true })
     assert.deepEqual(errors(text), [
       'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy, log)',
-      'mcpServers.a.command: must be a non-empty string',
-      'mcpServers.a.args: must be an array of strings',
-      'mcpServers.b.type: must be "stdio" or "http", not "sse"',
-      'mcpServers.c.header: unknown key (known: type, url, headers)',
-      'mcpServers.c.url: must start with http:// or https://',
-      'mcpServers.d.args[0]: must be a string',
-      'mcpServers.d.env.N: must be a string',
-      'mcpServers.e: must be an object',
       'sandbox.node: must be a non-empty string',
     ])
     assert.match(errors('{"mcpServers": ')[0]!, /^the config is not valid JSON/)
@@ -199,6 +214,29 @@ describe('the config location', () => {
   })
 })
 
+describe('the policy read again at each run', () => {
+  test('reads only the policy: a bad server entry or sandbox waits for the next start', () => {
+    const text = JSON.stringify({
+      mcpServers: { a: { command: '' } },
+      sandbox: { node: 3 },
+      policy: [{ match: 'mcp__a__*', action: 'allow' }],
+    })
+    assert.deepEqual(policyOf(text), { ok: true, policy: [{ match: 'mcp__a__*', action: 'allow', index: 0 }] })
+    assert.deepEqual(policyOf('{"mcpServers": {}}'), { ok: true, policy: [] })
+  })
+
+  test('a broken file or policy gives the errors, never the text near them', () => {
+    const json = policyOf('{"policy": [{"match": "mcp__a__*", "action": fake-secret}]}')
+    assert.equal(json.ok, false)
+    assert.ok(!json.ok && /^the config is not valid JSON/.test(json.errors[0]!), JSON.stringify(json))
+    assert.ok(!JSON.stringify(json).includes('fake-secret'))
+    assert.deepEqual(policyOf('{"policy": [{"match": "x", "action": "allow"}]}'), {
+      ok: false,
+      errors: ['policy[0].match: must be a glob over mcp__<server>__<tool>, such as "mcp__github__*", not "x"'],
+    })
+  })
+})
+
 describe('the catalog', () => {
   const states: ServerState[] = [
     {
@@ -250,7 +288,7 @@ describe('the catalog', () => {
     const issues = searchResult(states, 'issues', 15)
     assert.equal(
       issues,
-      '1 of 3 MCP tools.\n\n### mcp__bench__list_issues\nList all issues of a project.\nargs: { project: string }\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
+      '1 of 3 MCP tools.\n\n### mcp__bench__list_issues\nList all issues of a project. More text.\ncall("mcp__bench__list_issues", {\n  project: string\n})\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
     )
     assert.match(
       searchResult(states, 'list', 15),
@@ -279,7 +317,7 @@ describe('the catalog', () => {
     const text = searchResult(odd, '', 15)
     assert.equal(
       text,
-      '1 of 1 MCP tools.\n\n### mcp__x__ok\nFine ### forged\nargs: { p ### y?: string }\n\n## Not connected\n- y: line one ### mcp__y__forged\n- z: still connecting. Search again in a moment.',
+      '1 of 1 MCP tools.\n\n### mcp__x__ok\nFine ### forged\ncall("mcp__x__ok", {\n  "p\\n### y"?: string\n})\n\n## Not connected\n- y: line one ### mcp__y__forged\n- z: still connecting. Search again in a moment.',
     )
   })
 

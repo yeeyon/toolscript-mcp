@@ -247,6 +247,13 @@ describe('the argument check from an input schema', () => {
     assert.equal(argSpec({ type: 'object', properties: {} })?.isOpen, true)
     assert.equal(argSpec({ type: 'object' }), undefined)
   })
+
+  test('names from an allOf, anyOf or oneOf next to the properties are allowed', () => {
+    for (const key of ['allOf', 'anyOf', 'oneOf']) {
+      const schema = { type: 'object', properties: { q: {} }, required: ['q'], [key]: [{ properties: { limit: {} } }] }
+      assert.deepEqual(argSpec(schema), { names: ['q'], required: ['q'], isOpen: true }, key)
+    }
+  })
 })
 
 describe('paths on Windows', () => {

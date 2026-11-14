@@ -9,7 +9,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { DownstreamTool, ServerState } from '../core/catalog.ts'
-import { childEnv, redact, type ServerConfig, type ServerKey } from '../core/config.ts'
+import { childEnv, invalidReason, redact, type ServerConfig, type ServerEntry, type ServerKey } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
 
 /** The time that one server gets for its connect and for each page of its tool list. */
@@ -106,7 +106,7 @@ const listAll = async (client: Client): Promise<DownstreamTool[]> => {
 
 /** `now` gives the time in ms for the attempt cap: a test sets it. */
 export const connectAll = (
-  servers: ReadonlyMap<ServerKey, ServerConfig>,
+  servers: ReadonlyMap<ServerKey, ServerEntry>,
   version: string,
   log: (line: string) => void,
   now: () => number = Date.now,
@@ -167,7 +167,9 @@ export const connectAll = (
   /** Starts an attempt when `key` failed and the cap allows one, and returns it. */
   const reconnect = (key: ServerKey): Promise<void> | undefined => {
     const server = servers.get(key)
-    if (closing || server === undefined || links.get(key)?.status !== 'failed' || capWait(key) > 0) return undefined
+    // An entry with config errors never starts, so it never comes back either.
+    if (closing || server === undefined || server.kind === 'invalid') return undefined
+    if (links.get(key)?.status !== 'failed' || capWait(key) > 0) return undefined
     log(`${key}: connecting again`)
     return attempt(key, server)
   }
@@ -186,7 +188,15 @@ export const connectAll = (
     return { key, status: 'failed', reason: `${link.reason}${note}` }
   }
 
-  const ready = Promise.all([...servers].map(([key, server]) => attempt(key, server)))
+  // Its errors name keys and variables, never values.
+  const ready = Promise.all(
+    [...servers].map(async ([key, server]) => {
+      if (server.kind !== 'invalid') return attempt(key, server)
+      const reason = invalidReason(server.errors)
+      log(`${key}: failed: ${reason}`)
+      links.set(key, { status: 'failed', reason })
+    }),
+  )
   return {
     settled: Promise.race([ready, new Promise(r => setTimeout(r, FIRST_WAIT_MS).unref())]).then(() => {}),
     states: () => [...links].map(([key, link]) => stateOf(key, link)),
