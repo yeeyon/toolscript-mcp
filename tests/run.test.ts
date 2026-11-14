@@ -36,6 +36,7 @@ const TOOLS: Record<string, Tool> = {
   hang: (_, signal) =>
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
   big: () => json(Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `item ${i}` }))),
+  none: () => json({ results: [], next_cursor: null }),
 }
 const SCHEMAS: Record<string, unknown> = {
   echo: { type: 'object', properties: { n: {}, a: {}, b: {}, x: {} } },
@@ -352,6 +353,12 @@ describe('output projection', () => {
   test('an empty result after calls that returned data says so', async () => {
     const r = await setup().run('await call("mcp__f__echo", { n: 1 })\nreturn []')
     assert.ok(r.text.includes('The result is empty, but the calls returned data'), r.text)
+  })
+
+  test('an empty result after calls that returned only empty values has no note', async () => {
+    const r = await setup().run('await call("mcp__f__none", {})\nreturn []')
+    assert.equal(r.isError, false, r.text)
+    assert.ok(!r.text.includes('The result is empty'), r.text)
   })
 
   test('a cut result is kept whole and recall gives it back', async () => {

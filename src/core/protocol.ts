@@ -339,6 +339,8 @@ export type CallRecord = {
   tool: string
   status: 'ok' | 'failed' | 'unfinished'
   chars: number
+  /** True when the call worked and its value is not empty (see `isEmpty`). */
+  data?: boolean
   shape?: string
   repeatOf?: number
 }
@@ -403,7 +405,8 @@ const MAX_SHAPE_CHARS = 200
 const MAX_KEYS = 8
 const SAMPLE = 20
 
-const isEmpty = (v: unknown): boolean =>
+/** True for null, undefined, an empty string, and arrays and objects that hold only empty values. */
+export const isEmpty = (v: unknown): boolean =>
   v === null ||
   v === undefined ||
   v === '' ||
@@ -911,7 +914,7 @@ export const charCount = (n: number): string =>
 
 /** True when a program returned nothing although its calls returned data: a filter that missed. */
 export const missedData = (outcome: RunnerDone | RunnerError | undefined, calls: readonly CallRecord[]): boolean => {
-  if (outcome?.t !== 'done' || !calls.some(c => c.status === 'ok' && c.chars > 2)) return false
+  if (outcome?.t !== 'done' || !calls.some(c => c.data === true)) return false
   try {
     return isEmpty(JSON.parse(outcome.value))
   } catch {
