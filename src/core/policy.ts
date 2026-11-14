@@ -45,11 +45,79 @@ export const decide = (policy: Policy, tool: string): Verdict => {
   return rule === undefined ? { action: 'ask' } : { action: rule.action, rule }
 }
 
-/** A rule as the config writes it, with its place: `policy[2] {"match": "mcp__x__*", "action": "deny"}`. */
-export const ruleText = (rule: Rule): string =>
-  `policy[${rule.index}] {"match": ${JSON.stringify(rule.match)}, "action": "${rule.action}"}`
+/** A rule as the config writes it: `{"match": "mcp__x__*", "action": "deny"}`. */
+const ruleJson = (match: string, action: Action): string => `{"match": ${JSON.stringify(match)}, "action": "${action}"}`
 
-const allowRule = (tool: string): string => `{"match": ${JSON.stringify(tool)}, "action": "allow"}`
+/** A rule as the config writes it, with its place: `policy[2] {"match": "mcp__x__*", "action": "deny"}`. */
+export const ruleText = (rule: Rule): string => `policy[${rule.index}] ${ruleJson(rule.match, rule.action)}`
+
+const allowRule = (tool: string): string => ruleJson(tool, 'allow')
+
+/** Each step up this order lets a tool run with less from the person. */
+const LOOSENESS: Record<Action, number> = { deny: 0, ask: 1, allow: 2 }
+
+/**
+ * What `next` lets run that `current` does not: the names whose decision goes
+ * up (deny to ask, deny or ask to allow). Each rule of either policy adds its
+ * match with no `*`, a name that the rule matches, so a rule over tools of no
+ * connected server counts too. Such a name shows as the match.
+ */
+export const loosened = (current: Policy, next: Policy, names: Iterable<string>): string[] => {
+  const shown = new Map<string, string>()
+  for (const name of names) shown.set(name, name)
+  for (const rule of [...current, ...next]) {
+    const name = rule.match.replaceAll('*', '')
+    if (!shown.has(name)) shown.set(name, rule.match)
+  }
+  const looser = [...shown].filter(
+    ([name]) => LOOSENESS[decide(next, name).action] > LOOSENESS[decide(current, name).action],
+  )
+  return [...new Set(looser.map(([, label]) => label))].sort()
+}
+
+/** The rules of `a` that `b` does not have, one for one. */
+const minus = (a: readonly string[], b: readonly string[]): string[] => {
+  const left = [...b]
+  return a.filter(rule => {
+    const at = left.indexOf(rule)
+    if (at >= 0) left.splice(at, 1)
+    return at < 0
+  })
+}
+
+/** The rules added and removed, for the log and the note of a run. Empty when the rules are the same. */
+export const policyChange = (current: Policy, next: Policy): string => {
+  const before = current.map(r => ruleJson(r.match, r.action))
+  const after = next.map(r => ruleJson(r.match, r.action))
+  if (before.join('\n') === after.join('\n')) return ''
+  const added = minus(after, before)
+  const removed = minus(before, after)
+  const parts = [
+    ...(added.length > 0 ? [`added ${added.join(', ')}`] : []),
+    ...(removed.length > 0 ? [`removed ${removed.join(', ')}`] : []),
+  ]
+  return parts.length > 0 ? parts.join('; ') : 'the order of the rules changed'
+}
+
+const SHOWN_NAMES = 20
+
+const nameList = (names: readonly string[]): string =>
+  names.length <= SHOWN_NAMES
+    ? names.join(', ')
+    : `${names.slice(0, SHOWN_NAMES).join(', ')} and ${names.length - SHOWN_NAMES} more`
+
+/** The prompt before a looser policy from the config file applies. */
+export const loosenText = (file: string, names: readonly string[]): string =>
+  `The toolscript-mcp policy in ${file} changed to allow: ${nameList(names)}. Apply the new policy?`
+
+/** The note after a run that kept the policy in force, because the person did not approve a looser one. */
+export const keptPolicyNote = (file: string, names: readonly string[], why: Refusal): string => {
+  const kept =
+    why === 'decline'
+      ? 'The person did not approve it, so this run used the policy in force.'
+      : 'A looser policy applies only after a restart, so this run used the policy in force. If the person made this change, ask them to restart toolscript-mcp.'
+  return `## Policy not reloaded\n\nThe toolscript-mcp policy in ${file} now allows ${nameList(names)}. ${kept} Do not change the config yourself.`
+}
 
 /**
  * The decision before a run, from the tool names that the program writes as
