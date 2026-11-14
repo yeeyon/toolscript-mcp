@@ -1,13 +1,18 @@
 // connectAll with real stdio children (tests/probe-server.mjs): a server whose
 // connection closed connects again on next use, once for all callers, at most
-// 3 times in 60 s, and never after close.
+// 3 times in 60 s, and never after close. An HTTP server built with the SDK
+// checks that a server that restarted connects again after one failed call.
 
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { ServerConfig, ServerKey } from '../src/core/config.ts'
 import { connectAll, type Downstream } from '../src/host/downstream.ts'
 
@@ -139,4 +144,100 @@ describe('reconnect', () => {
     ])
     assert.equal(lines.filter(l => l.includes('connecting again')).length, 0, lines.join('\n'))
   })
+
+  test('a transport that cannot be made fails only its server', async () => {
+    const downstream = connectAll(
+      new Map([[KEY, { kind: 'http', url: 'http://', headers: {} } as const]]),
+      '0',
+      () => {},
+    )
+    opened.push(downstream)
+    await downstream.settled
+    const state = downstream.states()[0]
+    assert.match(state?.status === 'failed' ? state.reason : '', /Invalid URL/)
+  })
+})
+
+/**
+ * A stateful HTTP MCP server with one tool, `ping`, built with the SDK. A
+ * request with a session id that it does not know gets `unknown`: a new
+ * transport, which answers 400 "Server not initialized", or a 404, as the spec says.
+ */
+const startHttp = async (port: number, unknown: 'new transport' | 404) => {
+  const sessions = new Map<string, StreamableHTTPServerTransport>()
+  const fresh = async () => {
+    const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: randomUUID,
+      onsessioninitialized: id => void sessions.set(id, transport),
+    })
+    const mcp = new McpServer({ name: 'fake-http', version: '1.0.0' })
+    mcp.registerTool('ping', { description: 'Ping.' }, async () => ({ content: [{ type: 'text', text: 'pong' }] }))
+    await mcp.connect(transport)
+    return transport
+  }
+  const server = http.createServer(async (req, res) => {
+    const id = req.headers['mcp-session-id']
+    const known = typeof id === 'string' ? sessions.get(id) : undefined
+    if (known === undefined && id !== undefined && unknown === 404)
+      return void res.writeHead(404).end('Session not found')
+    await (known ?? (await fresh())).handleRequest(req, res)
+  })
+  await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve))
+  return {
+    port: (server.address() as AddressInfo).port,
+    forget: () => sessions.clear(),
+    close: () =>
+      new Promise<void>(resolve => {
+        server.close(() => resolve())
+        server.closeAllConnections()
+      }),
+  }
+}
+
+describe('http', () => {
+  const cases = [
+    { name: 'a server that restarted', unknown: 'new transport', restart: true, failure: /fetch failed/ },
+    {
+      name: 'a server that lost its sessions',
+      unknown: 'new transport',
+      restart: false,
+      failure: /Server not initialized/,
+    },
+    {
+      name: 'a server that answers 404 for a lost session',
+      unknown: 404,
+      restart: false,
+      failure: /Session not found/,
+    },
+  ] as const
+  for (const { name, unknown, restart, failure } of cases)
+    test(`${name} fails one call, and the next call connects again`, async () => {
+      let fake = await startHttp(0, unknown)
+      const downstream = connectAll(
+        new Map([[KEY, { kind: 'http', url: `http://127.0.0.1:${fake.port}/mcp`, headers: {} } as const]]),
+        '0',
+        () => {},
+      )
+      opened.push(downstream)
+      const ping = async (): Promise<string> => {
+        const link = await downstream.client(KEY)
+        if (!link.ok) return link.reason
+        const r = await link.client.callTool({ name: 'ping', arguments: {} }).catch((err: Error) => err)
+        return r instanceof Error ? r.message : JSON.stringify(r.content)
+      }
+      const pong = JSON.stringify([{ type: 'text', text: 'pong' }])
+      try {
+        await downstream.settled
+        assert.equal(await ping(), pong)
+        if (restart) {
+          await fake.close()
+          fake = await startHttp(fake.port, unknown)
+        } else fake.forget()
+        assert.match(await ping(), failure)
+        assert.equal(await ping(), pong, 'the call after the failed one connects again')
+      } finally {
+        await downstream.close()
+        await fake.close()
+      }
+    })
 })

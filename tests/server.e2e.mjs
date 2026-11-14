@@ -23,6 +23,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = process.env.TOOLSCRIPT_E2E_MAIN || path.join(ROOT, 'dist', 'host', 'main.js')
 const BENCH_TOOLS = ['create_ticket', 'get_deploys', 'list_issues', 'query_logs', 'search_messages']
 const MARKER = `fake-${randomUUID()}`
+const BAD_URL = `http://[fake-${randomUUID()}]/mcp`
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-e2e-'))
 const PROBE = path.join(ROOT, 'tests', 'probe-server.mjs')
@@ -44,6 +45,7 @@ fs.mkdirSync(HOME)
 const SERVER_ENV = {
   ...process.env,
   TOOLSCRIPT_E2E_MARKER: MARKER,
+  TOOLSCRIPT_E2E_BAD_URL: BAD_URL,
   TMPDIR: TMP,
   TEMP: TMP,
   TMP,
@@ -88,6 +90,9 @@ fs.writeFileSync(
       },
       // A variable that is not set: this entry fails alone, and the server still starts.
       broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
+      // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
+      badurl: { type: 'http', url: 'http://' },
+      badvar: { type: 'http', url: '${TOOLSCRIPT_E2E_BAD_URL}' },
     },
   }),
 )
@@ -265,6 +270,22 @@ test('(d) a config entry with an error fails alone, and search_tools shows the e
   assert.match(text, /### mcp__bench__/, text)
 })
 
+test('(k) an http entry whose URL does not parse fails alone, and the error names the key, not the URL', async () => {
+  const text = await search('')
+  assert.match(
+    text,
+    /- badurl: invalid entry in the toolscript-mcp config: mcpServers\.badurl\.url: must be a valid URL/,
+    text,
+  )
+  assert.match(
+    text,
+    /- badvar: invalid entry in the toolscript-mcp config: mcpServers\.badvar\.url: must be a valid URL/,
+    text,
+  )
+  assert.match(text, /### mcp__bench__/, text)
+  assert.ok(!text.includes(BAD_URL) && !transport.stderr.includes(BAD_URL), 'the URL of the variable is not shown')
+})
+
 test('(e) a nested toolscript-mcp refuses to start', async () => {
   const text = await search('')
   assert.match(text, /- nested: .*refused to start, because TOOLSCRIPT_MCP_DEPTH is set/, text)
@@ -426,32 +447,88 @@ test('run (j) a large result is cut, and recall returns it whole with no new cal
   assert.equal(benchCalls('list_issues'), before + 1)
 })
 
-test('run (m) a policy edit applies at the next run, and a broken config keeps the last good policy', async () => {
-  const code = 'return (await call("mcp__bench__create_ticket", { title: "x" })).created.key'
-  const edited = JSON.parse(CONFIG_TEXT)
-  edited.policy[0].action = 'allow'
+const TICKET = 'return (await call("mcp__bench__create_ticket", { title: "x" })).created.key'
+const DENY_TICKET = '{"match": "mcp__bench__create_ticket", "action": "deny"}'
+const ALLOW_TICKET = '{"match": "mcp__bench__create_ticket", "action": "allow"}'
+// The config of the scenario: a program writes a policy that allows the denied create_ticket.
+const looserConfig = () => {
+  const looser = JSON.parse(CONFIG_TEXT)
+  looser.policy[0].action = 'allow'
+  return JSON.stringify(looser)
+}
+
+test('run (m) a looser policy waits for a restart when the client cannot ask, and a tighter one applies at once', async () => {
   try {
-    fs.writeFileSync(configFile, JSON.stringify(edited))
-    const allowed = await run(code)
-    assert.equal(allowed.isError, false, allowed.text)
-    assert.equal(benchCalls('create_ticket'), 1)
+    fs.writeFileSync(configFile, looserConfig())
+    const kept = await run(TICKET)
+    assert.equal(kept.isError, true, kept.text)
+    assert.ok(kept.text.includes('is denied by policy[0]'), kept.text)
+    assert.ok(
+      kept.text.includes(`The toolscript-mcp policy in ${configFile} now allows mcp__bench__create_ticket.`),
+      kept.text,
+    )
+    assert.ok(kept.text.includes('restart toolscript-mcp'), kept.text)
+    assert.equal(benchCalls('create_ticket'), 0)
+    assert.match(transport.stderr, /the policy in .* was not applied, because it allows mcp__bench__create_ticket/)
 
     fs.writeFileSync(configFile, '{"policy": [')
-    const kept = await run(code)
-    assert.equal(kept.isError, false, kept.text)
-    assert.ok(kept.text.includes('## Policy not reloaded'), kept.text)
-    assert.ok(kept.text.includes('- the config is not valid JSON'), kept.text)
-    assert.equal(benchCalls('create_ticket'), 2)
+    const broken = await run(TICKET)
+    assert.ok(broken.text.includes('is denied by policy[0]'), broken.text)
+    assert.ok(broken.text.includes('## Policy not reloaded'), broken.text)
+    assert.ok(broken.text.includes('- the config is not valid JSON'), broken.text)
+
+    const tighter = JSON.parse(CONFIG_TEXT)
+    tighter.policy[3].action = 'deny'
+    fs.writeFileSync(configFile, JSON.stringify(tighter))
+    const deploys = await run('return await call("mcp__bench__get_deploys", { date: "2026-10-09" })')
+    assert.equal(deploys.isError, true, deploys.text)
+    assert.ok(deploys.text.includes('is denied by policy[3]'), deploys.text)
+    const change =
+      'added {"match": "mcp__bench__get_deploys", "action": "deny"}; removed {"match": "mcp__bench__get_deploys", "action": "ask"}'
+    assert.ok(deploys.text.endsWith(`The policy changed: ${change}.`), deploys.text)
+    assert.ok(transport.stderr.includes(`the policy changed: ${change}\n`), transport.stderr)
   } finally {
     fs.writeFileSync(configFile, CONFIG_TEXT)
   }
-  const denied = await run(code)
-  assert.equal(denied.isError, true)
-  assert.ok(denied.text.includes('is denied by policy[0]'), denied.text)
-  assert.equal(benchCalls('create_ticket'), 2)
+  assert.equal(benchCalls('create_ticket'), 0)
 })
 
-test('(m) init imports the servers of a client into a config that the server starts with', async () => {
+test('run (n) a looser policy asks the person: decline keeps the policy in force, accept applies it', async () => {
+  const prompts = asking.prompts.length
+  try {
+    fs.writeFileSync(configFile, looserConfig())
+    asking.answer = 'decline'
+    const declined = await run(TICKET, askingClient)
+    assert.equal(declined.isError, true, declined.text)
+    assert.ok(declined.text.includes('is denied by policy[0]'), declined.text)
+    assert.ok(declined.text.includes('The person did not approve it'), declined.text)
+    assert.equal(asking.prompts.length, prompts + 1)
+    assert.equal(
+      asking.prompts.at(-1),
+      `The toolscript-mcp policy in ${configFile} changed to allow: mcp__bench__create_ticket. Apply the new policy?`,
+    )
+    assert.equal(benchCalls('create_ticket'), 0)
+
+    asking.answer = 'accept'
+    const accepted = await run(TICKET, askingClient)
+    assert.equal(accepted.isError, false, accepted.text)
+    assert.ok(
+      accepted.text.endsWith(`The policy changed: added ${ALLOW_TICKET}; removed ${DENY_TICKET}.`),
+      accepted.text,
+    )
+    assert.equal(asking.prompts.length, prompts + 2)
+    assert.equal(benchCalls('create_ticket'), 1)
+  } finally {
+    fs.writeFileSync(configFile, CONFIG_TEXT)
+  }
+  const tighter = await run(TICKET, askingClient)
+  assert.ok(tighter.text.includes('is denied by policy[0]'), tighter.text)
+  assert.ok(tighter.text.endsWith(`The policy changed: added ${DENY_TICKET}; removed ${ALLOW_TICKET}.`), tighter.text)
+  assert.equal(asking.prompts.length, prompts + 2, 'a tighter policy applies with no prompt')
+  assert.equal(benchCalls('create_ticket'), 1)
+})
+
+test('(j) init imports the servers of a client into a config that the server starts with', async () => {
   const home = path.join(dir, 'init-home')
   fs.mkdirSync(path.join(home, '.cursor'), { recursive: true })
   const secret = `fake-secret-${randomUUID()}`

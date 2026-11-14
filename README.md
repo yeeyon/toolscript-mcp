@@ -177,8 +177,12 @@ of your config.
 
 A refused call throws an error in the program. The program can catch it.
 
-toolscript-mcp reads `policy` again at the start of each run. You do not have to restart it after you change a rule.
-If the config has errors at that time, the run uses the last valid policy, and the result tells you so.
+toolscript-mcp reads `policy` again at the start of each run. If the config has errors at that time, the run uses the
+last valid policy, and the result tells you so.
+
+A stricter policy applies at once. If a change lets a tool run with less approval, toolscript-mcp asks you before the
+run. If your client cannot ask, restart toolscript-mcp to apply that change. Do not let a tool that the policy allows
+write the config file.
 
 If a tool does not answer in the call time limit, the call throws an error. toolscript-mcp cancels the request on the
 server. The program can catch the error and continue.
@@ -197,6 +201,7 @@ server. The program can catch the error and continue.
 - Without both, it reads `%APPDATA%\toolscript-mcp\config.json` on Windows.
 - On other systems, it reads `$XDG_CONFIG_HOME/toolscript-mcp/config.json`, else `~/.config/toolscript-mcp/config.json`.
 - A stdio server has `command`, `args` and `env`. An HTTP server has `"type": "http"`, `url` and `headers`.
+- The `url` of an HTTP server must be a valid URL that starts with `http://` or `https://`.
 - `${VAR}` in `args`, `env`, `url` and `headers` gets the value of `VAR` from the environment of toolscript-mcp.
 - If a server entry has an error, for example a variable that is not set, only that server fails.
 - `search_tools` shows the error of the server. The error names the variable, not its value.
@@ -257,8 +262,8 @@ code. Read [SECURITY.md](SECURITY.md).
 - Elicitation is tested with the client of the MCP TypeScript SDK. It is not yet tested in the user interface of each
   client.
 - toolscript-mcp has no OAuth login. A remote server that needs an OAuth login does not connect.
-- An HTTP server that stops does not close its connection, so toolscript-mcp does not connect to it again. Its calls
-  fail with an error until you restart toolscript-mcp.
+- If an HTTP server restarts or loses the session, one call to it can fail. The next use of the server connects
+  again.
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
 - Each `run_code` call starts a new program. No state stays between two calls, except the files of `saveFile`.
 
