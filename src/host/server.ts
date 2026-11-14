@@ -37,6 +37,7 @@ const HANDLERS: Record<ServedName, Handler> = {
     const { query, limit: asked } = parseInput('search_tools', args)
     const limit = Math.min(100, Math.max(1, asked || SEARCH_LIMIT))
     await downstream.settled
+    await downstream.retry()
     return text(searchResult(downstream.states(), query, limit))
   },
   run_code: async (args, { run, extra }) => run(parseInput('run_code', args).code, extra),

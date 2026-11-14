@@ -2,6 +2,7 @@
 // that no policy rule allows, runs the program in the sandbox and answers its
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { argSpec, catalogOf } from '../core/catalog.ts'
@@ -80,9 +81,11 @@ const refused = (text: string): RunResult => ({ text, isError: true })
 export const runCode = async (ctx: RunContext, code: string): Promise<RunResult> => {
   if (code.trim() === '') return refused('Error: code is empty.')
   await ctx.downstream.settled
+  const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
+  // A failed server that the program names connects again before the check.
+  await ctx.downstream.retry([...new Set(literal.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[])
   const catalog = catalogOf(ctx.downstream.states())
   const specs = new Map(catalog.map(t => [t.name, argSpec(t.inputSchema)]))
-  const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
   const problems = checkCalls(literal, new Set(specs.keys()), tool => specs.get(tool), {})
   if (problems.length > 0) return refused(problemReport(problems))
 
@@ -159,6 +162,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   const { config, downstream, kept } = ctx
   const limitSeconds = config.sandbox.timeoutSeconds
   const timeoutMs = limitSeconds * 1000
+  const callSeconds = config.sandbox.callTimeoutSeconds
   const startedAt = performance.now()
   const xdir = await makeExchangeDir()
 
@@ -208,12 +212,20 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
       if (check.needsRule) unapproved.add(tool)
       return { ok: false, error: check.error }
     }
-    const client = downstream.clients.get(target.server as ServerKey)
-    if (client === undefined) return { ok: false, error: `no MCP server "${target.server}" is connected` }
+    const link = await downstream.client(target.server as ServerKey)
+    if (!link.ok) return { ok: false, error: link.reason }
+    // A reconnect can outlast the sandbox: then the call has no reader and does not start.
+    if (ended) return { ok: false, error: 'the program ended before the call started' }
+    // The SDK keeps its abort listener after the answer and then sends a
+    // cancel for a finished call: one signal per call, unlinked at the end.
+    const own = new AbortController()
+    const stop = () => own.abort()
+    cancel.signal.addEventListener('abort', stop, { once: true })
     try {
-      const r = await client.callTool({ name: target.name, arguments: args }, undefined, {
-        timeout: timeoutMs,
-        signal: cancel.signal,
+      // At the timeout the SDK sends notifications/cancelled, so the server can stop the work.
+      const r = await link.client.callTool({ name: target.name, arguments: args }, undefined, {
+        timeout: callSeconds * 1000,
+        signal: own.signal,
       })
       return mcpReply({
         content: Array.isArray(r.content) ? r.content : [],
@@ -221,7 +233,15 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
         structuredContent: r.structuredContent,
       })
     } catch (err) {
+      // An abort at the end of the run is also a RequestTimeout to the SDK.
+      if (!own.signal.aborted && err instanceof McpError && err.code === ErrorCode.RequestTimeout)
+        return {
+          ok: false,
+          error: `${tool} did not answer within the call limit of ${callSeconds} s and was cancelled`,
+        }
       return { ok: false, error: errorText(err) }
+    } finally {
+      cancel.signal.removeEventListener('abort', stop)
     }
   }
 
