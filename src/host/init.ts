@@ -21,17 +21,17 @@ import { errorText } from '../core/protocol.ts'
 
 export const INIT_USAGE = 'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run]'
 
-const SECRET_WORD = `${SECRET_WORD_LENGTH} or more letters, digits, _ and -, with letters and digits`
+const LONG_WORD = `${SECRET_WORD_LENGTH} or more letters, digits, _ and -, with letters and digits`
 const NAMES = `${SECRET_NAMES.slice(0, -1).join(', ')} or ${SECRET_NAMES.at(-1)}`
 
 /** What the dry run shows as `***`: the rules of hideArgSecrets. */
 const HIDDEN = [
   'These show as ***:',
   '- the values of env and headers',
-  `- in a URL: the user and password, each query value, the fragment, and each path segment of ${SECRET_WORD}`,
+  `- in a URL: the user and password, each query value, the fragment, and each path segment of ${LONG_WORD}`,
   `- the value of an argument whose name holds ${NAMES}: --name value, --name=value, NAME=value, Name: value`,
   '- the word after Bearer or Basic',
-  `- an argument of ${SECRET_WORD}`,
+  `- an argument of ${LONG_WORD}`,
   'Other arguments show as they are. If one of them holds a secret, do not share this output.',
 ]
 

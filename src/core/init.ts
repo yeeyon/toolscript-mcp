@@ -193,7 +193,7 @@ export const configText = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean
 export const oldConfigReport = (oldText: string, servers: ReadonlyMap<ServerKey, Entry>, bak: string): string[] => {
   const json = parseJson(oldText)
   if (!json.ok || !isObject(json.value))
-    return [`The old config is not a JSON object, so init cannot list what the new config leaves out of it.`]
+    return ['The old config is not a JSON object, so init cannot list what the new config leaves out of it.']
   const next = configObject(servers, false)
   const top: Record<string, unknown> = next
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
