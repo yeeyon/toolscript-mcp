@@ -123,6 +123,21 @@ describe('rotation', () => {
     }
   })
 
+  test('concurrent writers at the cap lose no record and log no error', async () => {
+    const home = path.join(ROOT, 'busy')
+    const dir = path.dirname(runLogFile(home))
+    fs.mkdirSync(dir, { recursive: true })
+    const filler = `${'f'.repeat(MAX_LOG_BYTES - 100)}\n`
+    fs.writeFileSync(runLogFile(home), filler)
+    const errors: string[] = []
+    const lines = Array.from({ length: 20 }, (_, i) => `{"id":"run-${i}","pad":"${'p'.repeat(30)}"}\n`)
+    await Promise.all(lines.map(line => appendRunLog(home, line, e => errors.push(e))))
+    assert.deepEqual(errors, [])
+    const kept = [oldRunLogFile(home), runLogFile(home)].map(f => fs.readFileSync(f, 'utf8')).join('')
+    assert.equal(kept.includes(filler), true, 'the old history is kept')
+    for (const line of lines) assert.equal(kept.includes(line), true, line)
+  })
+
   test('a write failure logs one line and does not throw', async () => {
     const home = path.join(ROOT, 'blocked')
     fs.writeFileSync(home, 'a file, not a folder')
