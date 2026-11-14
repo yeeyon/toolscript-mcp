@@ -126,9 +126,12 @@ export const connectAll = (
   const connect = async (key: ServerKey, server: ServerConfig): Promise<void> => {
     const client = new Client({ name: 'toolscript-mcp', version })
     opened.add(client)
-    const { transport, lastError } = transportOf(server)
+    let lastError = () => ''
     try {
-      await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS })
+      // Inside the try: a transport that cannot be made fails this server only.
+      const made = transportOf(server)
+      lastError = made.lastError
+      await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const tools = await listAll(client)
       links.set(key, { status: 'connected', client, tools })
       log(`${key}: connected, ${tools.length} tools`)
@@ -142,9 +145,10 @@ export const connectAll = (
       // A child that exits gives only "Connection closed": its stderr says
       // why (on Windows, also for a command that is not found).
       const stderr = lastError()
-      fail(key, server, stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`)
+      // After an await: a failure that comes at once must not come before `attempt` marks the link connecting.
       await client.close().catch(() => {})
       opened.delete(client)
+      fail(key, server, stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`)
     }
   }
 
