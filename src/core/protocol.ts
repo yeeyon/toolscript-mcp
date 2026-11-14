@@ -283,9 +283,12 @@ export const savedReply = (format: SavedResult['format'], fileText: string): Rep
 
 const clip = (text: string, max: number, whole?: number): string => {
   if (text.length <= max) return text
+  // Do not cut between the two halves of a surrogate pair: one half alone is not valid text.
+  const last = text.charCodeAt(max - 1)
+  const end = last >= 0xd800 && last <= 0xdbff ? max - 1 : max
   const fix =
     whole === undefined ? 'return less data' : `await recall(${whole}) returns the whole result: return a part of it`
-  return `${text.slice(0, max)}\n… [${text.length - max} more characters cut; ${fix}]`
+  return `${text.slice(0, end)}\n… [${text.length - end} more characters cut; ${fix}]`
 }
 
 /** The text the host shows for a return value: formatted JSON, or the raw text when it is not JSON. */

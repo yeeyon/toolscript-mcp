@@ -12,6 +12,7 @@ import {
   extractDeclaration,
   fileNameError,
   fileText,
+  formatOutcome,
   literalCalls,
   maskCode,
   mergeArgNames,
@@ -581,6 +582,14 @@ describe('output projection', () => {
     )
     assert.ok(has(text, '--- 10 MCP calls: '), text)
     assert.ok(has(text, '#1…#8 mcp__x__get ×10, 1 failed, 1 did not finish 80'), text)
+  })
+
+  test('a cut result does not split a character outside the BMP', () => {
+    // The shown text is "aaaaaaaaa😀😀😀: the 11th unit is the first half of an emoji.
+    const value = JSON.stringify('a'.repeat(9) + '😀'.repeat(3))
+    const text = formatOutcome({ t: 'done', value, logs: [] }, 0, '', 11)
+    assert.ok(text.isWellFormed(), JSON.stringify(text))
+    assert.ok(text.startsWith('"aaaaaaaaa\n… [7 more characters cut;'), text)
   })
 })
 
