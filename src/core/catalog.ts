@@ -56,6 +56,12 @@ export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
       : [],
   )
 
+/** Why a call cannot reach a server now, or undefined when it is connected. */
+export const notConnected = (s: ServerState): string | undefined =>
+  s.status === 'connected'
+    ? undefined
+    : `the MCP server "${s.key}" is not connected: ${s.status === 'failed' ? s.reason : 'it is still connecting'}`
+
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 // An empty enum allows no value. An empty type list is not a valid schema.

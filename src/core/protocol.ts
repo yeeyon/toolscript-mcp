@@ -10,7 +10,8 @@ export type RunnerRead = { t: 'read'; id: number; path: string }
 export type RunnerResources = { t: 'resources'; id: number; server?: string }
 export type RunnerResource = { t: 'resource'; id: number; server: string; uri: string }
 export type RunnerDone = { t: 'done'; value: string; logs: string[] }
-export type RunnerError = { t: 'error'; message: string; logs: string[] }
+/** `timedOut`: the runner's time limit or the host's ended the run, not the program. */
+export type RunnerError = { t: 'error'; message: string; logs: string[]; timedOut?: boolean }
 export type RunnerMessage =
   | RunnerCall
   | RunnerRecall
@@ -824,20 +825,27 @@ export type CallProblem = { line: number; text: string; isGuess: boolean }
 /**
  * The wrong names in the literal calls of a program: a tool that is not
  * connected, and with a declaration, an unknown or a missing argument. With
- * only the names of earlier calls, a name close to one of them.
+ * only the names of earlier calls, a name close to one of them. A tool of a
+ * server in `down` (key to reason) gets the reason, not a guess.
  */
 export const checkCalls = (
   calls: readonly LiteralCall[],
   tools: ReadonlySet<string>,
   specOf: (tool: string) => ArgSpec | undefined,
   learned: ArgNames,
+  down: ReadonlyMap<string, string>,
 ): CallProblem[] => {
   const problems: CallProblem[] = []
   for (const c of calls) {
     if (tools.size > 0 && !tools.has(c.tool) && splitToolName(c.tool) !== undefined) {
+      const server = splitToolName(c.tool)!.server
+      const reason = down.get(server)
+      if (reason !== undefined) {
+        problems.push({ line: c.line, text: reason, isGuess: false })
+        continue
+      }
       const near = nearest(c.tool, [...tools], 3)
       const guess = near === undefined ? '' : ` (did you mean "${near}"?)`
-      const server = splitToolName(c.tool)!.server
       const text = [...tools].some(t => splitToolName(t)?.server === server)
         ? `no tool "${c.tool}" on the connected server "${server}"${guess}`
         : `no MCP tool "${c.tool}" is connected${guess}`
@@ -874,17 +882,15 @@ export const checkCalls = (
   return problems
 }
 
-/** The result of a program that did not run because of wrong names. */
+/** The result of a program that did not run because of wrong names or servers that are not connected. */
 export const problemReport = (problems: readonly CallProblem[]): string => {
   const lines = problems.map(p => `- line ${p.line}: ${p.text}`)
   const escape = problems.some(p => p.isGuess)
     ? ['If a name is right, pass the arguments as a variable: the check reads only object literals.']
     : []
-  return [
-    'Error: the program did not run, because some calls have wrong names. No call was made.',
-    ...lines,
-    ...escape,
-  ].join('\n')
+  return ['Error: the program did not run, because of the calls below. No call was made.', ...lines, ...escape].join(
+    '\n',
+  )
 }
 
 /** Runs at most `n` tasks at a time; the others wait in the order they came. */

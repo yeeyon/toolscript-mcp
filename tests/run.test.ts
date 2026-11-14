@@ -9,14 +9,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { searchResult, type ServerState } from '../src/core/catalog.ts'
-import type { Config, ServerKey } from '../src/core/config.ts'
+import type { Config, ServerConfig, ServerKey } from '../src/core/config.ts'
 import { runLogFile } from '../src/core/paths.ts'
 import type { Rule } from '../src/core/policy.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
 import { newKept, type Kept } from '../src/core/protocol.ts'
 import { TOOL } from '../src/core/tools.ts'
-import type { Downstream } from '../src/host/downstream.ts'
+import { connectAll, type Downstream } from '../src/host/downstream.ts'
 import { runCode, type Approval, type RunContext } from '../src/host/run.ts'
+
+const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
 
 // The exchange dirs go under this temp dir, so a test sees one that stays.
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-run-test-'))
@@ -45,8 +47,8 @@ const SCHEMAS: Record<string, unknown> = {
   search: { type: 'object', properties: { query: {}, maxResults: {} }, required: ['query'] },
 }
 
-/** One fake server `f` with the tools above. `called` lists each call that reached it. */
-const fakeDownstream = () => {
+/** One fake server `f` with the tools above, and the servers in `others`. `called` lists each call that reached `f`. */
+const fakeDownstream = (others: readonly ServerState[] = []) => {
   const called: string[] = []
   let inFlight = 0
   let most = 0
@@ -76,6 +78,7 @@ const fakeDownstream = () => {
         inputSchema: SCHEMAS[name] ?? { type: 'object' },
       })),
     },
+    ...others,
   ]
   const downstream = {
     settled: Promise.resolve(),
@@ -99,12 +102,14 @@ type Options = {
   kept?: Kept
   signal?: AbortSignal
   log?: boolean
+  downstream?: Downstream
+  others?: ServerState[]
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
 
 const setup = (o: Options = {}) => {
-  const fake = fakeDownstream()
+  const fake = fakeDownstream(o.others)
   const asked: string[][] = []
   const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
@@ -118,7 +123,7 @@ const setup = (o: Options = {}) => {
     log: o.log ?? true,
   }
   const ctx: RunContext = {
-    downstream: fake.downstream,
+    downstream: o.downstream ?? fake.downstream,
     config,
     kept: o.kept ?? newKept(),
     shapes: new Map(),
@@ -281,6 +286,26 @@ describe('a reply that cannot be written', () => {
     assert.deepEqual(unhandled, [])
     assert.deepEqual(leftDirs(), [])
   })
+
+  test('a call whose reply is written after the end of the run keeps its entry in the run log', async () => {
+    const write = fs.promises.writeFile
+    fs.promises.writeFile = (async (file: fs.PathLike, ...rest: unknown[]) => {
+      if (/[\\/]r\d+\.json$/.test(String(file))) await new Promise(res => setTimeout(res, 1500))
+      return (write as (...a: unknown[]) => Promise<void>)(file, ...rest)
+    }) as typeof write
+    try {
+      const { run, lines } = setup()
+      const r = await run('call("mcp__f__echo", { n: 1 }).catch(() => {})\nreturn 1')
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(
+        lines().map(l => l.calls.map(({ tool, ok, error }) => ({ tool, ok, error }))),
+        [[{ tool: 'mcp__f__echo', ok: true, error: undefined }]],
+      )
+      await new Promise(res => setTimeout(res, 1000))
+    } finally {
+      fs.promises.writeFile = write
+    }
+  })
 })
 
 describe('files', () => {
@@ -331,6 +356,28 @@ describe('the check before a run', () => {
     assert.deepEqual(called, [])
   })
 
+  test('a tool of a server that failed or is connecting gets the state of its server, not a guess', async () => {
+    const { run, called } = setup({
+      others: [
+        { key: 'g' as ServerKey, status: 'failed', reason: 'the connection closed' },
+        { key: 'h' as ServerKey, status: 'connecting' },
+      ],
+    })
+    const r = await run(
+      'await call("mcp__g__echo", {})\nawait call("mcp__h__echo", {})\nreturn await call("mcp__k__echo", {})',
+    )
+    assert.equal(
+      r.text,
+      [
+        'Error: the program did not run, because of the calls below. No call was made.',
+        '- line 1: the MCP server "g" is not connected: the connection closed',
+        '- line 2: the MCP server "h" is not connected: it is still connecting',
+        '- line 3: no MCP tool "mcp__k__echo" is connected (did you mean "mcp__f__echo"?)',
+      ].join('\n'),
+    )
+    assert.deepEqual(called, [])
+  })
+
   test('an unknown or a missing argument stops the program, from the input schema', async () => {
     const { run, called } = setup()
     const r = await run('return await call("mcp__f__search", { query: "x", maxResult: 5 })')
@@ -373,6 +420,20 @@ describe('output projection', () => {
       'console.log("x")\nArray.prototype.toJSON = () => { throw new Error("no") }\nawait call("mcp__f__hang", {})',
     )
     assert.ok(r.text.startsWith('Error: timeout after 1000 ms'), r.text)
+  })
+
+  test('a result is reported when the program changes how arrays or JSON turn into text', async () => {
+    const { run } = setup()
+    for (const change of [
+      'Array.prototype.toJSON = () => "x"',
+      'Array.prototype.toJSON = () => { throw new Error("no") }',
+      'JSON.stringify = () => "x"',
+      'JSON.stringify = () => { throw new Error("no") }',
+    ]) {
+      const r = await run(`console.log("a")\n${change}\nreturn 1`)
+      assert.equal(r.isError, false, `${change}: ${r.text}`)
+      assert.ok(r.text.startsWith('1'), `${change}: ${r.text}`)
+    }
   })
 
   test('a call still in the queue when the sandbox ends does not start', async () => {
@@ -554,8 +615,29 @@ describe('the run log', () => {
     await denied.run('return await call("mcp__f__echo", {})')
     assert.deepEqual(
       denied.lines().map(l => [l.ending, l.calls.length]),
-      [['refused', 0]],
+      [['refused', 1]],
     )
+  })
+
+  test('a refused run lists the calls that the program names, with their decisions', async () => {
+    const policy = rules(['mcp__f__fail', 'deny'], ['mcp__f__echo', 'allow'], ['mcp__f__slow', 'ask'])
+    const program = 'await call("mcp__f__echo", {})\nawait call("mcp__f__slow", {})\nawait call("Bash", {})'
+    const denied = setup({ policy })
+    await denied.run(`${program}\nawait call("mcp__f__fail", {})`)
+    const declined = setup({ policy, answer: 'decline' })
+    await declined.run(program)
+    const wrong = setup({ policy })
+    await wrong.run('await call("mcp__f__echo", {})\nawait call("mcp__f__serch", {})')
+    const entries = (lines: RunRecord[]) =>
+      lines.map(l => [l.ending, ...l.calls.map(c => `${c.tool} ${c.decision} ${c.ok} ${c.ms} ${c.error}`)])
+    const named = [
+      'mcp__f__echo allow false 0 undefined',
+      'mcp__f__slow unapproved false 0 unapproved',
+      'unknown invalid false 0 invalid',
+    ]
+    assert.deepEqual(entries(denied.lines()), [['refused', ...named, 'mcp__f__fail denied false 0 denied']])
+    assert.deepEqual(entries(declined.lines()), [['refused', ...named]])
+    assert.deepEqual(entries(wrong.lines()), [['refused', named[0], 'unknown unapproved false 0 unapproved']])
   })
 
   test('a run past the time limit ends as timeout, and an abort as cancelled', async () => {
@@ -574,6 +656,38 @@ describe('the run log', () => {
     assert.deepEqual(
       aborted.lines().map(l => l.ending),
       ['cancelled'],
+    )
+  })
+
+  test('a call whose server exited during the call keeps its tool name', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, 'probe.json'), '--exit-on-call'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, lines } = setup({ downstream })
+      const r = await run('try { await call("mcp__p__probe", {}) } catch {}\nreturn 1')
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(
+        lines().map(l => l.calls.map(({ tool, ok, error }) => ({ tool, ok, error }))),
+        [[{ tool: 'mcp__p__probe', ok: false, error: 'failed' }]],
+      )
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a program that throws the text of a time limit ends as error, and the runner time limit as timeout', async () => {
+    const { run, lines } = setup({ timeoutSeconds: 1 })
+    await run('throw "timeout after 5 ms"')
+    await run('throw new Error("the job ran past the time limit")')
+    await run('await call("mcp__f__hang", {})')
+    assert.deepEqual(
+      lines().map(l => l.ending),
+      ['error', 'error', 'timeout'],
     )
   })
 
