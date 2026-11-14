@@ -311,6 +311,12 @@ describe('output projection', () => {
     assert.deepEqual(leftDirs(), [])
   })
 
+  test('the console lines before a timeout are in the result', async () => {
+    const r = await setup({ timeoutSeconds: 1 }).run('console.log("before the call")\nawait call("mcp__f__hang", {})')
+    assert.ok(r.text.startsWith('Error: timeout after 1000 ms'), r.text)
+    assert.ok(r.text.includes('--- console (1 lines) ---\nbefore the call'), r.text)
+  })
+
   test('a call still in the queue when the sandbox ends does not start', async () => {
     const { run, called } = setup()
     const r = await run(

@@ -108,9 +108,12 @@ const BOOTSTRAP = String.raw`
 (() => {
   const post = globalThis.__post
   delete globalThis.__post
+  // The program can replace JSON.stringify, but not this copy.
+  const stringify = JSON.stringify
   const waiting = new Map()
   let nextId = 0
   const logs = []
+  globalThis.__logs = () => stringify(logs)
   const fmt = v => {
     if (typeof v === 'string') return v
     try { return JSON.stringify(v) } catch { return String(v) }
@@ -243,7 +246,8 @@ try {
     if (!finished) toContext(id, text)
   }
   const start = runSync('globalThis.__start', 'x.js')
-  runSync('delete globalThis.__deliver; delete globalThis.__start', 'x.js')
+  const logsOf = runSync('globalThis.__logs', 'x.js')
+  runSync('delete globalThis.__deliver; delete globalThis.__start; delete globalThis.__logs', 'x.js')
 
   // The saved functions, each compiled in the context as its own file. One
   // that does not compile throws its error when the program calls it, and its
@@ -288,7 +292,10 @@ try {
     if (finished) clearInterval(timer)
   }, POLL_MS)
 
-  setTimeout(() => finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: [] }), timeoutMs)
+  setTimeout(
+    () => finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: JSON.parse(String(logsOf())) }),
+    timeoutMs,
+  )
 } catch (err) {
   finish({ t: 'error', message: String(err?.stack ?? err), logs: [] })
 }
