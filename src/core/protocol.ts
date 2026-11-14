@@ -909,8 +909,11 @@ export const limiter = (n: number) => {
 }
 
 /** A character count, short: 812, 18k, 1.2M. */
-export const charCount = (n: number): string =>
-  n < 1000 ? String(n) : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`
+export const charCount = (n: number): string => {
+  if (n < 1000) return String(n)
+  const k = Math.round(n / 1000)
+  return k < 1000 ? `${k}k` : `${(n / 1_000_000).toFixed(1)}M`
+}
 
 /** True when a program returned nothing although its calls returned data: a filter that missed. */
 export const missedData = (outcome: RunnerDone | RunnerError | undefined, calls: readonly CallRecord[]): boolean => {
@@ -965,7 +968,9 @@ const groupLines = (calls: readonly CallRecord[]): string[] => {
 /** How old a kept result is, short: 40 s old, 12 min old, 3 h old. */
 export const age = (ms: number): string => {
   const s = Math.max(0, Math.round(ms / 1000))
-  return s < 60 ? `${s} s old` : s < 3600 ? `${Math.round(s / 60)} min old` : `${Math.round(s / 3600)} h old`
+  if (s < 60) return `${s} s old`
+  const min = Math.round(s / 60)
+  return min < 60 ? `${min} min old` : `${Math.round(s / 3600)} h old`
 }
 
 /** The footer of a run with output projection: what came in, what went out, and how to get it again. */

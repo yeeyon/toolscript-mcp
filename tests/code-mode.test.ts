@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { SERVED, SERVER_NAME, TOOL, TOOL_NAMES, parseInput, registration } from '../src/core/tools.ts'
 import {
   MARK,
+  age,
   argNamesOf,
   callKey,
   charCount,
@@ -510,6 +511,14 @@ describe('protocol', () => {
 
   test('charCount is short', () => {
     assert.deepEqual([charCount(812), charCount(18_400), charCount(1_230_000)], ['812', '18k', '1.2M'])
+  })
+
+  test('charCount and age round before they pick the unit', () => {
+    assert.deepEqual([charCount(999), charCount(999_400), charCount(999_600)], ['999', '999k', '1.0M'])
+    assert.deepEqual(
+      [age(59_400), age(59_600), age(3_569_000), age(3_590_000)],
+      ['59 s old', '1 min old', '59 min old', '1 h old'],
+    )
   })
 
   test('rankTools scores name hits above description hits', () => {
