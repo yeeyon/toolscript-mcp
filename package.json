@@ -34,7 +34,7 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.host.json",
+    "build": "npm run typecheck && node scripts/build.mjs",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.host.json --noEmit",
     "test": "node --experimental-strip-types --test \"tests/*.test.ts\"",
@@ -42,10 +42,9 @@
     "format": "sh scripts/format.sh --write ."
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@types/node": "22.20.5",
+    "esbuild": "0.28.2",
     "typescript": "7.0.2"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.2"
   }
 }

@@ -319,5 +319,6 @@ endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic.
 
 MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-The one runtime dependency is the MCP TypeScript SDK, `@modelcontextprotocol/sdk` 1.32.2, under the MIT License.
-The packages it installs are under the MIT, ISC, BSD-2-Clause and BSD-3-Clause licences.
+The package has no runtime dependency. `dist/host/main.js` holds the MCP TypeScript SDK, `@modelcontextprotocol/sdk`
+1.32.2 (MIT License), and the packages that it uses. These are under the MIT, ISC and BSD-3-Clause licences.
+`dist/third-party-licenses.txt` holds their licence texts.

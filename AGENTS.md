@@ -11,7 +11,8 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   (config parse, `${VAR}` expansion, config location, self-loop guard), `catalog.ts` (downstream tools, the
   `search_tools` result, argument specs from input schemas), `policy.ts` (the allow, deny and ask rules: the decision
   before a run, the check of each call and the refusal texts). Imports between them use `.ts` extensions.
-- `src/host/` holds the host code, which runs in Node. It builds with `tsconfig.host.json`.
+- `src/host/` holds the host code, which runs in Node. `tsconfig.host.json` checks its types. `scripts/build.mjs`
+  bundles it with the SDK into `dist/host/main.js`, the one file that the package runs.
   - `main.ts`: the `toolscript-mcp` command. It reads the config, starts the server and closes the children.
   - `server.ts`: the SDK `McpServer`, with a handler for each tool in `SERVED`, the approval prompt (elicitation),
     the policy read again at each run (a looser one waits for the person or a restart) and the runs in flight, which
@@ -32,6 +33,7 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
 - `node tests/runner.integration.mjs` runs the real sandbox on Linux, macOS and Windows.
 - `node tests/server.e2e.mjs` runs the built server over stdio. Run `npm run build` first.
 - After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
+- `node scripts/start-time.mjs` measures the start, from the spawn to the `tools/list` reply. Run `npm run build` first.
 
 ## Rules
 - Read `CODING_STANDARDS.md` before a change to code, tests or model-facing text.
