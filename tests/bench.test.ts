@@ -54,6 +54,19 @@ test('check.mjs judges an answer of another agent with the check of run.mjs', ()
   assert.equal(check('nope', 'x').status, 2)
 })
 
+test('interactive.mjs counts the saved runs of a resumed --out toward --max-spend', async () => {
+  const { spentSoFar, estimate } = await import('../bench/spend.mjs')
+  const saved = [
+    { task: 'issues', arm: 'toolscript', costUsd: 2.5 },
+    { task: 'issues', arm: 'toolscript', costUsd: 2.4 },
+  ]
+  assert.equal(spentSoFar(saved, 0.1).toFixed(2), '5.00')
+  assert.equal(spentSoFar([], 0.1), 0.1)
+  assert.equal(estimate(saved, 'toolscript', 'issues'), 2.5)
+  assert.equal(estimate(saved, 'toolscript', 'logs'), 2.5)
+  assert.equal(estimate(saved, 'direct', 'issues'), 0.25)
+})
+
 test('run.mjs answers --help and an unknown flag with the usage, and starts no run', () => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH'))
   const out = path.join(ROOT, 'help')
