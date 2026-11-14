@@ -1,7 +1,6 @@
 {
   "name": "toolscript-mcp",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Standalone MCP server for code mode: the model writes one JavaScript program that calls your MCP tools in a sandbox.",
   "keywords": [
     "mcp",
