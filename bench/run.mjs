@@ -22,6 +22,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
 import { TASKS } from './data.mjs'
 import { forgetRuns } from './forget.mjs'
 
@@ -30,20 +31,45 @@ const FAKE_SERVER = path.join(REPO, 'bench', 'fake-server.mjs')
 const TOOLSCRIPT = path.join(REPO, 'dist', 'host', 'main.js')
 const NODE = process.execPath
 
-const arg = (name, fallback) => {
-  const i = process.argv.indexOf(name)
-  return i > 0 ? process.argv[i + 1] : fallback
+const USAGE = `usage: node bench/run.mjs [--reps N] [--parallel N] [--max-spend USD] [--model NAME]
+       [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,toolscript] [--out DIR]
+       node bench/run.mjs --report DIR
+Each run starts headless Claude Code and costs money. --max-spend stops the bench (default 3).`
+
+// A flag this script does not know stops it before any run, so a typo or --help never spends money.
+let opts
+try {
+  opts = parseArgs({
+    strict: true,
+    options: {
+      help: { type: 'boolean', short: 'h' },
+      reps: { type: 'string' },
+      parallel: { type: 'string' },
+      'max-spend': { type: 'string' },
+      model: { type: 'string' },
+      tasks: { type: 'string' },
+      arms: { type: 'string' },
+      out: { type: 'string' },
+      report: { type: 'string' },
+    },
+  }).values
+} catch (err) {
+  console.error(`${err.message}\n${USAGE}`)
+  process.exit(2)
 }
-const reps = Number(arg('--reps', 5))
-const parallel = Number(arg('--parallel', 3))
-const maxSpend = Number(arg('--max-spend', 3))
-const model = arg('--model')
-const taskIds = arg('--tasks')?.split(',') ?? TASKS.map(t => t.id)
-const armIds = arg('--arms', 'direct,toolscript').split(',')
-const reportOnly = arg('--report')
+if (opts.help) {
+  console.log(USAGE)
+  process.exit(0)
+}
+const reps = Number(opts.reps ?? 5)
+const parallel = Number(opts.parallel ?? 3)
+const maxSpend = Number(opts['max-spend'] ?? 3)
+const model = opts.model
+const taskIds = opts.tasks?.split(',') ?? TASKS.map(t => t.id)
+const armIds = (opts.arms ?? 'direct,toolscript').split(',')
+const reportOnly = opts.report
 const outArg =
-  reportOnly ??
-  arg('--out', path.join(os.tmpdir(), `toolscript-bench-${new Date().toISOString().replace(/[:.]/g, '-')}`))
+  reportOnly ?? opts.out ?? path.join(os.tmpdir(), `toolscript-bench-${new Date().toISOString().replace(/[:.]/g, '-')}`)
 fs.mkdirSync(outArg, { recursive: true })
 // The long form of the path: Claude Code's file tools refuse a cwd with a Windows short name such as USERNA~1.
 const out = fs.realpathSync.native(outArg)
