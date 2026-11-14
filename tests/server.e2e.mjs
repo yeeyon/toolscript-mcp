@@ -86,9 +86,12 @@ fs.writeFileSync(
           hangFile,
         ],
       },
+      // A variable that is not set: this entry fails alone, and the server still starts.
+      broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
     },
   }),
 )
+const CONFIG_TEXT = fs.readFileSync(configFile, 'utf8')
 
 // A client transport over the child's stdio that keeps every stdout line, so
 // the test sees what is not JSON-RPC too.
@@ -252,6 +255,16 @@ test('(i) a search connects again a server that closed, at most 3 times in 60 s'
   assert.equal(probeEvents(crashFile, 'start').length, 3, 'no attempt over the cap')
 })
 
+test('(d) a config entry with an error fails alone, and search_tools shows the error', async () => {
+  const text = await search('')
+  assert.match(
+    text,
+    /- broken: invalid entry in the toolscript-mcp config: mcpServers\.broken\.env\.TOKEN: the environment variable TOOLSCRIPT_E2E_UNSET is not set/,
+    text,
+  )
+  assert.match(text, /### mcp__bench__/, text)
+})
+
 test('(e) a nested toolscript-mcp refuses to start', async () => {
   const text = await search('')
   assert.match(text, /- nested: .*refused to start, because TOOLSCRIPT_MCP_DEPTH is set/, text)
@@ -411,6 +424,71 @@ test('run (j) a large result is cut, and recall returns it whole with no new cal
   assert.ok(again.text.startsWith('[\n  180,\n  "OPS-180"\n]'), again.text)
   assert.ok(again.text.includes(`--- 0 MCP calls, 1 recall: `), again.text)
   assert.equal(benchCalls('list_issues'), before + 1)
+})
+
+test('run (m) a policy edit applies at the next run, and a broken config keeps the last good policy', async () => {
+  const code = 'return (await call("mcp__bench__create_ticket", { title: "x" })).created.key'
+  const edited = JSON.parse(CONFIG_TEXT)
+  edited.policy[0].action = 'allow'
+  try {
+    fs.writeFileSync(configFile, JSON.stringify(edited))
+    const allowed = await run(code)
+    assert.equal(allowed.isError, false, allowed.text)
+    assert.equal(benchCalls('create_ticket'), 1)
+
+    fs.writeFileSync(configFile, '{"policy": [')
+    const kept = await run(code)
+    assert.equal(kept.isError, false, kept.text)
+    assert.ok(kept.text.includes('## Policy not reloaded'), kept.text)
+    assert.ok(kept.text.includes('- the config is not valid JSON'), kept.text)
+    assert.equal(benchCalls('create_ticket'), 2)
+  } finally {
+    fs.writeFileSync(configFile, CONFIG_TEXT)
+  }
+  const denied = await run(code)
+  assert.equal(denied.isError, true)
+  assert.ok(denied.text.includes('is denied by policy[0]'), denied.text)
+  assert.equal(benchCalls('create_ticket'), 2)
+})
+
+test('(m) init imports the servers of a client into a config that the server starts with', async () => {
+  const home = path.join(dir, 'init-home')
+  fs.mkdirSync(path.join(home, '.cursor'), { recursive: true })
+  const secret = `fake-secret-${randomUUID()}`
+  const cursor = {
+    mcpServers: {
+      bench: { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG, S: secret } },
+    },
+  }
+  fs.writeFileSync(path.join(home, '.cursor', 'mcp.json'), JSON.stringify(cursor))
+  // Every client file and the config are in the temp home: no file of this machine is read.
+  const env = { ...SERVER_ENV, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming') }
+  env.XDG_CONFIG_HOME = path.join(home, '.config')
+  for (const name of ['CLAUDE_CONFIG_DIR', 'TOOLSCRIPT_CONFIG']) delete env[name]
+  const written =
+    process.platform === 'win32'
+      ? path.join(env.APPDATA, 'toolscript-mcp', 'config.json')
+      : path.join(env.XDG_CONFIG_HOME, 'toolscript-mcp', 'config.json')
+
+  const init = spawnSync(process.execPath, [MAIN, 'init'], { env, input: '', encoding: 'utf8' })
+  assert.equal(init.status, 0, init.stderr)
+  assert.equal(init.stdout, '', 'init writes nothing to stdout')
+  assert.ok(!init.stderr.includes(secret), init.stderr)
+  assert.ok(init.stderr.includes('Remove from "mcpServers": "bench"'), init.stderr)
+  assert.ok(fs.existsSync(written), init.stderr)
+  if (process.platform !== 'win32') assert.equal(fs.statSync(written).mode & 0o777, 0o600)
+  assert.equal(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8'), JSON.stringify(cursor))
+
+  const imported = new Client({ name: 'e2e-init', version: '0' })
+  await imported.connect(
+    new StdioClientTransport({ command: process.execPath, args: [MAIN, '--config', written], env, stderr: 'ignore' }),
+  )
+  try {
+    const r = await imported.callTool({ name: 'search_tools', arguments: { query: 'issue' } })
+    assert.match(r.content[0].text, /### mcp__bench__list_issues/, r.content[0].text)
+  } finally {
+    await imported.close()
+  }
 })
 
 test('run (k) a server that exited after a call connects again on the next call', async () => {

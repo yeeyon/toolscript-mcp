@@ -116,4 +116,27 @@ describe('reconnect', () => {
     await downstream.retry()
     assert.equal(starts(), 1)
   })
+
+  test('an entry with config errors stays failed with its errors, and no search or call starts it', async () => {
+    const lines: string[] = []
+    const downstream = connectAll(
+      new Map([[KEY, { kind: 'invalid', errors: ['mcpServers.p.env.T: ${T} is not set'] } as const]]),
+      '0',
+      line => lines.push(line),
+    )
+    opened.push(downstream)
+    await downstream.settled
+    await downstream.retry()
+    await downstream.retry([KEY])
+    const link = await downstream.client(KEY)
+    assert.equal(link.ok, false)
+    assert.deepEqual(downstream.states(), [
+      {
+        key: KEY,
+        status: 'failed',
+        reason: 'invalid entry in the toolscript-mcp config: mcpServers.p.env.T: ${T} is not set',
+      },
+    ])
+    assert.equal(lines.filter(l => l.includes('connecting again')).length, 0, lines.join('\n'))
+  })
 })

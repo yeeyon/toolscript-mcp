@@ -6,12 +6,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { searchResult } from '../core/catalog.ts'
-import type { Config } from '../core/config.ts'
+import { policyOf, type Config } from '../core/config.ts'
 import { appPath } from '../core/paths.ts'
-import { askText } from '../core/policy.ts'
+import { askText, stalePolicyNote, type Policy } from '../core/policy.ts'
 import { errorText, newKept, serverInstructions } from '../core/protocol.ts'
 import { SEARCH_LIMIT, SERVED, parseInput, registration, type ServedName } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
@@ -54,6 +55,7 @@ export type Served = {
 export const createServer = (
   downstream: Downstream,
   config: Config,
+  configFile: string,
   version: string,
   log: (line: string) => void,
 ): Served => {
@@ -83,10 +85,27 @@ export const createServer = (
       }
     }
 
+  // The policy is read again at each run, so an edit needs no restart. A
+  // config that does not read keeps the last good policy, and the result says so.
+  let policy = config.policy
+  const freshPolicy = async (): Promise<{ policy: Policy; note: string }> => {
+    const read = await fs.promises.readFile(configFile, 'utf8').then(policyOf, err => ({
+      ok: false as const,
+      errors: [`cannot read the config: ${errorText(err)}`],
+    }))
+    if (read.ok) {
+      policy = read.policy
+      return { policy, note: '' }
+    }
+    log(`the policy was not reloaded: ${read.errors.join('; ')}`)
+    return { policy, note: stalePolicyNote(read.errors) }
+  }
+
   const run = async (code: string, extra: Extra): Promise<CallToolResult> => {
+    const fresh = await freshPolicy()
     const ctx: RunContext = {
       downstream,
-      config,
+      config: { ...config, policy: fresh.policy },
       kept,
       filesDir,
       ask: ask(extra),
@@ -99,7 +118,7 @@ export const createServer = (
     runs.add(running)
     try {
       const r = await running
-      return text(r.text, r.isError)
+      return text(fresh.note === '' ? r.text : `${r.text}\n\n${fresh.note}`, r.isError)
     } finally {
       runs.delete(running)
     }
