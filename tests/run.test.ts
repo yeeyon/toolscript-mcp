@@ -144,6 +144,16 @@ describe('run_code', () => {
     assert.deepEqual(called, [])
   })
 
+  test('arguments that are not an object throw an error the program can catch', async () => {
+    const { run, called } = setup()
+    const r = await run(
+      'const out = []\nfor (const args of ["PROJ-1", ["a"], 5]) {\n  try { await call("mcp__f__echo", args) } catch (e) { out.push(e.message) }\n}\nreturn out',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.equal(r.text.match(/call\(tool, args\): args must be an object/g)?.length, 3, r.text)
+    assert.deepEqual(called, [])
+  })
+
   test('runs at most 8 nested calls at a time', async () => {
     const { run, most } = setup()
     const r = await run('return (await Promise.all(Array.from({ length: 20 }, () => call("mcp__f__slow", {})))).length')

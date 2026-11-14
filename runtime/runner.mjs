@@ -131,6 +131,8 @@ const BOOTSTRAP = String.raw`
 
   const call = (tool, args) => handled(new Promise((resolve, reject) => {
     if (typeof tool !== 'string') throw new TypeError('call(tool, args): tool must be a string')
+    if (args != null && (typeof args !== 'object' || Array.isArray(args)))
+      throw new TypeError('call(tool, args): args must be an object, such as { id: "x" }')
     const id = ++nextId
     waiting.set(id, { resolve, reject })
     post('call', String(id), tool, JSON.stringify(args ?? {}))
