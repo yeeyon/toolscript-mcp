@@ -258,8 +258,8 @@ code. Read [SECURITY.md](SECURITY.md).
 - Elicitation is tested with the client of the MCP TypeScript SDK. It is not yet tested in the user interface of each
   client.
 - toolscript-mcp has no OAuth login. A remote server that needs an OAuth login does not connect.
-- An HTTP server that stops does not close its connection, so toolscript-mcp does not connect to it again. Its calls
-  fail with an error until you restart toolscript-mcp.
+- If an HTTP server restarts or loses the session, one call to it can fail. The next use of the server connects
+  again.
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
 - Each `run_code` call starts a new program. No state stays between two calls, except the files of `saveFile`.
 
