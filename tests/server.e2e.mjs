@@ -34,7 +34,18 @@ const BENCH_LOG = path.join(dir, 'bench.jsonl')
 // The server's temp dir: each run makes its exchange dir here, and must remove it.
 const TMP = path.join(dir, 'tmp')
 fs.mkdirSync(TMP)
-const SERVER_ENV = { ...process.env, TOOLSCRIPT_E2E_MARKER: MARKER, TMPDIR: TMP, TEMP: TMP, TMP }
+// The server's HOME: the run log and saveFile never touch the real one.
+const HOME = path.join(dir, 'home')
+fs.mkdirSync(HOME)
+const SERVER_ENV = {
+  ...process.env,
+  TOOLSCRIPT_E2E_MARKER: MARKER,
+  TMPDIR: TMP,
+  TEMP: TMP,
+  TMP,
+  HOME,
+  USERPROFILE: HOME,
+}
 fs.writeFileSync(
   configFile,
   JSON.stringify({
