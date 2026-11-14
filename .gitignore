@@ -2,3 +2,5 @@
 node_modules/
 dist/
 .audit/
+.claude/worktrees/
+.claude/settings.local.json

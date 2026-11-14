@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.0
 
-toolscript-mcp is derived from claude-code-mode by Gabriele Pavanello at commit eea4077 (MIT).
+The first release on npm. Install it with `npx -y toolscript-mcp --config <path>`. toolscript-mcp is derived from claude-code-mode by Gabriele Pavanello at commit eea4077 (MIT).
 
 The package skeleton:
 
@@ -49,3 +49,9 @@ The bench:
 - `bench/run.mjs` compares two arms in headless Claude Code: the fake server's tools called directly, and the same server behind toolscript-mcp. It records correctness, cost, the token kinds, turns, wall time and the calls of each run, and prints the median and range per arm and per task. Removed the plugin-only parts and `scripts/projection-report.mjs`.
 - `bench/forget.mjs` removes only the Claude Code project folder of each run's temp cwd, where Claude Code saves a large MCP result.
 - `bench/RESULTS.md` holds the first measurement with Haiku 5.5 and its limits.
+
+The release:
+
+- `.github/workflows/release.yml` publishes the version in `package.json` to npm with provenance, then tags the commit and makes the GitHub release with the tarball. It runs every job of `test.yml` first, and a rerun skips the steps that are done.
+- `scripts/pack-check.mjs` packs the package, checks its file list, installs the tarball in an empty folder and runs `tests/server.e2e.mjs` against the installed command. CI runs it on Linux, macOS and Windows.
+- The README has install lines for Claude Code, Claude Desktop, Cursor and Codex, a Limits section and a comparison with Claude Code Code Mode.
