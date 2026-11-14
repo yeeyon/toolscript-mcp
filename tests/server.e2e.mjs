@@ -29,6 +29,8 @@ const PROBE = path.join(ROOT, 'tests', 'probe-server.mjs')
 const probeFile = path.join(dir, 'probe.json')
 const passedFile = path.join(dir, 'passed.json')
 const crashFile = path.join(dir, 'crash.json')
+const flakyFile = path.join(dir, 'flaky.json')
+const slowFile = path.join(dir, 'slow.json')
 const hangFile = path.join(dir, 'hang.pid')
 const configFile = path.join(dir, 'config.json')
 // Every call that reaches the fake server, one JSON line each.
@@ -51,13 +53,15 @@ const SERVER_ENV = {
 fs.writeFileSync(
   configFile,
   JSON.stringify({
-    sandbox: { timeoutSeconds: 5 },
+    sandbox: { timeoutSeconds: 5, callTimeoutSeconds: 2 },
     // query_logs matches no rule, so it is ask.
     policy: [
       { match: 'mcp__bench__create_ticket', action: 'deny' },
       { match: 'mcp__bench__search_messages', action: 'allow' },
       { match: 'mcp__bench__list_issues', action: 'allow' },
       { match: 'mcp__bench__get_deploys', action: 'ask' },
+      { match: 'mcp__flaky__probe', action: 'allow' },
+      { match: 'mcp__slow__probe', action: 'allow' },
     ],
     mcpServers: {
       // `node` from PATH, not process.execPath: the SDK's short environment must still find it.
@@ -71,6 +75,8 @@ fs.writeFileSync(
       },
       nested: { command: process.execPath, args: [MAIN, '--config', configFile] },
       crash: { command: process.execPath, args: [PROBE, crashFile, '--exit-after-list'] },
+      flaky: { command: process.execPath, args: [PROBE, flakyFile, '--exit-after-call'] },
+      slow: { command: process.execPath, args: [PROBE, slowFile, '--hang-calls'] },
       // Never answers, and ignores the end of its stdin.
       hang: {
         command: process.execPath,
@@ -80,9 +86,12 @@ fs.writeFileSync(
           hangFile,
         ],
       },
+      // A variable that is not set: this entry fails alone, and the server still starts.
+      broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
     },
   }),
 )
+const CONFIG_TEXT = fs.readFileSync(configFile, 'utf8')
 
 // A client transport over the child's stdio that keeps every stdout line, so
 // the test sees what is not JSON-RPC too.
@@ -159,6 +168,14 @@ const benchCalls = tool =>
     .map(line => JSON.parse(line))
     .filter(c => c.tool === tool).length
 const leftDirs = () => fs.readdirSync(TMP).filter(f => f.startsWith('toolscript-'))
+// The starts and cancelled requests that a probe child of `client`'s server
+// wrote. The server of askingClient starts its own children.
+const probeEvents = (file, event) =>
+  (fs.existsSync(`${file}.log`) ? fs.readFileSync(`${file}.log`, 'utf8') : '')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+    .filter(e => e.event === event && e.ppid === transport.child.pid)
 
 before(async () => {
   assert.ok(fs.existsSync(MAIN), 'dist/host/main.js is missing: run npm run build first')
@@ -193,7 +210,7 @@ test('(a) tools/list shows run_code and search_tools, and no downstream tool', a
     ['run_code', 'search_tools'],
   )
   assert.match(client.getInstructions() ?? '', /search_tools.*run_code/)
-  assert.match(client.getInstructions() ?? '', /\bbench, missing, probe, passed, nested, crash, hang\b/)
+  assert.match(client.getInstructions() ?? '', /\bbench, missing, probe, passed, nested, crash, flaky, slow, hang\b/)
   for (const tool of tools) assert.equal(tool._meta?.['anthropic/alwaysLoad'], true, tool.name)
 })
 
@@ -220,11 +237,32 @@ test('(d) a server whose command does not exist shows as failed, and bench still
   assert.match(text, /## Not connected\n(- .+\n)*- missing: .*(ENOENT|toolscript-e2e-no-such-command)/, text)
 })
 
-test('(d) a server that hangs does not block the search, and one that dies later shows as failed', async () => {
+test('(d) a server that hangs does not block the search', async () => {
   const text = await search('')
   assert.match(text, /- hang: still connecting\./, text)
-  assert.match(text, /- crash: the connection closed/, text)
+})
+
+test('(i) a search connects again a server that closed, at most 3 times in 60 s', async () => {
+  let text = ''
+  for (let i = 0; i < 40 && !/- crash: .*tries again/.test(text); i++) {
+    text = await search('')
+    await new Promise(r => setTimeout(r, 300))
+  }
+  assert.match(text, /- crash: the connection closed.*\. toolscript-mcp tries again on next use after \d+ s/, text)
   assert.doesNotMatch(text, /mcp__crash__/, text)
+  assert.equal(probeEvents(crashFile, 'start').length, 3, 'the start and 2 reconnects')
+  await search('')
+  assert.equal(probeEvents(crashFile, 'start').length, 3, 'no attempt over the cap')
+})
+
+test('(d) a config entry with an error fails alone, and search_tools shows the error', async () => {
+  const text = await search('')
+  assert.match(
+    text,
+    /- broken: invalid entry in the toolscript-mcp config: mcpServers\.broken\.env\.TOKEN: the environment variable TOOLSCRIPT_E2E_UNSET is not set/,
+    text,
+  )
+  assert.match(text, /### mcp__bench__/, text)
 })
 
 test('(e) a nested toolscript-mcp refuses to start', async () => {
@@ -386,6 +424,106 @@ test('run (j) a large result is cut, and recall returns it whole with no new cal
   assert.ok(again.text.startsWith('[\n  180,\n  "OPS-180"\n]'), again.text)
   assert.ok(again.text.includes(`--- 0 MCP calls, 1 recall: `), again.text)
   assert.equal(benchCalls('list_issues'), before + 1)
+})
+
+test('run (m) a policy edit applies at the next run, and a broken config keeps the last good policy', async () => {
+  const code = 'return (await call("mcp__bench__create_ticket", { title: "x" })).created.key'
+  const edited = JSON.parse(CONFIG_TEXT)
+  edited.policy[0].action = 'allow'
+  try {
+    fs.writeFileSync(configFile, JSON.stringify(edited))
+    const allowed = await run(code)
+    assert.equal(allowed.isError, false, allowed.text)
+    assert.equal(benchCalls('create_ticket'), 1)
+
+    fs.writeFileSync(configFile, '{"policy": [')
+    const kept = await run(code)
+    assert.equal(kept.isError, false, kept.text)
+    assert.ok(kept.text.includes('## Policy not reloaded'), kept.text)
+    assert.ok(kept.text.includes('- the config is not valid JSON'), kept.text)
+    assert.equal(benchCalls('create_ticket'), 2)
+  } finally {
+    fs.writeFileSync(configFile, CONFIG_TEXT)
+  }
+  const denied = await run(code)
+  assert.equal(denied.isError, true)
+  assert.ok(denied.text.includes('is denied by policy[0]'), denied.text)
+  assert.equal(benchCalls('create_ticket'), 2)
+})
+
+test('(m) init imports the servers of a client into a config that the server starts with', async () => {
+  const home = path.join(dir, 'init-home')
+  fs.mkdirSync(path.join(home, '.cursor'), { recursive: true })
+  const secret = `fake-secret-${randomUUID()}`
+  const cursor = {
+    mcpServers: {
+      bench: { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG, S: secret } },
+    },
+  }
+  fs.writeFileSync(path.join(home, '.cursor', 'mcp.json'), JSON.stringify(cursor))
+  // Every client file and the config are in the temp home: no file of this machine is read.
+  const env = { ...SERVER_ENV, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming') }
+  env.XDG_CONFIG_HOME = path.join(home, '.config')
+  for (const name of ['CLAUDE_CONFIG_DIR', 'TOOLSCRIPT_CONFIG']) delete env[name]
+  const written =
+    process.platform === 'win32'
+      ? path.join(env.APPDATA, 'toolscript-mcp', 'config.json')
+      : path.join(env.XDG_CONFIG_HOME, 'toolscript-mcp', 'config.json')
+
+  const init = spawnSync(process.execPath, [MAIN, 'init'], { env, input: '', encoding: 'utf8' })
+  assert.equal(init.status, 0, init.stderr)
+  assert.equal(init.stdout, '', 'init writes nothing to stdout')
+  assert.ok(!init.stderr.includes(secret), init.stderr)
+  assert.ok(init.stderr.includes('Remove from "mcpServers": "bench"'), init.stderr)
+  assert.ok(fs.existsSync(written), init.stderr)
+  if (process.platform !== 'win32') assert.equal(fs.statSync(written).mode & 0o777, 0o600)
+  assert.equal(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8'), JSON.stringify(cursor))
+
+  const imported = new Client({ name: 'e2e-init', version: '0' })
+  await imported.connect(
+    new StdioClientTransport({ command: process.execPath, args: [MAIN, '--config', written], env, stderr: 'ignore' }),
+  )
+  try {
+    const r = await imported.callTool({ name: 'search_tools', arguments: { query: 'issue' } })
+    assert.match(r.content[0].text, /### mcp__bench__list_issues/, r.content[0].text)
+  } finally {
+    await imported.close()
+  }
+})
+
+test('run (k) a server that exited after a call connects again on the next call', async () => {
+  const code = 'return await call("mcp__flaky__probe", {})'
+  const first = await run(code)
+  assert.equal(first.isError, false, first.text)
+  const pid = Number(/^"?(\d+)/.exec(first.text)?.[1])
+  assert.ok(await gone(pid), `the flaky child ${pid} exited`)
+  const second = await run(code)
+  assert.equal(second.isError, false, second.text)
+  assert.notEqual(Number(/^"?(\d+)/.exec(second.text)?.[1]), pid, 'a new child answered')
+  assert.equal(probeEvents(flakyFile, 'start').length, 2)
+})
+
+test('run (l) a call with no answer in callTimeoutSeconds throws, the program goes on, and the server gets a cancel', async () => {
+  const r = await run(
+    'const t = Date.now()\ntry { await call("mcp__slow__probe", {}) } catch (e) { return [e.message, Date.now() - t] }',
+  )
+  assert.equal(r.isError, false, r.text)
+  assert.ok(r.text.includes('"mcp__slow__probe did not answer within the call limit of 2 s and was cancelled"'), r.text)
+  const ms = Number(/,\s*(\d+)\s*\]/.exec(r.text)?.[1])
+  assert.ok(ms >= 1900 && ms < 4500, `the call waited ${ms} ms`)
+  for (let i = 0; i < 20 && probeEvents(slowFile, 'cancelled').length === 0; i++)
+    await new Promise(res => setTimeout(res, 100))
+  assert.equal(probeEvents(slowFile, 'cancelled').length, 1, 'the server got notifications/cancelled')
+  const logged = fs
+    .readFileSync(path.join(HOME, '.toolscript-mcp', 'runs.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+  const last = JSON.parse(logged.at(-1))
+  assert.deepEqual(
+    last.calls.map(({ tool, ok, error }) => ({ tool, ok, error })),
+    [{ tool: 'mcp__slow__probe', ok: false, error: 'timeout' }],
+    'the run log records the call as a timeout',
+  )
 })
 
 test('(f) stdout holds only JSON-RPC, and (h) the server and its children end when stdin closes', async () => {

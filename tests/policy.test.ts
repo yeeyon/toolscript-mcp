@@ -120,6 +120,20 @@ describe('the sandbox config', () => {
       ])
   })
 
+  test('callTimeoutSeconds is 60 by default, at least 1, and never more than timeoutSeconds', () => {
+    assert.equal(config({}).sandbox.callTimeoutSeconds, 60)
+    assert.equal(config({ sandbox: { timeoutSeconds: 30 } }).sandbox.callTimeoutSeconds, 30)
+    assert.equal(config({ sandbox: { callTimeoutSeconds: 1 } }).sandbox.callTimeoutSeconds, 1)
+    assert.equal(config({ sandbox: { timeoutSeconds: 600, callTimeoutSeconds: 600 } }).sandbox.callTimeoutSeconds, 600)
+    for (const t of [0, -1, 2.5, '30', 86_401, null])
+      assert.deepEqual(errors({ sandbox: { callTimeoutSeconds: t } }), [
+        `sandbox.callTimeoutSeconds: must be a whole number of seconds from 1 to 86400, not ${JSON.stringify(t)}`,
+      ])
+    assert.deepEqual(errors({ sandbox: { timeoutSeconds: 30, callTimeoutSeconds: 31 } }), [
+      'sandbox.callTimeoutSeconds: must not be more than sandbox.timeoutSeconds (30)',
+    ])
+  })
+
   test('on Windows a bare node is refused, because the sandbox has no PATH', () => {
     const [error] = errors({ sandbox: { node: 'node' } }, 'win32')
     assert.match(error!, /^sandbox\.node: on Windows, give the full path of node\.exe/)

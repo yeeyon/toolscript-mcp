@@ -80,7 +80,9 @@ const fakeDownstream = () => {
   const downstream = {
     settled: Promise.resolve(),
     states: () => states,
-    clients: new Map([['f' as ServerKey, client]]),
+    retry: async () => {},
+    client: async (key: ServerKey) =>
+      key === 'f' ? { ok: true, client } : { ok: false, reason: `no MCP server "${key}" is connected` },
     close: async () => {},
   } as unknown as Downstream
   return { downstream, called, most: () => most }
@@ -107,7 +109,11 @@ const setup = (o: Options = {}) => {
   const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
     servers: new Map(),
-    sandbox: { node: process.execPath, timeoutSeconds: o.timeoutSeconds ?? 20 },
+    sandbox: {
+      node: process.execPath,
+      timeoutSeconds: o.timeoutSeconds ?? 20,
+      callTimeoutSeconds: o.timeoutSeconds ?? 20,
+    },
     policy: o.policy ?? rules(['mcp__*', 'allow']),
     log: o.log ?? true,
   }
