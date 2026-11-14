@@ -9,6 +9,7 @@ import {
   type ServerState,
 } from '../src/core/catalog.ts'
 import { serverKey } from '../src/core/config.ts'
+import { checkCalls } from '../src/core/protocol.ts'
 
 const server = (tools: DownstreamTool[]): ServerState[] => [{ key: serverKey('x')!, status: 'connected', tools }]
 const one = (tool: DownstreamTool, shapes?: Map<string, string>): string =>
@@ -388,6 +389,17 @@ describe('the argument check of a closed schema', () => {
     })) {
       assert.deepEqual(argSpec({ ...closed, [key]: value }), { names: ['q'], required: ['q'], isOpen: true }, key)
     }
+  })
+
+  test('a required argument that the properties leave out is no unknown argument', () => {
+    const spec = argSpec({ type: 'object', properties: { a: {} }, required: ['a', 'b'] })
+    const problems = (keys: string[]) =>
+      checkCalls([{ tool: 'mcp__x__t', line: 1, keys }], new Set(['mcp__x__t']), () => spec, {}, new Map()).map(
+        p => p.text,
+      )
+    assert.deepEqual(problems(['a', 'b']), [])
+    assert.deepEqual(problems(['a']), ['mcp__x__t: missing required argument "b"'])
+    assert.deepEqual(problems(['a', 'b', 'other']), ['mcp__x__t: unknown argument "other"'])
   })
 })
 
