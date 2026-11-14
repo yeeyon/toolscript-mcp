@@ -93,11 +93,27 @@ export const runInit = async (
     return 1
   }
 
+  const bak = `${file}.bak`
+  let old: Buffer | undefined
+  try {
+    old = options.force ? await readIfAny(file) : undefined
+  } catch (err) {
+    print(`cannot read ${file}: ${errorText(err)}`)
+    return 1
+  }
+  const oldReport = old === undefined ? [] : oldConfigReport(old.toString('utf8'), imported.servers, bak)
+
   if (options['dry-run']) {
-    const exists = fs.existsSync(file) ? ` ${file} exists, so init refuses to replace it without --force.` : ''
+    const existing =
+      old !== undefined
+        ? [`${file} exists. init would replace it and keep the old file as ${bak}.`, ...oldReport]
+        : !options.force && fs.existsSync(file)
+          ? [`${file} exists, so init refuses to replace it without --force.`]
+          : []
     print(
       [
-        `Dry run: init writes nothing. It would write this config to ${file}.${exists}`,
+        `Dry run: init writes nothing. It would write this config to ${file}.`,
+        ...existing,
         ...HIDDEN,
         '',
         configText(imported.servers, true),
@@ -107,11 +123,8 @@ export const runInit = async (
     return 0
   }
 
-  const bak = `${file}.bak`
-  let old: Buffer | undefined
   try {
     await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
-    old = options.force ? await readIfAny(file) : undefined
     if (old !== undefined) await writeConfig(bak, old, true)
     await writeConfig(file, configText(imported.servers, false), options.force === true)
   } catch (err) {
@@ -122,10 +135,7 @@ export const runInit = async (
     print(`cannot write ${file}: ${errorText(err)}`)
     return 1
   }
-  const kept =
-    old === undefined
-      ? []
-      : [`${bak} holds the old config (mode 0600).`, ...oldConfigReport(old.toString('utf8'), imported.servers, bak)]
+  const kept = old === undefined ? [] : [`${bak} holds the old config (mode 0600).`, ...oldReport]
   print([`Wrote ${file}.`, ...kept, '', report].join('\n'))
   return 0
 }

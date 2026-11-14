@@ -290,6 +290,23 @@ describe('toolscript-mcp init', () => {
     assert.match(out, /do not share this output/)
   })
 
+  test('--dry-run says what init does with an existing config, with and without --force', async () => {
+    const old = JSON.stringify({ mcpServers: {}, policy: [{ match: 'mcp__github__*', action: 'allow' }] })
+    const home = homeWith({ ...CLIENTS, '.config/toolscript-mcp/config.json': old })
+    const file = path.join(home, '.config', 'toolscript-mcp', 'config.json')
+    const plain = await init(home, ['--dry-run'])
+    assert.equal(plain.code, 0, plain.out)
+    assert.ok(plain.out.includes(`${file} exists, so init refuses to replace it without --force.`), plain.out)
+
+    const forced = await init(home, ['--dry-run', '--force'])
+    assert.equal(forced.code, 0, forced.out)
+    assert.doesNotMatch(forced.out, /refuses to replace/)
+    assert.ok(forced.out.includes(`${file} exists. init would replace it and keep the old file as ${file}.bak.`))
+    assert.ok(forced.out.split('\n').includes('- "policy"'), forced.out)
+    assert.equal(fs.readFileSync(file, 'utf8'), old)
+    assert.deepEqual(fs.readdirSync(path.dirname(file)), ['config.json'])
+  })
+
   test('--dry-run writes nothing and prints the config with the secrets hidden', async () => {
     const home = homeWith(CLIENTS)
     const { code, out, file } = await init(home, ['--dry-run'])
