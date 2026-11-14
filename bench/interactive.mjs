@@ -40,9 +40,10 @@ const PROJECTS = path.join(os.homedir(), '.claude', 'projects')
 
 // USD per million tokens. Source: the claude-api skill of Claude Code 2.1.325 (model table, and
 // shared/prompt-caching.md: a 5-minute cache write is 1.25x the input price, a 1-hour write 2x).
+// `alias` is the --model name that runs as the model.
 const PRICES = {
-  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1, write5m: 2.5, write1h: 4 },
-  'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01, write5m: 0.125, write1h: 0.2 },
+  'claude-sonnet-5-5': { alias: 'sonnet', input: 2, output: 10, cacheRead: 0.1, write5m: 2.5, write1h: 4 },
+  'claude-haiku-5-5': { alias: 'haiku', input: 0.1, output: 0.5, cacheRead: 0.01, write5m: 0.125, write1h: 0.2 },
 }
 
 const USAGE = `usage: node bench/interactive.mjs [--reps N] [--max-spend USD] [--spent USD] [--model NAME]
@@ -53,6 +54,11 @@ Each run starts interactive Claude Code and costs money. Before each run, the be
 run of the same arm and task has cost so far, and stops when that passes --max-spend (default 5). This is an
 estimate: one run can cost more, so the total can pass the cap. The spend counts the saved runs of --out.
 --spent adds money spent outside them.`
+
+const usage = message => {
+  console.error(`${message}\n${USAGE}`)
+  process.exit(2)
+}
 
 let opts
 try {
@@ -74,8 +80,7 @@ try {
     },
   }).values
 } catch (err) {
-  console.error(`${err.message}\n${USAGE}`)
-  process.exit(2)
+  usage(err.message)
 }
 if (opts.help) {
   console.log(USAGE)
@@ -412,15 +417,18 @@ const METRICS = [
   ['seconds', r => r.seconds, 1],
 ]
 
-const report = rows => {
+// A failed run has only its cost and its error: it counts in the spend, not in the tables.
+const report = all => {
+  const rows = all.filter(r => r.error === undefined)
+  const failed = all.length - rows.length
   const arms = Object.keys(ARMS).filter(a => rows.some(r => r.arm === a))
   const tasks = TASKS.map(t => t.id).filter(t => rows.some(r => r.task === t))
   const warm = rows.filter(r => !r.cold)
   const of = (rs, arm, task) => rs.filter(r => r.arm === arm && (task === undefined || r.task === task))
   console.log(
-    `runs: ${arms.map(a => `${a} ${of(rows, a).length}`).join(', ')}; cold: ${rows.filter(r => r.cold).length}`,
+    `runs: ${arms.map(a => `${a} ${of(rows, a).length}`).join(', ')}; cold: ${rows.filter(r => r.cold).length}; failed: ${failed}`,
   )
-  console.log(`total spend: $${rows.reduce((n, r) => n + r.costUsd, 0).toFixed(4)}`)
+  console.log(`total spend: $${all.reduce((n, r) => n + r.costUsd, 0).toFixed(4)}`)
   console.log(`models: ${[...new Set(rows.flatMap(r => r.models))].join(', ')}`)
   console.log(`\n### Warm runs per arm: mean / median / min-max\n`)
   console.log(`| metric | ${arms.join(' | ')} |`)
@@ -483,6 +491,7 @@ const report = rows => {
 // Wall time and the accepted prompts are not in the transcript, so they come from the saved row.
 const remeasure = (dir, saved) =>
   saved.map(r => {
+    if (r.error !== undefined) return r
     const run = path.join(dir, `${r.task}-${r.arm}-${r.rep}`)
     const files = fs.readdirSync(path.join(run, 'transcript')).map(f => path.join(run, 'transcript', f))
     const main = files.find(f => !path.basename(f).includes('__'))
@@ -507,9 +516,21 @@ if (opts.report) {
   process.exit(0)
 }
 
+// A spend that is not a number would turn off the cap: no total passes NaN.
+const dollars = (flag, fallback) => {
+  const text = opts[flag] ?? String(fallback)
+  const usd = Number(text)
+  if (text.trim() === '' || !Number.isFinite(usd) || usd < 0)
+    usage(`--${flag} must be a number of dollars, 0 or more, not "${text}"`)
+  return usd
+}
 const reps = Number(opts.reps ?? 3)
-const maxSpend = Number(opts['max-spend'] ?? 5)
+const maxSpend = dollars('max-spend', 5)
+const extraSpent = dollars('spent', 0)
 const model = opts.model ?? 'sonnet'
+// A model with no price would stop the bench after its first paid run.
+if (!Object.entries(PRICES).some(([id, p]) => id === model || p.alias === model))
+  usage(`no price for model ${model}: add it to PRICES in bench/interactive.mjs`)
 const taskIds = opts.tasks?.split(',') ?? TASKS.map(t => t.id)
 const armIds = (opts.arms ?? 'direct,codemode,toolscript').split(',')
 for (const a of armIds) if (!ARMS[a]) throw new Error(`unknown arm ${a}`)
@@ -520,7 +541,7 @@ const out = path.resolve(opts.out ?? path.join(ROOT, 'runs', new Date().toISOStr
 fs.mkdirSync(out, { recursive: true })
 const resultsFile = path.join(out, 'results.jsonl')
 const done = fs.existsSync(resultsFile) ? readJsonl(resultsFile) : []
-let spent = spentSoFar(done, Number(opts.spent ?? 0))
+let spent = spentSoFar(done, extraSpent)
 for (const a of armIds) fs.mkdirSync(cwdOf(a), { recursive: true })
 
 // Arms alternate inside each task, and their order flips every rep, so drift in load and cache hits all arms.
@@ -528,7 +549,10 @@ const jobs = []
 for (let rep = 1; rep <= reps; rep++)
   for (const task of TASKS.filter(t => taskIds.includes(t.id)))
     for (const arm of rep % 2 ? armIds : [...armIds].reverse()) jobs.push({ task, arm, rep })
-const todo = jobs.filter(j => !done.some(r => r.task === j.task.id && r.arm === j.arm && r.rep === j.rep))
+// A run that failed counts toward the spend, and runs again.
+const todo = jobs.filter(
+  j => !done.some(r => r.error === undefined && r.task === j.task.id && r.arm === j.arm && r.rep === j.rep),
+)
 const rows = [...done]
 console.log(`${todo.length} runs to do into ${out}; spent so far $${spent.toFixed(4)}, cap $${maxSpend}`)
 
@@ -577,6 +601,8 @@ for (const [i, { task, arm, rep }] of todo.entries()) {
       ).values(),
     ].reduce((n, m) => n + priceOf(m.model, m.usage ?? {}), 0)
     spent += cost
+    const row = { task: task.id, arm, rep, correct: false, costUsd: cost, error: err.message }
+    fs.appendFileSync(resultsFile, `${JSON.stringify(row)}\n`)
     console.error(`stopped; that run cost $${cost.toFixed(4)}; total $${spent.toFixed(4)}`)
     forgetRuns([cwdOf(arm)])
     process.exit(1)

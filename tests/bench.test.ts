@@ -67,6 +67,91 @@ test('interactive.mjs counts the saved runs of a resumed --out toward --max-spen
   assert.equal(estimate(saved, 'direct', 'issues'), 0.25)
 })
 
+// With no PATH, an interactive.mjs that starts a run cannot find claude, and a --pty-dir with no
+// node-pty stops it before the first run. So these cases never spend money.
+const NO_PATH = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH'))
+const interactive = (name: string, args: string[], env: NodeJS.ProcessEnv = NO_PATH) => {
+  const dir = path.join(ROOT, name)
+  const flags = ['--root', path.join(dir, 'root'), '--out', path.join(dir, 'out'), '--tasks', 'ticket']
+  return node([path.join(REPO, 'bench', 'interactive.mjs'), ...flags, '--arms', 'direct', '--reps', '1', ...args], {
+    env,
+  })
+}
+
+test('interactive.mjs refuses a spend that is not a number of dollars, and a model with no price', () => {
+  const noPty = ['--pty-dir', path.join(ROOT, 'no-pty')]
+  const refused = [
+    ['--max-spend', 'abc'],
+    ['--max-spend=-1'],
+    ['--spent', 'x'],
+    ['--spent', 'Infinity'],
+    ['--model', 'some-model'],
+  ]
+  for (const [i, args] of refused.entries()) {
+    const run = interactive(`refused-${i}`, [...args, ...noPty])
+    assert.equal(run.status, 2, `${args.join(' ')}: ${run.stdout}${run.stderr}`)
+    assert.match(run.stderr, /usage:/)
+    assert.match(run.stderr, args[0]!.startsWith('--model') ? /no price for model some-model/ : /--max-spend|--spent/)
+    assert.equal(fs.existsSync(path.join(ROOT, `refused-${i}`)), false, 'a refused start made a folder')
+  }
+})
+
+// A pseudo-terminal whose claude spends $1 on input tokens and exits at once.
+const FAKE_PTY = `
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path')
+exports.spawn = (file, args, { cwd }) => {
+  const dir = path.join(os.homedir(), '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'))
+  fs.mkdirSync(dir, { recursive: true })
+  const message = { id: 'm1', model: 'claude-sonnet-5-5', usage: { input_tokens: 500000 } }
+  fs.writeFileSync(path.join(dir, 'session.jsonl'), JSON.stringify({ type: 'assistant', message }) + '\\n')
+  let onExit
+  setImmediate(() => onExit?.({ exitCode: 1 }))
+  return { onData() {}, onExit: f => (onExit = f), write() {}, kill() {} }
+}`
+const FAKE_TERMINAL = `exports.Terminal = class { buffer = { active: { length: 0 } }; write() {} }`
+
+test('interactive.mjs saves the cost of a run that fails, and a resumed --out counts it', () => {
+  const pty = path.join(ROOT, 'fake-pty')
+  for (const [name, source] of [
+    ['node-pty', FAKE_PTY],
+    ['@xterm/headless', FAKE_TERMINAL],
+  ] as const) {
+    fs.mkdirSync(path.join(pty, 'node_modules', name), { recursive: true })
+    fs.writeFileSync(path.join(pty, 'node_modules', name, 'index.js'), source)
+  }
+  const home = path.join(ROOT, 'fake-home')
+  const env = { ...NO_PATH, HOME: home, USERPROFILE: home }
+  const args = ['--pty-dir', pty, '--bash', process.execPath]
+  const results = path.join(ROOT, 'failed-run', 'out', 'results.jsonl')
+
+  const failed = interactive('failed-run', [...args, '--max-spend', '5'], env)
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr)
+  const rows = fs
+    .readFileSync(results, 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line))
+  assert.equal(rows.length, 1)
+  assert.deepEqual(
+    { ...rows[0], error: undefined },
+    {
+      task: 'ticket',
+      arm: 'direct',
+      rep: 1,
+      correct: false,
+      costUsd: 1,
+      error: undefined,
+    },
+  )
+  assert.match(rows[0].error, /claude exited/)
+
+  const resumed = interactive('failed-run', [...args, '--max-spend', '1.5'], env)
+  assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr)
+  assert.match(resumed.stdout, /1 runs to do .*; spent so far \$1\.0000, cap \$1\.5/)
+  assert.match(resumed.stdout, /stop: \$1\.0000 spent/)
+  assert.equal(fs.readFileSync(results, 'utf8').trim().split('\n').length, 1)
+})
+
 test('run.mjs answers --help and an unknown flag with the usage, and starts no run', () => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH'))
   const out = path.join(ROOT, 'help')
