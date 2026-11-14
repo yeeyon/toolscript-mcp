@@ -13,8 +13,9 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   before a run, the check of each call and the refusal texts). Imports between them use `.ts` extensions.
 - `src/host/` holds the host code, which runs in Node. It builds with `tsconfig.host.json`.
   - `main.ts`: the `toolscript-mcp` command. It reads the config, starts the server and closes the children.
-  - `server.ts`: the SDK `McpServer`, with a handler for each tool in `SERVED`, the approval prompt (elicitation) and
-    the runs in flight, which `main.ts` stops at shutdown.
+  - `server.ts`: the SDK `McpServer`, with a handler for each tool in `SERVED`, the approval prompt (elicitation),
+    the policy read again at each run (a looser one waits for the person or a restart) and the runs in flight, which
+    `main.ts` stops at shutdown.
   - `run.ts`: one `run_code` call: the check before a run, the policy, the sandbox, the nested calls, saveFile,
     readFile, recall and the result.
   - `downstream.ts`: connects to the servers of the config in parallel. A failed or closed server connects again on

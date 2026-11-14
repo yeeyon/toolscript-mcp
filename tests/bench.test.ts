@@ -32,6 +32,28 @@ test('run.mjs refuses an --out that holds the rows of an earlier run', () => {
   assert.equal(fs.readFileSync(path.join(out, 'results.jsonl'), 'utf8'), rows)
 })
 
+test('check.mjs judges an answer of another agent with the check of run.mjs', () => {
+  const dir = path.join(ROOT, 'check')
+  fs.mkdirSync(dir)
+  const file = (name: string, text: string) => (fs.writeFileSync(path.join(dir, name), text), path.join(dir, name))
+  const log = file('calls.jsonl', `${JSON.stringify({ tool: 'create_ticket', chars: 40 })}\n`)
+  const check = (task: string, answer: string, calls?: string) =>
+    node([
+      path.join(REPO, 'bench', 'check.mjs'),
+      '--task',
+      task,
+      '--answer',
+      file(`${task}.txt`, answer),
+      ...(calls ? ['--log', calls] : []),
+    ])
+  const right = check('ticket', 'The key is INC-101.', log)
+  assert.equal(right.status, 0, right.stderr)
+  assert.equal(JSON.parse(right.stdout).correct, true)
+  assert.equal(check('ticket', 'The key is INC-101.').status, 1, 'no create_ticket call is wrong')
+  assert.equal(check('logs', 'search had 910').status, 1)
+  assert.equal(check('nope', 'x').status, 2)
+})
+
 test('run.mjs answers --help and an unknown flag with the usage, and starts no run', () => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH'))
   const out = path.join(ROOT, 'help')
