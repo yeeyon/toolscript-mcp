@@ -286,6 +286,26 @@ describe('a reply that cannot be written', () => {
     assert.deepEqual(unhandled, [])
     assert.deepEqual(leftDirs(), [])
   })
+
+  test('a call whose reply is written after the end of the run keeps its entry in the run log', async () => {
+    const write = fs.promises.writeFile
+    fs.promises.writeFile = (async (file: fs.PathLike, ...rest: unknown[]) => {
+      if (/[\\/]r\d+\.json$/.test(String(file))) await new Promise(res => setTimeout(res, 1500))
+      return (write as (...a: unknown[]) => Promise<void>)(file, ...rest)
+    }) as typeof write
+    try {
+      const { run, lines } = setup()
+      const r = await run('call("mcp__f__echo", { n: 1 }).catch(() => {})\nreturn 1')
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(
+        lines().map(l => l.calls.map(({ tool, ok, error }) => ({ tool, ok, error }))),
+        [[{ tool: 'mcp__f__echo', ok: true, error: undefined }]],
+      )
+      await new Promise(res => setTimeout(res, 1000))
+    } finally {
+      fs.promises.writeFile = write
+    }
+  })
 })
 
 describe('files', () => {

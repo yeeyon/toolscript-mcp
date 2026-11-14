@@ -425,9 +425,10 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     outcome = stoppedOutcome(ending, limitSeconds, killedByUs)
     if (outcome === undefined) stderr = `${stderr}\n${endingText(ending, config.sandbox.node)}`
   }
+  // A call can have its audit entry and no record: its reply was still being written at the end.
   for (const [id, tool] of started) {
-    if (records.has(id)) continue
-    records.set(id, { tool, status: 'unfinished', chars: 0 })
+    if (!records.has(id)) records.set(id, { tool, status: 'unfinished', chars: 0 })
+    if (audits.has(id)) continue
     audits.set(id, {
       tool,
       decision: callDecision(config.policy, approved, tool),
