@@ -221,24 +221,29 @@ describe('search_tools with 3 or fewer hits', () => {
     )
   })
 
-  test('a schema whose expansion branches without end falls back fast', () => {
+  test('a schema whose expansion branches without end falls back after bounded work', () => {
+    // Expanded in full, width 8 is 8^12 schemas. The search must stop far
+    // below that: reads of the recursive schema past the limit throw.
+    const limit = 50_000
     for (const width of [4, 8]) {
+      let reads = 0
       const branches = Array.from({ length: width }, (_, i) =>
         i < 4 ? { $ref: '#/$defs/T' } : { type: 'array', items: { $ref: '#/$defs/T' } },
       )
-      const started = performance.now()
+      const T = new Proxy(
+        { anyOf: branches },
+        {
+          get: (target, key) => {
+            if (++reads > limit) throw new Error(`width ${width}: more than ${limit} reads`)
+            return Reflect.get(target, key)
+          },
+        },
+      )
       const text = one({
         name: 'rec',
-        inputSchema: {
-          type: 'object',
-          $defs: { T: { anyOf: branches } },
-          properties: { t: { $ref: '#/$defs/T' } },
-          required: ['t'],
-        },
+        inputSchema: { type: 'object', $defs: { T }, properties: { t: { $ref: '#/$defs/T' } }, required: ['t'] },
       })
-      const ms = performance.now() - started
       assert.equal(text, '### mcp__x__rec\ncall("mcp__x__rec", { t: unknown })')
-      assert.ok(ms < 100, `width ${width}: ${ms.toFixed(1)} ms`)
     }
   })
 
