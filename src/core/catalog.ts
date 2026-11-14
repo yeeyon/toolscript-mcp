@@ -114,7 +114,11 @@ const DETAIL_HITS = 3
 const MAX_DESCRIPTION = 2000
 const MAX_DECLARATION = 3000
 const MAX_NOTE = 200
+const MAX_LITERAL = 500
 const MAX_ENUM = 25
+// Each schema a declaration reads costs a step. A schema whose refs and unions
+// branch can need more steps than its size: such a declaration is too large.
+const MAX_STEPS = 2000
 // The deepest object a declaration spells out: the arguments are level 1.
 const MAX_LEVEL = 3
 // Unions, arrays and refs nested in each other with no object between them.
@@ -127,7 +131,13 @@ const IDENTIFIER = /^[A-Za-z_$][\w$]*$/
 /** Downstream text with its white space collapsed, at most `max` characters. */
 const prose = (text: string, max: number): string => oneLine(text.replace(/\s+/g, ' ').trim(), max)
 
-const literal = (v: unknown): string => oneLine(JSON.stringify(v) ?? 'unknown', MAX_NOTE)
+const jsonType = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'unknown[]' : typeof v)
+
+// A value in full, or its type when it is too long: a cut value is a different value.
+const literal = (v: unknown): string => {
+  const text = JSON.stringify(v) ?? 'unknown'
+  return text.length <= MAX_LITERAL ? text : `${jsonType(v)} /* long value left out */`
+}
 
 // A local JSON pointer such as #/$defs/Filter, read in the root schema.
 const pointed = (root: unknown, ref: string): unknown => {
@@ -141,18 +151,31 @@ const pointed = (root: unknown, ref: string): unknown => {
   return at
 }
 
-// The schema with each $ref followed and an allOf of one schema opened. A ref
-// that cannot be read or that loops gives undefined, shown as unknown.
+// The keys that add to the type of a schema. Next to one of them, an allOf is an intersection.
+const TYPE_KEYS = ['$ref', 'type', 'properties', 'additionalProperties', 'items', 'enum', 'const', 'anyOf', 'oneOf']
+
+// The schema with each $ref followed, and an allOf of one schema opened when
+// nothing next to it adds to the type. A ref that cannot be read or that loops
+// gives undefined, shown as unknown.
 const resolve = (schema: unknown, root: unknown): unknown => {
   for (let hops = 0; hops < MAX_REF_HOPS; hops++) {
     if (isObject(schema) && typeof schema.$ref === 'string') schema = pointed(root, schema.$ref)
-    else if (isObject(schema) && Array.isArray(schema.allOf) && schema.allOf.length === 1) schema = schema.allOf[0]
+    else if (
+      isObject(schema) &&
+      Array.isArray(schema.allOf) &&
+      schema.allOf.length === 1 &&
+      !TYPE_KEYS.some(k => Object.hasOwn(schema as object, k))
+    )
+      schema = schema.allOf[0]
     else return schema
   }
   return undefined
 }
 
-type Render = { readonly root: unknown; readonly maxLevel: number }
+// `steps` is shared by the input and the output types of one declaration.
+type Render = { readonly root: unknown; readonly maxLevel: number; readonly steps: { left: number } }
+
+const TOO_LARGE = new Error('declaration too large')
 
 const PRIMITIVES: Record<string, string> = {
   string: 'string',
@@ -167,17 +190,24 @@ const grouped = (parts: readonly string[]): string => (parts.length === 1 ? part
 // The members of a schema's type: more than one for a union. `level` is the
 // level of the object around it, which sets the indent of a nested object.
 const members = (raw: unknown, r: Render, level: number, nest: number): string[] => {
+  if (--r.steps.left < 0) throw TOO_LARGE
   const schema = resolve(raw, r.root)
   if (!isObject(schema) || nest > MAX_NEST) return ['unknown']
+  if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
+    // The schema next to the allOf is one more part. A part that is only
+    // object or unknown adds nothing to the others.
+    const { allOf, ...rest } = schema
+    const parts = [rest, ...allOf].map(s => grouped(members(s, r, level, nest + 1)))
+    const shown = parts.filter(p => p !== 'object' && p !== 'unknown')
+    return [shown.length > 0 ? shown.join(' & ') : parts.includes('object') ? 'object' : 'unknown']
+  }
   if ('const' in schema) return [literal(schema.const)]
   if (Array.isArray(schema.enum)) {
-    const shown = schema.enum.slice(0, MAX_ENUM).map(literal)
+    const shown = [...new Set(schema.enum.slice(0, MAX_ENUM).map(literal))]
     return schema.enum.length > MAX_ENUM ? [...shown, '…'] : shown
   }
   const union = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : []
   if (union.length > 0) return union.flatMap(s => members(s, r, level, nest + 1))
-  if (Array.isArray(schema.allOf) && schema.allOf.length > 0)
-    return [schema.allOf.map(s => grouped(members(s, r, level, nest + 1))).join(' & ')]
   const type = schema.type ?? (isObject(schema.properties) ? 'object' : undefined)
   if (Array.isArray(type)) return type.flatMap(t => members({ ...schema, type: t }, r, level, nest + 1))
   if (type === 'object') return [objectType(schema, r, level + 1, nest + 1)]
@@ -218,21 +248,28 @@ const objectType = (schema: Record<string, unknown>, r: Render, level: number, n
 
 // The call() of a tool as a TypeScript declaration, with objects spelled out to
 // `maxLevel`. It returns a Promise of the outputSchema, when the tool has one.
-const declaration = (t: CatalogEntry, maxLevel: number): string => {
-  const args = typeText(t.inputSchema, { root: t.inputSchema, maxLevel }, 0, 0)
-  const returns =
-    t.outputSchema === undefined
-      ? ''
-      : `: Promise<${typeText(t.outputSchema, { root: t.outputSchema, maxLevel }, 0, 0)}>`
-  return `call(${JSON.stringify(t.name)}, ${args === 'object' || args === 'unknown' ? '{}' : args})${returns}`
+// Undefined when it is too large to show.
+const declaration = (t: CatalogEntry, maxLevel: number): string | undefined => {
+  const steps = { left: MAX_STEPS }
+  try {
+    const args = typeText(t.inputSchema, { root: t.inputSchema, maxLevel, steps }, 0, 0)
+    const returns =
+      t.outputSchema === undefined
+        ? ''
+        : `: Promise<${typeText(t.outputSchema, { root: t.outputSchema, maxLevel, steps }, 0, 0)}>`
+    const call = `call(${JSON.stringify(t.name)}, ${args === 'object' || args === 'unknown' ? '{}' : args})${returns}`
+    return call.length <= MAX_DECLARATION ? call : undefined
+  } catch (e) {
+    if (e === TOO_LARGE) return undefined
+    throw e
+  }
 }
 
 // A tool in full. A declaration too large to show loses its nested objects
 // first, then its notes and its result type.
 const detailBlock = (t: CatalogEntry, shapes: ReadonlyMap<string, string>): string => {
-  let call = declaration(t, MAX_LEVEL)
-  if (call.length > MAX_DECLARATION) call = declaration(t, 1)
-  if (call.length > MAX_DECLARATION) call = `call(${JSON.stringify(t.name)}, ${argsText(t.inputSchema)})`
+  const call =
+    declaration(t, MAX_LEVEL) ?? declaration(t, 1) ?? `call(${JSON.stringify(t.name)}, ${argsText(t.inputSchema)})`
   const shape = t.outputSchema === undefined ? shapes.get(t.name) : undefined
   const lines = [`### ${t.name}`, prose(t.description, MAX_DESCRIPTION), call]
   if (shape !== undefined) lines.push(`returned earlier: ${shape}`)
