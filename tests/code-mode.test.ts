@@ -591,15 +591,90 @@ describe('output projection', () => {
       { t: 'error', message: 'timeout after 2000 ms', logs: [] },
     )
     assert.ok(has(text, '--- 10 MCP calls: '), text)
-    assert.ok(has(text, '#1…#8 mcp__x__get ×10, 1 failed, 1 did not finish 80'), text)
+    assert.ok(has(text, '#1…#8 mcp__x__get ×10, 1 failed, 1 did not finish 80\n'), text)
+    assert.ok(text.endsWith('\nawait recall(n) returns result #n again, with no new call.'), text)
+  })
+
+  test('the footer names the recall of each kept result', () => {
+    const text = projectionFooter(
+      {
+        calls: [
+          { ref: 3, tool: 'mcp__x__get_deploys', status: 'ok', chars: 70_872, shape: '{deploys: [400]}', repeatOf: 1 },
+          { ref: 4, tool: 'mcp__x__list_issues', status: 'ok', chars: 49_284, shape: '{issues: [180]}' },
+          { ref: 5, tool: 'mcp__x__ping', status: 'ok', chars: 2 },
+          { tool: 'mcp__x__create_ticket', status: 'failed', chars: 0 },
+        ],
+        recalls: 0,
+        recalled: [],
+      },
+      { t: 'done', value: '{"booking":7}', logs: [] },
+    )
+    assert.equal(
+      text,
+      [
+        '--- 4 MCP calls: 120k characters in, 13 out ---',
+        '#3 mcp__x__get_deploys 71k, the same call as #1 {deploys: [400]} -> recall(3)',
+        '#4 mcp__x__list_issues 49k {issues: [180]} -> recall(4)',
+        '#5 mcp__x__ping 2 -> recall(5)',
+        '- mcp__x__create_ticket failed',
+      ].join('\n'),
+    )
+  })
+
+  test('a result that fits shows as formatted JSON', () => {
+    const text = formatOutcome({ t: 'done', value: '{"a":[1,2]}', logs: [] }, 0, '', 20_000, {
+      calls: [],
+      recalls: 0,
+      recalled: [],
+    })
+    assert.equal(text, '{\n  "a": [\n    1,\n    2\n  ]\n}\n\n--- 0 MCP calls: 0 characters in, 11 out ---')
+  })
+
+  test('a cut result shows its shape first, then the first 3,000 characters as compact JSON', () => {
+    const deploys = Array.from({ length: 400 }, (_, i) => ({
+      id: `dep-${5000 + i}`,
+      app: 'notify',
+      version: 'v4.15.7',
+      env: 'prod-eu',
+      status: 'success',
+      triggered_by: { login: 'fake' },
+      started_at: '2026-10-09T00:00:00.000Z',
+      duration_s: 101,
+    }))
+    const value = JSON.stringify({ date: '2026-10-09', count: 400, deploys }, null, 1)
+    const compact = JSON.stringify(JSON.parse(value))
+    assert.ok(compact.length > 70_000, `${compact.length}`)
+    const text = formatOutcome({ t: 'done', value, logs: [] }, 0, '', 20_000, {
+      calls: [],
+      recalls: 0,
+      recalled: [],
+      wholeRef: 2,
+    })
+    const [result, footer] = text.split('\n\n')
+    assert.equal(
+      result,
+      [
+        'shape: {date, count, deploys: [400 × {id, app, version, env, status, triggered_by: {1 key}, started_at, duration_s}]}',
+        compact.slice(0, 3000),
+        `… [${compact.length - 3000} more characters cut; await recall(2) returns the whole result: return a part of it]`,
+      ].join('\n'),
+    )
+    assert.ok(
+      result.split('\n')[1]!.startsWith('{"date":"2026-10-09","count":400,"deploys":[{"id":"dep-5000",'),
+      result,
+    )
+    assert.ok(footer?.startsWith('--- 0 MCP calls: '), footer)
   })
 
   test('a cut result does not split a character outside the BMP', () => {
-    // The shown text is "aaaaaaaaa😀😀😀: the 11th unit is the first half of an emoji.
-    const value = JSON.stringify('a'.repeat(9) + '😀'.repeat(3))
+    // The head is 3,000 characters: the quote, 2,998 a's and the first half of an emoji.
+    const value = JSON.stringify('a'.repeat(2998) + '😀'.repeat(3))
     const text = formatOutcome({ t: 'done', value, logs: [] }, 0, '', 11)
     assert.ok(text.isWellFormed(), JSON.stringify(text))
-    assert.ok(text.startsWith('"aaaaaaaaa\n… [7 more characters cut;'), text)
+    assert.ok(
+      text.startsWith(`shape: text, 1 line\n"${'a'.repeat(2998)}\n… [7 more characters cut;`),
+      text.slice(0, 100),
+    )
   })
 })
 
@@ -631,9 +706,15 @@ describe('the tool table', () => {
   // The listed tools load in every session, so each word costs tokens in
   // every session. Raise the limit only for text that changes what the model does.
   // M4: run_code 1542, search_tools 550 (it names run_code). v0.1: + alwaysLoad 41 on each.
+  // + 68 for the recall(n) line, which the bench showed second programs needed.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 2174, `size ${size} is over 2174`)
+    assert.ok(size <= 2236, `size ${size} is over 2236`)
+  })
+
+  // The bench: 5 of 9 second programs called a tool again for a result they could recall.
+  test('the run_code description says that recall makes no new call', () => {
+    assert.match(registration('run_code').description, /\n- await recall\(n\) -> [^\n]*with no new call\n/)
   })
 
   // A client with tool search (Claude Code) otherwise hides both tools until the model searches for them.
