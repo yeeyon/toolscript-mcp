@@ -600,8 +600,29 @@ describe('the run log', () => {
     await denied.run('return await call("mcp__f__echo", {})')
     assert.deepEqual(
       denied.lines().map(l => [l.ending, l.calls.length]),
-      [['refused', 0]],
+      [['refused', 1]],
     )
+  })
+
+  test('a refused run lists the calls that the program names, with their decisions', async () => {
+    const policy = rules(['mcp__f__fail', 'deny'], ['mcp__f__echo', 'allow'], ['mcp__f__slow', 'ask'])
+    const program = 'await call("mcp__f__echo", {})\nawait call("mcp__f__slow", {})\nawait call("Bash", {})'
+    const denied = setup({ policy })
+    await denied.run(`${program}\nawait call("mcp__f__fail", {})`)
+    const declined = setup({ policy, answer: 'decline' })
+    await declined.run(program)
+    const wrong = setup({ policy })
+    await wrong.run('await call("mcp__f__echo", {})\nawait call("mcp__f__serch", {})')
+    const entries = (lines: RunRecord[]) =>
+      lines.map(l => [l.ending, ...l.calls.map(c => `${c.tool} ${c.decision} ${c.ok} ${c.ms} ${c.error}`)])
+    const named = [
+      'mcp__f__echo allow false 0 undefined',
+      'mcp__f__slow unapproved false 0 unapproved',
+      'unknown invalid false 0 invalid',
+    ]
+    assert.deepEqual(entries(denied.lines()), [['refused', ...named, 'mcp__f__fail denied false 0 denied']])
+    assert.deepEqual(entries(declined.lines()), [['refused', ...named]])
+    assert.deepEqual(entries(wrong.lines()), [['refused', named[0], 'unknown unapproved false 0 unapproved']])
   })
 
   test('a run past the time limit ends as timeout, and an abort as cancelled', async () => {

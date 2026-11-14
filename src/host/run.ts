@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { argSpec, catalogOf, learnShape, notConnected } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
-import { approvalNote, askText, checkCall, deniedReport, planRun, refusedReport } from '../core/policy.ts'
+import { approvalNote, askText, checkCall, deniedReport, planRun, refusedReport, type Policy } from '../core/policy.ts'
 import {
   MAX_SEEN,
   callKey,
@@ -85,12 +85,18 @@ type Ran = { readonly result: RunResult; readonly ending: RunEnding; readonly ca
 /** `known`: the tool names of the catalog before the run. A server that closes during the run has none at its end. */
 type Attempt = Ran & { readonly known: ReadonlySet<string> }
 
-const refused = (text: string, known: ReadonlySet<string>): Attempt => ({
+const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallLog[]): Attempt => ({
   result: { text, isError: true },
   ending: 'refused',
-  calls: [],
+  calls,
   known,
 })
+
+/** A call that a refused program names. It never started; `error` says why the policy stops it. */
+const notMade = (policy: Policy, tool: string): CallLog => {
+  const decision = callDecision(policy, new Set(), tool)
+  return { tool, decision, ms: 0, ok: false, ...(decision === 'allow' ? {} : { error: decision }) }
+}
 
 /** One run_code call, and one line in the run log unless the config turns it off. */
 export const runCode = async (ctx: RunContext, code: string): Promise<RunResult> => {
@@ -118,9 +124,10 @@ export const runCode = async (ctx: RunContext, code: string): Promise<RunResult>
  * prompt comes before the run's timer starts.
  */
 const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
-  if (code.trim() === '') return refused('Error: code is empty.', new Set())
+  if (code.trim() === '') return refused('Error: code is empty.', new Set(), [])
   await ctx.downstream.settled
-  const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
+  const named = literalCalls(code)
+  const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
   // A failed server that the program names connects again before the check.
   await ctx.downstream.retry([...new Set(literal.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[])
   const states = ctx.downstream.states()
@@ -131,16 +138,22 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     const reason = notConnected(s)
     if (reason !== undefined) down.set(s.key, reason)
   }
+  const refuse = (text: string) =>
+    refused(
+      text,
+      known,
+      named.map(c => notMade(ctx.config.policy, c.tool)),
+    )
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
-  if (problems.length > 0) return refused(problemReport(problems), known)
+  if (problems.length > 0) return refuse(problemReport(problems))
 
   const plan = planRun(ctx.config.policy, literal)
-  if (plan.kind === 'refused') return refused(deniedReport(plan.denied), known)
+  if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
   if (plan.ask.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan.ask, code) : 'unsupported'
-    if (answer !== 'accept') return refused(refusedReport(plan.ask, answer), known)
+    if (answer !== 'accept') return refuse(refusedReport(plan.ask, answer))
   }
-  if (ctx.signal.aborted) return refused('Error: the server is shutting down. The program did not run.', known)
+  if (ctx.signal.aborted) return refuse('Error: the server is shutting down. The program did not run.')
   return { ...(await execute(ctx, code, new Set(plan.ask))), known }
 }
 
