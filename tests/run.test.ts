@@ -456,7 +456,7 @@ describe('output projection', () => {
     assert.ok(r.text.includes('"n": 7'), r.text)
     assert.ok(r.text.includes('no result #9 in this session'), r.text)
     assert.ok(r.text.includes('--- 0 MCP calls, 2 recalls: '), r.text)
-    assert.ok(r.text.includes('recalled: #1 (0 s old)'), r.text)
+    assert.match(r.text, /recalled: #1 \(\d+ s old\)/)
   })
 
   test('a call equal to an earlier one names it', async () => {

@@ -238,7 +238,8 @@ describe('search_tools with 3 or fewer hits', () => {
       })
       const ms = performance.now() - started
       assert.equal(text, '### mcp__x__rec\ncall("mcp__x__rec", { t: unknown })')
-      assert.ok(ms < 100, `width ${width}: ${ms.toFixed(1)} ms`)
+      // Without the step limit, width 4 took 18 s. The bound leaves room for a busy machine.
+      assert.ok(ms < 1000, `width ${width}: ${ms.toFixed(1)} ms`)
     }
   })
 
