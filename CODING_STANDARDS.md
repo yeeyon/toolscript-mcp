@@ -19,6 +19,9 @@ enforces; the others rely on discipline.
   failed. `[test: server.e2e.mjs]`
 - A failed or closed server connects again on next use: a search, or a call of a program. All callers wait for one
   attempt, at most 3 attempts in 60 s, and none after `close`. `[test: downstream.test.ts, server.e2e.mjs]`
+- The SDK HTTP client transport fires `onclose` only from `close()`. An HTTP link that a request finds unreachable,
+  or whose session the server no longer knows (400 or 404), fails in `client.onerror`, before that request rejects.
+  `[test: downstream.test.ts, describe http]`
 - Every nested call has the time limit `sandbox.callTimeoutSeconds`, through the SDK's `timeout`, so the SDK sends
   `notifications/cancelled` when it ends. `[test: server.e2e.mjs, case run (l)]`
 - `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there
@@ -42,6 +45,9 @@ enforces; the others rely on discipline.
   `[test: runner.integration.mjs fails when the runner sends a kind that is not in RUNNER_FIELDS]`
 - Every nested call of a program goes through `checkCall` (`src/core/policy.ts`) at call time, also when the check
   before the run passed: a tool name built at run time is never asked. `[test: run.test.ts and server.e2e.mjs, case (e)]`
+- A program can write the config file through a tool. So a policy read at a run that lets a tool run with less
+  approval applies only after the person approves it, or at a restart. A stricter one applies at once.
+  `[test: policy.test.ts and server.e2e.mjs, cases run (m) and run (n)]`
 - Every run removes its exchange dir, also after a timeout, a kill or a shutdown.
   `[test: run.test.ts and server.e2e.mjs check the temp dir after the runs]`
 - Never weaken a sandbox layer, the policy check, the guard of hint and function files or the approval of proposals
