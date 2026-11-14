@@ -16,6 +16,7 @@ The sandbox launcher:
 
 - Added `src/host/launch.ts`: it starts the runner on Linux, macOS and Windows, with a host kill timer on every system. Windows gets Node `--permission` and an environment with only `SYSTEMROOT`. The exchange dir is made and removed in Node, not with `mktemp` and `rm`.
 - `tests/runner.integration.mjs` runs the real launcher, also on Windows in CI, and checks that a layer a system does not have is absent.
+- The time limit of the runner and the host kill timer both count from the launch. On a busy machine where Node starts slowly, a run at the limit still reports its timeout and its console lines.
 
 The first server (M3):
 
