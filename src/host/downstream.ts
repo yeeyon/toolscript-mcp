@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { DownstreamTool, ServerState } from '../core/catalog.ts'
+import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import { childEnv, invalidReason, redact, type ServerConfig, type ServerEntry, type ServerKey } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
 
@@ -217,9 +217,7 @@ export const connectAll = (
       await pending(key)
       const after = links.get(key) ?? link
       if (after.status === 'connected') return { ok: true, client: after.client }
-      const state = stateOf(key, after)
-      const why = state.status === 'failed' ? state.reason : 'it is still connecting'
-      return { ok: false, reason: `the MCP server "${key}" is not connected: ${why}` }
+      return { ok: false, reason: notConnected(stateOf(key, after))! }
     },
     close: () => (closing ??= Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})),
   }

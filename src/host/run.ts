@@ -6,7 +6,7 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { argSpec, catalogOf, learnShape } from '../core/catalog.ts'
+import { argSpec, catalogOf, learnShape, notConnected } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
 import { approvalNote, askText, checkCall, deniedReport, planRun, refusedReport } from '../core/policy.ts'
 import {
@@ -123,10 +123,15 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
   // A failed server that the program names connects again before the check.
   await ctx.downstream.retry([...new Set(literal.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[])
-  const catalog = catalogOf(ctx.downstream.states())
-  const specs = new Map(catalog.map(t => [t.name, argSpec(t.inputSchema)]))
+  const states = ctx.downstream.states()
+  const specs = new Map(catalogOf(states).map(t => [t.name, argSpec(t.inputSchema)]))
   const known = new Set(specs.keys())
-  const problems = checkCalls(literal, known, tool => specs.get(tool), {})
+  const down = new Map<string, string>()
+  for (const s of states) {
+    const reason = notConnected(s)
+    if (reason !== undefined) down.set(s.key, reason)
+  }
+  const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refused(problemReport(problems), known)
 
   const plan = planRun(ctx.config.policy, literal)

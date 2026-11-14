@@ -47,8 +47,8 @@ const SCHEMAS: Record<string, unknown> = {
   search: { type: 'object', properties: { query: {}, maxResults: {} }, required: ['query'] },
 }
 
-/** One fake server `f` with the tools above. `called` lists each call that reached it. */
-const fakeDownstream = () => {
+/** One fake server `f` with the tools above, and the servers in `others`. `called` lists each call that reached `f`. */
+const fakeDownstream = (others: readonly ServerState[] = []) => {
   const called: string[] = []
   let inFlight = 0
   let most = 0
@@ -78,6 +78,7 @@ const fakeDownstream = () => {
         inputSchema: SCHEMAS[name] ?? { type: 'object' },
       })),
     },
+    ...others,
   ]
   const downstream = {
     settled: Promise.resolve(),
@@ -102,12 +103,13 @@ type Options = {
   signal?: AbortSignal
   log?: boolean
   downstream?: Downstream
+  others?: ServerState[]
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
 
 const setup = (o: Options = {}) => {
-  const fake = fakeDownstream()
+  const fake = fakeDownstream(o.others)
   const asked: string[][] = []
   const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
@@ -330,6 +332,28 @@ describe('the check before a run', () => {
     assert.ok(
       r.text.includes('- line 2: no tool "mcp__f__serch" on the connected server "f" (did you mean "mcp__f__search"?)'),
       r.text,
+    )
+    assert.deepEqual(called, [])
+  })
+
+  test('a tool of a server that failed or is connecting gets the state of its server, not a guess', async () => {
+    const { run, called } = setup({
+      others: [
+        { key: 'g' as ServerKey, status: 'failed', reason: 'the connection closed' },
+        { key: 'h' as ServerKey, status: 'connecting' },
+      ],
+    })
+    const r = await run(
+      'await call("mcp__g__echo", {})\nawait call("mcp__h__echo", {})\nreturn await call("mcp__k__echo", {})',
+    )
+    assert.equal(
+      r.text,
+      [
+        'Error: the program did not run, because of the calls below. No call was made.',
+        '- line 1: the MCP server "g" is not connected: the connection closed',
+        '- line 2: the MCP server "h" is not connected: it is still connecting',
+        '- line 3: no MCP tool "mcp__k__echo" is connected (did you mean "mcp__f__echo"?)',
+      ].join('\n'),
     )
     assert.deepEqual(called, [])
   })
