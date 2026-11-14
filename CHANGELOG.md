@@ -59,14 +59,14 @@ The release:
 
 Setup and configuration:
 
-- Added `toolscript-mcp init`. It imports the user-scope MCP servers of Claude Code, Claude Desktop and Cursor into a new config (mode 0600, written through a temp file), and prints the lines to change in each client. It never edits a client file. `--dry-run` hides env values, header values and URL credentials. The printed commands quote each word, so nothing in a name or path expands in the shell.
+- Added `toolscript-mcp init`. It imports the user-scope MCP servers of Claude Code, Claude Desktop and Cursor into a new config (mode 0600, written through a temp file), and prints the lines to change in each client. It never edits a client file. `--dry-run` writes nothing and hides env values, header values, and the user, password and query of URLs. The printed commands quote each word, so nothing in a name or path expands in the shell.
 - A server entry with an error, for example an unset `${VAR}`, fails alone. The other servers start, and `search_tools` shows the error. An error outside `mcpServers` still stops the start.
 - `run_code` reads `policy` from the config file at each run. A config with errors keeps the last valid policy, and the result says so.
 
 Downstream servers:
 
 - A server that failed to connect, or whose connection closed, connects again on the next `search_tools` or call. At most 3 attempts per server in 60 seconds. Concurrent callers share one attempt.
-- Added `sandbox.callTimeoutSeconds` (1 to `sandbox.timeoutSeconds`, default 60). A call past it throws an error that the program can catch, and the server gets `notifications/cancelled`.
+- Added `sandbox.callTimeoutSeconds` (1 to `sandbox.timeoutSeconds`, default 60, or `sandbox.timeoutSeconds` when that is shorter). A call past it throws an error that the program can catch, and the server gets `notifications/cancelled`.
 - The end of a run no longer sends `notifications/cancelled` for calls that already finished.
 
 Tool search:
