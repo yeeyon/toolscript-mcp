@@ -17,6 +17,10 @@ enforces; the others rely on discipline.
   `[test: code.check.mjs fails on a stdout write in src/host; tsc fails on console in src/core; server.e2e.mjs reads every stdout line]`
 - A failed downstream server must not stop the others. `connectAll` catches each failure and keeps the server as
   failed. `[test: server.e2e.mjs]`
+- A failed or closed server connects again on next use: a search, or a call of a program. All callers wait for one
+  attempt, at most 3 attempts in 60 s, and none after `close`. `[test: downstream.test.ts, server.e2e.mjs]`
+- Every nested call has the time limit `sandbox.callTimeoutSeconds`, through the SDK's `timeout`, so the SDK sends
+  `notifications/cancelled` when it ends. `[test: server.e2e.mjs, case run (l)]`
 - `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there
   and in the sandbox table of `README.md`. `[test: runner.integration.mjs checks each layer that LAYERS names]`
 - Imports between files use the `.ts` extension, so Node can run the sources and `tsc` rewrites them. Use only

@@ -2,6 +2,7 @@
 // that no policy rule allows, runs the program in the sandbox and answers its
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -109,9 +110,11 @@ export const runCode = async (ctx: RunContext, code: string): Promise<RunResult>
 const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   if (code.trim() === '') return refused('Error: code is empty.')
   await ctx.downstream.settled
+  const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
+  // A failed server that the program names connects again before the check.
+  await ctx.downstream.retry([...new Set(literal.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[])
   const catalog = catalogOf(ctx.downstream.states())
   const specs = new Map(catalog.map(t => [t.name, argSpec(t.inputSchema)]))
-  const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
   const problems = checkCalls(literal, new Set(specs.keys()), tool => specs.get(tool), {})
   if (problems.length > 0) return refused(problemReport(problems))
 
@@ -184,13 +187,11 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
-// The SDK's code for a request that ran past its timeout.
-const REQUEST_TIMEOUT = -32001
-
 const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<string>): Promise<Attempt> => {
   const { config, downstream, kept } = ctx
   const limitSeconds = config.sandbox.timeoutSeconds
   const timeoutMs = limitSeconds * 1000
+  const callSeconds = config.sandbox.callTimeoutSeconds
   const startedAt = performance.now()
   const xdir = await makeExchangeDir()
 
@@ -246,13 +247,20 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
       if (check.needsRule) unapproved.add(tool)
       return { ok: false, error: check.error, code: callDecision(config.policy, approved, tool) }
     }
-    const client = downstream.clients.get(target.server as ServerKey)
-    if (client === undefined)
-      return { ok: false, error: `no MCP server "${target.server}" is connected`, code: 'no-server' }
+    const link = await downstream.client(target.server as ServerKey)
+    if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
+    // A reconnect can outlast the sandbox: then the call has no reader and does not start.
+    if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }
+    // The SDK keeps its abort listener after the answer and then sends a
+    // cancel for a finished call: one signal per call, unlinked at the end.
+    const own = new AbortController()
+    const stop = () => own.abort()
+    cancel.signal.addEventListener('abort', stop, { once: true })
     try {
-      const r = await client.callTool({ name: target.name, arguments: args }, undefined, {
-        timeout: timeoutMs,
-        signal: cancel.signal,
+      // At the timeout the SDK sends notifications/cancelled, so the server can stop the work.
+      const r = await link.client.callTool({ name: target.name, arguments: args }, undefined, {
+        timeout: callSeconds * 1000,
+        signal: own.signal,
       })
       const reply = mcpReply({
         content: Array.isArray(r.content) ? r.content : [],
@@ -261,13 +269,16 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
       })
       return reply.ok ? reply : { ...reply, code: 'tool-error' }
     } catch (err) {
-      const code =
-        (err as { code?: unknown } | null)?.code === REQUEST_TIMEOUT
-          ? 'timeout'
-          : cancel.signal.aborted
-            ? 'cancelled'
-            : 'failed'
-      return { ok: false, error: errorText(err), code }
+      // An abort at the end of the run is also a RequestTimeout to the SDK.
+      if (!own.signal.aborted && err instanceof McpError && err.code === ErrorCode.RequestTimeout)
+        return {
+          ok: false,
+          error: `${tool} did not answer within the call limit of ${callSeconds} s and was cancelled`,
+          code: 'timeout',
+        }
+      return { ok: false, error: errorText(err), code: own.signal.aborted ? 'cancelled' : 'failed' }
+    } finally {
+      cancel.signal.removeEventListener('abort', stop)
     }
   }
 
