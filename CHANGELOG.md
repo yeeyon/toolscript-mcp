@@ -77,12 +77,18 @@ Downstream servers:
 Tool search:
 
 - `search_tools` shows each of 3 or fewer matches in full: the description and a TypeScript declaration of `call()` with nested object types, enums, unions, local `$ref`s and the note of each argument. A tool with an `outputSchema` gets a `Promise<…>` result type. Without one, the search shows the shape of a result from an earlier run in the session (`returned earlier:`). 4 or more matches keep the one-line list.
+- The check before a run gives the state and the reason of a server that failed or is still connecting. It no longer guesses a tool of another server.
 - The declaration has a work budget, so a recursive schema cannot stall the server. A literal is never cut.
 - The check before a run accepts argument names that an `allOf`, `anyOf` or `oneOf` adds.
 
 Run log:
 
 - Each `run_code` call appends one JSON line to `~/.toolscript-mcp/runs.jsonl`: time, run id, duration, ending, result size, and per call the tool name, policy decision, duration and a short error code. Never arguments, results, program text or error messages. It rotates to `runs.1.jsonl` at 5 MB. `"log": false` turns it off.
+- The run log keeps the tool name of a call whose server closed during the run. Before, the log named that call `unknown`.
+- The run log shows the ending `timeout` only when a time limit stopped the run.
+- The run log keeps the entry of a call whose reply came after the end of the run.
+- The run log of a refused run lists each call that has a literal tool name, with its policy decision, `ok: false` and 0 ms.
+- A program that changes `Array.prototype.toJSON` or `JSON.stringify` now gets its result instead of "the sandbox exited without a result".
 
 Runner fixes (inherited from claude-code-mode at eea4077):
 
