@@ -272,7 +272,8 @@ code. Read [SECURITY.md](SECURITY.md).
   client.
 - toolscript-mcp has no OAuth login. A remote server that needs an OAuth login does not connect.
 - If an HTTP server restarts or loses the session, one call to it can fail. The next use of the server connects
-  again.
+  again. toolscript-mcp sees a lost session in a 404, or in a 400 with a session error text of the MCP TypeScript
+  SDK. If a server answers a lost session with a different 400, restart toolscript-mcp.
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
 - Each `run_code` call starts a new program. No state stays between two calls, except the files of `saveFile`.
 
