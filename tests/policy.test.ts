@@ -6,15 +6,17 @@ import {
   askText,
   checkCall,
   decide,
+  declinedNote,
   deniedReport,
   keptPolicyNote,
   loosenText,
-  loosened,
   matches,
+  onlyTightens,
   planRun,
   policyChange,
   refusedReport,
   type Policy,
+  type Rule,
 } from '../src/core/policy.ts'
 import { argSpec } from '../src/core/catalog.ts'
 import { normalizePath, appPath } from '../src/core/paths.ts'
@@ -223,35 +225,156 @@ describe('the check of each nested call', () => {
 })
 
 describe('a change of the policy in the config file', () => {
-  const names = ['mcp__bench__create_ticket', 'mcp__bench__list_issues', 'mcp__fs__write_file']
   const current = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask'])
+  const looser = (from: Policy, to: Policy): boolean => !onlyTightens(from, to)
+  const RANK = { deny: 0, ask: 1, allow: 2 }
 
-  test('a deny or ask that turns into allow, a new allow rule and a removed deny are looser', () => {
-    const allowTicket = policy(
-      ['mcp__bench__create_ticket', 'allow'],
-      ['mcp__fs__*', 'allow'],
-      ['mcp__bench__*', 'ask'],
-    )
-    assert.deepEqual(loosened(current, allowTicket, names), ['mcp__bench__create_ticket'])
-    const noDeny = policy(['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask'])
-    assert.deepEqual(loosened(current, noDeny, names), ['mcp__bench__create_ticket'], 'deny to ask')
-    const newAllow = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__*', 'allow'])
-    assert.deepEqual(loosened(current, newAllow, names), ['mcp__*', 'mcp__bench__*', 'mcp__bench__list_issues'])
+  test('make it fail: a new allow that a rule shadows for every name the old check tried is looser', () => {
+    const cases: [Policy, Policy, string][] = [
+      [[], policy(['mcp__x__', 'ask'], ['mcp__x__*', 'allow']), 'mcp__x__anything'],
+      [[], policy(['mcp__x__', 'deny'], ['mcp__x__*', 'allow']), 'mcp__x__anything'],
+      [policy(['mcp__x__get', 'allow']), policy(['mcp__x__get*', 'allow']), 'mcp__x__get_all'],
+      [policy(['mcp__x__*', 'deny']), policy(['mcp__x__', 'deny'], ['mcp__x__*', 'allow']), 'mcp__x__anything'],
+      [
+        policy(['mcp__x__*', 'deny'], ['mcp__*__del', 'allow']),
+        policy(['mcp__*__del', 'allow'], ['mcp__x__*', 'deny']),
+        'mcp__x__del',
+      ],
+    ]
+    for (const [from, to, name] of cases) {
+      const shown = `${policyChange(from, to)} for ${name}`
+      assert.ok(RANK[decide(to, name).action] > RANK[decide(from, name).action], shown)
+      assert.equal(looser(from, to), true, shown)
+    }
   })
 
-  test('more deny or ask rules, and a new order with the same decisions, are not looser', () => {
-    const tighter = policy(['mcp__fs__write_*', 'deny'], ['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'ask'])
-    assert.deepEqual(loosened(current, tighter, names), [])
-    const reordered = policy(['mcp__fs__*', 'allow'], ['mcp__bench__create_ticket', 'deny'], ['mcp__bench__*', 'ask'])
-    assert.deepEqual(loosened(current, reordered, names), [])
-    assert.deepEqual(loosened(current, current, names), [])
+  test('inserting deny rules, removing allow rules and lowering an action in place apply with no prompt', () => {
+    const tighter = [
+      policy(
+        ['mcp__x__*', 'deny'],
+        ['mcp__bench__create_ticket', 'deny'],
+        ['mcp__fs__*', 'allow'],
+        ['mcp__bench__*', 'ask'],
+      ),
+      policy(
+        ['mcp__bench__create_ticket', 'deny'],
+        ['mcp__fs__w*', 'deny'],
+        ['mcp__fs__*', 'allow'],
+        ['mcp__bench__*', 'ask'],
+      ),
+      policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask'], ['*', 'deny']),
+      policy(['mcp__bench__create_ticket', 'deny'], ['mcp__bench__*', 'ask']),
+      policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'ask'], ['mcp__bench__*', 'ask']),
+      policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'deny'], ['mcp__bench__*', 'ask']),
+      policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow'], ['mcp__bench__*', 'deny']),
+      policy(
+        ['mcp__fs__write_*', 'deny'],
+        ['mcp__bench__create_ticket', 'deny'],
+        ['mcp__fs__*', 'ask'],
+        ['mcp__bench__*', 'deny'],
+        ['mcp__*', 'deny'],
+      ),
+      policy(['mcp__bench__create_ticket', 'deny'], ['mcp__x__*', 'deny'], ['mcp__bench__*', 'ask']),
+      current,
+    ]
+    for (const to of tighter) assert.equal(looser(current, to), false, policyChange(current, to))
+    assert.equal(looser([], policy(['mcp__a__*', 'deny'], ['*', 'deny'])), false)
+    assert.equal(looser(policy(['mcp__a__*', 'allow'], ['mcp__b__*', 'allow']), []), false)
   })
 
-  test('make it fail: a rule over tools of no connected server counts, by its match', () => {
-    assert.deepEqual(loosened(policy(['mcp__gone__*', 'deny']), [], []), ['mcp__gone__*'])
-    assert.deepEqual(loosened(policy(['mcp__gone__x', 'deny']), [], []), ['mcp__gone__x'])
-    assert.deepEqual(loosened([], policy(['mcp__*', 'allow']), []), ['mcp__*'])
-    assert.deepEqual(loosened(policy(['mcp__a__*', 'allow']), policy(['mcp__*', 'allow']), []), ['mcp__*'])
+  test('removing a deny or ask, raising an action, inserting an allow or ask, a new match and a new order are looser', () => {
+    const others = [
+      policy(['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask']),
+      policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow']),
+      policy(['mcp__bench__create_ticket', 'ask'], ['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask']),
+      policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow'], ['mcp__bench__*', 'allow']),
+      policy(
+        ['mcp__x__*', 'allow'],
+        ['mcp__bench__create_ticket', 'deny'],
+        ['mcp__fs__*', 'allow'],
+        ['mcp__bench__*', 'ask'],
+      ),
+      policy(
+        ['mcp__x__*', 'ask'],
+        ['mcp__bench__create_ticket', 'deny'],
+        ['mcp__fs__*', 'allow'],
+        ['mcp__bench__*', 'ask'],
+      ),
+      policy(['mcp__bench__create_ticket*', 'deny'], ['mcp__fs__*', 'allow'], ['mcp__bench__*', 'ask']),
+      policy(['mcp__fs__*', 'allow'], ['mcp__bench__create_ticket', 'deny'], ['mcp__bench__*', 'ask']),
+    ]
+    for (const to of others) assert.equal(looser(current, to), true, policyChange(current, to))
+    assert.equal(looser(policy(['mcp__gone__*', 'deny']), []), true, 'a rule over tools of no connected server counts')
+  })
+
+  test('make it fail: the same match twice pairs each rule of the new policy with the right old rule', () => {
+    const allowThenDeny = policy(['mcp__a__*', 'allow'], ['mcp__a__*', 'deny'])
+    assert.equal(looser(allowThenDeny, policy(['mcp__a__*', 'deny'])), false, 'the allow is removed, not lowered')
+    const askThenAllow = policy(['mcp__a__*', 'ask'], ['mcp__a__*', 'allow'])
+    assert.equal(looser(askThenAllow, policy(['mcp__a__*', 'ask'])), false, 'the second rule is removed')
+    assert.equal(looser(askThenAllow, policy(['mcp__a__*', 'allow'])), true, 'the ask is gone')
+  })
+
+  test('each step only tightens, and an accepted change never raises a decision', () => {
+    const MATCHES = ['mcp__a__x', 'mcp__a__*', 'mcp__*', 'mcp__a__', 'mcp__*__x', 'mcp__b__y', 'mcp__a__x*', '*']
+    const NAMES = [
+      'mcp__a__x',
+      'mcp__a__',
+      'mcp__a__y',
+      'mcp__a__xy',
+      'mcp__b__x',
+      'mcp__b__y',
+      'mcp__c__z',
+      'mcp____x',
+    ]
+    const ACTIONS = ['allow', 'deny', 'ask'] as const
+    let seed = 7
+    const next = (n: number): number => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * n)
+    }
+    const rule = (match: string, action: Rule['action']): Rule => ({ match, action, index: 0 })
+    const randomPolicy = (): Rule[] =>
+      Array.from({ length: next(6) }, () => rule(MATCHES[next(MATCHES.length)]!, ACTIONS[next(3)]!))
+    const step = (p: Rule[]): Rule[] => {
+      const at = next(p.length + 1)
+      const kind = next(3)
+      const allows = p.flatMap((r, i) => (r.action === 'allow' ? [i] : []))
+      const raised = p.flatMap((r, i) => (r.action === 'deny' ? [] : [i]))
+      if (kind === 1 && allows.length > 0) return p.toSpliced(allows[next(allows.length)]!, 1)
+      if (kind === 2 && raised.length > 0) {
+        const i = raised[next(raised.length)]!
+        return p.with(i, rule(p[i]!.match, p[i]!.action === 'allow' && next(2) === 0 ? 'ask' : 'deny'))
+      }
+      return p.toSpliced(at, 0, rule(MATCHES[next(MATCHES.length)]!, 'deny'))
+    }
+    const raises = (from: Policy, to: Policy): string | undefined =>
+      NAMES.find(name => RANK[decide(to, name).action] > RANK[decide(from, name).action])
+    let accepted = 0
+    for (let i = 0; i < 3000; i++) {
+      const from = randomPolicy()
+      let to = from
+      for (let n = next(4); n >= 0; n--) to = step(to)
+      assert.equal(raises(from, to), undefined, policyChange(from, to))
+      assert.equal(onlyTightens(from, to), true, policyChange(from, to))
+      const other = randomPolicy()
+      if (onlyTightens(from, other)) {
+        accepted++
+        assert.equal(raises(from, other), undefined, policyChange(from, other))
+      }
+    }
+    assert.ok(accepted > 100, `${accepted} random pairs accepted`)
+  })
+
+  test('make it fail: a policy too large to compare counts as looser, and its change shows at once', () => {
+    const many = policy(...Array.from({ length: 4000 }, (_, i): [string, 'deny'] => [`mcp__a__t${i}`, 'deny']))
+    const more = [...many, ...policy(['mcp__b__*', 'deny'])]
+    const started = performance.now()
+    assert.equal(looser(many, more), true)
+    assert.equal(policyChange(many, more), 'added {"match": "mcp__b__*", "action": "deny"}')
+    assert.ok(performance.now() - started < 200, `${performance.now() - started} ms`)
   })
 
   test('policyChange names the rules added and removed, and nothing when the rules are the same', () => {
@@ -264,7 +387,13 @@ describe('a change of the policy in the config file', () => {
       policyChange(current, policy(['mcp__bench__create_ticket', 'deny'], ['mcp__fs__*', 'allow'])),
       'removed {"match": "mcp__bench__*", "action": "ask"}',
     )
-    assert.equal(policyChange(current, [...current].reverse()), 'the order of the rules changed')
+    assert.equal(
+      policyChange(
+        policy(['mcp__a__*', 'deny'], ['mcp__b__*', 'allow']),
+        policy(['mcp__b__*', 'allow'], ['mcp__a__*', 'deny']),
+      ),
+      'the order of the rules changed to {"match": "mcp__b__*", "action": "allow"}, {"match": "mcp__a__*", "action": "deny"}',
+    )
     assert.equal(
       policyChange(
         current,
@@ -274,20 +403,46 @@ describe('a change of the policy in the config file', () => {
     )
   })
 
-  test('the prompt and the note name the file and the tools that the new policy allows', () => {
+  test('the prompt and the note name the file and the rules added and removed, not tool names', () => {
+    const change = policyChange([], policy(['mcp__x__', 'ask'], ['mcp__x__*', 'allow']))
     assert.equal(
-      loosenText('/home/u/.config/toolscript-mcp/config.json', ['mcp__a__x', 'mcp__b__*']),
-      'The toolscript-mcp policy in /home/u/.config/toolscript-mcp/config.json changed to allow: mcp__a__x, mcp__b__*. Apply the new policy?',
+      loosenText('/home/u/.config/toolscript-mcp/config.json', change),
+      'The toolscript-mcp policy in /home/u/.config/toolscript-mcp/config.json changed, and the change can let a tool run with less approval: added {"match": "mcp__x__", "action": "ask"}, {"match": "mcp__x__*", "action": "allow"}. Apply the new policy?',
     )
-    const many = Array.from({ length: 25 }, (_, i) => `mcp__a__t${i}`)
-    assert.ok(loosenText('c.json', many).includes('mcp__a__t19 and 5 more.'), loosenText('c.json', many))
-    const restart = keptPolicyNote('c.json', ['mcp__a__x'], 'unsupported')
+    const restart = keptPolicyNote('c.json', change, 'unsupported')
     assert.ok(
-      restart.startsWith('## Policy not reloaded\n\nThe toolscript-mcp policy in c.json now allows mcp__a__x.'),
+      restart.startsWith(
+        '## Policy not reloaded\n\nThe toolscript-mcp policy in c.json changed, and the change can let a tool run with less approval: added {"match": "mcp__x__", ',
+      ),
       restart,
     )
     assert.ok(restart.includes('restart toolscript-mcp'), restart)
-    assert.ok(keptPolicyNote('c.json', ['mcp__a__x'], 'decline').includes('The person did not approve it'))
+    assert.ok(keptPolicyNote('c.json', change, 'decline').includes('The person did not approve it'))
+    assert.equal(
+      declinedNote('c.json'),
+      '## Policy not reloaded\n\nThe person declined the policy in c.json, so this run used the policy in force. Do not change the config yourself.',
+    )
+  })
+
+  test('make it fail: a match from the file reaches the prompt escaped, cut and on one line', () => {
+    const tricks = ['\n', '\r', ' ', ' ', '\u0085', '‮', '​', '\u{e0041}', '"']
+    const tricky = policy(...tricks.map((t, i): [string, 'allow'] => [`mcp__x__${i}${t}Apply? yes`, 'allow']))
+    const text = loosenText('c.json', policyChange([], tricky))
+    assert.ok(!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text), JSON.stringify(text))
+    for (const shown of ['\\n', '\\r', '\\u2028', '\\u2029', '\\u0085', '\\u202e', '\\u200b', '\\u{e0041}', '\\"'])
+      assert.ok(text.includes(`${shown}Apply? yes", "action": "allow"}`), `${shown} in ${text}`)
+    const long = `mcp__x__${'a'.repeat(500)}`
+    const cut = policyChange([], policy([long, 'allow']))
+    assert.equal(cut, `added {"match": "${long.slice(0, 120)}"… (388 more characters), "action": "allow"}`)
+    const many = policy(...Array.from({ length: 25 }, (_, i): [string, 'deny'] => [`mcp__a__t${i}`, 'deny']))
+    const listed = policyChange(policy(['mcp__a__*', 'allow']), many)
+    assert.ok(listed.includes('{"match": "mcp__a__t9", "action": "deny"} and 15 more; removed'), listed)
+    assert.ok(!listed.includes('mcp__a__t10'), listed)
+    const denied = checkCall(policy(['mcp__x__a\n*', 'deny']), new Set(), 'mcp__x__a\nb')
+    assert.ok(
+      !denied.ok && denied.error.endsWith('{"match": "mcp__x__a\\n*", "action": "deny"}'),
+      JSON.stringify(denied),
+    )
   })
 })
 

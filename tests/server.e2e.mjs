@@ -33,6 +33,7 @@ const crashFile = path.join(dir, 'crash.json')
 const flakyFile = path.join(dir, 'flaky.json')
 const slowFile = path.join(dir, 'slow.json')
 const hangFile = path.join(dir, 'hang.pid')
+const writerFile = path.join(dir, 'writer.json')
 const configFile = path.join(dir, 'config.json')
 // Every call that reaches the fake server, one JSON line each.
 const BENCH_LOG = path.join(dir, 'bench.jsonl')
@@ -64,6 +65,7 @@ fs.writeFileSync(
       { match: 'mcp__bench__get_deploys', action: 'ask' },
       { match: 'mcp__flaky__probe', action: 'allow' },
       { match: 'mcp__slow__probe', action: 'allow' },
+      { match: 'mcp__x__probe', action: 'allow' },
     ],
     mcpServers: {
       // `node` from PATH, not process.execPath: the SDK's short environment must still find it.
@@ -88,6 +90,8 @@ fs.writeFileSync(
           hangFile,
         ],
       },
+      // Its allowed tool writes a file, such as the config. It also answers a tool name that it does not list.
+      x: { command: process.execPath, args: [PROBE, writerFile, '--write-on-call'] },
       // A variable that is not set: this entry fails alone, and the server still starts.
       broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
       // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
@@ -463,13 +467,18 @@ test('run (m) a looser policy waits for a restart when the client cannot ask, an
     const kept = await run(TICKET)
     assert.equal(kept.isError, true, kept.text)
     assert.ok(kept.text.includes('is denied by policy[0]'), kept.text)
-    assert.ok(
-      kept.text.includes(`The toolscript-mcp policy in ${configFile} now allows mcp__bench__create_ticket.`),
-      kept.text,
-    )
+    const looser = `the change can let a tool run with less approval: added ${ALLOW_TICKET}; removed ${DENY_TICKET}.`
+    assert.ok(kept.text.includes(`The toolscript-mcp policy in ${configFile} changed, and ${looser}`), kept.text)
     assert.ok(kept.text.includes('restart toolscript-mcp'), kept.text)
     assert.equal(benchCalls('create_ticket'), 0)
-    assert.match(transport.stderr, /the policy in .* was not applied, because it allows mcp__bench__create_ticket/)
+    assert.ok(
+      transport.stderr.includes(
+        `the policy in ${configFile} was not applied, because it can let a tool run with less approval (added ${ALLOW_TICKET}; removed ${DENY_TICKET}): restart toolscript-mcp to apply it\n`,
+      ),
+      transport.stderr,
+    )
+    const again = await run(TICKET)
+    assert.ok(again.text.includes(`changed, and ${looser}`), 'a client that cannot ask gets the note at each run')
 
     fs.writeFileSync(configFile, '{"policy": [')
     const broken = await run(TICKET)
@@ -493,7 +502,7 @@ test('run (m) a looser policy waits for a restart when the client cannot ask, an
   assert.equal(benchCalls('create_ticket'), 0)
 })
 
-test('run (n) a looser policy asks the person: decline keeps the policy in force, accept applies it', async () => {
+test('run (n) a looser policy asks the person: decline keeps the policy in force with no new prompt until the file changes, accept applies it', async () => {
   const prompts = asking.prompts.length
   try {
     fs.writeFileSync(configFile, looserConfig())
@@ -505,10 +514,24 @@ test('run (n) a looser policy asks the person: decline keeps the policy in force
     assert.equal(asking.prompts.length, prompts + 1)
     assert.equal(
       asking.prompts.at(-1),
-      `The toolscript-mcp policy in ${configFile} changed to allow: mcp__bench__create_ticket. Apply the new policy?`,
+      `The toolscript-mcp policy in ${configFile} changed, and the change can let a tool run with less approval: added ${ALLOW_TICKET}; removed ${DENY_TICKET}. Apply the new policy?`,
     )
     assert.equal(benchCalls('create_ticket'), 0)
 
+    const silent = await run(TICKET, askingClient)
+    assert.ok(silent.text.includes('is denied by policy[0]'), silent.text)
+    assert.ok(
+      silent.text.endsWith(
+        `The person declined the policy in ${configFile}, so this run used the policy in force. Do not change the config yourself.`,
+      ),
+      silent.text,
+    )
+    assert.equal(asking.prompts.length, prompts + 1, 'the declined policy is not asked again')
+
+    fs.writeFileSync(configFile, CONFIG_TEXT)
+    const same = await run(TICKET, askingClient)
+    assert.ok(same.text.includes('is denied by policy[0]') && !same.text.includes('## Policy'), same.text)
+    fs.writeFileSync(configFile, looserConfig())
     asking.answer = 'accept'
     const accepted = await run(TICKET, askingClient)
     assert.equal(accepted.isError, false, accepted.text)
@@ -526,6 +549,45 @@ test('run (n) a looser policy asks the person: decline keeps the policy in force
   assert.ok(tighter.text.endsWith(`The policy changed: added ${DENY_TICKET}; removed ${ALLOW_TICKET}.`), tighter.text)
   assert.equal(asking.prompts.length, prompts + 2, 'a tighter policy applies with no prompt')
   assert.equal(benchCalls('create_ticket'), 1)
+})
+
+test('run (o) a program that writes a policy whose new allow is shadowed for every listed tool is asked, and a decline keeps the built name refused', async () => {
+  const prompts = asking.prompts.length
+  const hiddenCalls = () =>
+    (fs.existsSync(`${writerFile}.log`) ? fs.readFileSync(`${writerFile}.log`, 'utf8') : '')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line))
+      .filter(e => e.event === 'call' && e.name === 'hidden').length
+  const shadow = JSON.parse(CONFIG_TEXT)
+  shadow.policy.unshift({ match: 'mcp__x__', action: 'ask' }, { match: 'mcp__x__*', action: 'allow' })
+  const write = `await call("mcp__x__probe", { path: ${JSON.stringify(configFile)}, text: ${JSON.stringify(JSON.stringify(shadow))} })\nreturn "written"`
+  const hidden =
+    'const name = "mcp__x__" + "hidden"\ntry {\n  return await call(name, {})\n} catch (err) {\n  return err.message\n}'
+  try {
+    asking.answer = 'decline'
+    const wrote = await run(write, askingClient)
+    assert.equal(wrote.isError, false, wrote.text)
+    assert.equal(fs.readFileSync(configFile, 'utf8'), JSON.stringify(shadow))
+
+    const refused = await run(hidden, askingClient)
+    assert.ok(refused.text.includes('not approved: no policy rule allows mcp__x__hidden'), refused.text)
+    assert.ok(refused.text.includes('The person did not approve it'), refused.text)
+    assert.equal(hiddenCalls(), 0, 'the hidden tool never ran')
+    assert.equal(asking.prompts.length, prompts + 1)
+    assert.equal(
+      asking.prompts.at(-1),
+      `The toolscript-mcp policy in ${configFile} changed, and the change can let a tool run with less approval: added {"match": "mcp__x__", "action": "ask"}, {"match": "mcp__x__*", "action": "allow"}. Apply the new policy?`,
+    )
+
+    const again = await run(hidden, askingClient)
+    assert.ok(again.text.includes('not approved: no policy rule allows mcp__x__hidden'), again.text)
+    assert.ok(again.text.includes(`The person declined the policy in ${configFile}`), again.text)
+    assert.equal(asking.prompts.length, prompts + 1, 'a declined policy is not asked again')
+    assert.equal(hiddenCalls(), 0)
+  } finally {
+    fs.writeFileSync(configFile, CONFIG_TEXT)
+  }
 })
 
 test('(j) init imports the servers of a client into a config that the server starts with', async () => {

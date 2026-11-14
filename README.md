@@ -189,9 +189,19 @@ A refused call throws an error in the program. The program can catch it.
 toolscript-mcp reads `policy` again at the start of each run. If the config has errors at that time, the run uses the
 last valid policy, and the result tells you so.
 
-A stricter policy applies at once. If a change lets a tool run with less approval, toolscript-mcp asks you before the
-run. If your client cannot ask, restart toolscript-mcp to apply that change. Do not let a tool that the policy allows
-write the config file.
+A changed policy applies at once only when the change has these steps alone:
+
+- It adds `deny` rules at any place.
+- It removes `allow` rules.
+- It makes the `action` of a rule stricter: `allow` to `ask` or `deny`, or `ask` to `deny`. The rule keeps its `match`.
+
+These steps never let a tool run with less approval. toolscript-mcp compares the rules only, not a list of tools.
+
+Any other change waits for your approval, also a new order of the same rules. toolscript-mcp asks you before the run
+and shows the rules added and removed. If you decline, the run uses the policy in force. toolscript-mcp does not ask
+again until the config file changes. If your client cannot ask, restart toolscript-mcp to apply the change.
+
+Do not let a tool that the policy allows write the config file. A program can call that tool to change its own policy.
 
 If a tool does not answer in the call time limit, the call throws an error. toolscript-mcp cancels the request on the
 server. The program can catch the error and continue.
