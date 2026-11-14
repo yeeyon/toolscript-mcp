@@ -70,13 +70,14 @@ Do each run in a new empty folder, with a new log file. `<repo>` is the full pat
    ```
 
 2. Give Codex no other MCP server, no web search and no shell, if your version allows that. Write down what stays on.
-3. Run the task without a person, with JSON events. For example:
+3. Run the task without a person, with JSON events. The run folder is not a Git repository, so add
+   `--skip-git-repo-check`. Without it, `codex exec` stops before the task. For example:
 
    ```sh
-   codex exec --json --model <model> "<prompt of the task>" > events.jsonl
+   codex exec --skip-git-repo-check --json --model <model> "<prompt of the task>" > events.jsonl
    ```
 
-   Add the code mode flag only for `codex-codemode`.
+   Add the code mode flag only for `codex-codemode`. Use the same flags in all three arms.
 4. Save the final answer text of the agent as `answer.txt`.
 5. Judge the answer:
 
