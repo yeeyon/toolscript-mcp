@@ -72,6 +72,17 @@ describe('reconnect', () => {
     assert.equal(starts(), 2)
   })
 
+  test('two runs that name one failed server both wait for its one attempt', async () => {
+    const { downstream, starts, closed } = setup()
+    await downstream.settled
+    await closed()
+    const statusAfter = (keys?: ServerKey[]) => downstream.retry(keys).then(() => downstream.states()[0]?.status)
+    const [first, second, search] = await Promise.all([statusAfter([KEY]), statusAfter([KEY]), statusAfter()])
+    assert.deepEqual([first, second], ['connected', 'connected'])
+    assert.equal(search, 'connecting', 'a search does not wait for an attempt that another caller started')
+    assert.equal(starts(), 2)
+  })
+
   test('at most 3 attempts in 60 s, then the reason gives the wait, and after 60 s one more', async () => {
     const { downstream, clock, starts, closed } = setup()
     await downstream.settled

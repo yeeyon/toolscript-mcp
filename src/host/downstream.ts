@@ -29,7 +29,7 @@ export const FIRST_WAIT_MS = 10_000
 const MAX_ATTEMPTS = 3
 const ATTEMPT_WINDOW_MS = 60_000
 
-/** The longest time a search or a run waits for the reconnects that it started. */
+/** The longest time a search or a run waits for reconnects in `retry`. */
 const RETRY_WAIT_MS = 5_000
 
 /** One server: an attempt in progress, the client to call, or why it failed. */
@@ -50,7 +50,10 @@ export type Downstream = {
   states(): readonly ServerState[]
   /**
    * Connects again each failed server of `keys` (all when undefined) that the
-   * cap allows, and waits for these attempts up to RETRY_WAIT_MS. Never rejects.
+   * cap allows, and waits up to RETRY_WAIT_MS. With `keys` (a run), it also waits
+   * for an attempt that another caller started, so the run can use the server.
+   * Without `keys` (a search), it waits only for the attempts that it started,
+   * so a server that hangs in its connect does not slow each search. Never rejects.
    */
   retry(keys?: readonly ServerKey[]): Promise<void>
   /**
@@ -169,6 +172,12 @@ export const connectAll = (
     return attempt(key, server)
   }
 
+  /** The attempt that a caller of `key` waits for: a new one, or the one in progress, whoever started it. */
+  const pending = (key: ServerKey): Promise<void> | undefined => {
+    const link = links.get(key)
+    return reconnect(key) ?? (link?.status === 'connecting' ? link.done : undefined)
+  }
+
   const stateOf = (key: ServerKey, link: Link): ServerState => {
     if (link.status === 'connecting') return { key, status: 'connecting' }
     if (link.status === 'connected') return { key, status: 'connected', tools: link.tools }
@@ -182,17 +191,20 @@ export const connectAll = (
     settled: Promise.race([ready, new Promise(r => setTimeout(r, FIRST_WAIT_MS).unref())]).then(() => {}),
     states: () => [...links].map(([key, link]) => stateOf(key, link)),
     retry: async keys => {
-      const started = (keys ?? [...servers.keys()]).flatMap(key => reconnect(key) ?? [])
-      if (started.length === 0) return
+      const waits =
+        keys === undefined
+          ? [...servers.keys()].flatMap(key => reconnect(key) ?? [])
+          : keys.flatMap(key => pending(key) ?? [])
+      if (waits.length === 0) return
       let timer: NodeJS.Timeout | undefined
-      await Promise.race([Promise.all(started), new Promise(r => (timer = setTimeout(r, RETRY_WAIT_MS)))])
+      await Promise.race([Promise.all(waits), new Promise(r => (timer = setTimeout(r, RETRY_WAIT_MS)))])
       clearTimeout(timer)
     },
     client: async key => {
       if (closing) return { ok: false, reason: 'toolscript-mcp is shutting down' }
       const link = links.get(key)
       if (link === undefined) return { ok: false, reason: `no MCP server "${key}" is connected` }
-      await (reconnect(key) ?? (link.status === 'connecting' ? link.done : undefined))
+      await pending(key)
       const after = links.get(key) ?? link
       if (after.status === 'connected') return { ok: true, client: after.client }
       const state = stateOf(key, after)
