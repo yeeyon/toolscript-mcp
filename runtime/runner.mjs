@@ -10,7 +10,7 @@
 //           {"t":"resources","id":5,"server":"docs"}
 //           {"t":"resource","id":6,"server":"docs","uri":"file:///a.md"}
 //           {"t":"done","value":"<json>","logs":[...]}
-//           {"t":"error","message":"...","logs":[...]}
+//           {"t":"error","message":"...","logs":[...]}  ("timedOut":true when the time limit ended it)
 // The host answers each message with an <id> by writing <exchange dir>/r<id>.json:
 //           {"ok":true,"value":...} or {"ok":false,"error":"..."}
 // sleep(ms) never reaches the host: this process answers it with its own timer.
@@ -309,7 +309,10 @@ try {
       return []
     }
   }
-  setTimeout(() => finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: logsSoFar() }), timeoutMs)
+  setTimeout(
+    () => finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: logsSoFar(), timedOut: true }),
+    timeoutMs,
+  )
 } catch (err) {
   finish({ t: 'error', message: String(err?.stack ?? err), logs: [] })
 }

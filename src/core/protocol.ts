@@ -10,7 +10,8 @@ export type RunnerRead = { t: 'read'; id: number; path: string }
 export type RunnerResources = { t: 'resources'; id: number; server?: string }
 export type RunnerResource = { t: 'resource'; id: number; server: string; uri: string }
 export type RunnerDone = { t: 'done'; value: string; logs: string[] }
-export type RunnerError = { t: 'error'; message: string; logs: string[] }
+/** `timedOut`: the runner's time limit or the host's ended the run, not the program. */
+export type RunnerError = { t: 'error'; message: string; logs: string[]; timedOut?: boolean }
 export type RunnerMessage =
   | RunnerCall
   | RunnerRecall

@@ -190,9 +190,9 @@ const NO_RESOURCES: Reply = { ok: false, error: 'resources() and readResource() 
 // SIGKILL, not SIGXCPU. A SIGKILL that the run sent itself (an abort) is no limit.
 const stoppedOutcome = (ending: Ending, limitSeconds: number, aborted: boolean): RunnerError | undefined => {
   const past = `the program ran past the time limit of ${limitSeconds} s and was stopped`
-  if (ending.kind === 'timeout') return { t: 'error', message: past, logs: [] }
+  if (ending.kind === 'timeout') return { t: 'error', message: past, logs: [], timedOut: true }
   if (ending.kind === 'exit' && !aborted && (ending.signal === 'SIGXCPU' || ending.signal === 'SIGKILL'))
-    return { t: 'error', message: `${past} (CPU limit)`, logs: [] }
+    return { t: 'error', message: `${past} (CPU limit)`, logs: [], timedOut: true }
   return undefined
 }
 
@@ -454,11 +454,9 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   }
 }
 
-const TIMED_OUT = /^timeout after|ran past the time limit/
-
 const endingOf = (outcome: RunnerDone | RunnerError | undefined, aborted: boolean): RunEnding => {
   if (outcome?.t === 'done') return 'done'
   if (aborted) return 'cancelled'
   if (outcome === undefined) return 'failed'
-  return TIMED_OUT.test(outcome.message) ? 'timeout' : 'error'
+  return outcome.timedOut === true ? 'timeout' : 'error'
 }

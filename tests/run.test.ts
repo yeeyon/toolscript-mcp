@@ -624,6 +624,17 @@ describe('the run log', () => {
     }
   })
 
+  test('a program that throws the text of a time limit ends as error, and the runner time limit as timeout', async () => {
+    const { run, lines } = setup({ timeoutSeconds: 1 })
+    await run('throw "timeout after 5 ms"')
+    await run('throw new Error("the job ran past the time limit")')
+    await run('await call("mcp__f__hang", {})')
+    assert.deepEqual(
+      lines().map(l => l.ending),
+      ['error', 'error', 'timeout'],
+    )
+  })
+
   test('"log": false writes no file', async () => {
     const { run, ctx } = setup({ log: false })
     await run('return 1')
