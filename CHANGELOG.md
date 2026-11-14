@@ -52,6 +52,39 @@ The bench:
 
 The release:
 
-- `.github/workflows/release.yml` publishes the version in `package.json` to npm with provenance, then tags the commit and makes the GitHub release with the tarball. It runs every job of `test.yml` first, and a rerun skips the steps that are done.
+- `.github/workflows/release.yml` publishes the version in `package.json` to npm with provenance, then tags the commit and makes the GitHub release with the tarball. It runs every job of `test.yml` first. A read-only job builds and checks the tarball, and the publish job uploads only that tarball. A rerun skips the steps that are done, and fails when npm holds a different tarball for the version.
 - `scripts/pack-check.mjs` packs the package, checks its file list, installs the tarball in an empty folder and runs `tests/server.e2e.mjs` against the installed command. CI runs it on Linux, macOS and Windows.
 - The README has install lines for Claude Code, Claude Desktop, Cursor and Codex, a Limits section and a comparison with Claude Code Code Mode.
+- `bench/run.mjs` answers `--help` and refuses an unknown flag before any run, so neither spends money.
+
+Setup and configuration:
+
+- Added `toolscript-mcp init`. It imports the user-scope MCP servers of Claude Code, Claude Desktop and Cursor into a new config (mode 0600, written through a temp file), and prints the lines to change in each client. It never edits a client file. `--dry-run` writes nothing and hides env values, header values, and the user, password and query of URLs. Other arguments show as they are. The printed commands quote each word, so nothing in a name or path expands in the shell.
+- A server entry with an error, for example an unset `${VAR}`, fails alone. The other servers start, and `search_tools` shows the error. An error outside `mcpServers` still stops the start.
+- `run_code` reads `policy` from the config file at each run. A config with errors keeps the last valid policy, and the result says so.
+
+Downstream servers:
+
+- A server that failed to connect, or whose connection closed, connects again on the next `search_tools` or call. At most 3 attempts per server in 60 seconds. Concurrent callers share one attempt.
+- Added `sandbox.callTimeoutSeconds` (1 to `sandbox.timeoutSeconds`, default 60, or `sandbox.timeoutSeconds` when that is shorter). A call past it throws an error that the program can catch, and the server gets `notifications/cancelled`.
+- The end of a run no longer sends `notifications/cancelled` for calls that already finished.
+
+Tool search:
+
+- `search_tools` shows each of 3 or fewer matches in full: the description and a TypeScript declaration of `call()` with nested object types, enums, unions, local `$ref`s and the note of each argument. A tool with an `outputSchema` gets a `Promise<…>` result type. Without one, the search shows the shape of a result from an earlier run in the session (`returned earlier:`). 4 or more matches keep the one-line list.
+- The declaration has a work budget, so a recursive schema cannot stall the server. A literal is never cut.
+- The check before a run accepts argument names that an `allOf`, `anyOf` or `oneOf` adds.
+
+Run log:
+
+- Each `run_code` call appends one JSON line to `~/.toolscript-mcp/runs.jsonl`: time, run id, duration, ending, result size, and per call the tool name, policy decision, duration and a short error code. Never arguments, results, program text or error messages. It rotates to `runs.1.jsonl` at 5 MB. `"log": false` turns it off.
+
+Runner fixes (inherited from claude-code-mode at eea4077):
+
+- A failed call that the program awaits later no longer crashes the sandbox.
+- After the result, the runner gives no more answers to the program, so a looping callback cannot block the result (upstream #71).
+- A timeout keeps the console lines collected so far.
+- A cut result never splits a surrogate pair.
+- The "calls returned data" note counts only results that hold data.
+- Sizes and ages round before the unit is picked (upstream #82).
+- `call(tool, "text")` throws a catchable error. A return value with a cycle or a BigInt is an error, not `"[object Object]"`.
