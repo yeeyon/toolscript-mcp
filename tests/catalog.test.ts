@@ -420,4 +420,16 @@ describe('search_tools with more than 3 hits', () => {
       /^3 of 3 MCP tools\.\n\n### mcp__x__a\nTool a\. More\.\ncall\(/,
     )
   })
+
+  test('a tool whose array items nest 20,000 deep does not break the search', () => {
+    let deep: unknown = { type: 'string' }
+    for (let i = 0; i < 20_000; i++) deep = { type: 'array', items: deep }
+    const tools = ['a', 'b', 'c', 'd'].map(name => ({
+      name,
+      inputSchema: { type: 'object', properties: { id: name === 'd' ? deep : { type: 'string' } } },
+    }))
+    const text = searchResult(server(tools), '', 15)
+    assert.match(text, /### mcp__x__d\n\nargs: \{ id\?: unknown(\[\])+ \}/)
+    assert.match(one(tools[3]!), /^### mcp__x__d\ncall\("mcp__x__d", \{\n {2}id\?: unknown(\[\])+\n\}\)$/)
+  })
 })

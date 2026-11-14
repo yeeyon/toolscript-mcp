@@ -65,14 +65,15 @@ export const notConnected = (s: ServerState): string | undefined =>
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 // An empty enum allows no value. An empty type list is not a valid schema.
-const typeOf = (schema: unknown): string => {
-  if (!isObject(schema)) return 'unknown'
+// Arrays nested deeper than MAX_NEST end in unknown, so a deep schema cannot overflow the stack.
+const typeOf = (schema: unknown, nest = 0): string => {
+  if (!isObject(schema) || nest > MAX_NEST) return 'unknown'
   if (Array.isArray(schema.enum))
     return schema.enum.length === 0 ? 'never' : schema.enum.map(v => JSON.stringify(v)).join(' | ')
   const type = schema.type
   if (Array.isArray(type))
-    return type.length === 0 ? 'unknown' : type.map(t => typeOf({ ...schema, type: t })).join(' | ')
-  if (type === 'array') return `${typeOf(schema.items)}[]`
+    return type.length === 0 ? 'unknown' : type.map(t => typeOf({ ...schema, type: t }, nest)).join(' | ')
+  if (type === 'array') return `${typeOf(schema.items, nest + 1)}[]`
   if (type === 'integer') return 'number'
   if (typeof type === 'string') return type
   return 'unknown'
