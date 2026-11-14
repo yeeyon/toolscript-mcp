@@ -397,7 +397,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
       runner: RUNNER,
       xdir,
       timeoutMs,
-      input: JSON.stringify({ code, timeoutMs, lib: {} }),
+      code,
     })
     kill = () => {
       killedByUs = true

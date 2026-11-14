@@ -26,10 +26,12 @@ export type LaunchOptions = {
   readonly runner: string
   /** From makeExchangeDir. */
   readonly xdir: string
-  /** The wall-clock limit of the run. The runner reports it by itself, and the host kill timer is the backstop. */
+  /** The wall-clock limit of the run, from the launch. The runner reports it by itself, and the host kill timer is the backstop. */
   readonly timeoutMs: number
-  /** The runner's stdin: `{"code", "timeoutMs", "lib"}` as JSON. */
-  readonly input: string
+  /** The program. */
+  readonly code: string
+  /** The saved functions, by name: each one is the source of an async function expression. */
+  readonly lib?: Readonly<Record<string, string>>
   /** The environment of the Linux and macOS launch script, which finds node and unshare on its PATH. The sandbox process never gets it. */
   readonly env?: NodeJS.ProcessEnv
 }
@@ -149,13 +151,16 @@ export const launch = (o: LaunchOptions): Sandbox => {
   // --allow-fs-read takes real paths: on macOS the temp dir is under a link, and
   // --permission stops a main script whose path goes through a link before it starts.
   const command = SANDBOX.command(o, fs.realpathSync(o.runner), fs.realpathSync(o.xdir))
+  // The runner's timer and the kill timer both count from here: on a busy machine Node can take
+  // longer than KILL_GRACE_MS to start the runner. Both processes read the same system clock.
+  const deadline = Date.now() + o.timeoutMs
   const child = spawn(command.file, command.args, { env: command.env, stdio: 'pipe', windowsHide: true })
   child.stdin.on('error', () => {}) // a process that ends early does not read stdin
-  child.stdin.end(o.input)
+  child.stdin.end(JSON.stringify({ code: o.code, lib: o.lib ?? {}, timeoutMs: o.timeoutMs, deadline }))
 
   // kill returns false once the process has exited, so a run that ends at the limit is no timeout.
   let timedOut = false
-  const timer = setTimeout(() => (timedOut = child.kill('SIGKILL')), o.timeoutMs + KILL_GRACE_MS)
+  const timer = setTimeout(() => (timedOut = child.kill('SIGKILL')), deadline + KILL_GRACE_MS - Date.now())
   let failed: Error | undefined
   const ended = new Promise<Ending>(resolve => {
     child.on('error', error => {

@@ -1,7 +1,8 @@
 // Sandbox runner for code-mode. Runs one script the model wrote.
 //
 // argv:   runner.mjs <exchange dir>
-// stdin:  {"code": "...", "timeoutMs": 60000, "lib": {"<name>": "<async function expression>"}}
+// stdin:  {"code": "...", "lib": {"<name>": "<async function expression>"}, "timeoutMs": 60000,
+//          "deadline": <Date.now() at the launch + timeoutMs>}
 // stdout: one line per message, each "\u0001cm " + JSON:
 //           {"t":"call","id":1,"tool":"mcp__x__y","args":{...}}
 //           {"t":"recall","id":2,"ref":4}
@@ -31,6 +32,7 @@ const POLL_MS = 5
 const xdir = process.argv[2]
 const input = JSON.parse(fs.readFileSync(0, 'utf8'))
 const timeoutMs = Number(input.timeoutMs) || 60_000
+const deadline = Number(input.deadline)
 
 let finished = false
 const lineOf = msg => MARK + JSON.stringify(msg) + '\n'
@@ -319,7 +321,7 @@ try {
   setTimeout(
     () =>
       finish({ t: 'error', message: `timeout after ${timeoutMs} ms`, logs: linesOf(String(logsOf())), timedOut: true }),
-    timeoutMs,
+    Math.max(0, deadline - Date.now()),
   )
 } catch (err) {
   finish({ t: 'error', message: String(err?.stack ?? err), logs: [] })
