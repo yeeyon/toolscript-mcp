@@ -43,6 +43,8 @@ The first server (M3):
 - A policy glob matches with no regular expression: `*` also matches a line break, and a long tool name that a program builds cannot stall the server.
 - `approvalNote` moved to `src/core/policy.ts` and names the rule to add in the config. The check before a run no longer says that a deny rule hides a tool.
 - `normalizePath` keeps a Windows drive, so `appPath` works with a Windows home folder.
+- A return value cut at 20,000 characters now shows its shape first, then the first 3,000 characters as compact JSON, then the `recall(n)` note. Before, it showed 20,000 characters of indented JSON and the shape came after the cut. A 71k-character result now takes 3,414 characters, not 20,342.
+- Each kept call in the footer names its handle, as `#1 mcp__bench__get_deploys 71k {…} -> recall(1)`. The `run_code` description lists `recall(n)`. In the bench, 5 of 9 second programs called the same tool again instead of `recall(n)`.
 - `tests/run.test.ts` runs `run_code` with the real sandbox and fake servers: the run_code, files, check, output projection and approval cases of the plugin that apply. `tests/policy.test.ts` covers the rules and the config. `tests/server.e2e.mjs` covers paging, deny, ask with and without elicitation, a name built at run time, a busy loop, a wrong name, a secret probe, a cut result with recall, and the cleanup of the exchange dir.
 
 The bench:
@@ -57,6 +59,7 @@ The release:
 - `scripts/pack-check.mjs` packs the package, checks its file list, installs the tarball in an empty folder and runs `tests/server.e2e.mjs` against the installed command. CI runs it on Linux, macOS and Windows.
 - The README has install lines for Claude Code, Claude Desktop, Cursor and Codex, a Limits section and a comparison with Claude Code Code Mode.
 - `bench/run.mjs` answers `--help` and refuses an unknown flag before any run, so neither spends money.
+- The build bundles the host code and the SDK into one file, `dist/host/main.js`, with esbuild. The package has no runtime dependency, so an install adds 1 package instead of 96. On Windows the time from the spawn to the `tools/list` reply went from 423 ms to 232 ms (median of 40 starts), and from 631 ms to 294 ms on the first start after an install (10 starts). `dist/third-party-licenses.txt` holds the licences of the bundled packages. `scripts/start-time.mjs` measures the start.
 
 Setup and configuration:
 

@@ -301,6 +301,23 @@ export const shownText = (json: string): string => {
   }
 }
 
+// A cut result shows this much compact JSON after its shape: enough to see how
+// the values are spelled. In the bench, Code Mode's model read 3,000 characters
+// of a 71k result with preview() and wrote a correct second program.
+const HEAD_CHARS = 3000
+
+/** A return value as the model reads it: formatted JSON when it fits in `max`, else its shape and a short head of compact JSON. */
+const resultText = (json: string, max: number, whole?: number): string => {
+  const shown = shownText(json)
+  if (shown.length <= max) return shown
+  try {
+    const value: unknown = JSON.parse(json)
+    return `shape: ${shapeOf(value)}\n${clip(JSON.stringify(value), HEAD_CHARS, whole)}`
+  } catch {
+    return clip(json, HEAD_CHARS, whole)
+  }
+}
+
 /** The text the model reads after a run. */
 export const formatOutcome = (
   outcome: RunnerDone | RunnerError | undefined,
@@ -314,7 +331,7 @@ export const formatOutcome = (
     parts.push('Error: the sandbox exited without a result.')
     if (stderr.trim() !== '') parts.push(`stderr:\n${clip(stderr.trim(), 2000)}`)
   } else if (outcome.t === 'done') {
-    parts.push(clip(shownText(outcome.value), maxChars, projection?.wholeRef))
+    parts.push(resultText(outcome.value, maxChars, projection?.wholeRef))
   } else {
     const message = /^\w*Error: /.test(outcome.message) ? outcome.message : `Error: ${outcome.message}`
     parts.push(clip(message, 4000))
@@ -952,7 +969,8 @@ const callLine = (c: CallRecord): string => {
   if (c.status === 'unfinished') return `${id} ${c.tool} did not finish`
   if (c.status === 'failed') return `${id} ${c.tool} failed`
   const repeat = c.repeatOf === undefined || c.repeatOf === 0 ? '' : `, the same call as #${c.repeatOf}`
-  return `${id} ${c.tool} ${charCount(c.chars)}${repeat} ${c.shape ?? ''}`.trimEnd()
+  const recall = c.ref === undefined ? '' : ` -> recall(${c.ref})`
+  return `${`${id} ${c.tool} ${charCount(c.chars)}${repeat} ${c.shape ?? ''}`.trimEnd()}${recall}`
 }
 
 // Many calls: one line per tool, with the shape of its first result.
@@ -993,13 +1011,18 @@ export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerErro
           `recalled: ${[...new Map(p.recalled.map(r => [r.ref, r])).values()].map(r => `#${r.ref} (${age(r.ageMs)})`).join(', ')}`,
         ]
   if (n === 0) return [head, ...recalled].join('\n')
-  const lines = n <= MAX_CALL_LINES ? p.calls.map(callLine) : groupLines(p.calls)
   const missed = missedData(outcome, p.calls)
     ? ['The result is empty, but the calls returned data: check the shapes.']
     : []
-  return [head, ...lines, ...recalled, ...missed, 'await recall(n) returns result #n again, with no new call.'].join(
-    '\n',
-  )
+  // A line per call names its recall(n). A group line has a range of numbers, so the note says how to use them.
+  if (n <= MAX_CALL_LINES) return [head, ...p.calls.map(callLine), ...recalled, ...missed].join('\n')
+  return [
+    head,
+    ...groupLines(p.calls),
+    ...recalled,
+    ...missed,
+    'await recall(n) returns result #n again, with no new call.',
+  ].join('\n')
 }
 
 const words = (text: string): string[] =>
@@ -1067,6 +1090,7 @@ export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, a
 
 The program is the body of an async function. Available:
 - await call("mcp__<server>__<tool>", args) -> the tool result (parsed JSON when the tool returns JSON, else text)
+- await recall(n) -> result #n of an earlier run, with no new call
 - await sleep(ms) -> waits, to poll a slow job; the time limit of the run still applies
 - await saveFile(name, data) -> writes data to a file and returns its path: text as it is, CSV or JSON lines for an array with a .csv or .jsonl name, else JSON; use it for data too large to return
 - await readFile(path) -> the text of a file from saveFile
