@@ -3,6 +3,7 @@
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { argSpec, catalogOf } from '../core/catalog.ts'
@@ -35,9 +36,11 @@ import {
   type RunnerError,
   type RunnerMessage,
 } from '../core/protocol.ts'
+import { callDecision, runLine, runRecord, type CallError, type CallLog, type RunEnding } from '../core/runlog.ts'
 import { SERVER_NAME } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
+import { appendRunLog } from './runlog.ts'
 
 const MAX_RESULT_CHARS = 20_000
 // Nested calls of one run that wait for a reply at one time: a program that
@@ -68,18 +71,43 @@ export type RunContext = {
   /** Aborts when the server shuts down or the client cancels the call: the sandbox is killed. */
   readonly signal: AbortSignal
   readonly log: (line: string) => void
+  /** HOME, where the run log goes. */
+  readonly home: string
 }
 
 export type RunResult = { readonly text: string; readonly isError: boolean }
 
-const refused = (text: string): RunResult => ({ text, isError: true })
+/** A result with what the run log needs to know about it. */
+type Attempt = { readonly result: RunResult; readonly ending: RunEnding; readonly calls: readonly CallLog[] }
+
+const refused = (text: string): Attempt => ({ result: { text, isError: true }, ending: 'refused', calls: [] })
+
+/** One run_code call, and one line in the run log unless the config turns it off. */
+export const runCode = async (ctx: RunContext, code: string): Promise<RunResult> => {
+  const startedAt = performance.now()
+  const { result, ending, calls } = await attempt(ctx, code)
+  if (ctx.config.log) {
+    const known = new Set(catalogOf(ctx.downstream.states()).map(t => t.name))
+    const record = runRecord({
+      now: new Date(),
+      id: randomUUID(),
+      ms: performance.now() - startedAt,
+      ending,
+      chars: result.text.length,
+      calls,
+      known,
+    })
+    await appendRunLog(ctx.home, runLine(record), ctx.log)
+  }
+  return result
+}
 
 /**
- * One run_code call. The check of names and the policy come first: a program
+ * The run itself. The check of names and the policy come first: a program
  * with a wrong name or a denied tool never starts a sandbox, and the approval
  * prompt comes before the run's timer starts.
  */
-export const runCode = async (ctx: RunContext, code: string): Promise<RunResult> => {
+const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   if (code.trim() === '') return refused('Error: code is empty.')
   await ctx.downstream.settled
   const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
@@ -159,7 +187,7 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
-const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<string>): Promise<RunResult> => {
+const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<string>): Promise<Attempt> => {
   const { config, downstream, kept } = ctx
   const limitSeconds = config.sandbox.timeoutSeconds
   const timeoutMs = limitSeconds * 1000
@@ -168,6 +196,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   const xdir = await makeExchangeDir()
 
   const records = new Map<number, CallRecord>()
+  const audits = new Map<number, CallLog>()
   // Every call the program made, by id: one with no record at the end did not finish.
   const started = new Map<number, string>()
   const unapproved = new Set<string>()
@@ -204,19 +233,24 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     await fs.promises.writeFile(path.join(xdir, `r${id}.json`), typeof r === 'string' ? r : JSON.stringify(r))
   }
 
-  const callTool = async (tool: string, args: Record<string, unknown>): Promise<Reply> => {
+  // `error` is the short code for the run log: a message from a server can hold data.
+  const callTool = async (tool: string, args: Record<string, unknown>): Promise<Reply & { code?: CallError }> => {
     const target = isCallable(tool, SERVER_NAME) ? splitToolName(tool) : undefined
     if (target === undefined)
-      return { ok: false, error: `only MCP tools (mcp__<server>__<tool>) can be called, not "${tool}"` }
+      return {
+        ok: false,
+        error: `only MCP tools (mcp__<server>__<tool>) can be called, not "${tool}"`,
+        code: 'invalid',
+      }
     const check = checkCall(config.policy, approved, tool)
     if (!check.ok) {
       if (check.needsRule) unapproved.add(tool)
-      return { ok: false, error: check.error }
+      return { ok: false, error: check.error, code: callDecision(config.policy, approved, tool) }
     }
     const link = await downstream.client(target.server as ServerKey)
-    if (!link.ok) return { ok: false, error: link.reason }
+    if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
     // A reconnect can outlast the sandbox: then the call has no reader and does not start.
-    if (ended) return { ok: false, error: 'the program ended before the call started' }
+    if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }
     // The SDK keeps its abort listener after the answer and then sends a
     // cancel for a finished call: one signal per call, unlinked at the end.
     const own = new AbortController()
@@ -228,19 +262,21 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
         timeout: callSeconds * 1000,
         signal: own.signal,
       })
-      return mcpReply({
+      const reply = mcpReply({
         content: Array.isArray(r.content) ? r.content : [],
         isError: r.isError === true,
         structuredContent: r.structuredContent,
       })
+      return reply.ok ? reply : { ...reply, code: 'tool-error' }
     } catch (err) {
       // An abort at the end of the run is also a RequestTimeout to the SDK.
       if (!own.signal.aborted && err instanceof McpError && err.code === ErrorCode.RequestTimeout)
         return {
           ok: false,
           error: `${tool} did not answer within the call limit of ${callSeconds} s and was cancelled`,
+          code: 'timeout',
         }
-      return { ok: false, error: errorText(err) }
+      return { ok: false, error: errorText(err), code: own.signal.aborted ? 'cancelled' : 'failed' }
     } finally {
       cancel.signal.removeEventListener('abort', stop)
     }
@@ -248,8 +284,16 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
 
   const answerCall = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
     if (ended) return
-    const r = await callTool(tool, args)
+    const began = performance.now()
+    const { code: failure, ...r } = await callTool(tool, args)
     if (closed) return
+    audits.set(id, {
+      tool,
+      decision: callDecision(config.policy, approved, tool),
+      ms: performance.now() - began,
+      ok: r.ok,
+      ...(r.ok ? {} : { error: failure ?? 'failed' }),
+    })
     await reply(id, r)
     // A repeat is a call equal to an earlier one that worked. A failed call is
     // not kept: a new call is the only way to retry it.
@@ -364,7 +408,17 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     outcome = stoppedOutcome(ending, limitSeconds, killedByUs)
     if (outcome === undefined) stderr = `${stderr}\n${endingText(ending, config.sandbox.node)}`
   }
-  for (const [id, tool] of started) if (!records.has(id)) records.set(id, { tool, status: 'unfinished', chars: 0 })
+  for (const [id, tool] of started) {
+    if (records.has(id)) continue
+    records.set(id, { tool, status: 'unfinished', chars: 0 })
+    audits.set(id, {
+      tool,
+      decision: callDecision(config.policy, approved, tool),
+      ms: 0,
+      ok: false,
+      error: 'unfinished',
+    })
+  }
   const calls = [...records].sort((a, b) => a[0] - b[0]).map(([, r]) => r)
 
   // A result too large to show is kept whole, so the next program can page it.
@@ -375,5 +429,19 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   const note = approvalNote([...unapproved], ctx.canAsk())
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
-  return { text: note === '' ? text : `${text}\n\n${note}`, isError: outcome?.t !== 'done' }
+  const result = { text: note === '' ? text : `${text}\n\n${note}`, isError: outcome?.t !== 'done' }
+  return {
+    result,
+    ending: endingOf(outcome, ctx.signal.aborted),
+    calls: [...audits].sort((a, b) => a[0] - b[0]).map(([, c]) => c),
+  }
+}
+
+const TIMED_OUT = /^timeout after|ran past the time limit/
+
+const endingOf = (outcome: RunnerDone | RunnerError | undefined, aborted: boolean): RunEnding => {
+  if (outcome?.t === 'done') return 'done'
+  if (aborted) return 'cancelled'
+  if (outcome === undefined) return 'failed'
+  return TIMED_OUT.test(outcome.message) ? 'timeout' : 'error'
 }

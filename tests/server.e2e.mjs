@@ -38,7 +38,18 @@ const BENCH_LOG = path.join(dir, 'bench.jsonl')
 // The server's temp dir: each run makes its exchange dir here, and must remove it.
 const TMP = path.join(dir, 'tmp')
 fs.mkdirSync(TMP)
-const SERVER_ENV = { ...process.env, TOOLSCRIPT_E2E_MARKER: MARKER, TMPDIR: TMP, TEMP: TMP, TMP }
+// The server's HOME: the run log and saveFile never touch the real one.
+const HOME = path.join(dir, 'home')
+fs.mkdirSync(HOME)
+const SERVER_ENV = {
+  ...process.env,
+  TOOLSCRIPT_E2E_MARKER: MARKER,
+  TMPDIR: TMP,
+  TEMP: TMP,
+  TMP,
+  HOME,
+  USERPROFILE: HOME,
+}
 fs.writeFileSync(
   configFile,
   JSON.stringify({
@@ -425,6 +436,16 @@ test('run (l) a call with no answer in callTimeoutSeconds throws, the program go
   for (let i = 0; i < 20 && probeEvents(slowFile, 'cancelled').length === 0; i++)
     await new Promise(res => setTimeout(res, 100))
   assert.equal(probeEvents(slowFile, 'cancelled').length, 1, 'the server got notifications/cancelled')
+  const logged = fs
+    .readFileSync(path.join(HOME, '.toolscript-mcp', 'runs.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+  const last = JSON.parse(logged.at(-1))
+  assert.deepEqual(
+    last.calls.map(({ tool, ok, error }) => ({ tool, ok, error })),
+    [{ tool: 'mcp__slow__probe', ok: false, error: 'timeout' }],
+    'the run log records the call as a timeout',
+  )
 })
 
 test('(f) stdout holds only JSON-RPC, and (h) the server and its children end when stdin closes', async () => {

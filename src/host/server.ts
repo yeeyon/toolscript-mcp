@@ -93,6 +93,7 @@ export const createServer = (
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
       log,
+      home: os.homedir(),
     }
     const running = runCode(ctx, code)
     runs.add(running)

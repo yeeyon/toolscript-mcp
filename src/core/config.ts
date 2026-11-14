@@ -37,6 +37,8 @@ export type Config = {
   readonly servers: ReadonlyMap<ServerKey, ServerConfig>
   readonly sandbox: Sandbox
   readonly policy: Policy
+  /** False when the config says `"log": false`: no run log. */
+  readonly log: boolean
 }
 
 /** The time limit of a run without `sandbox.timeoutSeconds`, and the least it can be, as in the plugin. */
@@ -243,7 +245,7 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
   }
   if (!isObject(raw)) return { ok: false, errors: ['the config must be a JSON object with an mcpServers object'] }
   const errors: string[] = []
-  unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox', 'policy'], 'config', errors)
+  unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox', 'policy', 'log'], 'config', errors)
 
   const servers = new Map<ServerKey, ServerConfig>()
   if (!isObject(raw.mcpServers)) errors.push('mcpServers: must be an object')
@@ -263,8 +265,11 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
 
   const sandbox = parseSandbox(raw.sandbox, execPath, platform, errors)
   const policy = parsePolicy(raw.policy, errors)
+  if (raw.log !== undefined && typeof raw.log !== 'boolean')
+    errors.push(`log: must be true or false, not ${JSON.stringify(raw.log)}`)
+  const log = raw.log !== false
 
-  return errors.length > 0 ? { ok: false, errors } : { ok: true, config: { servers, sandbox, policy } }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, config: { servers, sandbox, policy, log } }
 }
 
 /**
