@@ -179,6 +179,97 @@ describe('search_tools with 3 or fewer hits', () => {
     assert.ok(text.length < 200, text)
   })
 
+  test('an allOf next to properties shows both, so a required argument stays required', () => {
+    const text = one({
+      name: 'q',
+      inputSchema: {
+        type: 'object',
+        $defs: { Paging: { type: 'object', properties: { limit: { type: 'integer' } } } },
+        properties: {
+          query: { type: 'string' },
+          paging: { allOf: [{ $ref: '#/$defs/Paging' }], description: 'Paging.' },
+          sort: {
+            properties: { by: { type: 'string' } },
+            required: ['by'],
+            allOf: [{ $ref: '#/$defs/Paging' }, { properties: { desc: { type: 'boolean' } } }],
+          },
+        },
+        required: ['query'],
+        allOf: [{ properties: { limit: { type: 'integer' } } }],
+      },
+    })
+    assert.equal(
+      text,
+      [
+        '### mcp__x__q',
+        'call("mcp__x__q", {',
+        '  query: string',
+        '  paging?: { // Paging.',
+        '    limit?: number',
+        '  }',
+        '  sort?: {',
+        '    by: string',
+        '  } & {',
+        '    limit?: number',
+        '  } & {',
+        '    desc?: boolean',
+        '  }',
+        '} & {',
+        '  limit?: number',
+        '})',
+      ].join('\n'),
+    )
+  })
+
+  test('a schema whose expansion branches without end falls back fast', () => {
+    for (const width of [4, 8]) {
+      const branches = Array.from({ length: width }, (_, i) =>
+        i < 4 ? { $ref: '#/$defs/T' } : { type: 'array', items: { $ref: '#/$defs/T' } },
+      )
+      const started = performance.now()
+      const text = one({
+        name: 'rec',
+        inputSchema: {
+          type: 'object',
+          $defs: { T: { anyOf: branches } },
+          properties: { t: { $ref: '#/$defs/T' } },
+          required: ['t'],
+        },
+      })
+      const ms = performance.now() - started
+      assert.equal(text, '### mcp__x__rec\ncall("mcp__x__rec", { t: unknown })')
+      assert.ok(ms < 100, `width ${width}: ${ms.toFixed(1)} ms`)
+    }
+  })
+
+  test('a literal is never cut: a long one shows whole, a longer one shows its type', () => {
+    const long = 'a'.repeat(220)
+    const longer = 'b'.repeat(600)
+    const text = one({
+      name: 'lit',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mode: { enum: [long] },
+          kind: { const: longer },
+          pick: { enum: ['x', longer, `${longer}c`] },
+        },
+        required: ['mode'],
+      },
+    })
+    assert.equal(
+      text,
+      [
+        '### mcp__x__lit',
+        'call("mcp__x__lit", {',
+        `  mode: "${long}"`,
+        '  kind?: string /* long value left out */',
+        '  pick?: "x" | string /* long value left out */',
+        '})',
+      ].join('\n'),
+    )
+  })
+
   test('a long description is cut at 2000 characters', () => {
     const text = one({ name: 'long', description: 'word '.repeat(2000) })
     const description = text.split('\n')[1]!
