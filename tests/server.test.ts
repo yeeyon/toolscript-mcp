@@ -4,6 +4,7 @@ import {
   DEPTH_VAR,
   childEnv,
   configPath,
+  hideArgSecrets,
   nestedStart,
   parseConfig,
   policyOf,
@@ -238,6 +239,23 @@ describe('redact', () => {
     )
     const http = { kind: 'http', url: 'https://h.example.com/s/fakeUrlSecretPath0123/mcp', headers: {} } as const
     assert.equal(redact('404 for /s/fakeUrlSecretPath0123/mcp', http), '404 for /s/***/mcp')
+  })
+
+  test('hides a secret flag value that starts with a hyphen, and keeps the next flag', () => {
+    assert.deepEqual(hideArgSecrets(['--password', '-fake-pass-1', '--no-auth', '--port', '8080']).args, [
+      '--password',
+      '***',
+      '--no-auth',
+      '--port',
+      '8080',
+    ])
+    const stdio: StdioServer = { kind: 'stdio', command: 'x', args: ['--password', '-fake-pass-1'], env: {} }
+    assert.equal(redact('denied: -fake-pass-1', stdio), 'denied: ***')
+  })
+
+  test('hides the password of a URL also when it shows without the user', () => {
+    const http = { kind: 'http', url: 'https://fake-user:fake-password-2@example.com/mcp', headers: {} } as const
+    assert.equal(redact('authentication failed: fake-password-2', http), 'authentication failed: ***')
   })
 })
 

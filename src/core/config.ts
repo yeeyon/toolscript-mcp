@@ -337,8 +337,13 @@ const URL_TEXT = /[A-Za-z][\w+.-]*:\/\/\S+/g
 const hideUrl = (url: string, hide: (secret: string) => string): string =>
   url
     .replace(/#([\s\S]+)$/, (_, fragment: string) => `#${hide(fragment)}`)
-    // All text up to the last `@` is user and password, because a password can hold `@` or `/`.
-    .replace(/^([^:]*:\/\/)([\s\S]*)@/, (_, scheme: string, user: string) => `${scheme}${hide(user)}@`)
+    // All text up to the last `@` is user and password, because a password can hold `@` or `/`. An error can
+    // show the password without the user, so it is a secret of its own too.
+    .replace(/^([^:]*:\/\/)([\s\S]*)@/, (_, scheme: string, user: string) => {
+      const colon = user.indexOf(':')
+      if (colon >= 0) hide(user.slice(colon + 1))
+      return `${scheme}${hide(user)}@`
+    })
     .replace(/([?&][^=&#]*=)([^&#]+)/g, (_, name: string, value: string) => `${name}${hide(value)}`)
     .replace(/\/([\w-]+)(?=[/?#]|$)/g, (whole, part: string) => (SECRET_WORD.test(part) ? `/${hide(part)}` : whole))
 
@@ -356,7 +361,8 @@ export const hideArgSecrets = (args: readonly string[]): { args: string[]; secre
   }
   const hidden = args.map((arg, i) => {
     const flag = args[i - 1]
-    if (flag !== undefined && FLAG.test(flag) && SECRET_NAME.test(flag) && !arg.startsWith('-')) {
+    // A value can start with `-`. Only a `--` arg after a secret flag is taken for the next flag.
+    if (flag !== undefined && FLAG.test(flag) && SECRET_NAME.test(flag) && !arg.startsWith('--')) {
       const header = HEADER.exec(arg)
       return header ? `${header[1]}${hide(header[2] ?? '')}` : hide(arg)
     }
