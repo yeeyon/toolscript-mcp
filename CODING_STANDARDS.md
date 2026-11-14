@@ -19,6 +19,9 @@ enforces; the others rely on discipline.
   failed. `[test: server.e2e.mjs]`
 - A failed or closed server connects again on next use: a search, or a call of a program. All callers wait for one
   attempt, at most 3 attempts in 60 s, and none after `close`. `[test: downstream.test.ts, server.e2e.mjs]`
+- The SDK HTTP client transport fires `onclose` only from `close()`. An HTTP link that a request finds unreachable,
+  or whose session the server no longer knows (400 or 404), fails in `client.onerror`, before that request rejects.
+  `[test: downstream.test.ts, describe http]`
 - Every nested call has the time limit `sandbox.callTimeoutSeconds`, through the SDK's `timeout`, so the SDK sends
   `notifications/cancelled` when it ends. `[test: server.e2e.mjs, case run (l)]`
 - `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there
