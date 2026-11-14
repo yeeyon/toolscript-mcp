@@ -1,6 +1,13 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { learnShape, searchResult, type DownstreamTool, type ServerState } from '../src/core/catalog.ts'
+import {
+  argsText,
+  argSpec,
+  learnShape,
+  searchResult,
+  type DownstreamTool,
+  type ServerState,
+} from '../src/core/catalog.ts'
 import { serverKey } from '../src/core/config.ts'
 
 const server = (tools: DownstreamTool[]): ServerState[] => [{ key: serverKey('x')!, status: 'connected', tools }]
@@ -160,10 +167,55 @@ describe('search_tools with 3 or fewer hits', () => {
     })
     assert.equal(nested, '### mcp__x__nested\ncall("mcp__x__nested", {\n  a?: object\n  b?: string // B.\n})')
 
-    const flat = one({ name: 'flat', inputSchema: { type: 'object', properties: wide, required: ['f0'] } })
-    assert.match(flat, /^### mcp__x__flat\ncall\("mcp__x__flat", \{ f0: string; f1\?: string; f2\?: string;/)
-    assert.ok(!flat.includes('//'), flat)
-    assert.ok(flat.length < 700, `${flat.length} characters`)
+    const flat = one({
+      name: 'flat',
+      inputSchema: { type: 'object', properties: wide, required: ['f59'] },
+      outputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+    })
+    const lines = Array.from({ length: 59 }, (_, i) => `  f${i}?: string`)
+    assert.equal(flat, ['### mcp__x__flat', 'call("mcp__x__flat", {', '  f59: string', ...lines, '})'].join('\n'))
+  })
+
+  test('a large flat tool without room for its notes shows every argument, the required ones first', () => {
+    const note = 'n'.repeat(150)
+    const properties = Object.fromEntries(
+      Array.from({ length: 40 }, (_, i) => [`option_${i}`, { enum: ['alpha', 'beta', 'gamma'], description: note }]),
+    )
+    const text = one({ name: 'big', inputSchema: { type: 'object', properties, required: ['option_39'] } })
+    const optional = Array.from({ length: 39 }, (_, i) => `  option_${i}?: "alpha" | "beta" | "gamma"`)
+    assert.equal(
+      text,
+      ['### mcp__x__big', 'call("mcp__x__big", {', '  option_39: "alpha" | "beta" | "gamma"', ...optional, '})'].join(
+        '\n',
+      ),
+    )
+  })
+
+  test('arguments too many to show keep the required ones and count the rest', () => {
+    const properties = Object.fromEntries(
+      Array.from({ length: 150 }, (_, i) => [`argument_number_${i}`, { type: 'string' }]),
+    )
+    const text = one({ name: 'wide', inputSchema: { type: 'object', properties, required: ['argument_number_149'] } })
+    const prefix = '### mcp__x__wide\ncall("mcp__x__wide", { '
+    assert.ok(text.startsWith(prefix) && text.endsWith(' })'), text)
+    const args = text.slice(prefix.length - 2, -1)
+    assert.ok(args.length <= 500, `${args.length} characters`)
+    const parts = text.slice(prefix.length, -3).split('; ')
+    const left = Number(/^… (\d+) more arguments$/.exec(parts.pop()!)?.[1])
+    assert.equal(parts[0], 'argument_number_149: string', text)
+    parts.slice(1).forEach((p, i) => assert.equal(p, `argument_number_${i}?: string`))
+    assert.ok(parts.length > 1, text)
+    assert.equal(parts.length + left, 150, text)
+    assert.match(
+      argsText({ type: 'object', properties }),
+      /^\{ argument_number_0\?: string; .+; … \d+ more arguments \}$/,
+    )
+  })
+
+  test('an empty enum shows never and an empty type list shows unknown', () => {
+    const inputSchema = { type: 'object', properties: { a: { enum: [] }, b: { type: [] } } }
+    assert.equal(one({ name: 'e', inputSchema }), '### mcp__x__e\ncall("mcp__x__e", {\n  a?: never\n  b?: unknown\n})')
+    assert.equal(argsText(inputSchema), '{ a?: never; b?: unknown }')
   })
 
   test('an array or union that holds itself with no object between stops', () => {
@@ -318,6 +370,24 @@ describe('the result shape a search shows', () => {
     const shapes = new Map([['mcp__x__get', '{a}']])
     const text = one({ name: 'get', outputSchema: { type: 'object', properties: { b: { type: 'number' } } } }, shapes)
     assert.equal(text, '### mcp__x__get\ncall("mcp__x__get", {}): Promise<{\n  b?: number\n}>')
+  })
+})
+
+describe('the argument check of a closed schema', () => {
+  test('a schema that can name more arguments next to its properties allows other names', () => {
+    const closed = { type: 'object', properties: { q: {} }, required: ['q'], additionalProperties: false }
+    assert.equal(argSpec(closed)?.isOpen, false)
+    for (const [key, value] of Object.entries({
+      patternProperties: { '^x-': { type: 'string' } },
+      if: { properties: { q: { const: 'a' } } },
+      then: { properties: { extra: {} } },
+      else: { properties: { extra: {} } },
+      dependentSchemas: { q: { properties: { extra: {} } } },
+      dependencies: { q: { properties: { extra: {} } } },
+      $ref: '#/$defs/More',
+    })) {
+      assert.deepEqual(argSpec({ ...closed, [key]: value }), { names: ['q'], required: ['q'], isOpen: true }, key)
+    }
   })
 })
 
