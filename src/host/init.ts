@@ -8,7 +8,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { configPath, SECRET_NAMES, SECRET_WORD_LENGTH, type Env } from '../core/config.ts'
-import { clientFiles, configText, importServers, initReport, type ClientFile, type ClientRead } from '../core/init.ts'
+import {
+  clientFiles,
+  configText,
+  importServers,
+  initReport,
+  oldConfigReport,
+  type ClientFile,
+  type ClientRead,
+} from '../core/init.ts'
 import { errorText } from '../core/protocol.ts'
 
 export const INIT_USAGE = 'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run]'
@@ -37,12 +45,19 @@ const readClient = async (file: ClientFile): Promise<ClientRead> => {
   }
 }
 
+/** The bytes of `file`, or undefined when there is no such file. */
+const readIfAny = (file: string): Promise<Buffer | undefined> =>
+  fs.promises.readFile(file).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return undefined
+    throw err
+  })
+
 /**
- * Writes the config, which holds the env and header values of the servers, so that only the user reads it: a new
+ * Writes a config, which holds the env and header values of the servers, so that only the user reads it: a new
  * 0600 file in the same folder, then a rename onto `file`. The secrets never go into an old file that others can
  * read, and `file` never holds a part of a config. Without `replace`, the link fails with EEXIST when `file` exists.
  */
-const writeConfig = async (file: string, text: string, replace: boolean): Promise<void> => {
+const writeConfig = async (file: string, text: string | Uint8Array, replace: boolean): Promise<void> => {
   const temp = `${file}.${randomUUID()}.tmp`
   try {
     await fs.promises.writeFile(temp, text, { mode: 0o600, flag: 'wx' })
@@ -92,8 +107,12 @@ export const runInit = async (
     return 0
   }
 
+  const bak = `${file}.bak`
+  let old: Buffer | undefined
   try {
     await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
+    old = options.force ? await readIfAny(file) : undefined
+    if (old !== undefined) await writeConfig(bak, old, true)
     await writeConfig(file, configText(imported.servers, false), options.force === true)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
@@ -103,6 +122,10 @@ export const runInit = async (
     print(`cannot write ${file}: ${errorText(err)}`)
     return 1
   }
-  print(`Wrote ${file}.\n\n${report}`)
+  const kept =
+    old === undefined
+      ? []
+      : [`${bak} holds the old config (mode 0600).`, ...oldConfigReport(old.toString('utf8'), imported.servers, bak)]
+  print([`Wrote ${file}.`, ...kept, '', report].join('\n'))
   return 0
 }

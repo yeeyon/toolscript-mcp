@@ -177,10 +177,40 @@ const masked = (entry: Entry): Entry => {
   }
 }
 
+const configObject = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean) => ({
+  mcpServers: Object.fromEntries([...servers].map(([key, entry]) => [key, mask ? masked(entry) : entry])),
+  policy: [],
+})
+
 /** The toolscript-mcp config of the imported servers, with an empty policy. `mask` hides the secrets for the screen. */
-export const configText = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean): string => {
-  const mcpServers = Object.fromEntries([...servers].map(([key, entry]) => [key, mask ? masked(entry) : entry]))
-  return `${JSON.stringify({ mcpServers, policy: [] }, null, 2)}\n`
+export const configText = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean): string =>
+  `${JSON.stringify(configObject(servers, mask), null, 2)}\n`
+
+/**
+ * The report lines on the old config in `oldText`, which `bak` keeps: the top-level keys and the servers that the
+ * new config of `servers` leaves out or has with a different value. Names only, no value.
+ */
+export const oldConfigReport = (oldText: string, servers: ReadonlyMap<ServerKey, Entry>, bak: string): string[] => {
+  const json = parseJson(oldText)
+  if (!json.ok || !isObject(json.value))
+    return [`The old config is not a JSON object, so init cannot list what the new config leaves out of it.`]
+  const next = configObject(servers, false)
+  const top: Record<string, unknown> = next
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  const left = Object.entries(json.value).flatMap(([key, value]): string[] => {
+    if (key !== 'mcpServers' || !isObject(value))
+      return same(value, Object.hasOwn(top, key) ? top[key] : undefined) ? [] : [JSON.stringify(key)]
+    return Object.entries(value).flatMap(([name, entry]) => {
+      const server = `the server ${JSON.stringify(name)}`
+      if (!Object.hasOwn(next.mcpServers, name)) return [`${server}: not in the new config`]
+      return same(entry, next.mcpServers[name]) ? [] : [`${server}: a different entry`]
+    })
+  })
+  if (left.length === 0) return ['The new config keeps every part of the old one.']
+  return [
+    `The new config leaves out these parts of the old one. Copy the ones you need from ${bak}:`,
+    ...left.map(l => `- ${l}`),
+  ]
 }
 
 /**

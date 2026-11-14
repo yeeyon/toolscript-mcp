@@ -174,7 +174,49 @@ describe('toolscript-mcp init', () => {
     } finally {
       fs.closeSync(reader)
     }
-    assert.deepEqual(fs.readdirSync(path.dirname(file)), ['config.json'])
+    assert.deepEqual(fs.readdirSync(path.dirname(file)).sort(), ['config.json', 'config.json.bak'])
+  })
+
+  test('--force keeps the old config as config.json.bak and lists the parts that the new one leaves out', async () => {
+    const old = JSON.stringify(
+      {
+        mcpServers: {
+          github: { command: 'fake-old-github' },
+          mine: { command: 'fake-mine' },
+          bench: { command: 'node', args: ['/src/toolscript-mcp/bench/fake-server.mjs'] },
+        },
+        policy: [{ match: 'mcp__github__*', action: 'allow' }],
+        sandbox: { timeoutSeconds: 30 },
+        log: false,
+      },
+      null,
+      2,
+    )
+    const home = homeWith({
+      ...CLIENTS,
+      '.config/toolscript-mcp/config.json': old,
+      '.config/toolscript-mcp/config.json.bak': 'an older backup',
+    })
+    const file = path.join(home, '.config', 'toolscript-mcp', 'config.json')
+    const bak = `${file}.bak`
+    fs.chmodSync(bak, 0o644)
+    const { code, out } = await init(home, ['--force'])
+    assert.equal(code, 0, out)
+    assert.match(fs.readFileSync(file, 'utf8'), /"tracker"/)
+    assert.equal(fs.readFileSync(bak, 'utf8'), old)
+    if (process.platform !== 'win32') assert.equal(fs.statSync(bak).mode & 0o777, 0o600)
+    assert.ok(out.includes(`${bak} holds the old config`), out)
+    const lines = out.split('\n')
+    for (const part of [
+      '"policy"',
+      '"sandbox"',
+      '"log"',
+      'the server "github": a different entry',
+      'the server "mine": not in the new config',
+    ])
+      assert.ok(lines.includes(`- ${part}`), `missing - ${part}:\n${out}`)
+    assert.doesNotMatch(out, /the server "bench"/, 'an entry that the new config has as it is')
+    assert.doesNotMatch(out, /fake-old-github|fake-mine|timeoutSeconds/, 'no value of the old config')
   })
 
   test('--dry-run hides the whole user and password of a URL, also with @ or / in the password', async () => {
