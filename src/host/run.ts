@@ -80,16 +80,24 @@ export type RunContext = {
 export type RunResult = { readonly text: string; readonly isError: boolean }
 
 /** A result with what the run log needs to know about it. */
-type Attempt = { readonly result: RunResult; readonly ending: RunEnding; readonly calls: readonly CallLog[] }
+type Ran = { readonly result: RunResult; readonly ending: RunEnding; readonly calls: readonly CallLog[] }
 
-const refused = (text: string): Attempt => ({ result: { text, isError: true }, ending: 'refused', calls: [] })
+/** `known`: the tool names of the catalog before the run. A server that closes during the run has none at its end. */
+type Attempt = Ran & { readonly known: ReadonlySet<string> }
+
+const refused = (text: string, known: ReadonlySet<string>): Attempt => ({
+  result: { text, isError: true },
+  ending: 'refused',
+  calls: [],
+  known,
+})
 
 /** One run_code call, and one line in the run log unless the config turns it off. */
 export const runCode = async (ctx: RunContext, code: string): Promise<RunResult> => {
   const startedAt = performance.now()
-  const { result, ending, calls } = await attempt(ctx, code)
+  const { result, ending, calls, known: before } = await attempt(ctx, code)
   if (ctx.config.log) {
-    const known = new Set(catalogOf(ctx.downstream.states()).map(t => t.name))
+    const known = new Set([...before, ...catalogOf(ctx.downstream.states()).map(t => t.name)])
     const record = runRecord({
       now: new Date(),
       id: randomUUID(),
@@ -110,24 +118,25 @@ export const runCode = async (ctx: RunContext, code: string): Promise<RunResult>
  * prompt comes before the run's timer starts.
  */
 const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
-  if (code.trim() === '') return refused('Error: code is empty.')
+  if (code.trim() === '') return refused('Error: code is empty.', new Set())
   await ctx.downstream.settled
   const literal = literalCalls(code).filter(c => isCallable(c.tool, SERVER_NAME))
   // A failed server that the program names connects again before the check.
   await ctx.downstream.retry([...new Set(literal.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[])
   const catalog = catalogOf(ctx.downstream.states())
   const specs = new Map(catalog.map(t => [t.name, argSpec(t.inputSchema)]))
-  const problems = checkCalls(literal, new Set(specs.keys()), tool => specs.get(tool), {})
-  if (problems.length > 0) return refused(problemReport(problems))
+  const known = new Set(specs.keys())
+  const problems = checkCalls(literal, known, tool => specs.get(tool), {})
+  if (problems.length > 0) return refused(problemReport(problems), known)
 
   const plan = planRun(ctx.config.policy, literal)
-  if (plan.kind === 'refused') return refused(deniedReport(plan.denied))
+  if (plan.kind === 'refused') return refused(deniedReport(plan.denied), known)
   if (plan.ask.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan.ask, code) : 'unsupported'
-    if (answer !== 'accept') return refused(refusedReport(plan.ask, answer))
+    if (answer !== 'accept') return refused(refusedReport(plan.ask, answer), known)
   }
-  if (ctx.signal.aborted) return refused('Error: the server is shutting down. The program did not run.')
-  return execute(ctx, code, new Set(plan.ask))
+  if (ctx.signal.aborted) return refused('Error: the server is shutting down. The program did not run.', known)
+  return { ...(await execute(ctx, code, new Set(plan.ask))), known }
 }
 
 /** True when `file` is inside `dir`. Both are real paths. */
@@ -189,7 +198,7 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
-const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<string>): Promise<Attempt> => {
+const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<string>): Promise<Ran> => {
   const { config, downstream, kept } = ctx
   const limitSeconds = config.sandbox.timeoutSeconds
   const timeoutMs = limitSeconds * 1000

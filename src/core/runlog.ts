@@ -56,7 +56,7 @@ export type RunInput = {
   readonly ending: RunEnding
   readonly chars: number
   readonly calls: readonly CallLog[]
-  /** The tool names of the connected servers. A program can build any other name, and a name can hold data. */
+  /** The tool names of the servers connected before or after the run. A program can build any other name, and a name can hold data. */
   readonly known: ReadonlySet<string>
 }
 

@@ -9,14 +9,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { searchResult, type ServerState } from '../src/core/catalog.ts'
-import type { Config, ServerKey } from '../src/core/config.ts'
+import type { Config, ServerConfig, ServerKey } from '../src/core/config.ts'
 import { runLogFile } from '../src/core/paths.ts'
 import type { Rule } from '../src/core/policy.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
 import { newKept, type Kept } from '../src/core/protocol.ts'
 import { TOOL } from '../src/core/tools.ts'
-import type { Downstream } from '../src/host/downstream.ts'
+import { connectAll, type Downstream } from '../src/host/downstream.ts'
 import { runCode, type Approval, type RunContext } from '../src/host/run.ts'
+
+const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
 
 // The exchange dirs go under this temp dir, so a test sees one that stays.
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-run-test-'))
@@ -99,6 +101,7 @@ type Options = {
   kept?: Kept
   signal?: AbortSignal
   log?: boolean
+  downstream?: Downstream
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -118,7 +121,7 @@ const setup = (o: Options = {}) => {
     log: o.log ?? true,
   }
   const ctx: RunContext = {
-    downstream: fake.downstream,
+    downstream: o.downstream ?? fake.downstream,
     config,
     kept: o.kept ?? newKept(),
     shapes: new Map(),
@@ -574,6 +577,27 @@ describe('the run log', () => {
       aborted.lines().map(l => l.ending),
       ['cancelled'],
     )
+  })
+
+  test('a call whose server exited during the call keeps its tool name', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, 'probe.json'), '--exit-on-call'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, lines } = setup({ downstream })
+      const r = await run('try { await call("mcp__p__probe", {}) } catch {}\nreturn 1')
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(
+        lines().map(l => l.calls.map(({ tool, ok, error }) => ({ tool, ok, error }))),
+        [[{ tool: 'mcp__p__probe', ok: false, error: 'failed' }]],
+      )
+    } finally {
+      await downstream.close()
+    }
   })
 
   test('"log": false writes no file', async () => {

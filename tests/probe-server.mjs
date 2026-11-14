@@ -6,6 +6,7 @@
 //   --exit-after-list  exits once it has listed its tools
 //   --exit-after-call  exits once it has answered one call
 //   --hang-calls       never answers a call
+//   --exit-on-call     exits when a call comes, with no answer
 //
 //   node tests/probe-server.mjs /tmp/probe.json [mode]
 
@@ -38,6 +39,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   }
   if (msg.method === 'tools/call') {
     if (mode === '--hang-calls') return
+    if (mode === '--exit-on-call') process.exit(3)
     reply({ content: [{ type: 'text', text: String(process.pid) }] })
     if (mode === '--exit-after-call') setTimeout(() => process.exit(3), 50)
     return
