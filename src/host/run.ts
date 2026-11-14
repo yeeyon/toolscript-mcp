@@ -4,7 +4,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { argSpec, catalogOf } from '../core/catalog.ts'
+import { argSpec, catalogOf, learnShape } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
 import { approvalNote, askText, checkCall, deniedReport, planRun, refusedReport } from '../core/policy.ts'
 import {
@@ -57,6 +57,8 @@ export type RunContext = {
   readonly config: Config
   /** The results kept for recall(n), for the whole session. */
   readonly kept: Kept
+  /** The shape of each tool's result, by tool name, for search_tools. */
+  readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
   readonly filesDir: string
   /** Asks the person to approve the tools for one run. */
@@ -237,6 +239,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
     const ref = r.ok ? keep(kept, json, Date.now()) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
+    if (r.ok) learnShape(ctx.shapes, tool, r.value)
     records.set(id, {
       ref,
       tool,
