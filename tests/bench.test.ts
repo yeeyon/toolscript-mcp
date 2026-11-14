@@ -32,6 +32,19 @@ test('run.mjs refuses an --out that holds the rows of an earlier run', () => {
   assert.equal(fs.readFileSync(path.join(out, 'results.jsonl'), 'utf8'), rows)
 })
 
+test('run.mjs answers --help and an unknown flag with the usage, and starts no run', () => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH'))
+  const out = path.join(ROOT, 'help')
+  const help = node([path.join(REPO, 'bench', 'run.mjs'), '--help', '--out', out], { env })
+  assert.equal(help.status, 0, help.stdout + help.stderr)
+  assert.match(help.stdout, /^usage: node bench\/run\.mjs/)
+  const typo = node([path.join(REPO, 'bench', 'run.mjs'), '--rep', '1', '--out', out], { env })
+  assert.equal(typo.status, 2, typo.stdout + typo.stderr)
+  assert.match(typo.stderr, /--rep/)
+  assert.match(typo.stderr, /usage:/)
+  assert.equal(fs.existsSync(out), false, 'a refused start made the out dir')
+})
+
 test('forget.mjs removes the project folder of a run when given a relative out dir', () => {
   const home = path.join(ROOT, 'home')
   const work = path.join(ROOT, 'work')
