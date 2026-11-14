@@ -1,6 +1,8 @@
 // End-to-end test of the built server (dist/host/main.js), on Linux, macOS and
 // Windows. An SDK Client starts toolscript-mcp over stdio with a temp config
 // and reads every line of its stdout. Run `npm run build` first.
+// TOOLSCRIPT_E2E_MAIN points the test at another main.js, for example the one
+// of a package installed from `npm pack` (scripts/pack-check.mjs).
 //
 //   node tests/server.e2e.mjs
 
@@ -18,7 +20,7 @@ import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const MAIN = path.join(ROOT, 'dist', 'host', 'main.js')
+const MAIN = process.env.TOOLSCRIPT_E2E_MAIN || path.join(ROOT, 'dist', 'host', 'main.js')
 const BENCH_TOOLS = ['create_ticket', 'get_deploys', 'list_issues', 'query_logs', 'search_messages']
 const MARKER = `fake-${randomUUID()}`
 

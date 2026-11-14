@@ -36,6 +36,7 @@ const TOOLS: Record<string, Tool> = {
   hang: (_, signal) =>
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
   big: () => json(Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `item ${i}` }))),
+  none: () => json({ results: [], next_cursor: null }),
 }
 const SCHEMAS: Record<string, unknown> = {
   echo: { type: 'object', properties: { n: {}, a: {}, b: {}, x: {} } },
@@ -151,6 +152,26 @@ describe('run_code', () => {
     assert.deepEqual(called, [])
   })
 
+  test('arguments that are not an object throw an error the program can catch', async () => {
+    const { run, called } = setup()
+    const r = await run(
+      'const out = []\nfor (const args of ["PROJ-1", ["a"], 5]) {\n  try { await call("mcp__f__echo", args) } catch (e) { out.push(e.message) }\n}\nreturn out',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.equal(r.text.match(/call\(tool, args\): args must be an object/g)?.length, 3, r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a return value that JSON cannot hold is an error, not "[object Object]"', async () => {
+    const { run } = setup()
+    for (const code of ['const a = { n: 1 }\na.self = a\nreturn a', 'return { n: 1n }']) {
+      const r = await run(code)
+      assert.equal(r.isError, true, r.text)
+      assert.ok(r.text.startsWith('TypeError: the return value cannot be sent as JSON: '), r.text)
+      assert.ok(!r.text.includes('[object Object]'), r.text)
+    }
+  })
+
   test('runs at most 8 nested calls at a time', async () => {
     const { run, most } = setup()
     const r = await run('return (await Promise.all(Array.from({ length: 20 }, () => call("mcp__f__slow", {})))).length')
@@ -168,6 +189,24 @@ describe('run_code', () => {
   test('sleep waits inside the sandbox', async () => {
     const r = await setup().run('const t = Date.now()\nawait sleep(200)\nreturn Date.now() - t >= 150')
     assert.ok(r.text.startsWith('true'), r.text)
+  })
+
+  test('a failed call that the program awaits later can be caught', async () => {
+    const r = await setup().run(
+      'const p = call("mcp__f__fail", {})\nawait sleep(200)\ntry { await p } catch (e) { return "caught: " + e.message }',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.ok(r.text.startsWith('"caught: '), r.text)
+  })
+
+  test('code that waits on an answer after the program returned does not hold the result', async () => {
+    const started = performance.now()
+    const r = await setup({ timeoutSeconds: 3 }).run(
+      'sleep(0).then(() => { while (true) {} })\nreturn "x".repeat(1_000_000)',
+    )
+    assert.equal(r.isError, false, r.text.slice(0, 300))
+    assert.ok(r.text.startsWith('"xxx'), r.text.slice(0, 300))
+    assert.ok(performance.now() - started < 3000, 'the run does not wait for the time limit')
   })
 
   test('a busy loop ends at the time limit, and the next run works', async () => {
@@ -301,6 +340,19 @@ describe('output projection', () => {
     assert.deepEqual(leftDirs(), [])
   })
 
+  test('the console lines before a timeout are in the result', async () => {
+    const r = await setup({ timeoutSeconds: 1 }).run('console.log("before the call")\nawait call("mcp__f__hang", {})')
+    assert.ok(r.text.startsWith('Error: timeout after 1000 ms'), r.text)
+    assert.ok(r.text.includes('--- console (1 lines) ---\nbefore the call'), r.text)
+  })
+
+  test('a timeout is reported when the console lines cannot be sent as JSON', async () => {
+    const r = await setup({ timeoutSeconds: 1 }).run(
+      'console.log("x")\nArray.prototype.toJSON = () => { throw new Error("no") }\nawait call("mcp__f__hang", {})',
+    )
+    assert.ok(r.text.startsWith('Error: timeout after 1000 ms'), r.text)
+  })
+
   test('a call still in the queue when the sandbox ends does not start', async () => {
     const { run, called } = setup()
     const r = await run(
@@ -336,6 +388,12 @@ describe('output projection', () => {
   test('an empty result after calls that returned data says so', async () => {
     const r = await setup().run('await call("mcp__f__echo", { n: 1 })\nreturn []')
     assert.ok(r.text.includes('The result is empty, but the calls returned data'), r.text)
+  })
+
+  test('an empty result after calls that returned only empty values has no note', async () => {
+    const r = await setup().run('await call("mcp__f__none", {})\nreturn []')
+    assert.equal(r.isError, false, r.text)
+    assert.ok(!r.text.includes('The result is empty'), r.text)
   })
 
   test('a cut result is kept whole and recall gives it back', async () => {

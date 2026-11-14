@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { SERVED, SERVER_NAME, TOOL, TOOL_NAMES, parseInput, registration } from '../src/core/tools.ts'
 import {
   MARK,
+  age,
   argNamesOf,
   callKey,
   charCount,
@@ -12,6 +13,7 @@ import {
   extractDeclaration,
   fileNameError,
   fileText,
+  formatOutcome,
   literalCalls,
   maskCode,
   mergeArgNames,
@@ -511,6 +513,14 @@ describe('protocol', () => {
     assert.deepEqual([charCount(812), charCount(18_400), charCount(1_230_000)], ['812', '18k', '1.2M'])
   })
 
+  test('charCount and age round before they pick the unit', () => {
+    assert.deepEqual([charCount(999), charCount(999_400), charCount(999_600)], ['999', '999k', '1.0M'])
+    assert.deepEqual(
+      [age(59_400), age(59_600), age(3_569_000), age(3_590_000)],
+      ['59 s old', '1 min old', '59 min old', '1 h old'],
+    )
+  })
+
   test('rankTools scores name hits above description hits', () => {
     const tools = [
       { name: 'mcp__a__list_issues', description: 'Lists things' },
@@ -581,6 +591,14 @@ describe('output projection', () => {
     )
     assert.ok(has(text, '--- 10 MCP calls: '), text)
     assert.ok(has(text, '#1…#8 mcp__x__get ×10, 1 failed, 1 did not finish 80'), text)
+  })
+
+  test('a cut result does not split a character outside the BMP', () => {
+    // The shown text is "aaaaaaaaa😀😀😀: the 11th unit is the first half of an emoji.
+    const value = JSON.stringify('a'.repeat(9) + '😀'.repeat(3))
+    const text = formatOutcome({ t: 'done', value, logs: [] }, 0, '', 11)
+    assert.ok(text.isWellFormed(), JSON.stringify(text))
+    assert.ok(text.startsWith('"aaaaaaaaa\n… [7 more characters cut;'), text)
   })
 })
 

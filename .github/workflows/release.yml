@@ -1,0 +1,115 @@
+# Publishes the version in package.json to npm with provenance, then tags that
+# commit v<version> and makes the GitHub release with the tarball and the
+# CHANGELOG.md section of the version. Start it from the Actions tab: Run
+# workflow, branch main.
+#
+# test runs every job of test.yml. build packs and checks the tarball with read
+# access only, because it runs the code of the dependencies. publish only
+# uploads that exact tarball. A rerun skips the steps that are done already,
+# and fails when npm holds a different tarball for the version.
+#
+# npm auth: the NPM_TOKEN secret, or npm trusted publishing (OIDC) for this
+# file once it is set up on npmjs.com. npm tries OIDC first.
+name: release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Refuse a branch other than main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run the release from main, not $GITHUB_REF"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Read the version and its release notes
+        id: version
+        run: |
+          mkdir -p release
+          version=$(node -p "require('./package.json').version")
+          if [ "$(node -p "require('./package.json').private === true")" = true ]; then
+            echo "::error::package.json has \"private\": true"
+            exit 1
+          fi
+          awk -v h="## $version" '$0 == h { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > release/notes.md
+          if [ -z "$(tr -d '[:space:]' < release/notes.md)" ]; then
+            echo "::error::CHANGELOG.md has no section \"## $version\""
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/pack-check.mjs --out release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@11.21.2
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          tarball="release/toolscript-mcp-$VERSION.tgz"
+          local=$(node -e "const c=require('crypto'),f=require('fs');console.log('sha512-'+c.createHash('sha512').update(f.readFileSync(process.argv[1])).digest('base64'))" "$tarball")
+          remote=$(npm view "toolscript-mcp@$VERSION" dist.integrity 2>/dev/null || true)
+          if [ -z "$remote" ]; then
+            npm publish "$tarball" --provenance --access public
+          elif [ "$remote" = "$local" ]; then
+            echo "toolscript-mcp@$VERSION is on npm already, with this tarball"
+          else
+            echo "::error::npm holds a different tarball for toolscript-mcp@$VERSION. Raise the version in package.json."
+            exit 1
+          fi
+      - name: Tag and make the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "the release v$VERSION exists already"
+          else
+            gh release create "v$VERSION" "release/toolscript-mcp-$VERSION.tgz" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "v$VERSION" --notes-file release/notes.md
+          fi
