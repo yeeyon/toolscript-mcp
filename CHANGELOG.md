@@ -59,7 +59,7 @@ The release:
 
 Setup and configuration:
 
-- Added `toolscript-mcp init`. It imports the user-scope MCP servers of Claude Code, Claude Desktop and Cursor into a new config (mode 0600, written through a temp file), and prints the lines to change in each client. It never edits a client file. `--dry-run` writes nothing and hides env values, header values, and the user, password and query of URLs. The printed commands quote each word, so nothing in a name or path expands in the shell.
+- Added `toolscript-mcp init`. It imports the user-scope MCP servers of Claude Code, Claude Desktop and Cursor into a new config (mode 0600, written through a temp file), and prints the lines to change in each client. It never edits a client file. `--dry-run` writes nothing and hides env values, header values, and the user, password and query of URLs. Other arguments show as they are. The printed commands quote each word, so nothing in a name or path expands in the shell.
 - A server entry with an error, for example an unset `${VAR}`, fails alone. The other servers start, and `search_tools` shows the error. An error outside `mcpServers` still stops the start.
 - `run_code` reads `policy` from the config file at each run. A config with errors keeps the last valid policy, and the result says so.
 

@@ -151,7 +151,9 @@ Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/con
   Desktop, Cursor.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
 - On Linux and macOS, only your user account can read the config that init writes.
-- `--dry-run` shows the config and the steps, and writes nothing. Secret values show as `***`.
+- `--dry-run` shows the config and the steps, and writes nothing. The values of `env` and `headers` show as `***`.
+  The user, password and query of a URL also show as `***`. Other arguments show as they are. If an argument holds a
+  secret, do not share the output.
 - `--force` replaces a config that exists. Without it, init does not change an existing config.
 - `--config <path>` writes the config to a different path.
 - The config from init has an empty `policy`, so each tool is `ask`.
