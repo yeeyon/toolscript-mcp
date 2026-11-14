@@ -270,7 +270,7 @@ test('(d) a config entry with an error fails alone, and search_tools shows the e
   assert.match(text, /### mcp__bench__/, text)
 })
 
-test('(j) an http entry whose URL does not parse fails alone, and the error names the key, not the URL', async () => {
+test('(k) an http entry whose URL does not parse fails alone, and the error names the key, not the URL', async () => {
   const text = await search('')
   assert.match(
     text,
