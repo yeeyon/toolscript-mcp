@@ -7,11 +7,25 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { configPath, type Env } from '../core/config.ts'
+import { configPath, SECRET_NAMES, SECRET_WORD_LENGTH, type Env } from '../core/config.ts'
 import { clientFiles, configText, importServers, initReport, type ClientFile, type ClientRead } from '../core/init.ts'
 import { errorText } from '../core/protocol.ts'
 
 export const INIT_USAGE = 'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run]'
+
+const SECRET_WORD = `${SECRET_WORD_LENGTH} or more letters, digits, _ and -, with letters and digits`
+const NAMES = `${SECRET_NAMES.slice(0, -1).join(', ')} or ${SECRET_NAMES.at(-1)}`
+
+/** What the dry run shows as `***`: the rules of hideArgSecrets. */
+const HIDDEN = [
+  'These show as ***:',
+  '- the values of env and headers',
+  `- in a URL: the user and password, each query value, the fragment, and each path segment of ${SECRET_WORD}`,
+  `- the value of an argument whose name holds ${NAMES}: --name value, --name=value, NAME=value, Name: value`,
+  '- the word after Bearer or Basic',
+  `- an argument of ${SECRET_WORD}`,
+  'Other arguments show as they are. If one of them holds a secret, do not share this output.',
+]
 
 const readClient = async (file: ClientFile): Promise<ClientRead> => {
   const at = { client: file.client, path: path.resolve(file.path) }
@@ -69,7 +83,7 @@ export const runInit = async (
     print(
       [
         `Dry run: init writes nothing. It would write this config to ${file}.${exists}`,
-        'The values of env and headers, and the user, password and query of URLs, show as ***.',
+        ...HIDDEN,
         '',
         configText(imported.servers, true),
         report,

@@ -1,9 +1,10 @@
 // toolscript-mcp init: the MCP servers in the config files of Claude Code,
 // Claude Desktop and Cursor, merged into one toolscript-mcp config, and the
 // steps that move each client to toolscript. The host reads the client files
-// and writes the config. Nothing here prints a value of env or headers.
+// and writes the config. Nothing here prints a value of env or headers, or a
+// secret that hideArgSecrets finds in args and URLs.
 
-import { parseJson, serverKey, type Env, type ServerKey } from './config.ts'
+import { hideArgSecrets, parseJson, serverKey, type Env, type ServerKey } from './config.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor'
 
@@ -161,20 +162,17 @@ export const importServers = (reads: readonly ClientRead[]): Import => {
   return { servers: new Map([...kept].map(([key, k]) => [key, k.entry])), clients }
 }
 
-/**
- * A URL with its user, password and query values as `***`. Other text stays as it is. All text up to the last `@`
- * counts as user and password, because a password can hold `@` or `/`: an `@` later in the text hides more.
- */
-const maskUrl = (text: string): string =>
-  /:\/\//.test(text) ? text.replace(/(:\/\/)[\s\S]*@/, '$1***@').replace(/([?&][^=&#\s]*=)[^&#\s]*/g, '$1***') : text
-
 const masked = (entry: Entry): Entry => {
   const hide = (map: StringMap | undefined) => map && Object.fromEntries(Object.keys(map).map(k => [k, '***']))
   if ('type' in entry)
-    return { ...entry, url: maskUrl(entry.url), ...(entry.headers && { headers: hide(entry.headers) }) }
+    return {
+      ...entry,
+      url: hideArgSecrets([entry.url]).args[0] ?? '',
+      ...(entry.headers && { headers: hide(entry.headers) }),
+    }
   return {
     ...entry,
-    ...(entry.args && { args: entry.args.map(maskUrl) }),
+    ...(entry.args && { args: hideArgSecrets(entry.args).args }),
     ...(entry.env && { env: hide(entry.env) }),
   }
 }

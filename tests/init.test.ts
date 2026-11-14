@@ -191,9 +191,61 @@ describe('toolscript-mcp init', () => {
     })
     const { code, out } = await init(home, ['--dry-run'])
     assert.equal(code, 0, out)
-    assert.doesNotMatch(out, /secret/)
+    assert.doesNotMatch(out, /fake[@/]secret/)
     assert.match(out, /"https:\/\/\*\*\*@example\.com\/mcp"/)
     assert.match(out, /"--db=postgres:\/\/\*\*\*@db\.example\.com\/x"/)
+  })
+
+  test('--dry-run hides the secrets in arguments, URL paths and fragments, and keeps other arguments', async () => {
+    const home = homeWith({
+      '.cursor/mcp.json': {
+        mcpServers: {
+          remote: {
+            command: 'npx',
+            args: [
+              '-y',
+              '@fake-scope/fake-remote@1.2.3',
+              'https://mcp.example.com/api/mcp/s/fakeSecretPath0123456789/mcp',
+              '--header',
+              'Authorization: Bearer fake-secret-header-arg',
+              '--api-key',
+              'fake-secret-flag',
+              '--token=fake-secret-assign',
+              '-e',
+              'GITHUB_TOKEN=fake-secret-env-arg',
+              '-H',
+              'X-Fake: Bearer fake-secret-bearer',
+              'https://mcp.example.com/x#frag=fake-secret-fragment',
+              '/srv/data/notes',
+              '--port',
+              '8080',
+            ],
+          },
+          api: { url: 'https://mcp.example.com/mcp/fake0secret0path0abcd/sse#k=fake-secret-url-fragment' },
+        },
+      },
+    })
+    const { code, out } = await init(home, ['--dry-run'])
+    assert.equal(code, 0, out)
+    assert.doesNotMatch(out, /fake.?secret/i)
+    for (const kept of [
+      '"-y"',
+      '"@fake-scope/fake-remote@1.2.3"',
+      '"https://mcp.example.com/api/mcp/s/***/mcp"',
+      '"--header"',
+      '"Authorization: ***"',
+      '"--api-key"',
+      '"--token=***"',
+      '"GITHUB_TOKEN=***"',
+      '"X-Fake: Bearer ***"',
+      '"https://mcp.example.com/x#***"',
+      '"/srv/data/notes"',
+      '"--port",\n        "8080"',
+      '"https://mcp.example.com/mcp/***/sse#***"',
+    ])
+      assert.ok(out.includes(kept), `missing ${kept}:\n${out}`)
+    assert.match(out, /key, token, secret, pass, auth, bearer, header or credential/)
+    assert.match(out, /do not share this output/)
   })
 
   test('--dry-run writes nothing and prints the config with the secrets hidden', async () => {

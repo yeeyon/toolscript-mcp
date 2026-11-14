@@ -311,6 +311,59 @@ export const childEnv = (server: StdioServer): Record<string, string> => ({
   [DEPTH_VAR]: '1',
 })
 
+/** A name with one of these in it, in any case, holds a secret: `--api-key <value>`, `--token=<value>`, `TOKEN=<value>`. */
+export const SECRET_NAMES = ['key', 'token', 'secret', 'pass', 'auth', 'bearer', 'header', 'credential'] as const
+/** A word of at least this many letters, digits, `_` and `-`, with both letters and digits, is a secret. */
+export const SECRET_WORD_LENGTH = 20
+
+const SECRET_NAME = new RegExp(SECRET_NAMES.join('|'), 'i')
+const SECRET_WORD = new RegExp(`^(?=.*\\d)(?=.*[A-Za-z])[\\w-]{${SECRET_WORD_LENGTH},}$`)
+const FLAG = /^--?[A-Za-z][\w.-]*$/
+// `name=value` or `Name: value`, and not the `://` of a URL.
+const ASSIGN = /^(-{0,2}[A-Za-z][\w.-]*)(=|:(?!\/\/)\s*)([\s\S]*)$/
+const HEADER = /^([\w-]+:\s+)([\s\S]+)$/
+const URL_TEXT = /[A-Za-z][\w+.-]*:\/\/\S+/g
+
+/** A URL with its user and password, each query value, its fragment and each secret word of its path hidden. */
+const hideUrl = (url: string, hide: (secret: string) => string): string =>
+  url
+    .replace(/#([\s\S]+)$/, (_, fragment: string) => `#${hide(fragment)}`)
+    // All text up to the last `@` is user and password, because a password can hold `@` or `/`.
+    .replace(/^([^:]*:\/\/)([\s\S]*)@/, (_, scheme: string, user: string) => `${scheme}${hide(user)}@`)
+    .replace(/([?&][^=&#]*=)([^&#]+)/g, (_, name: string, value: string) => `${name}${hide(value)}`)
+    .replace(/\/([\w-]+)(?=[/?#]|$)/g, (whole, part: string) => (SECRET_WORD.test(part) ? `/${hide(part)}` : whole))
+
+/**
+ * The args of a server with each secret in them as `***`, and the secrets. A secret is the value after a flag
+ * with a secret name (the name of a header stays), the value of `name=value` or `Name: value` with a secret name,
+ * the word after Bearer or Basic, the user, password, query values, fragment and secret path words of a URL, and an
+ * arg that is one secret word. Other args stay as they are.
+ */
+export const hideArgSecrets = (args: readonly string[]): { args: string[]; secrets: string[] } => {
+  const secrets: string[] = []
+  const hide = (secret: string) => {
+    secrets.push(secret)
+    return '***'
+  }
+  const hidden = args.map((arg, i) => {
+    const flag = args[i - 1]
+    if (flag !== undefined && FLAG.test(flag) && SECRET_NAME.test(flag) && !arg.startsWith('-')) {
+      const header = HEADER.exec(arg)
+      return header ? `${header[1]}${hide(header[2] ?? '')}` : hide(arg)
+    }
+    const assign = ASSIGN.exec(arg)
+    if (assign && SECRET_NAME.test(assign[1] ?? '')) return `${assign[1]}${assign[2]}${hide(assign[3] ?? '')}`
+    const text = arg
+      .replace(
+        /\b(Bearer|Basic)(\s+)(\S+)/gi,
+        (_, word: string, space: string, token: string) => word + space + hide(token),
+      )
+      .replace(URL_TEXT, url => hideUrl(url, hide))
+    return SECRET_WORD.test(text) ? hide(text) : text
+  })
+  return { args: hidden, secrets: secrets.filter(s => s !== '') }
+}
+
 /**
  * `text` with each `env` and `headers` value of the server (4 characters or
  * more), and each word of 8 or more in one ("Bearer <token>"), replaced by
