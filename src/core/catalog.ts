@@ -84,9 +84,10 @@ const MAX_ARGS = 500
 /**
  * What an input schema says of a tool's arguments, for the check before a run.
  * A schema with no properties allows any names, as does one that sets
- * `additionalProperties` to anything but false. Without it, other names are
- * typos, as in the generated types of the plugin. Undefined when the schema
- * has no properties object.
+ * `additionalProperties` to anything but false, or one with an allOf, anyOf or
+ * oneOf, which can name more. Without them, other names are typos, as in the
+ * generated types of the plugin. Undefined when the schema has no properties
+ * object.
  */
 export const argSpec = (inputSchema: unknown): ArgSpec | undefined => {
   if (!isObject(inputSchema) || !isObject(inputSchema.properties)) return undefined
@@ -95,7 +96,8 @@ export const argSpec = (inputSchema: unknown): ArgSpec | undefined => {
     ? inputSchema.required.filter((n): n is string => typeof n === 'string')
     : []
   const extra = inputSchema.additionalProperties
-  return { names, required, isOpen: names.length === 0 || (extra !== undefined && extra !== false) }
+  const composed = ['allOf', 'anyOf', 'oneOf'].some(k => Object.hasOwn(inputSchema, k))
+  return { names, required, isOpen: names.length === 0 || composed || (extra !== undefined && extra !== false) }
 }
 
 const notConnectedText = (states: readonly ServerState[]): string => {
