@@ -17,7 +17,8 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
     the runs in flight, which `main.ts` stops at shutdown.
   - `run.ts`: one `run_code` call: the check before a run, the policy, the sandbox, the nested calls, saveFile,
     readFile, recall and the result.
-  - `downstream.ts`: connects to the servers of the config in parallel. A failed server stays failed.
+  - `downstream.ts`: connects to the servers of the config in parallel. A failed or closed server connects again on
+    next use, at most 3 times in 60 s.
   - `launch.ts`: starts the runner with the sandbox layers of each OS, the host kill timer and the exchange dir.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
 - `hints/` holds the bundled hints and `hints/sha256.json`. `bench/` holds the token and cost bench, direct MCP tools
