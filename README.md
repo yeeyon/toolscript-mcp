@@ -28,7 +28,7 @@ directly. The other arm used toolscript-mcp.
 
 The saving comes from tasks with large tool results: 27% to 69% lower cost. On the 2 tasks with small results,
 toolscript-mcp cost more (38% and 91%), because it adds a search step. Only one model, one operating system and 5
-tools were measured. Read [bench/RESULTS.md](bench/RESULTS.md) for the method and the limits.
+tools were measured. The bench ran at commit `cce6ea0`, before the changes of 0.1.0 to the text and the search output. Read [bench/RESULTS.md](bench/RESULTS.md) for the method and the limits.
 
 ## How it works
 
@@ -91,7 +91,13 @@ You need Node 22.13 or later. npm installs toolscript-mcp when your client start
 Claude Code:
 
 ```sh
-claude mcp add toolscript -- npx -y toolscript-mcp --config /path/to/config.json
+claude mcp add --scope user toolscript -- npx -y toolscript-mcp --config /path/to/config.json
+```
+
+On Windows, Claude Code needs `cmd /c` before `npx`:
+
+```sh
+claude mcp add --scope user toolscript -- cmd /c npx -y toolscript-mcp --config C:\path\to\config.json
 ```
 
 Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
@@ -204,13 +210,14 @@ code. Read [SECURITY.md](SECURITY.md).
 ## toolscript-mcp and Claude Code Code Mode
 
 Claude Code 2.1.323 added Code Mode, an experimental option. With it, Claude writes JavaScript that calls its tools.
-It solves the same problem inside Claude Code.
+It solves a similar problem inside Claude Code.
 
 - Code Mode works only in Claude Code. It is off by default, and it has more conditions, for example the interactive
   terminal and the Anthropic API.
-- Code Mode also reaches the built-in tools of Claude Code and the shell. toolscript-mcp reaches only MCP tools.
-- toolscript-mcp works with each MCP client that can start a stdio server. It is open source, with a documented
-  sandbox and allow, deny and ask rules.
+- Code Mode reaches the built-in tools of Claude Code and the shell. toolscript-mcp reaches only MCP tools.
+- toolscript-mcp is for each MCP client that can start a stdio server. It is open source, with a documented sandbox
+  and allow, deny and ask rules.
+- toolscript-mcp is tested with the client of the MCP TypeScript SDK and with Claude Code.
 
 If you use only Claude Code, try Code Mode or the [claude-code-mode](https://github.com/gabe4coding/claude-code-mode)
 plugin first. The bench in [Measured](#measured) ran on Claude Code 2.1.322, the release before Code Mode.
