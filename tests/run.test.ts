@@ -422,6 +422,20 @@ describe('output projection', () => {
     assert.ok(r.text.startsWith('Error: timeout after 1000 ms'), r.text)
   })
 
+  test('a result is reported when the program changes how arrays or JSON turn into text', async () => {
+    const { run } = setup()
+    for (const change of [
+      'Array.prototype.toJSON = () => "x"',
+      'Array.prototype.toJSON = () => { throw new Error("no") }',
+      'JSON.stringify = () => "x"',
+      'JSON.stringify = () => { throw new Error("no") }',
+    ]) {
+      const r = await run(`console.log("a")\n${change}\nreturn 1`)
+      assert.equal(r.isError, false, `${change}: ${r.text}`)
+      assert.ok(r.text.startsWith('1'), `${change}: ${r.text}`)
+    }
+  })
+
   test('a call still in the queue when the sandbox ends does not start', async () => {
     const { run, called } = setup()
     const r = await run(
