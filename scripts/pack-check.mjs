@@ -14,7 +14,15 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const REQUIRED = ['package.json', 'README.md', 'LICENSE', 'NOTICE', 'dist/host/main.js', 'runtime/runner.mjs']
+const REQUIRED = [
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'NOTICE',
+  'dist/host/main.js',
+  'dist/third-party-licenses.txt',
+  'runtime/runner.mjs',
+]
 const FORBIDDEN = /^(src|tests|bench|scripts|\.github|\.audit|\.claude|\.githooks|node_modules)\//
 const WIN = process.platform === 'win32'
 
@@ -46,6 +54,11 @@ try {
   fs.mkdirSync(app)
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ private: true }))
   npm(['install', '--no-audit', '--no-fund', tarball], app)
+  // dist/host/main.js holds its packages, so the end-to-end test below also proves that it needs no other.
+  const others = fs
+    .readdirSync(path.join(app, 'node_modules'))
+    .filter(f => !f.startsWith('.') && f !== 'toolscript-mcp')
+  assert.deepEqual(others, [], 'the package installs runtime dependencies: build bundles them into dist/host/main.js')
   const installed = path.join(app, 'node_modules', 'toolscript-mcp')
   const bin = path.join(app, 'node_modules', '.bin', WIN ? 'toolscript-mcp.cmd' : 'toolscript-mcp')
   assert.ok(fs.existsSync(bin), `npm made no command at ${bin}`)
