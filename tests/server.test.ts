@@ -118,7 +118,7 @@ describe('the config', () => {
       extra: true,
     })
     assert.deepEqual(errors(text), [
-      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy)',
+      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy, log)',
       'mcpServers.a.command: must be a non-empty string',
       'mcpServers.a.args: must be an array of strings',
       'mcpServers.b.type: must be "stdio" or "http", not "sse"',
