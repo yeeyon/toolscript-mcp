@@ -37,7 +37,8 @@ tools were measured. The bench ran at commit `cce6ea0`, before the changes of 0.
    TypeScript declaration of its `call()`: the nested types and the note of each argument.
 3. The model sends one program to `run_code`.
 4. The program runs in a separate Node process. Each nested tool call goes through your allow, deny and ask rules.
-5. The return value of the program goes back to the model.
+5. The return value of the program goes back to the model. If the formatted value is longer than 20,000 characters,
+   the model gets its shape and the first 3,000 characters of compact JSON.
 
 Your MCP client sees only `search_tools` and `run_code`. It does not see the tools of your other servers.
 
@@ -274,7 +275,8 @@ code. Read [SECURITY.md](SECURITY.md).
 - If an HTTP server restarts or loses the session, one call to it can fail. The next use of the server connects
   again.
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
-- Each `run_code` call starts a new program. No state stays between two calls, except the files of `saveFile`.
+- Each `run_code` call starts a new program. No variables stay between two calls. The files of `saveFile` and the
+  results of `recall(n)` stay.
 
 ## toolscript-mcp and Claude Code Code Mode
 
