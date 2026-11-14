@@ -162,6 +162,14 @@ describe('run_code', () => {
     assert.ok(r.text.startsWith('true'), r.text)
   })
 
+  test('a failed call that the program awaits later can be caught', async () => {
+    const r = await setup().run(
+      'const p = call("mcp__f__fail", {})\nawait sleep(200)\ntry { await p } catch (e) { return "caught: " + e.message }',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.ok(r.text.startsWith('"caught: '), r.text)
+  })
+
   test('a busy loop ends at the time limit, and the next run works', async () => {
     const { run } = setup({ timeoutSeconds: 1 })
     const started = performance.now()

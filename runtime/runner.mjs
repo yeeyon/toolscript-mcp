@@ -118,12 +118,20 @@ const BOOTSTRAP = String.raw`
   const log = (...a) => { logs.push(a.map(fmt).join(' ')) }
   globalThis.console = { log, info: log, warn: log, error: log, debug: log }
 
-  const call = (tool, args) => new Promise((resolve, reject) => {
+  // A program can start a call and await it later. If the call fails first,
+  // its rejection has no handler yet, and Node ends the process. The no-op
+  // catch marks it handled; the program still gets the error when it awaits.
+  const handled = p => {
+    p.catch(() => {})
+    return p
+  }
+
+  const call = (tool, args) => handled(new Promise((resolve, reject) => {
     if (typeof tool !== 'string') throw new TypeError('call(tool, args): tool must be a string')
     const id = ++nextId
     waiting.set(id, { resolve, reject })
     post('call', String(id), tool, JSON.stringify(args ?? {}))
-  })
+  }))
   // tools.<server>.<tool>(args) is call("mcp__<server>__<tool>", args)
   const tools = new Proxy({}, {
     get: (_, server) => typeof server !== 'string' ? undefined : new Proxy({}, {
@@ -132,26 +140,26 @@ const BOOTSTRAP = String.raw`
     }),
   })
   // recall(n): the result of call #n from this session again, with no new call
-  const recall = ref => new Promise((resolve, reject) => {
+  const recall = ref => handled(new Promise((resolve, reject) => {
     if (!Number.isInteger(ref)) throw new TypeError('recall(n): n must be the number of a result')
     const id = ++nextId
     waiting.set(id, { resolve, reject })
     post('recall', String(id), String(ref))
-  })
+  }))
   // sleep(ms): waits, for programs that poll; no timers reach the context
-  const sleep = ms => new Promise((resolve, reject) => {
+  const sleep = ms => handled(new Promise((resolve, reject) => {
     if (typeof ms !== 'number' || !(ms >= 0)) throw new TypeError('sleep(ms): ms must be a number of milliseconds, 0 or more')
     const id = ++nextId
     waiting.set(id, { resolve, reject })
     post('sleep', String(id), String(ms))
-  })
+  }))
   // saveFile(name, data) and readFile(path): the host writes and reads the
   // files; this process has no file system access of its own
-  const ask = (kind, a, b) => new Promise((resolve, reject) => {
+  const ask = (kind, a, b) => handled(new Promise((resolve, reject) => {
     const id = ++nextId
     waiting.set(id, { resolve, reject })
     post(kind, String(id), a, b)
-  })
+  }))
   const saveFile = (name, data) => {
     if (typeof name !== 'string') throw new TypeError('saveFile(name, data): name must be a string')
     const json = JSON.stringify(data)
