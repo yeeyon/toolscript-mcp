@@ -141,7 +141,7 @@ describe('the config', () => {
   test('an error outside the server entries stops the start, and names the bad key', () => {
     const text = JSON.stringify({ mcpServers: { a: { command: '' } }, sandbox: { node: 3 }, extra: true })
     assert.deepEqual(errors(text), [
-      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy)',
+      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy, log)',
       'sandbox.node: must be a non-empty string',
     ])
     assert.match(errors('{"mcpServers": ')[0]!, /^the config is not valid JSON/)

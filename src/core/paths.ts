@@ -36,6 +36,10 @@ export const hintsFolder = (root: string): string => appPath(root, HINTS)
 /** The saved-function folder under HOME. */
 export const functionsFolder = (home: string): string => appPath(home, FUNCTIONS)
 
+/** The run log under HOME, and the one old file that rotation keeps. */
+export const runLogFile = (home: string): string => appPath(home, 'runs.jsonl')
+export const oldRunLogFile = (home: string): string => appPath(home, 'runs.1.jsonl')
+
 /**
  * The folders whose files steer the model, as written: the person's and the
  * project's hints (the project's even while projectHints is off, so none can

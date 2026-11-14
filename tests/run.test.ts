@@ -10,7 +10,9 @@ import os from 'node:os'
 import path from 'node:path'
 import type { ServerState } from '../src/core/catalog.ts'
 import type { Config, ServerKey } from '../src/core/config.ts'
+import { runLogFile } from '../src/core/paths.ts'
 import type { Rule } from '../src/core/policy.ts'
+import type { RunRecord } from '../src/core/runlog.ts'
 import { newKept, type Kept } from '../src/core/protocol.ts'
 import { TOOL } from '../src/core/tools.ts'
 import type { Downstream } from '../src/host/downstream.ts'
@@ -94,6 +96,7 @@ type Options = {
   canAsk?: boolean
   kept?: Kept
   signal?: AbortSignal
+  log?: boolean
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -101,10 +104,12 @@ const filesDir = path.join(ROOT, 'files', 'session')
 const setup = (o: Options = {}) => {
   const fake = fakeDownstream()
   const asked: string[][] = []
+  const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
     servers: new Map(),
     sandbox: { node: process.execPath, timeoutSeconds: o.timeoutSeconds ?? 20 },
     policy: o.policy ?? rules(['mcp__*', 'allow']),
+    log: o.log ?? true,
   }
   const ctx: RunContext = {
     downstream: fake.downstream,
@@ -115,9 +120,20 @@ const setup = (o: Options = {}) => {
     canAsk: () => o.canAsk ?? true,
     signal: o.signal ?? new AbortController().signal,
     log: () => {},
+    home,
   }
   const run = async (code: string) => runCode(ctx, code)
-  return { ...fake, asked, run, ctx }
+  const lines = (): RunRecord[] => {
+    const file = runLogFile(home)
+    return fs.existsSync(file)
+      ? fs
+          .readFileSync(file, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map(l => JSON.parse(l) as RunRecord)
+      : []
+  }
+  return { ...fake, asked, run, ctx, lines }
 }
 
 describe('run_code', () => {
@@ -472,5 +488,95 @@ describe('approval', () => {
     const r = await run('try { await call("mcp__f__fail", {}) } catch (e) { return e.message }')
     assert.ok(r.text.includes('"server error"'), r.text)
     assert.ok(!r.text.includes('## No allow rule'), r.text)
+  })
+})
+
+describe('the run log', () => {
+  const SECRET = 'sk-fake-secret-1234567890'
+
+  test('a run writes one line with its calls, and no value from the arguments, results or messages', async () => {
+    const { run, lines } = setup({
+      policy: rules(['mcp__f__fail', 'deny'], ['mcp__f__echo', 'allow'], ['mcp__*', 'ask']),
+    })
+    const r = await run(
+      [
+        `const a = await call("mcp__f__echo", { x: "${SECRET}" })`,
+        'try { await call("mcp__f__" + "fail", {}) } catch {}',
+        'try { await call("mcp__f__" + "big", {}) } catch {}',
+        'return a',
+      ].join('\n'),
+    )
+    assert.ok(r.text.includes(SECRET), r.text)
+    const [record, ...more] = lines()
+    assert.deepEqual(more, [])
+    assert.equal(record!.ending, 'done')
+    assert.equal(record!.chars, r.text.length)
+    assert.ok(record!.ms >= 0 && !Number.isNaN(Date.parse(record!.time)) && record!.id !== '')
+    assert.deepEqual(
+      record!.calls.map(({ tool, decision, ok, error }) => ({ tool, decision, ok, error })),
+      [
+        { tool: 'mcp__f__echo', decision: 'allow', ok: true, error: undefined },
+        { tool: 'mcp__f__fail', decision: 'denied', ok: false, error: 'denied' },
+        { tool: 'mcp__f__big', decision: 'unapproved', ok: false, error: 'unapproved' },
+      ],
+    )
+    assert.equal(JSON.stringify(record).includes(SECRET), false)
+  })
+
+  test('records a server error as a code, an approved call, and the endings error and refused', async () => {
+    const { run, lines } = setup({ policy: rules(['mcp__f__fail', 'ask']) })
+    await run('try { await call("mcp__f__fail", {}) } catch {}\nthrow new Error("fake-secret-in-message")')
+    const [failed] = lines()
+    assert.equal(failed!.ending, 'error')
+    assert.deepEqual(
+      failed!.calls.map(({ decision, ok, error }) => ({ decision, ok, error })),
+      [{ decision: 'ask-approved', ok: false, error: 'tool-error' }],
+    )
+    assert.equal(JSON.stringify(failed).includes('server error'), false)
+    assert.equal(JSON.stringify(failed).includes('fake-secret-in-message'), false)
+
+    const denied = setup({ policy: rules(['mcp__f__echo', 'deny']) })
+    await denied.run('return await call("mcp__f__echo", {})')
+    assert.deepEqual(
+      denied.lines().map(l => [l.ending, l.calls.length]),
+      [['refused', 0]],
+    )
+  })
+
+  test('a run past the time limit ends as timeout, and an abort as cancelled', async () => {
+    const slow = setup({ timeoutSeconds: 1 })
+    await slow.run('while (true) {}')
+    assert.deepEqual(
+      slow.lines().map(l => l.ending),
+      ['timeout'],
+    )
+    const stop = new AbortController()
+    const aborted = setup({ signal: stop.signal })
+    const running = aborted.run('while (true) {}')
+    await new Promise(r => setTimeout(r, 500))
+    stop.abort()
+    await running
+    assert.deepEqual(
+      aborted.lines().map(l => l.ending),
+      ['cancelled'],
+    )
+  })
+
+  test('"log": false writes no file', async () => {
+    const { run, ctx } = setup({ log: false })
+    await run('return 1')
+    assert.equal(fs.existsSync(runLogFile(ctx.home)), false)
+  })
+
+  test('a log that cannot be written does not fail the run', async () => {
+    const { ctx } = setup()
+    fs.writeFileSync(path.join(ctx.home, '.toolscript-mcp'), 'a file, not a folder')
+    const logged: string[] = []
+    const r = await runCode({ ...ctx, log: l => logged.push(l) }, 'return 7')
+    assert.ok(r.text.startsWith('7') && !r.isError, r.text)
+    assert.ok(
+      logged.some(l => l.startsWith('cannot write the run log')),
+      logged.join('\n'),
+    )
   })
 })
