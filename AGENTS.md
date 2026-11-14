@@ -23,8 +23,14 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
     next use, at most 3 times in 60 s.
   - `launch.ts`: starts the runner with the sandbox layers of each OS, the host kill timer and the exchange dir.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
-- `hints/` holds the bundled hints and `hints/sha256.json`. `bench/` holds the token and cost bench, direct MCP tools
-  against toolscript-mcp in headless Claude Code (`bench/run.mjs`, results in `bench/RESULTS.md`).
+- `hints/` holds the bundled hints and `hints/sha256.json`.
+- `bench/` holds the token and cost bench. `run.mjs` and `interactive.mjs` start Claude Code and spend money.
+  - `run.mjs`: direct MCP tools against toolscript-mcp in headless Claude Code. Results in `RESULTS.md`.
+  - `interactive.mjs`: direct tools, Claude Code Code Mode and toolscript-mcp in the interactive TUI. Results in
+    `RESULTS-codemode.md`. `spend.mjs` holds its spend cap.
+  - `CODEX.md`: the test plan for the same arms in Codex. `check.mjs` judges an answer of another agent.
+  - `data.mjs` holds the tasks and their checks, `fake-server.mjs` the fake MCP server, and `forget.mjs` removes the
+    Claude Code project folder of a run.
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake
   servers. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
 
