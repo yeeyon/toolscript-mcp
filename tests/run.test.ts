@@ -154,6 +154,16 @@ describe('run_code', () => {
     assert.deepEqual(called, [])
   })
 
+  test('a return value that JSON cannot hold is an error, not "[object Object]"', async () => {
+    const { run } = setup()
+    for (const code of ['const a = { n: 1 }\na.self = a\nreturn a', 'return { n: 1n }']) {
+      const r = await run(code)
+      assert.equal(r.isError, true, r.text)
+      assert.ok(r.text.startsWith('TypeError: the return value cannot be sent as JSON: '), r.text)
+      assert.ok(!r.text.includes('[object Object]'), r.text)
+    }
+  })
+
   test('runs at most 8 nested calls at a time', async () => {
     const { run, most } = setup()
     const r = await run('return (await Promise.all(Array.from({ length: 20 }, () => call("mcp__f__slow", {})))).length')

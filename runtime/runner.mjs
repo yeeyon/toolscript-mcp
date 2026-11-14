@@ -227,7 +227,13 @@ const BOOTSTRAP = String.raw`
     Promise.resolve().then(main).then(
       v => {
         let out
-        try { out = v === undefined ? 'null' : JSON.stringify(v) } catch (e) { out = JSON.stringify(String(v)) }
+        try {
+          out = v === undefined ? 'null' : JSON.stringify(v)
+        } catch (e) {
+          // A cycle, a BigInt or a toJSON that throws. String(v) would give "[object Object]" as a result.
+          const why = e instanceof Error ? e.message : 'a toJSON method threw'
+          return post('error', 'TypeError: the return value cannot be sent as JSON: ' + why, JSON.stringify(logs))
+        }
         post('done', out ?? 'null', JSON.stringify(logs))
       },
       e => post('error', describe(e), JSON.stringify(logs)),
