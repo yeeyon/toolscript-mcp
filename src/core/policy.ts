@@ -115,6 +115,17 @@ export const askText = (tools: readonly string[], code: string): string => {
   ].join('\n')
 }
 
+/** The note after a run whose fresh read of the policy failed, so the run used the last good policy. */
+export const stalePolicyNote = (errors: readonly string[]): string =>
+  [
+    '## Policy not reloaded',
+    '',
+    'The toolscript-mcp config has errors, so this run used the last policy that toolscript-mcp could read:',
+    ...errors.map(e => `- ${e}`),
+    '',
+    'Ask the person to fix the config. Do not change the config yourself.',
+  ].join('\n')
+
 /** The result of a program that did not run because the person was not asked or said no. */
 export const refusedReport = (tools: readonly string[], why: Refusal): string => {
   const head =

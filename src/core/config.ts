@@ -24,6 +24,15 @@ export type HttpServer = {
 
 export type ServerConfig = StdioServer | HttpServer
 
+/** A server entry with errors. It fails alone: the other servers still start, and search_tools shows the errors. */
+export type InvalidServer = { readonly kind: 'invalid'; readonly errors: readonly string[] }
+
+export type ServerEntry = ServerConfig | InvalidServer
+
+/** Why an invalid entry is not connected, as search_tools shows it. */
+export const invalidReason = (errors: readonly string[]): string =>
+  `invalid entry in the toolscript-mcp config: ${errors.join('; ')}`
+
 export type Sandbox = {
   /** The Node binary that starts the sandbox. */
   readonly node: string
@@ -32,7 +41,7 @@ export type Sandbox = {
 }
 
 export type Config = {
-  readonly servers: ReadonlyMap<ServerKey, ServerConfig>
+  readonly servers: ReadonlyMap<ServerKey, ServerEntry>
   readonly sandbox: Sandbox
   readonly policy: Policy
 }
@@ -210,25 +219,31 @@ const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
   })
 }
 
+/** The JSON in `text`, or where it breaks. V8 quotes the text near the error, which can hold a token: only the place is kept. */
+export const parseJson = (text: string): { ok: true; value: unknown } | { ok: false; where: string } => {
+  try {
+    return { ok: true, value: JSON.parse(text) }
+  } catch (err) {
+    const where = /line \d+ column \d+|position \d+/.exec(err instanceof Error ? err.message : '')
+    return { ok: false, where: where ? ` (${where[0]})` : '' }
+  }
+}
+
 /**
  * The config in `text`. `execPath` is the default Node of the sandbox and
  * `platform` the host's process.platform. Every error names the key it is
- * about, as `mcpServers.github.env.TOKEN` or `policy[2].action`.
+ * about, as `mcpServers.github.env.TOKEN` or `policy[2].action`. An error in
+ * one server entry makes only that entry invalid.
  */
 export const parseConfig = (text: string, env: Env, execPath: string, platform: string): Parsed => {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (err) {
-    // V8 quotes the text near the error, which can hold a token: keep only where it is.
-    const where = /line \d+ column \d+|position \d+/.exec(err instanceof Error ? err.message : '')
-    return { ok: false, errors: [`the config is not valid JSON${where ? ` (${where[0]})` : ''}`] }
-  }
+  const json = parseJson(text)
+  if (!json.ok) return { ok: false, errors: [`the config is not valid JSON${json.where}`] }
+  const raw = json.value
   if (!isObject(raw)) return { ok: false, errors: ['the config must be a JSON object with an mcpServers object'] }
   const errors: string[] = []
   unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox', 'policy'], 'config', errors)
 
-  const servers = new Map<ServerKey, ServerConfig>()
+  const servers = new Map<ServerKey, ServerEntry>()
   if (!isObject(raw.mcpServers)) errors.push('mcpServers: must be an object')
   else
     for (const [name, entry] of Object.entries(raw.mcpServers)) {
@@ -240,14 +255,28 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
         )
         continue
       }
-      const server = parseServer(entry, path, env, errors)
-      if (server) servers.set(key, server)
+      const entryErrors: string[] = []
+      const server = parseServer(entry, path, env, entryErrors)
+      servers.set(key, server && entryErrors.length === 0 ? server : { kind: 'invalid', errors: entryErrors })
     }
 
   const sandbox = parseSandbox(raw.sandbox, execPath, platform, errors)
   const policy = parsePolicy(raw.policy, errors)
 
   return errors.length > 0 ? { ok: false, errors } : { ok: true, config: { servers, sandbox, policy } }
+}
+
+/**
+ * Only the `policy` of the config in `text`, which is read again at each run.
+ * A change to a server or the sandbox takes effect at the next start.
+ */
+export const policyOf = (text: string): { ok: true; policy: Policy } | { ok: false; errors: string[] } => {
+  const json = parseJson(text)
+  if (!json.ok) return { ok: false, errors: [`the config is not valid JSON${json.where}`] }
+  if (!isObject(json.value)) return { ok: false, errors: ['the config must be a JSON object'] }
+  const errors: string[] = []
+  const policy = parsePolicy(json.value.policy, errors)
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, policy }
 }
 
 /**

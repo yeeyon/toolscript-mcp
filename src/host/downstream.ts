@@ -7,7 +7,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { DownstreamTool, ServerState } from '../core/catalog.ts'
-import { childEnv, redact, type ServerConfig, type ServerKey } from '../core/config.ts'
+import { childEnv, invalidReason, redact, type ServerConfig, type ServerEntry, type ServerKey } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
 
 /** The time that one server gets for its connect and for each page of its tool list. */
@@ -77,7 +77,7 @@ const listAll = async (client: Client): Promise<DownstreamTool[]> => {
 }
 
 export const connectAll = (
-  servers: ReadonlyMap<ServerKey, ServerConfig>,
+  servers: ReadonlyMap<ServerKey, ServerEntry>,
   version: string,
   log: (line: string) => void,
 ): Downstream => {
@@ -117,7 +117,15 @@ export const connectAll = (
     }
   }
 
-  const ready = Promise.all([...servers].map(([key, server]) => connect(key, server)))
+  // An entry with config errors never starts. Its errors name keys and variables, never values.
+  const ready = Promise.all(
+    [...servers].map(async ([key, server]) => {
+      if (server.kind !== 'invalid') return connect(key, server)
+      const reason = invalidReason(server.errors)
+      log(`${key}: failed: ${reason}`)
+      states.set(key, { key, status: 'failed', reason })
+    }),
+  )
   return {
     settled: Promise.race([ready, new Promise(r => setTimeout(r, FIRST_WAIT_MS).unref())]).then(() => {}),
     states: () => [...states.values()],
