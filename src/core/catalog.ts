@@ -64,36 +64,70 @@ export const notConnected = (s: ServerState): string | undefined =>
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
+// An empty enum allows no value. An empty type list is not a valid schema.
 const typeOf = (schema: unknown): string => {
   if (!isObject(schema)) return 'unknown'
-  if (Array.isArray(schema.enum)) return schema.enum.map(v => JSON.stringify(v)).join(' | ')
+  if (Array.isArray(schema.enum))
+    return schema.enum.length === 0 ? 'never' : schema.enum.map(v => JSON.stringify(v)).join(' | ')
   const type = schema.type
-  if (Array.isArray(type)) return type.map(t => typeOf({ ...schema, type: t })).join(' | ')
+  if (Array.isArray(type))
+    return type.length === 0 ? 'unknown' : type.map(t => typeOf({ ...schema, type: t })).join(' | ')
   if (type === 'array') return `${typeOf(schema.items)}[]`
   if (type === 'integer') return 'number'
   if (typeof type === 'string') return type
   return 'unknown'
 }
 
-/** The argument names and types of an input schema: `{ project: string; limit?: number }`. */
+// The properties of an object schema, the required ones first.
+const requiredFirst = (schema: Record<string, unknown>): [name: string, schema: unknown, required: boolean][] => {
+  const properties = isObject(schema.properties) ? Object.entries(schema.properties) : []
+  const required = Array.isArray(schema.required) ? schema.required : []
+  const marked = properties.map(([name, s]): [string, unknown, boolean] => [name, s, required.includes(name)])
+  return [...marked.filter(p => p[2]), ...marked.filter(p => !p[2])]
+}
+
+/**
+ * The argument names and types of an input schema, the required ones first:
+ * `{ project: string; limit?: number }`. A list longer than MAX_ARGS keeps
+ * whole arguments and ends with the count of the others, so a required
+ * argument shows whenever any argument does.
+ */
 export const argsText = (inputSchema: unknown): string => {
-  const properties = isObject(inputSchema) && isObject(inputSchema.properties) ? inputSchema.properties : {}
-  const required = isObject(inputSchema) && Array.isArray(inputSchema.required) ? inputSchema.required : []
-  const parts = Object.entries(properties).map(
-    ([name, schema]) => `${name}${required.includes(name) ? '' : '?'}: ${typeOf(schema)}`,
+  const parts = (isObject(inputSchema) ? requiredFirst(inputSchema) : []).map(([name, schema, required]) =>
+    oneLine(`${name}${required ? '' : '?'}: ${typeOf(schema)}`, Infinity),
   )
-  return oneLine(parts.length === 0 ? '{}' : `{ ${parts.join('; ')} }`, MAX_ARGS)
+  if (parts.length === 0) return '{}'
+  const all = `{ ${parts.join('; ')} }`
+  if (all.length <= MAX_ARGS) return all
+  const cut = (shown: number): string =>
+    `{ ${[...parts.slice(0, shown), `… ${parts.length - shown} more arguments`].join('; ')} }`
+  let shown = 0
+  while (shown < parts.length && cut(shown + 1).length <= MAX_ARGS) shown++
+  return cut(shown)
 }
 
 const MAX_ARGS = 500
 
+// Keys next to the properties that can allow more argument names.
+const MORE_NAMES = [
+  'patternProperties',
+  'allOf',
+  'anyOf',
+  'oneOf',
+  'if',
+  'then',
+  'else',
+  'dependentSchemas',
+  'dependencies',
+  '$ref',
+]
+
 /**
  * What an input schema says of a tool's arguments, for the check before a run.
  * A schema with no properties allows any names, as does one that sets
- * `additionalProperties` to anything but false, or one with an allOf, anyOf or
- * oneOf, which can name more. Without them, other names are typos, as in the
- * generated types of the plugin. Undefined when the schema has no properties
- * object.
+ * `additionalProperties` to anything but false, or one with a key in
+ * MORE_NAMES. Without them, other names are typos, as in the generated types
+ * of the plugin. Undefined when the schema has no properties object.
  */
 export const argSpec = (inputSchema: unknown): ArgSpec | undefined => {
   if (!isObject(inputSchema) || !isObject(inputSchema.properties)) return undefined
@@ -102,8 +136,8 @@ export const argSpec = (inputSchema: unknown): ArgSpec | undefined => {
     ? inputSchema.required.filter((n): n is string => typeof n === 'string')
     : []
   const extra = inputSchema.additionalProperties
-  const composed = ['allOf', 'anyOf', 'oneOf'].some(k => Object.hasOwn(inputSchema, k))
-  return { names, required, isOpen: names.length === 0 || composed || (extra !== undefined && extra !== false) }
+  const more = MORE_NAMES.some(k => Object.hasOwn(inputSchema, k))
+  return { names, required, isOpen: names.length === 0 || more || (extra !== undefined && extra !== false) }
 }
 
 const notConnectedText = (states: readonly ServerState[]): string => {
@@ -181,7 +215,12 @@ const resolve = (schema: unknown, root: unknown): unknown => {
 }
 
 // `steps` is shared by the input and the output types of one declaration.
-type Render = { readonly root: unknown; readonly maxLevel: number; readonly steps: { left: number } }
+type Render = {
+  readonly root: unknown
+  readonly maxLevel: number
+  readonly notes: boolean
+  readonly steps: { left: number }
+}
 
 const TOO_LARGE = new Error('declaration too large')
 
@@ -211,13 +250,15 @@ const members = (raw: unknown, r: Render, level: number, nest: number): string[]
   }
   if ('const' in schema) return [literal(schema.const)]
   if (Array.isArray(schema.enum)) {
+    if (schema.enum.length === 0) return ['never']
     const shown = [...new Set(schema.enum.slice(0, MAX_ENUM).map(literal))]
     return schema.enum.length > MAX_ENUM ? [...shown, '…'] : shown
   }
   const union = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : []
   if (union.length > 0) return union.flatMap(s => members(s, r, level, nest + 1))
   const type = schema.type ?? (isObject(schema.properties) ? 'object' : undefined)
-  if (Array.isArray(type)) return type.flatMap(t => members({ ...schema, type: t }, r, level, nest + 1))
+  if (Array.isArray(type))
+    return type.length === 0 ? ['unknown'] : type.flatMap(t => members({ ...schema, type: t }, r, level, nest + 1))
   if (type === 'object') return [objectType(schema, r, level + 1, nest + 1)]
   if (type === 'array') return [`${grouped(members(schema.items, r, level, nest + 1))}[]`]
   return [typeof type === 'string' && Object.hasOwn(PRIMITIVES, type) ? PRIMITIVES[type]! : 'unknown']
@@ -235,36 +276,35 @@ const noteOf = (schema: unknown, root: unknown): string => {
   return note === '' ? '' : ` // ${note}`
 }
 
-// An object type at `level`, one property to a line. The note goes on the
-// first line of the property, where a nested object opens.
+// An object type at `level`, one property to a line, the required ones first.
+// The note goes on the first line of the property, where a nested object opens.
 const objectType = (schema: Record<string, unknown>, r: Render, level: number, nest: number): string => {
-  const properties = isObject(schema.properties) ? Object.entries(schema.properties) : []
+  const properties = requiredFirst(schema)
   if (level > r.maxLevel) return 'object'
   if (properties.length === 0) {
     const extra = schema.additionalProperties
     return isObject(extra) ? `{ [key: string]: ${typeText(extra, r, level, nest + 1)} }` : 'object'
   }
-  const required = Array.isArray(schema.required) ? schema.required : []
   const pad = '  '.repeat(level)
-  const lines = properties.map(([name, s]) => {
-    const key = `${IDENTIFIER.test(name) ? name : JSON.stringify(name)}${required.includes(name) ? '' : '?'}`
+  const lines = properties.map(([name, s, required]) => {
+    const key = `${IDENTIFIER.test(name) ? name : JSON.stringify(name)}${required ? '' : '?'}`
     const [first, ...rest] = typeText(s, r, level, nest + 1).split('\n')
-    return [`${pad}${key}: ${first}${noteOf(s, r.root)}`, ...rest].join('\n')
+    return [`${pad}${key}: ${first}${r.notes ? noteOf(s, r.root) : ''}`, ...rest].join('\n')
   })
   return `{\n${lines.join('\n')}\n${'  '.repeat(level - 1)}}`
 }
 
 // The call() of a tool as a TypeScript declaration, with objects spelled out to
-// `maxLevel`. It returns a Promise of the outputSchema, when the tool has one.
-// Undefined when it is too large to show.
-const declaration = (t: CatalogEntry, maxLevel: number): string | undefined => {
+// `maxLevel`. With notes, it also returns a Promise of the outputSchema, when
+// the tool has one. Undefined when it is too large to show.
+const declaration = (t: CatalogEntry, maxLevel: number, notes: boolean): string | undefined => {
   const steps = { left: MAX_STEPS }
   try {
-    const args = typeText(t.inputSchema, { root: t.inputSchema, maxLevel, steps }, 0, 0)
+    const args = typeText(t.inputSchema, { root: t.inputSchema, maxLevel, notes, steps }, 0, 0)
     const returns =
-      t.outputSchema === undefined
+      t.outputSchema === undefined || !notes
         ? ''
-        : `: Promise<${typeText(t.outputSchema, { root: t.outputSchema, maxLevel, steps }, 0, 0)}>`
+        : `: Promise<${typeText(t.outputSchema, { root: t.outputSchema, maxLevel, notes, steps }, 0, 0)}>`
     const call = `call(${JSON.stringify(t.name)}, ${args === 'object' || args === 'unknown' ? '{}' : args})${returns}`
     return call.length <= MAX_DECLARATION ? call : undefined
   } catch (e) {
@@ -274,10 +314,14 @@ const declaration = (t: CatalogEntry, maxLevel: number): string | undefined => {
 }
 
 // A tool in full. A declaration too large to show loses its nested objects
-// first, then its notes and its result type.
+// first, then its notes and its result type, and last its argument types
+// past MAX_ARGS characters.
 const detailBlock = (t: CatalogEntry, shapes: ReadonlyMap<string, string>): string => {
   const call =
-    declaration(t, MAX_LEVEL) ?? declaration(t, 1) ?? `call(${JSON.stringify(t.name)}, ${argsText(t.inputSchema)})`
+    declaration(t, MAX_LEVEL, true) ??
+    declaration(t, 1, true) ??
+    declaration(t, 1, false) ??
+    `call(${JSON.stringify(t.name)}, ${argsText(t.inputSchema)})`
   const shape = t.outputSchema === undefined ? shapes.get(t.name) : undefined
   const lines = [`### ${t.name}`, prose(t.description, MAX_DESCRIPTION), call]
   if (shape !== undefined) lines.push(`returned earlier: ${shape}`)

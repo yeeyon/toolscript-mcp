@@ -9,7 +9,7 @@ The package skeleton:
 - Moved the pure core (`protocol`, `hints`, `functions`, `paths`, `tools`) to `src/core/`. Relative imports use `.ts` extensions.
 - Removed the Claude Code plugin parts: the engine module, manifest, session hook, generated types, docs, risk tooling, issue templates and the e2e smoke test.
 - Ported the tests of the pure core to `node:test` (74 tests). Dropped the tests that need the plugin engine.
-- Added `package.json` (private, 0.0.0), one `tsconfig.json` that builds to `dist/`, `.gitattributes`, `NOTICE` and a second copyright line in `LICENSE`.
+- Added `package.json`, one `tsconfig.json` that builds to `dist/`, `.gitattributes`, `NOTICE` and a second copyright line in `LICENSE`.
 - Rewrote the README, SECURITY, CONTRIBUTING, AGENTS and CODING_STANDARDS files, and the CI workflow.
 
 The sandbox launcher:
@@ -20,11 +20,11 @@ The sandbox launcher:
 
 The first server (M3):
 
-- Added the `toolscript-mcp` command (`dist/host/main.js`), an MCP server over stdio. It lists one tool, `search_tools`. `run_code` comes in M4.
+- Added the `toolscript-mcp` command (`dist/host/main.js`), an MCP server over stdio, with `search_tools`.
 - Added `@modelcontextprotocol/sdk` 1.32.2 (MIT), the first runtime dependency.
 - Added the config file: the `mcpServers` shape of Claude Desktop and Claude Code, with stdio and HTTP servers, `${VAR}` expansion and `sandbox.node`. It is found with `--config`, `TOOLSCRIPT_CONFIG` or a per-user default.
-- The server connects to all downstream servers in parallel. A failed server shows in `search_tools` with its reason, and the others still work. The reason hides the `env` and `headers` values of that server.
-- `search_tools` waits at most 10 seconds after the start for servers that are still connecting, and then shows them as connecting. A server whose connection closes later shows as failed.
+- The server connects to all downstream servers in parallel. A failed server shows in `search_tools` with its reason, and the others still work. The reason hides the `env` and `headers` values of that server. It also hides the secrets in the args or the URL of that server.
+- `search_tools` waits at most 10 seconds after the start for servers that are still connecting, and then shows them as connecting. A server whose connection closes later shows as failed until it connects again.
 - A stdio child gets only its config `env` and the SDK's short list of system variables, and `TOOLSCRIPT_MCP_DEPTH`. A copy of toolscript-mcp that sees this variable refuses to start.
 - The state folder is `.toolscript-mcp`, not `.claude/code-mode`. Model-facing text no longer names `ToolSearch`, `~/.claude/settings.json` or tools that the server does not list. The tool ids are `mcp__toolscript__<tool>`.
 - `tests/code.check.mjs` fails on a stdout write in `src/host`. `tests/server.e2e.mjs` runs the built server in CI on Linux, macOS and Windows.
@@ -60,25 +60,39 @@ The release:
 
 Setup and configuration:
 
-- Added `toolscript-mcp init`. It imports the user-scope MCP servers of Claude Code, Claude Desktop and Cursor into a new config (mode 0600, written through a temp file), and prints the lines to change in each client. It never edits a client file. `--dry-run` writes nothing and hides env values, header values, and the user, password and query of URLs. Other arguments show as they are. The printed commands quote each word, so nothing in a name or path expands in the shell.
+- Added `toolscript-mcp init`. It imports the user-scope MCP servers of Claude Code, Claude Desktop and Cursor into a new config (mode 0600, written through a temp file), and prints the lines to change in each client. It never edits a client file. `--dry-run` writes nothing. It hides env and header values, and the user, password, query values, fragment and long random path segments of URLs. It also hides the value of an argument whose name holds key, token, secret, pass, auth, bearer, header or credential, the word after Bearer or Basic, and an argument that is one long random word. Other arguments show as they are. The printed commands quote each word, so nothing in a name or path expands in the shell.
+- `--force` keeps the old config as `<config>.bak` (mode 0600) and lists the top-level keys and servers that the new config leaves out or changes.
 - A server entry with an error, for example an unset `${VAR}`, fails alone. The other servers start, and `search_tools` shows the error. An error outside `mcpServers` still stops the start.
 - `run_code` reads `policy` from the config file at each run. A config with errors keeps the last valid policy, and the result says so.
+- A stricter policy from the config file applies at once. A policy that lets a tool run with less approval applies only after the person approves it in a prompt, or after a restart when the client cannot ask. So a program that writes the config through an allowed tool cannot loosen its own policy. Each applied change logs one line to stderr and adds a note to the result of the run.
+- `npm pack` and `npm publish` build `dist/` first (`prepack`).
 
 Downstream servers:
 
 - A server that failed to connect, or whose connection closed, connects again on the next `search_tools` or call. At most 3 attempts per server in 60 seconds. Concurrent callers share one attempt.
 - Added `sandbox.callTimeoutSeconds` (1 to `sandbox.timeoutSeconds`, default 60, or `sandbox.timeoutSeconds` when that is shorter). A call past it throws an error that the program can catch, and the server gets `notifications/cancelled`.
 - The end of a run no longer sends `notifications/cancelled` for calls that already finished.
+- An HTTP server that restarts, or loses the session, no longer fails every later call until toolscript-mcp restarts. The first call that finds the server unreachable, or the session unknown (HTTP 400 or 404), fails, and the next use connects again.
+- An HTTP `url` that does not parse, also after `${VAR}` expansion, fails only its entry. It no longer stops toolscript-mcp at the start. The error names the key, not the URL.
 
 Tool search:
 
 - `search_tools` shows each of 3 or fewer matches in full: the description and a TypeScript declaration of `call()` with nested object types, enums, unions, local `$ref`s and the note of each argument. A tool with an `outputSchema` gets a `Promise<…>` result type. Without one, the search shows the shape of a result from an earlier run in the session (`returned earlier:`). 4 or more matches keep the one-line list.
+- The check before a run gives the state and the reason of a server that failed or is still connecting. It no longer guesses a tool of another server.
 - The declaration has a work budget, so a recursive schema cannot stall the server. A literal is never cut.
-- The check before a run accepts argument names that an `allOf`, `anyOf` or `oneOf` adds.
+- A declaration too large with its notes shows again without its notes and its result type. Required arguments come first.
+- The one-line list keeps whole arguments up to 500 characters and ends with `… N more arguments`. A required argument shows whenever any argument shows.
+- An empty `enum` shows as `never`, and an empty `type` list shows as `unknown`.
+- The check before a run accepts the argument names that other keys next to the properties can add: `allOf`, `anyOf`, `oneOf`, `patternProperties`, `if`, `then`, `else`, `dependentSchemas`, `dependencies` and `$ref`.
 
 Run log:
 
 - Each `run_code` call appends one JSON line to `~/.toolscript-mcp/runs.jsonl`: time, run id, duration, ending, result size, and per call the tool name, policy decision, duration and a short error code. Never arguments, results, program text or error messages. It rotates to `runs.1.jsonl` at 5 MB. `"log": false` turns it off.
+- The run log keeps the tool name of a call whose server closed during the run. Before, the log named that call `unknown`.
+- The run log shows the ending `timeout` only when a time limit stopped the run.
+- The run log keeps the entry of a call whose reply came after the end of the run.
+- The run log of a refused run lists each call that has a literal tool name, with its policy decision, `ok: false` and 0 ms.
+- A program that changes `Array.prototype.toJSON` or `JSON.stringify` now gets its result instead of "the sandbox exited without a result".
 
 Runner fixes (inherited from claude-code-mode at eea4077):
 

@@ -1,9 +1,10 @@
 // toolscript-mcp init: the MCP servers in the config files of Claude Code,
 // Claude Desktop and Cursor, merged into one toolscript-mcp config, and the
 // steps that move each client to toolscript. The host reads the client files
-// and writes the config. Nothing here prints a value of env or headers.
+// and writes the config. Nothing here prints a value of env or headers, or a
+// secret that hideArgSecrets finds in args and URLs.
 
-import { parseJson, serverKey, type Env, type ServerKey } from './config.ts'
+import { hideArgSecrets, parseJson, serverKey, type Env, type ServerKey } from './config.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor'
 
@@ -161,28 +162,55 @@ export const importServers = (reads: readonly ClientRead[]): Import => {
   return { servers: new Map([...kept].map(([key, k]) => [key, k.entry])), clients }
 }
 
-/**
- * A URL with its user, password and query values as `***`. Other text stays as it is. All text up to the last `@`
- * counts as user and password, because a password can hold `@` or `/`: an `@` later in the text hides more.
- */
-const maskUrl = (text: string): string =>
-  /:\/\//.test(text) ? text.replace(/(:\/\/)[\s\S]*@/, '$1***@').replace(/([?&][^=&#\s]*=)[^&#\s]*/g, '$1***') : text
-
 const masked = (entry: Entry): Entry => {
   const hide = (map: StringMap | undefined) => map && Object.fromEntries(Object.keys(map).map(k => [k, '***']))
   if ('type' in entry)
-    return { ...entry, url: maskUrl(entry.url), ...(entry.headers && { headers: hide(entry.headers) }) }
+    return {
+      ...entry,
+      url: hideArgSecrets([entry.url]).args[0] ?? '',
+      ...(entry.headers && { headers: hide(entry.headers) }),
+    }
   return {
     ...entry,
-    ...(entry.args && { args: entry.args.map(maskUrl) }),
+    ...(entry.args && { args: hideArgSecrets(entry.args).args }),
     ...(entry.env && { env: hide(entry.env) }),
   }
 }
 
+const configObject = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean) => ({
+  mcpServers: Object.fromEntries([...servers].map(([key, entry]) => [key, mask ? masked(entry) : entry])),
+  policy: [],
+})
+
 /** The toolscript-mcp config of the imported servers, with an empty policy. `mask` hides the secrets for the screen. */
-export const configText = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean): string => {
-  const mcpServers = Object.fromEntries([...servers].map(([key, entry]) => [key, mask ? masked(entry) : entry]))
-  return `${JSON.stringify({ mcpServers, policy: [] }, null, 2)}\n`
+export const configText = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean): string =>
+  `${JSON.stringify(configObject(servers, mask), null, 2)}\n`
+
+/**
+ * The report lines on the old config in `oldText`, which `bak` keeps: the top-level keys and the servers that the
+ * new config of `servers` leaves out or has with a different value. Names only, no value.
+ */
+export const oldConfigReport = (oldText: string, servers: ReadonlyMap<ServerKey, Entry>, bak: string): string[] => {
+  const json = parseJson(oldText)
+  if (!json.ok || !isObject(json.value))
+    return ['The old config is not a JSON object, so init cannot list what the new config leaves out of it.']
+  const next = configObject(servers, false)
+  const top: Record<string, unknown> = next
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  const left = Object.entries(json.value).flatMap(([key, value]): string[] => {
+    if (key !== 'mcpServers' || !isObject(value))
+      return same(value, Object.hasOwn(top, key) ? top[key] : undefined) ? [] : [JSON.stringify(key)]
+    return Object.entries(value).flatMap(([name, entry]) => {
+      const server = `the server ${JSON.stringify(name)}`
+      if (!Object.hasOwn(next.mcpServers, name)) return [`${server}: not in the new config`]
+      return same(entry, next.mcpServers[name]) ? [] : [`${server}: a different entry`]
+    })
+  })
+  if (left.length === 0) return ['The new config keeps every part of the old one.']
+  return [
+    `The new config leaves out these parts of the old one. Copy the ones you need from ${bak}:`,
+    ...left.map(l => `- ${l}`),
+  ]
 }
 
 /**
