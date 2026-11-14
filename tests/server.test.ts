@@ -198,6 +198,28 @@ describe('redact', () => {
     assert.equal(redact('bad token fake-token-456', http), 'bad token ***')
     assert.equal(redact('got Bearer fake-token-456', http), 'got ***')
   })
+
+  test('hides the secrets in the args and the URL of a server, and keeps the other args', () => {
+    const args = [
+      '--api-key',
+      'fake-arg-secret-1',
+      '--token=fake-arg-secret-2',
+      'https://h.example.com/s/fakeArgSecretPath0123/mcp?k=fake-arg-secret-3#fake-arg-secret-4',
+      '--header',
+      'Authorization: Bearer fake-arg-secret-5',
+      '/srv/data/notes',
+    ]
+    const stdio: StdioServer = { kind: 'stdio', command: 'x', args, env: {} }
+    assert.equal(
+      redact(
+        'bad key fake-arg-secret-1, fake-arg-secret-2, fakeArgSecretPath0123, fake-arg-secret-3, fake-arg-secret-4, fake-arg-secret-5 in /srv/data/notes',
+        stdio,
+      ),
+      'bad key ***, ***, ***, ***, ***, *** in /srv/data/notes',
+    )
+    const http = { kind: 'http', url: 'https://h.example.com/s/fakeUrlSecretPath0123/mcp', headers: {} } as const
+    assert.equal(redact('404 for /s/fakeUrlSecretPath0123/mcp', http), '404 for /s/***/mcp')
+  })
 })
 
 describe('the config location', () => {

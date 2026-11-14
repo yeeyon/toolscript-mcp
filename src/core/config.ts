@@ -365,12 +365,15 @@ export const hideArgSecrets = (args: readonly string[]): { args: string[]; secre
 }
 
 /**
- * `text` with each `env` and `headers` value of the server (4 characters or
- * more), and each word of 8 or more in one ("Bearer <token>"), replaced by
- * `***`: a failed child's stderr can echo a token, and the reason goes to the model.
+ * `text` with each `env` and `headers` value of the server, and each secret that hideArgSecrets finds in its args or
+ * URL (4 characters or more), and each word of 8 or more in one ("Bearer <token>"), replaced by `***`: a failed
+ * child's stderr can echo a token, and the reason goes to the model.
  */
 export const redact = (text: string, server: ServerConfig): string => {
-  const values = Object.values(server.kind === 'stdio' ? server.env : server.headers)
+  const values = [
+    ...Object.values(server.kind === 'stdio' ? server.env : server.headers),
+    ...hideArgSecrets(server.kind === 'stdio' ? server.args : [server.url]).secrets,
+  ]
   const secrets = [
     ...values.filter(v => v.length >= 4),
     ...values.flatMap(v => v.split(/\s+/).filter(w => w.length >= 8)),
