@@ -1,6 +1,6 @@
 # Runs the checks of CODING_STANDARDS.md: the pure-core tests, the build and
-# the server end to end on three systems, the real sandbox, the types and the
-# format.
+# the server end to end on three systems, the real sandbox, the package, the
+# types and the format. release.yml calls it before it publishes.
 name: test
 
 on:
@@ -8,6 +8,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -32,6 +33,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node tests/server.e2e.mjs
+      - run: node scripts/pack-check.mjs
 
   sandbox:
     # The network block is sandbox-exec on macOS and unshare -rn on Linux.
