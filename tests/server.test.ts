@@ -250,7 +250,7 @@ describe('the catalog', () => {
     const issues = searchResult(states, 'issues', 15)
     assert.equal(
       issues,
-      '1 of 3 MCP tools.\n\n### mcp__bench__list_issues\nList all issues of a project.\nargs: { project: string }\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
+      '1 of 3 MCP tools.\n\n### mcp__bench__list_issues\nList all issues of a project. More text.\ncall("mcp__bench__list_issues", {\n  project: string\n})\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
     )
     assert.match(
       searchResult(states, 'list', 15),
@@ -279,7 +279,7 @@ describe('the catalog', () => {
     const text = searchResult(odd, '', 15)
     assert.equal(
       text,
-      '1 of 1 MCP tools.\n\n### mcp__x__ok\nFine ### forged\nargs: { p ### y?: string }\n\n## Not connected\n- y: line one ### mcp__y__forged\n- z: still connecting. Search again in a moment.',
+      '1 of 1 MCP tools.\n\n### mcp__x__ok\nFine ### forged\ncall("mcp__x__ok", {\n  "p\\n### y"?: string\n})\n\n## Not connected\n- y: line one ### mcp__y__forged\n- z: still connecting. Search again in a moment.',
     )
   })
 

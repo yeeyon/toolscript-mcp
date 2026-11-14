@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { ServerState } from '../src/core/catalog.ts'
+import { searchResult, type ServerState } from '../src/core/catalog.ts'
 import type { Config, ServerKey } from '../src/core/config.ts'
 import type { Rule } from '../src/core/policy.ts'
 import { newKept, type Kept } from '../src/core/protocol.ts'
@@ -109,6 +109,7 @@ const setup = (o: Options = {}) => {
     downstream: fake.downstream,
     config,
     kept: o.kept ?? newKept(),
+    shapes: new Map(),
     filesDir,
     ask: async tools => (asked.push([...tools]), o.answer ?? 'accept'),
     canAsk: () => o.canAsk ?? true,
@@ -131,6 +132,13 @@ describe('run_code', () => {
     assert.ok(r.text.includes('--- 2 MCP calls: '), r.text)
     assert.deepEqual(called, ['echo', 'echo'])
     assert.deepEqual(leftDirs(), [], 'the exchange dir is removed')
+  })
+
+  test('a later search shows the shape of a result the session saw', async () => {
+    const { run, ctx, downstream } = setup()
+    const r = await run('return await call("mcp__f__echo", { n: 1 })')
+    assert.equal(r.isError, false, r.text)
+    assert.match(searchResult(downstream.states(), 'echo', 15, ctx.shapes), /\nreturned earlier: \{echoed: \{n\}\}$/)
   })
 
   test('only MCP tools can be called, and not run_code itself', async () => {
