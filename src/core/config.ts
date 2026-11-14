@@ -5,6 +5,9 @@
 
 import { ACTIONS, type Action, type Policy, type Rule } from './policy.ts'
 
+// The WHATWG URL of every JavaScript runtime. The core loads no DOM or Node types, so it declares the one method it uses.
+declare const URL: { canParse(url: string): boolean }
+
 /** A server key that makes `mcp__<key>__<tool>` split back into the key and the tool. */
 export type ServerKey = string & { readonly __brand: 'ServerKey' }
 
@@ -165,8 +168,14 @@ const parseServer = (raw: unknown, path: string, env: Env, errors: string[]): Se
   }
   if (type === 'http') {
     unknownKeys(raw, ['type', 'url', 'headers'], path, errors)
+    const found = errors.length
     const url = expand(nonEmpty(raw.url, `${path}.url`, errors), env, `${path}.url`, errors)
-    if (url !== '' && !/^https?:\/\//i.test(url)) errors.push(`${path}.url: must start with http:// or https://`)
+    // An empty or unexpanded url has its error already. The text names only the
+    // key: the URL can come from a variable and hold a token.
+    if (errors.length === found) {
+      if (!/^https?:\/\//i.test(url)) errors.push(`${path}.url: must start with http:// or https://`)
+      else if (!URL.canParse(url)) errors.push(`${path}.url: must be a valid URL`)
+    }
     return { kind: 'http', url, headers: stringMap(raw.headers, `${path}.headers`, env, errors) }
   }
   errors.push(`${path}.type: must be "stdio" or "http", not ${JSON.stringify(type)}`)

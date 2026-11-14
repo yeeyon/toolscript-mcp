@@ -138,6 +138,25 @@ describe('the config', () => {
     })
   })
 
+  test('a url that does not parse is an error that names the key, never the value', () => {
+    const config = ok(
+      {
+        mcpServers: {
+          a: { type: 'http', url: 'http://' },
+          b: { type: 'http', url: '${BAD_URL}' },
+          c: { type: 'http', url: 'https://${UNSET}/mcp' },
+        },
+      },
+      { BAD_URL: 'https://[fake-secret-value]/mcp' },
+    )
+    assert.deepEqual(Object.fromEntries(config.servers), {
+      a: { kind: 'invalid', errors: ['mcpServers.a.url: must be a valid URL'] },
+      b: { kind: 'invalid', errors: ['mcpServers.b.url: must be a valid URL'] },
+      c: { kind: 'invalid', errors: ['mcpServers.c.url: the environment variable UNSET is not set'] },
+    })
+    assert.ok(!JSON.stringify(Object.fromEntries(config.servers)).includes('fake-secret-value'))
+  })
+
   test('an error outside the server entries stops the start, and names the bad key', () => {
     const text = JSON.stringify({ mcpServers: { a: { command: '' } }, sandbox: { node: 3 }, extra: true })
     assert.deepEqual(errors(text), [

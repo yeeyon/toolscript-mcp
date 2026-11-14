@@ -23,6 +23,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = process.env.TOOLSCRIPT_E2E_MAIN || path.join(ROOT, 'dist', 'host', 'main.js')
 const BENCH_TOOLS = ['create_ticket', 'get_deploys', 'list_issues', 'query_logs', 'search_messages']
 const MARKER = `fake-${randomUUID()}`
+const BAD_URL = `http://[fake-${randomUUID()}]/mcp`
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-e2e-'))
 const PROBE = path.join(ROOT, 'tests', 'probe-server.mjs')
@@ -44,6 +45,7 @@ fs.mkdirSync(HOME)
 const SERVER_ENV = {
   ...process.env,
   TOOLSCRIPT_E2E_MARKER: MARKER,
+  TOOLSCRIPT_E2E_BAD_URL: BAD_URL,
   TMPDIR: TMP,
   TEMP: TMP,
   TMP,
@@ -88,6 +90,9 @@ fs.writeFileSync(
       },
       // A variable that is not set: this entry fails alone, and the server still starts.
       broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
+      // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
+      badurl: { type: 'http', url: 'http://' },
+      badvar: { type: 'http', url: '${TOOLSCRIPT_E2E_BAD_URL}' },
     },
   }),
 )
@@ -263,6 +268,22 @@ test('(d) a config entry with an error fails alone, and search_tools shows the e
     text,
   )
   assert.match(text, /### mcp__bench__/, text)
+})
+
+test('(k) an http entry whose URL does not parse fails alone, and the error names the key, not the URL', async () => {
+  const text = await search('')
+  assert.match(
+    text,
+    /- badurl: invalid entry in the toolscript-mcp config: mcpServers\.badurl\.url: must be a valid URL/,
+    text,
+  )
+  assert.match(
+    text,
+    /- badvar: invalid entry in the toolscript-mcp config: mcpServers\.badvar\.url: must be a valid URL/,
+    text,
+  )
+  assert.match(text, /### mcp__bench__/, text)
+  assert.ok(!text.includes(BAD_URL) && !transport.stderr.includes(BAD_URL), 'the URL of the variable is not shown')
 })
 
 test('(e) a nested toolscript-mcp refuses to start', async () => {
