@@ -161,9 +161,12 @@ export const importServers = (reads: readonly ClientRead[]): Import => {
   return { servers: new Map([...kept].map(([key, k]) => [key, k.entry])), clients }
 }
 
-/** A URL with its user, password and query values as `***`. Other text stays as it is. */
+/**
+ * A URL with its user, password and query values as `***`. Other text stays as it is. All text up to the last `@`
+ * counts as user and password, because a password can hold `@` or `/`: an `@` later in the text hides more.
+ */
 const maskUrl = (text: string): string =>
-  /:\/\//.test(text) ? text.replace(/(:\/\/)[^/@\s]*@/, '$1***@').replace(/([?&][^=&#\s]*=)[^&#\s]*/g, '$1***') : text
+  /:\/\//.test(text) ? text.replace(/(:\/\/)[\s\S]*@/, '$1***@').replace(/([?&][^=&#\s]*=)[^&#\s]*/g, '$1***') : text
 
 const masked = (entry: Entry): Entry => {
   const hide = (map: StringMap | undefined) => map && Object.fromEntries(Object.keys(map).map(k => [k, '***']))
@@ -182,8 +185,20 @@ export const configText = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean
   return `${JSON.stringify({ mcpServers, policy: [] }, null, 2)}\n`
 }
 
-/** One word for a shell: as it is when safe, else in double quotes. */
-const shellWord = (word: string): string => (/^[\w.\/:\\~@+=-]+$/.test(word) ? word : `"${word.replace(/"/g, '\\"')}"`)
+/**
+ * One word of a printed command, as it is when the shell keeps it, else as a literal in single quotes, so no `$`,
+ * backtick or `$(...)` expands: PowerShell on Windows, a POSIX shell elsewhere. A bare PowerShell word starts with a
+ * letter or a path character, so it is not a number. Before a script, such as the npm shim of claude, PowerShell
+ * drops a bare `--` and splits `-a:b`. It also reads the curly quotes U+2018 to U+201B as single quotes.
+ */
+export const shellWord = (word: string, platform: string): string =>
+  platform === 'win32'
+    ? /^(?:--?[A-Za-z][\w-]*|[A-Za-z./\\][\w./:\\~-]*)$/.test(word)
+      ? word
+      : `'${word.replace(/['‘-‛]/g, '$&$&')}'`
+    : /^[\w./:@+-][\w./:@+~-]*$/.test(word)
+      ? word
+      : `'${word.replace(/'/g, `'\\''`)}'`
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
@@ -196,10 +211,11 @@ const steps = (c: ClientResult, configFile: string, platform: string): string[] 
   if (c.file.client === 'claude-code') {
     // Claude Code on Windows starts npx only through cmd /c.
     const npx = platform === 'win32' ? ['cmd', '/c', 'npx'] : ['npx']
+    const word = (w: string) => shellWord(w, platform)
     return [
-      'Claude Code:',
-      ...remove.map(name => `  claude mcp remove ${shellWord(name)} --scope user`),
-      `  claude mcp add --scope user toolscript -- ${[...npx, ...run].map(shellWord).join(' ')}`,
+      platform === 'win32' ? 'Claude Code, in PowerShell:' : 'Claude Code:',
+      ...remove.map(name => `  claude mcp remove ${word(name)} --scope user`),
+      `  claude mcp add --scope user toolscript ${['--', ...npx, ...run].map(word).join(' ')}`,
       '  Then start a new Claude Code session.',
     ]
   }

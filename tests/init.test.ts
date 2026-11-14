@@ -1,10 +1,11 @@
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parseConfig } from '../src/core/config.ts'
-import { clientFiles } from '../src/core/init.ts'
+import { clientFiles, importServers, initReport, shellWord } from '../src/core/init.ts'
 import { runInit } from '../src/host/init.ts'
 
 const SECRETS = ['fake-secret-env', 'fake-secret-header', 'fake-secret-pass', 'fake-secret-query']
@@ -113,7 +114,7 @@ describe('toolscript-mcp init', () => {
     const has = (line: string) => assert.ok(lines.includes(line), `missing line: ${line}\n\n${out}`)
     has('claude mcp remove github --scope user')
     has('claude mcp remove toolscript --scope user')
-    has(`claude mcp add --scope user toolscript -- npx -y toolscript-mcp --config ${file}`)
+    has(`claude mcp add --scope user toolscript -- npx -y toolscript-mcp --config ${shellWord(file, 'linux')}`)
     has('Remove from "mcpServers": "github", "my notes", "self"')
     has('Remove from "mcpServers": "bench", "tracker"')
     has(
@@ -133,7 +134,10 @@ describe('toolscript-mcp init', () => {
     const home = homeWith(CLIENTS)
     const first = await init(home)
     assert.equal(first.code, 0, first.out)
-    if (process.platform !== 'win32') assert.equal(fs.statSync(first.file).mode & 0o777, 0o600)
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(first.file).mode & 0o777, 0o600)
+      assert.equal(fs.statSync(path.dirname(first.file)).mode & 0o777, 0o700)
+    }
 
     fs.writeFileSync(first.file, '{"mcpServers": {}}')
     const refused = await init(home)
@@ -146,6 +150,50 @@ describe('toolscript-mcp init', () => {
     assert.equal(forced.code, 0, forced.out)
     assert.match(fs.readFileSync(first.file, 'utf8'), /"tracker"/)
     if (process.platform !== 'win32') assert.equal(fs.statSync(first.file).mode & 0o777, 0o600)
+  })
+
+  test('--force never writes the secrets into the old config, and leaves no temp file', async () => {
+    const old = '{"mcpServers": {}}'
+    const home = homeWith({ ...CLIENTS, '.config/toolscript-mcp/config.json': old })
+    const file = path.join(home, '.config', 'toolscript-mcp', 'config.json')
+    fs.chmodSync(file, 0o644)
+    // A reader that opened the old config while others could read it.
+    const reader = fs.openSync(file, 'r')
+    try {
+      const { code, out } = await init(home, ['--force'])
+      if (process.platform === 'win32') {
+        // Windows cannot rename onto an open file: the replace fails, and the old config stays whole.
+        assert.equal(code, 1, out)
+        assert.equal(fs.readFileSync(file, 'utf8'), old)
+      } else {
+        assert.equal(code, 0, out)
+        assert.equal(fs.readFileSync(reader, 'utf8'), old, 'the old file did not get the secrets')
+        assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+        assert.match(fs.readFileSync(file, 'utf8'), /"tracker"/)
+      }
+    } finally {
+      fs.closeSync(reader)
+    }
+    assert.deepEqual(fs.readdirSync(path.dirname(file)), ['config.json'])
+  })
+
+  test('--dry-run hides the whole user and password of a URL, also with @ or / in the password', async () => {
+    const home = homeWith({
+      '.cursor/mcp.json': {
+        mcpServers: {
+          api: { url: 'https://user:fake@secret@example.com/mcp' },
+          db: {
+            command: 'node',
+            args: ['--db=postgres://user:fake@secret@db.example.com/x', 'mysql://user:fake/secret@db.example.com'],
+          },
+        },
+      },
+    })
+    const { code, out } = await init(home, ['--dry-run'])
+    assert.equal(code, 0, out)
+    assert.doesNotMatch(out, /secret/)
+    assert.match(out, /"https:\/\/\*\*\*@example\.com\/mcp"/)
+    assert.match(out, /"--db=postgres:\/\/\*\*\*@db\.example\.com\/x"/)
   })
 
   test('--dry-run writes nothing and prints the config with the secrets hidden', async () => {
@@ -165,7 +213,7 @@ describe('toolscript-mcp init', () => {
     const { code, out } = await init(home, ['--config', target])
     assert.equal(code, 0, out)
     assert.ok(fs.existsSync(target))
-    assert.ok(out.includes(`--config ${target}`), out)
+    assert.ok(out.includes(`--config ${shellWord(target, 'linux')}`), out)
   })
 
   test('with no server to import, nothing is written', async () => {
@@ -193,16 +241,87 @@ describe('toolscript-mcp init', () => {
     const home = homeWith({ '.claude.json': CLAUDE_CODE })
     const { out, file } = await init(home, [], 'win32')
     assert.ok(
-      out.includes(`claude mcp add --scope user toolscript -- cmd /c npx -y toolscript-mcp --config ${file}`),
+      out.includes(
+        `claude mcp add --scope user toolscript '--' cmd /c npx -y toolscript-mcp --config ${shellWord(file, 'win32')}`,
+      ),
       out,
     )
   })
+})
 
-  test('a path with a space is quoted in the command line', async () => {
-    const home = homeWith({ '.claude.json': CLAUDE_CODE })
-    const target = path.join(home, 'my folder', 'config.json')
-    const { out } = await init(home, ['--config', target])
-    assert.ok(out.includes(`--config "${target}"`), out)
+describe('the printed Claude Code commands', () => {
+  // Each one expands in a shell when it is not quoted as a literal.
+  const NAME = `x $(echo pwned) \`echo pwned\` $HOME 'q' "d" ’ ; & | -a:b`
+  const report = (configFile: string, platform: string) =>
+    initReport(
+      importServers([
+        {
+          client: 'claude-code',
+          path: '/c/.claude.json',
+          kind: 'text',
+          text: JSON.stringify({ mcpServers: { [NAME]: { command: 'fake' } } }),
+        },
+      ]),
+      configFile,
+      platform,
+    )
+
+  /** The arguments that `claude` gets when a shell runs the printed command lines, one list per line. */
+  const argvInShell = (shell: string, define: string, text: string): string[][] => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-shell-'))
+    temps.push(dir)
+    const script = path.join(dir, 'argv.mjs')
+    const out = path.join(dir, 'argv.jsonl')
+    fs.writeFileSync(
+      script,
+      `import fs from 'node:fs'\nfs.appendFileSync(process.env.OUT, JSON.stringify(process.argv.slice(2)) + '\\n')\n`,
+    )
+    const lines = text
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('claude mcp '))
+    const args = shell === 'sh' ? ['-c'] : ['-NoProfile', '-NonInteractive', '-Command']
+    const run = spawnSync(shell, [...args, [define, ...lines].join('\n')], {
+      encoding: 'utf8',
+      // Git for Windows sh rewrites /home/... arguments into Windows paths unless told not to.
+      env: {
+        ...process.env,
+        NODE: process.execPath,
+        ARGV: script,
+        OUT: out,
+        MSYS_NO_PATHCONV: '1',
+        MSYS2_ARG_CONV_EXCL: '*',
+      },
+    })
+    assert.equal(run.status, 0, `${run.stdout}${run.stderr}`)
+    return fs
+      .readFileSync(out, 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l))
+  }
+  const has = (shell: string) => spawnSync(shell, ['-c', 'exit 0']).error === undefined
+
+  test('a POSIX shell passes the server name and the config path as they are', { skip: !has('sh') && 'no sh' }, () => {
+    const config = `/home/u/$HOME/it's $(echo pwned) \`x\`/config.json`
+    const argv = argvInShell('sh', 'claude() { "$NODE" "$ARGV" "$@"; }', report(config, 'linux'))
+    assert.deepEqual(argv, [
+      ['mcp', 'remove', NAME, '--scope', 'user'],
+      ['mcp', 'add', '--scope', 'user', 'toolscript', '--', 'npx', '-y', 'toolscript-mcp', '--config', config],
+    ])
+  })
+
+  // A function, as the npm shim claude.ps1 is a script: PowerShell drops a bare -- before both.
+  test('PowerShell passes the server name and the config path as they are', { skip: !has('pwsh') && 'no pwsh' }, () => {
+    const config = `C:\\Users\\u\\$env:USERNAME\\it’s $(echo pwned) \`x\\config.json`
+    const text = report(config, 'win32')
+    const argv = argvInShell('pwsh', 'function claude { & $env:NODE $env:ARGV @args }', text)
+    const run = ['-y', 'toolscript-mcp', '--config', config]
+    assert.deepEqual(argv, [
+      ['mcp', 'remove', NAME, '--scope', 'user'],
+      ['mcp', 'add', '--scope', 'user', 'toolscript', '--', 'cmd', '/c', 'npx', ...run],
+    ])
+    assert.match(text, /Claude Code, in PowerShell:/)
   })
 })
 

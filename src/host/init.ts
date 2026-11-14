@@ -3,6 +3,7 @@
 // client. It never writes a client file. It prints to stderr, as the server
 // does: the text is for a person, and the config file is the output.
 
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
@@ -19,6 +20,21 @@ const readClient = async (file: ClientFile): Promise<ClientRead> => {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...at, kind: 'missing' }
     return { ...at, kind: 'unreadable', error: errorText(err) }
+  }
+}
+
+/**
+ * Writes the config, which holds the env and header values of the servers, so that only the user reads it: a new
+ * 0600 file in the same folder, then a rename onto `file`. The secrets never go into an old file that others can
+ * read, and `file` never holds a part of a config. Without `replace`, the link fails with EEXIST when `file` exists.
+ */
+const writeConfig = async (file: string, text: string, replace: boolean): Promise<void> => {
+  const temp = `${file}.${randomUUID()}.tmp`
+  try {
+    await fs.promises.writeFile(temp, text, { mode: 0o600, flag: 'wx' })
+    await (replace ? fs.promises.rename(temp, file) : fs.promises.link(temp, file))
+  } finally {
+    await fs.promises.rm(temp, { force: true })
   }
 }
 
@@ -64,13 +80,7 @@ export const runInit = async (
 
   try {
     await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
-    // The config holds the env and header values of the servers: only the user reads it.
-    await fs.promises.writeFile(file, configText(imported.servers, false), {
-      mode: 0o600,
-      flag: options.force ? 'w' : 'wx',
-    })
-    // A file that --force replaces keeps its old mode.
-    await fs.promises.chmod(file, 0o600)
+    await writeConfig(file, configText(imported.servers, false), options.force === true)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       print(`${file} exists. init did not change it. To replace it, run init again with --force.`)
