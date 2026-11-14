@@ -78,7 +78,10 @@ Tool search:
 
 - `search_tools` shows each of 3 or fewer matches in full: the description and a TypeScript declaration of `call()` with nested object types, enums, unions, local `$ref`s and the note of each argument. A tool with an `outputSchema` gets a `Promise<…>` result type. Without one, the search shows the shape of a result from an earlier run in the session (`returned earlier:`). 4 or more matches keep the one-line list.
 - The declaration has a work budget, so a recursive schema cannot stall the server. A literal is never cut.
-- The check before a run accepts argument names that an `allOf`, `anyOf` or `oneOf` adds.
+- A declaration too large with its notes shows again without its notes and its result type. Required arguments come first.
+- The one-line list keeps whole arguments up to 500 characters and ends with `… N more arguments`. A required argument shows whenever any argument shows.
+- An empty `enum` shows as `never`, and an empty `type` list shows as `unknown`.
+- The check before a run accepts the argument names that other keys next to the properties can add: `allOf`, `anyOf`, `oneOf`, `patternProperties`, `if`, `then`, `else`, `dependentSchemas`, `dependencies` and `$ref`.
 
 Run log:
 
