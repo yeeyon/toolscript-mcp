@@ -17,6 +17,7 @@ import {
   fileText,
   formatOutcome,
   isCallable,
+  isEmpty,
   keep,
   limiter,
   literalCalls,
@@ -262,6 +263,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
       tool,
       status: r.ok ? 'ok' : 'failed',
       chars: json.length,
+      data: r.ok && !isEmpty(r.value),
       shape: r.ok ? shapeOf(r.value) : undefined,
       repeatOf,
     })

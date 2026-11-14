@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Nothing is released yet. Security fixes go on the default branch (`main`).
+Security fixes go into the latest release on npm and on the default branch (`main`). Older versions get no fixes.
 
 ## Reporting a vulnerability
 
