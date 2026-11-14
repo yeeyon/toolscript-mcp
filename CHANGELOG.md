@@ -59,6 +59,7 @@ The release:
 - `scripts/pack-check.mjs` packs the package, checks its file list, installs the tarball in an empty folder and runs `tests/server.e2e.mjs` against the installed command. CI runs it on Linux, macOS and Windows.
 - The README has install lines for Claude Code, Claude Desktop, Cursor and Codex, a Limits section and a comparison with Claude Code Code Mode.
 - `bench/run.mjs` answers `--help` and refuses an unknown flag before any run, so neither spends money.
+- The build bundles the host code and the SDK into one file, `dist/host/main.js`, with esbuild. The package has no runtime dependency, so an install adds 1 package instead of 96. On Windows the time from the spawn to the `tools/list` reply went from 423 ms to 232 ms (median of 40 starts), and from 631 ms to 294 ms on the first start after an install (10 starts). `dist/third-party-licenses.txt` holds the licences of the bundled packages. `scripts/start-time.mjs` measures the start.
 
 Setup and configuration:
 
