@@ -174,7 +174,49 @@ describe('toolscript-mcp init', () => {
     } finally {
       fs.closeSync(reader)
     }
-    assert.deepEqual(fs.readdirSync(path.dirname(file)), ['config.json'])
+    assert.deepEqual(fs.readdirSync(path.dirname(file)).sort(), ['config.json', 'config.json.bak'])
+  })
+
+  test('--force keeps the old config as config.json.bak and lists the parts that the new one leaves out', async () => {
+    const old = JSON.stringify(
+      {
+        mcpServers: {
+          github: { command: 'fake-old-github' },
+          mine: { command: 'fake-mine' },
+          bench: { command: 'node', args: ['/src/toolscript-mcp/bench/fake-server.mjs'] },
+        },
+        policy: [{ match: 'mcp__github__*', action: 'allow' }],
+        sandbox: { timeoutSeconds: 30 },
+        log: false,
+      },
+      null,
+      2,
+    )
+    const home = homeWith({
+      ...CLIENTS,
+      '.config/toolscript-mcp/config.json': old,
+      '.config/toolscript-mcp/config.json.bak': 'an older backup',
+    })
+    const file = path.join(home, '.config', 'toolscript-mcp', 'config.json')
+    const bak = `${file}.bak`
+    fs.chmodSync(bak, 0o644)
+    const { code, out } = await init(home, ['--force'])
+    assert.equal(code, 0, out)
+    assert.match(fs.readFileSync(file, 'utf8'), /"tracker"/)
+    assert.equal(fs.readFileSync(bak, 'utf8'), old)
+    if (process.platform !== 'win32') assert.equal(fs.statSync(bak).mode & 0o777, 0o600)
+    assert.ok(out.includes(`${bak} holds the old config`), out)
+    const lines = out.split('\n')
+    for (const part of [
+      '"policy"',
+      '"sandbox"',
+      '"log"',
+      'the server "github": a different entry',
+      'the server "mine": not in the new config',
+    ])
+      assert.ok(lines.includes(`- ${part}`), `missing - ${part}:\n${out}`)
+    assert.doesNotMatch(out, /the server "bench"/, 'an entry that the new config has as it is')
+    assert.doesNotMatch(out, /fake-old-github|fake-mine|timeoutSeconds/, 'no value of the old config')
   })
 
   test('--dry-run hides the whole user and password of a URL, also with @ or / in the password', async () => {
@@ -191,9 +233,78 @@ describe('toolscript-mcp init', () => {
     })
     const { code, out } = await init(home, ['--dry-run'])
     assert.equal(code, 0, out)
-    assert.doesNotMatch(out, /secret/)
+    assert.doesNotMatch(out, /fake[@/]secret/)
     assert.match(out, /"https:\/\/\*\*\*@example\.com\/mcp"/)
     assert.match(out, /"--db=postgres:\/\/\*\*\*@db\.example\.com\/x"/)
+  })
+
+  test('--dry-run hides the secrets in arguments, URL paths and fragments, and keeps other arguments', async () => {
+    const home = homeWith({
+      '.cursor/mcp.json': {
+        mcpServers: {
+          remote: {
+            command: 'npx',
+            args: [
+              '-y',
+              '@fake-scope/fake-remote@1.2.3',
+              'https://mcp.example.com/api/mcp/s/fakeSecretPath0123456789/mcp',
+              '--header',
+              'Authorization: Bearer fake-secret-header-arg',
+              '--api-key',
+              'fake-secret-flag',
+              '--token=fake-secret-assign',
+              '-e',
+              'GITHUB_TOKEN=fake-secret-env-arg',
+              '-H',
+              'X-Fake: Bearer fake-secret-bearer',
+              'https://mcp.example.com/x#frag=fake-secret-fragment',
+              '/srv/data/notes',
+              '--port',
+              '8080',
+            ],
+          },
+          api: { url: 'https://mcp.example.com/mcp/fake0secret0path0abcd/sse#k=fake-secret-url-fragment' },
+        },
+      },
+    })
+    const { code, out } = await init(home, ['--dry-run'])
+    assert.equal(code, 0, out)
+    assert.doesNotMatch(out, /fake.?secret/i)
+    for (const kept of [
+      '"-y"',
+      '"@fake-scope/fake-remote@1.2.3"',
+      '"https://mcp.example.com/api/mcp/s/***/mcp"',
+      '"--header"',
+      '"Authorization: ***"',
+      '"--api-key"',
+      '"--token=***"',
+      '"GITHUB_TOKEN=***"',
+      '"X-Fake: Bearer ***"',
+      '"https://mcp.example.com/x#***"',
+      '"/srv/data/notes"',
+      '"--port",\n        "8080"',
+      '"https://mcp.example.com/mcp/***/sse#***"',
+    ])
+      assert.ok(out.includes(kept), `missing ${kept}:\n${out}`)
+    assert.match(out, /key, token, secret, pass, auth, bearer, header or credential/)
+    assert.match(out, /do not share this output/)
+  })
+
+  test('--dry-run says what init does with an existing config, with and without --force', async () => {
+    const old = JSON.stringify({ mcpServers: {}, policy: [{ match: 'mcp__github__*', action: 'allow' }] })
+    const home = homeWith({ ...CLIENTS, '.config/toolscript-mcp/config.json': old })
+    const file = path.join(home, '.config', 'toolscript-mcp', 'config.json')
+    const plain = await init(home, ['--dry-run'])
+    assert.equal(plain.code, 0, plain.out)
+    assert.ok(plain.out.includes(`${file} exists, so init refuses to replace it without --force.`), plain.out)
+
+    const forced = await init(home, ['--dry-run', '--force'])
+    assert.equal(forced.code, 0, forced.out)
+    assert.doesNotMatch(forced.out, /refuses to replace/)
+    assert.ok(forced.out.includes(`${file} exists. init would replace it and keep the old file as ${file}.bak.`))
+    assert.ok(forced.out.split('\n').includes('- "policy"'), forced.out)
+    assert.equal(fs.readFileSync(file, 'utf8'), old)
+    assert.deepEqual(fs.readdirSync(path.dirname(file)), ['config.json'])
   })
 
   test('--dry-run writes nothing and prints the config with the secrets hidden', async () => {
