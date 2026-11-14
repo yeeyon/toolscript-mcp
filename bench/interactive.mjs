@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { TASKS } from './data.mjs'
 import { forgetRuns } from './forget.mjs'
+import { estimate, spentSoFar } from './spend.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const FAKE_SERVER = path.join(REPO, 'bench', 'fake-server.mjs')
@@ -48,8 +49,10 @@ const USAGE = `usage: node bench/interactive.mjs [--reps N] [--max-spend USD] [-
        [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,codemode,toolscript]
        [--root DIR] [--pty-dir DIR] [--bash PATH] [--out DIR]
        node bench/interactive.mjs --report DIR
-Each run starts interactive Claude Code and costs money. The bench stops before a run that could take
-the spend past --max-spend (default 5). --spent counts money already spent toward that cap.`
+Each run starts interactive Claude Code and costs money. Before each run, the bench adds the most that a
+run of the same arm and task has cost so far, and stops when that passes --max-spend (default 5). This is an
+estimate: one run can cost more, so the total can pass the cap. The spend counts the saved runs of --out.
+--spent adds money spent outside them.`
 
 let opts
 try {
@@ -506,7 +509,6 @@ if (opts.report) {
 
 const reps = Number(opts.reps ?? 3)
 const maxSpend = Number(opts['max-spend'] ?? 5)
-let spent = Number(opts.spent ?? 0)
 const model = opts.model ?? 'sonnet'
 const taskIds = opts.tasks?.split(',') ?? TASKS.map(t => t.id)
 const armIds = (opts.arms ?? 'direct,codemode,toolscript').split(',')
@@ -518,6 +520,7 @@ const out = path.resolve(opts.out ?? path.join(ROOT, 'runs', new Date().toISOStr
 fs.mkdirSync(out, { recursive: true })
 const resultsFile = path.join(out, 'results.jsonl')
 const done = fs.existsSync(resultsFile) ? readJsonl(resultsFile) : []
+let spent = spentSoFar(done, Number(opts.spent ?? 0))
 for (const a of armIds) fs.mkdirSync(cwdOf(a), { recursive: true })
 
 // Arms alternate inside each task, and their order flips every rep, so drift in load and cache hits all arms.
@@ -529,17 +532,12 @@ const todo = jobs.filter(j => !done.some(r => r.task === j.task.id && r.arm === 
 const rows = [...done]
 console.log(`${todo.length} runs to do into ${out}; spent so far $${spent.toFixed(4)}, cap $${maxSpend}`)
 
-// The most a run of this arm and task has cost so far, so the cap stops before a run, not after it.
-const estimate = (arm, task) => {
-  const same = rows.filter(r => r.arm === arm && r.task === task).map(r => r.costUsd)
-  const armRows = rows.filter(r => r.arm === arm).map(r => r.costUsd)
-  return same.length ? Math.max(...same) : armRows.length ? Math.max(...armRows) : 0.25
-}
-
 for (const [i, { task, arm, rep }] of todo.entries()) {
-  const est = estimate(arm, task.id)
+  const est = estimate(rows, arm, task.id)
   if (spent + est > maxSpend) {
-    console.log(`stop: $${spent.toFixed(4)} spent, the next run (${task.id}-${arm}-${rep}) can cost $${est.toFixed(4)}`)
+    console.log(
+      `stop: $${spent.toFixed(4)} spent, the next run (${task.id}-${arm}-${rep}) is estimated at $${est.toFixed(4)}`,
+    )
     break
   }
   const dir = path.join(out, `${task.id}-${arm}-${rep}`)
