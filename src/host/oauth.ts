@@ -115,7 +115,7 @@ export type LoginMode = {
 }
 /**
  * The provider of the running server: where a person must log in, it throws LoginNeeded with `reason`.
- * `lastFailure` gives the cause of the last failed request of this server, for the reason of a failed refresh.
+ * `lastFailure` gives why the last request of this server failed, or undefined when it got a good answer.
  */
 export type ServeMode = {
   readonly kind: 'serve'
@@ -177,11 +177,12 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       ...(oauth.scopes.length > 0 && { scope: oauth.scopes.join(' ') }),
     },
     // The SDK asks for the state only to start a new authorization. It starts one after a refresh that failed without
-    // a refusal too: then the running server keeps its tokens for the next use.
+    // a refusal too: then the last request of the flow failed, and the running server keeps its tokens for the next
+    // use. Without a failure, the SDK did not refresh: it found no refresh token for this authorization server.
     state: () => {
       if (login) return login.state
-      if (mode.kind === 'serve' && sent !== undefined)
-        throw new RefreshFailed(refreshReason(mode.lastFailure() ?? 'no answer'))
+      const failure = mode.kind === 'serve' && sent !== undefined ? mode.lastFailure() : undefined
+      if (failure !== undefined) throw new RefreshFailed(refreshReason(failure))
       return needLogin()
     },
     clientInformation: async () => keepClient(await client()),

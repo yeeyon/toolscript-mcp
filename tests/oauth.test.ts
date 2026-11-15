@@ -524,6 +524,21 @@ describe('the running server', () => {
     assert.equal(await s.ping(downstream), PONG)
   })
 
+  test('tokens of another authorization server ask for a login, not a new refresh', async () => {
+    const fake = await startFake()
+    const s = setup(fake, { oauth: { clientId: STATIC_ID, clientSecret: '${S}' } }, { S: STATIC_SECRET })
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const [file] = s.store()
+    const stored = JSON.parse(fs.readFileSync(file!, 'utf8'))
+    stored.tokens.issuer = 'https://auth.example/'
+    fs.writeFileSync(file!, JSON.stringify(stored))
+    fake.expire()
+    const downstream = s.connect()
+    await downstream.settled
+    const state = downstream.states()[0]
+    assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON)
+  })
+
   test('a server that answers 401 after a refresh ends the link with the login command', async () => {
     const fake = await startFake()
     const s = setup(fake)
