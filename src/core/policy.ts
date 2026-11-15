@@ -297,19 +297,24 @@ export const refusedReport = (tools: readonly string[], why: Refusal): string =>
     why === 'decline'
       ? 'Error: the program did not run, because the person did not approve the tools that need approval. No call was made.'
       : 'Error: the program did not run, because some tools need approval and this MCP client cannot ask the person. No call was made.'
-  return `${head}\n\n${approvalNote(tools, false)}`
+  return `${head}\n\n${approvalNote(tools, why === 'decline')}`
 }
 
 /**
  * The note after calls that the policy did not allow and nobody approved.
  * Only the person can add the allow rule. With a client that can ask, a tool
- * name written as a string in call() gets asked before the next run.
+ * name written as a string in call() gets asked before the next run, and the
+ * person approves the new rule in a prompt. Without one, the new rule is a
+ * looser policy that waits for a restart.
  */
 export const approvalNote = (tools: readonly string[], canAsk: boolean): string => {
   if (tools.length === 0) return ''
   const one = tools.length === 1
   const ask = canAsk
-    ? ` A tool name written as a string in call("…") is asked before the run; a name built while the program runs is not.`
+    ? ` A tool name written as a string in call("…") is asked before the run. A name built while the program runs is not.`
     : ''
-  return `## No allow rule\n\nNo policy rule allows ${tools.join(', ')}.${ask} If the person wants programs to call ${one ? 'this tool' : 'these tools'} with no prompt, ask them to add ${tools.map(allowRule).join(', ')} to "policy" in the toolscript-mcp config. Do not change the config yourself.`
+  const restart = canAsk
+    ? ''
+    : ' This MCP client cannot ask the person, so the new rule applies only after they restart toolscript-mcp.'
+  return `## No allow rule\n\nNo policy rule allows ${tools.join(', ')}.${ask} If the person wants programs to call ${one ? 'this tool' : 'these tools'} with no prompt, ask them to add ${tools.map(allowRule).join(', ')} to "policy" in the toolscript-mcp config.${restart} Do not change the config yourself.`
 }

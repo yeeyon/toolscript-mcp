@@ -336,7 +336,7 @@ export const SECRET_NAMES = [
   'dsn',
 ] as const
 /** These hold a secret only as a whole part of a name, as in `GITHUB_PAT` or `--sig`, so `--path` and `--signal` do not. */
-export const SECRET_PARTS = ['pat', 'sig', 'sas'] as const
+export const SECRET_PARTS = ['pat', 'sig', 'sas', 'pw'] as const
 /**
  * A word of at least this many characters, with letters and digits, is a secret: of letters, digits, `_` and `-`,
  * or, with upper and lower case, also of `. / + = : ~ %` (a JWT, a base64 key, a bot token), unless it starts as a path.
@@ -350,10 +350,15 @@ const PATH_START = /^(?:[./~]|[A-Za-z]:[\\/])/
 const isSecretWord = (word: string): boolean =>
   PLAIN_WORD.test(word) || (MIXED_WORD.test(word) && !PATH_START.test(word))
 
-const FLAG = /^--?[A-Za-z][\w.-]*$/
+// An empty `--name=` takes the next arg as its value.
+const FLAG = /^--?[A-Za-z][\w.-]*=?$/
 // `-t` and `-p` often take a token or a password, and also a port (`8080:80`), a time, a path or a package.
 const SHORT_FLAG = /^-[tp]$/
 const SHORT_KEEP = /^(?:[\d.:]+|[@./~]\S*|[A-Za-z]:[\\/]\S*)$/
+// curl takes `user:password` after these, and docker takes `user:group`.
+const USER_FLAG = /^(?:-u|--user|--proxy-user)$/
+// The user can be empty (`:<token>`), an email or `DOMAIN\name`.
+const USER_PASS = /^([^\s:/]*):(?!\/)(\S+)$/
 // `Name:` as a word of its own, before the value: `-H "X-Api-Key: <value>"` in a script.
 const NAME_COLON = /^[A-Za-z][\w.-]*:$/
 // The scheme ends the word before the value, alone or after a name: `X-Custom:Bearer <value>`.
@@ -379,7 +384,10 @@ const collector = (): { hide: Hide; secrets: () => string[] } => {
   }
 }
 
-/** A URL with its user and password, each query value or bare part, its fragment and each secret word of its path hidden. */
+/**
+ * A URL with its user and password, each query value or bare part, each `;name=value` path value, its fragment and
+ * each secret word of its path hidden.
+ */
 const maskUrl = (url: string, hide: Hide): string =>
   url
     .replace(/#([\s\S]+)$/, (_, fragment: string) => `#${hide(fragment)}`)
@@ -395,6 +403,7 @@ const maskUrl = (url: string, hide: Hide): string =>
     })
     .replace(/([?&][^=&#]*=)([^&#]+)/g, (_, name: string, value: string) => `${name}${hide(value)}`)
     .replace(/([?&])([^=&#]+)(?=[&#]|$)/g, (_, mark: string, part: string) => `${mark}${hide(part)}`)
+    .replace(/(;[^=;/?#]*=)([^;/?#]+)/g, (_, name: string, value: string) => `${name}${hide(value)}`)
     .replace(/\/([\w.~%+=-]+)(?=[/?#]|$)/g, (whole, part: string) => (isSecretWord(part) ? `/${hide(part)}` : whole))
 
 /** maskUrl, and the secrets of the URL as the URL parser writes it (`%20` for a space), the form that an error shows. */
@@ -407,6 +416,17 @@ const hideUrl = (url: string, hide: Hide): string => {
 export const hideUrlSecrets = (url: string): { url: string; secrets: string[] } => {
   const { hide, secrets } = collector()
   return { url: hideUrl(url, hide), secrets: secrets() }
+}
+
+/**
+ * `user:password` with the password hidden, or undefined for a value with no password. A number on either side, or
+ * the same name twice, is a docker user and group (`1000:1000`, `1000:docker`, `node:node`). A path stays too.
+ */
+const hidePassword = (value: string, hide: Hide): string | undefined => {
+  const [, user = '', password = ''] = USER_PASS.exec(value) ?? []
+  const group = password === user || /^\d+$/.test(user) || /^\d+$/.test(password)
+  if (password === '' || group || SHORT_KEEP.test(value)) return undefined
+  return `${user}:${hide(password)}`
 }
 
 /** The hidden form of `value` after the word or arg `prev`, or undefined when `prev` says nothing about it. */
@@ -423,6 +443,7 @@ const afterPrev = (value: string, prev: string | undefined, hide: Hide): string 
     const header = HEADER.exec(value)
     return header ? `${header[1]}${hide(header[2] ?? '')}` : hide(value)
   }
+  if (USER_FLAG.test(prev)) return hidePassword(value, hide)
   // `-t` takes no value in docker, so a `-x` after it is the next flag.
   if (SHORT_FLAG.test(prev) && !value.startsWith('-')) return SHORT_KEEP.test(value) ? value : hide(value)
   if ((NAME_COLON.test(prev) && SECRET_NAME.test(prev)) || BEARER.test(prev)) return hide(value)
@@ -450,11 +471,51 @@ const hideWords = (text: string, hide: Hide): string => {
     .join('')
 }
 
+// Inside a secret object these name the secret, as in `{"auth": {"user": "bob", "value": "<secret>"}}`, so they stay.
+const JSON_LABEL = /^(?:name|user|username|type|id)$/i
+
+/**
+ * A JSON value with each value under a key with a secret name hidden, also inside an object or array there, except
+ * a label, and the secrets in each other string.
+ */
+const hideJson = (value: unknown, secret: boolean, hide: Hide): unknown => {
+  if (Array.isArray(value)) return value.map(v => hideJson(v, secret, hide))
+  if (isObject(value))
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        k,
+        hideJson(v, (secret && !JSON_LABEL.test(k)) || SECRET_NAME.test(k), hide),
+      ]),
+    )
+  if (typeof value === 'string') return secret ? hide(value) : hideText(value, hide)
+  return secret && typeof value === 'number' ? hide(String(value)) : value
+}
+
+/** `hide` that also keeps each secret as JSON escapes it, the form in which a server echoes a JSON arg. */
+const hideEscapedToo =
+  (hide: Hide): Hide =>
+  secret => {
+    const escaped = JSON.stringify(secret).slice(1, -1)
+    if (escaped !== secret) hide(escaped)
+    return hide(secret)
+  }
+
 /** One arg, or one word or part of one, with its secrets hidden. */
 const hideText = (text: string, hide: Hide): string => {
+  const json = /^[[{]/.test(text) ? parseJson(text) : undefined
+  if (json?.ok && typeof json.value === 'object' && json.value !== null) {
+    try {
+      return JSON.stringify(hideJson(json.value, false, hideEscapedToo(hide)))
+    } catch {
+      // Nested deeper than the stack allows: the whole arg is the secret, so a failed server never stops the others.
+      return hide(text)
+    }
+  }
   const assign = ASSIGN.exec(text)
   const [, name = '', sep = '', value = ''] = assign ?? []
   if (assign && SECRET_NAME.test(name)) return value === '' ? text : `${name}${sep}${hide(value)}`
+  const password = assign && sep === '=' && USER_FLAG.test(name) ? hidePassword(value, hide) : undefined
+  if (password !== undefined) return `${name}${sep}${password}`
   if (WHOLE_URL.test(text)) return hideUrl(text, hide)
   if (assign && WHOLE_URL.test(value)) return `${name}${sep}${hideUrl(value, hide)}`
   if (isConnection(text))
@@ -470,11 +531,14 @@ const hideText = (text: string, hide: Hide): string => {
 
 /**
  * The args of a server with each secret in them as `***`, and the secrets. A secret is the value after a flag with a
- * secret name (the name of a header stays), the value after `-t` or `-p` unless it is a number, a path or a scoped
- * package, a secret header value after `-H`, the value of `name=value` or `Name: value` with a secret name, also as a
- * part of `Server=db;Password=x`, the word after Bearer or Basic, the user, password, query values and bare parts,
- * fragment and secret path words of a URL, and a secret word. An arg of several words, such as a `sh -c` script, gets
- * the same rules word by word. Other text stays as it is.
+ * secret name (the name of a header stays), also after an empty `--name=`, the value after `-t` or `-p` unless it is a
+ * number, a path or a scoped package, the password of `user:password` after `-u`, `--user` or `--proxy-user`, a secret
+ * header value after `-H`, the value of `name=value` or `Name: value` with a secret name, also as a part of
+ * `Server=db;Password=x`, each value under a key with a secret name in a JSON object or array (a JSON arg too deep for
+ * the stack is hidden whole), the word after Bearer or Basic, the user, password,
+ * query values and bare parts, `;name=value` path values, fragment and secret path words of a URL, and a secret word.
+ * An arg of several words, such as a `sh -c` script, gets the same rules word by word. Other text stays as it is. A
+ * JSON arg shows on one line.
  */
 export const hideArgSecrets = (args: readonly string[]): { args: string[]; secrets: string[] } => {
   const { hide, secrets } = collector()

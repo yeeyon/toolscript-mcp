@@ -27,9 +27,11 @@ const list = (words: readonly string[]) => `${words.slice(0, -1).join(', ')} or 
 const HIDDEN = [
   'These show as ***:',
   '- the values of env and headers',
-  '- in a URL: the user and password, each query value or part, the fragment, and each path segment that is a long word',
-  `- the value of a name that holds ${list(SECRET_NAMES)}, or the part ${list(SECRET_PARTS)}: --name value, --name=value, NAME=value, Name: value, Server=db;Password=value`,
+  '- in a URL: the user and password, each query value or part, each ;name=value path value, the fragment, and each path segment that is a long word',
+  `- the value of a name that holds ${list(SECRET_NAMES)}, or the part ${list(SECRET_PARTS)}: --name value, --name=value, --name= value, NAME=value, Name: value, Server=db;Password=value`,
+  '- in a JSON argument: each value under a key with such a name, also nested, except a label such as name or user, and the secrets in the other strings',
   '- the value after -t or -p, unless it is a number, a port such as 8080:80, a path or an @scope package',
+  '- the password of user:password after -u, --user or --proxy-user, unless a side is a number or both sides are the same, as in a docker user and group',
   '- after -H, the value of a header with such a name, and the secrets in other header values',
   '- the word after Bearer or Basic',
   `- a long word: ${SECRET_WORD_LENGTH} or more letters, digits, _ and - with letters and digits, or with upper and lower case also . / + = : ~ %, when it does not start as a path`,

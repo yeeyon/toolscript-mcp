@@ -187,9 +187,11 @@ describe('the decision before a run', () => {
       /^Error: the program did not run, because some tools need approval and this MCP client cannot ask the person\. No call was made\./,
     )
     assert.ok(unsupported.includes('add {"match": "mcp__x__y", "action": "allow"} to "policy"'), unsupported)
+    assert.ok(unsupported.includes('the new rule applies only after they restart toolscript-mcp'), unsupported)
     const declined = refusedReport(['mcp__x__y'], 'decline')
     assert.match(declined, /^Error: the program did not run, because the person did not approve/)
     assert.ok(declined.includes('{"match": "mcp__x__y", "action": "allow"}'), declined)
+    assert.ok(!declined.includes('restart'), declined)
   })
 })
 
@@ -220,7 +222,15 @@ describe('the check of each nested call', () => {
       note,
     )
     assert.ok(!note.includes('as a string'), note)
-    assert.ok(approvalNote(['mcp__a__x'], true).includes('A tool name written as a string in call("…") is asked'))
+    assert.ok(
+      note.includes(
+        'This MCP client cannot ask the person, so the new rule applies only after they restart toolscript-mcp.',
+      ),
+      note,
+    )
+    const asks = approvalNote(['mcp__a__x'], true)
+    assert.ok(asks.includes('A tool name written as a string in call("…") is asked before the run.'), asks)
+    assert.ok(!asks.includes('restart'), asks)
   })
 })
 

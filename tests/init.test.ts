@@ -128,6 +128,9 @@ describe('toolscript-mcp init', () => {
     assert.match(out, /my-notes.*"my notes".*cwd/)
     assert.doesNotMatch(out, /project_only/)
     assert.match(out, /"policy"/)
+    has('toolscript-mcp reads the policy again at each run. It asks you to approve a new allow rule before it applies.')
+    has('If your client cannot ask, restart toolscript-mcp to apply a new allow rule.')
+    assert.doesNotMatch(out, /needs no restart/)
   })
 
   test('the config is readable by its owner only, and an existing config needs --force', async () => {
@@ -288,7 +291,7 @@ describe('toolscript-mcp init', () => {
       assert.ok(out.includes(kept), `missing ${kept}:\n${out}`)
     assert.match(
       out,
-      /key, token, secret, pass, pwd, auth, bearer, header, credential, cookie, session or dsn, or the part pat, sig or sas/,
+      /key, token, secret, pass, pwd, auth, bearer, header, credential, cookie, session or dsn, or the part pat, sig, sas or pw/,
     )
     assert.match(out, /do not share this output/)
   })
@@ -310,6 +313,28 @@ describe('toolscript-mcp init', () => {
     assert.doesNotMatch(out, /fake pass|w0rd|ghp_fake|sk-fake|fakeBareToken/)
     assert.ok(out.includes('"url": "https://***@h.example/mcp?***"'), out)
     assert.ok(out.includes('"export GITHUB_TOKEN=***; npx fake-server --api-key ***"'), out)
+  })
+
+  test('--dry-run hides the secrets of a JSON argument and the password after -u', async () => {
+    const home = homeWith({
+      '.cursor/mcp.json': {
+        mcpServers: {
+          json: { command: 'fake', args: ['--config', '{"apiKey": "fake-secret-json", "url": "https://h.example"}'] },
+          curl: { command: 'sh', args: ['-c', 'curl -u fake:fake-secret-user https://h.example', '-u', '1000:1000'] },
+        },
+      },
+    })
+    const { code, out } = await init(home, ['--dry-run'])
+    assert.equal(code, 0, out)
+    assert.doesNotMatch(out, /fake.?secret/i)
+    for (const kept of [
+      String.raw`"{\"apiKey\":\"***\",\"url\":\"https://h.example\"}"`,
+      '"curl -u fake:*** https://h.example"',
+      '"-u",\n        "1000:1000"',
+    ])
+      assert.ok(out.includes(kept), `missing ${kept}:\n${out}`)
+    assert.match(out, /- in a JSON argument: each value under a key with such a name/)
+    assert.match(out, /- the password of user:password after -u, --user or --proxy-user/)
   })
 
   test('the mode of the .bak file is named only on Linux and macOS', async () => {

@@ -288,7 +288,8 @@ export const initReport = (imp: Import, configFile: string, platform: string): s
     'The policy in the config is empty, so toolscript-mcp asks you before a program calls a tool.',
     'If your client cannot ask, toolscript-mcp refuses the run, and the result names the rule to add.',
     `Add rules to "policy" in ${configFile}, for example {"match": "mcp__${first}__*", "action": "allow"}.`,
-    'toolscript-mcp reads the policy again at each run, so a new rule needs no restart.',
+    'toolscript-mcp reads the policy again at each run. It asks you to approve a new allow rule before it applies.',
+    'If your client cannot ask, restart toolscript-mcp to apply a new allow rule.',
     '',
     'Next, in each client, remove the servers that toolscript-mcp now runs, and add toolscript:',
   )
