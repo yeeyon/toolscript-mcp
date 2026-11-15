@@ -360,6 +360,17 @@ const cases = {
   'wall-clock timeout': async () =>
     assert.match(failure(await run('await new Promise(() => {})', { timeoutMs: 500 })), /timeout/),
 
+  'a runner input with no deadline keeps the limit of timeoutMs': async () => {
+    const xdir = await makeExchangeDir()
+    try {
+      const input = JSON.stringify({ code: 'await sleep(300)\nreturn 1', timeoutMs: 5000 })
+      const r = spawnSync(process.execPath, [RUNNER, xdir], { input, encoding: 'utf8', timeout: 15_000 })
+      assert.deepEqual(takeMessages(r.stdout).messages, [{ t: 'done', value: '1', logs: [] }], r.stdout + r.stderr)
+    } finally {
+      await removeExchangeDir(xdir)
+    }
+  },
+
   'a call with no reply ends at the time limit, and try/catch does not hide it': async () => {
     const answer = m => (m.tool === 'mcp__s__hang' ? undefined : echo(m))
     const code = 'await call("mcp__s__a"); try { await call("mcp__s__hang") } catch { return "caught" }'

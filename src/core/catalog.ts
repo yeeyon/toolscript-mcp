@@ -65,14 +65,15 @@ export const notConnected = (s: ServerState): string | undefined =>
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 // An empty enum allows no value. An empty type list is not a valid schema.
-const typeOf = (schema: unknown): string => {
-  if (!isObject(schema)) return 'unknown'
+// Arrays nested deeper than MAX_NEST end in unknown, so a deep schema cannot overflow the stack.
+const typeOf = (schema: unknown, nest = 0): string => {
+  if (!isObject(schema) || nest > MAX_NEST) return 'unknown'
   if (Array.isArray(schema.enum))
     return schema.enum.length === 0 ? 'never' : schema.enum.map(v => JSON.stringify(v)).join(' | ')
   const type = schema.type
   if (Array.isArray(type))
-    return type.length === 0 ? 'unknown' : type.map(t => typeOf({ ...schema, type: t })).join(' | ')
-  if (type === 'array') return `${typeOf(schema.items)}[]`
+    return type.length === 0 ? 'unknown' : type.map(t => typeOf({ ...schema, type: t }, nest)).join(' | ')
+  if (type === 'array') return `${typeOf(schema.items, nest + 1)}[]`
   if (type === 'integer') return 'number'
   if (typeof type === 'string') return type
   return 'unknown'
@@ -127,17 +128,19 @@ const MORE_NAMES = [
  * A schema with no properties allows any names, as does one that sets
  * `additionalProperties` to anything but false, or one with a key in
  * MORE_NAMES. Without them, other names are typos, as in the generated types
- * of the plugin. Undefined when the schema has no properties object.
+ * of the plugin. A required name is a known name, also when the properties
+ * leave it out. Undefined when the schema has no properties object.
  */
 export const argSpec = (inputSchema: unknown): ArgSpec | undefined => {
   if (!isObject(inputSchema) || !isObject(inputSchema.properties)) return undefined
-  const names = Object.keys(inputSchema.properties)
+  const properties = Object.keys(inputSchema.properties)
   const required = Array.isArray(inputSchema.required)
     ? inputSchema.required.filter((n): n is string => typeof n === 'string')
     : []
+  const names = [...new Set([...properties, ...required])]
   const extra = inputSchema.additionalProperties
   const more = MORE_NAMES.some(k => Object.hasOwn(inputSchema, k))
-  return { names, required, isOpen: names.length === 0 || more || (extra !== undefined && extra !== false) }
+  return { names, required, isOpen: properties.length === 0 || more || (extra !== undefined && extra !== false) }
 }
 
 const notConnectedText = (states: readonly ServerState[]): string => {

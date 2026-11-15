@@ -32,7 +32,8 @@ const POLL_MS = 5
 const xdir = process.argv[2]
 const input = JSON.parse(fs.readFileSync(0, 'utf8'))
 const timeoutMs = Number(input.timeoutMs) || 60_000
-const deadline = Number(input.deadline)
+// With no deadline in the input, the limit counts from here.
+const deadline = Number.isFinite(input.deadline) ? input.deadline : Date.now() + timeoutMs
 
 let finished = false
 const lineOf = msg => MARK + JSON.stringify(msg) + '\n'

@@ -5,7 +5,9 @@
 
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
+import childProcess, { type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { searchResult, type ServerState } from '../src/core/catalog.ts'
@@ -258,6 +260,36 @@ describe('run_code', () => {
     assert.ok(performance.now() - started < 3000, 'the run ends soon after the abort')
     assert.equal(r.isError, true)
     assert.deepEqual(leftDirs(), [])
+  })
+
+  // As the OOM killer or kill -9 does. The test finds the sandbox through spawn.
+  test('a SIGKILL from outside long before the limit is reported as the signal, not the time limit', async () => {
+    const spawn = childProcess.spawn
+    const sandboxes: ChildProcess[] = []
+    childProcess.spawn = ((...args: Parameters<typeof spawn>) => {
+      const child = spawn(...args)
+      sandboxes.push(child)
+      return child
+    }) as typeof spawn
+    syncBuiltinESMExports()
+    try {
+      const { run, lines } = setup({ timeoutSeconds: 20 })
+      const running = run('while (true) {}')
+      await new Promise(r => setTimeout(r, 500))
+      assert.equal(sandboxes.length, 1)
+      sandboxes[0]!.kill('SIGKILL')
+      const r = await running
+      assert.equal(r.isError, true)
+      assert.ok(!r.text.includes('time limit'), r.text)
+      assert.ok(r.text.includes('the sandbox ended with SIGKILL'), r.text)
+      assert.deepEqual(
+        lines().map(l => l.ending),
+        ['failed'],
+      )
+    } finally {
+      childProcess.spawn = spawn
+      syncBuiltinESMExports()
+    }
   })
 })
 
