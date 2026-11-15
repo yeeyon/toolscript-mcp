@@ -298,6 +298,8 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
 }
 
 const PONG = JSON.stringify([{ type: 'text', text: 'pong' }])
+/** The reason of a server that needs a login, with the command as the README installs toolscript-mcp. */
+const LOGIN_REASON = /needs an OAuth login.*`npx -y toolscript-mcp login fake`/
 
 describe('login', () => {
   test('login registers a client, gets tokens, and the server then lists and calls the tools', async () => {
@@ -446,7 +448,7 @@ describe('the running server', () => {
     assert.ok(Date.now() - start < 5000, 'no hang')
     const state = downstream.states()[0]
     assert.equal(state?.status, 'failed')
-    assert.match(state?.status === 'failed' ? state.reason : '', /needs an OAuth login.*`toolscript-mcp login fake`/)
+    assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON)
     assert.equal(fake.seen.registrations, 0)
     assert.equal(fake.seen.authorizations.length, 0)
   })
@@ -502,7 +504,7 @@ describe('the running server', () => {
     await s.ping(downstream)
     const state = downstream.states()[0]
     assert.equal(state?.status, 'failed')
-    assert.match(state?.status === 'failed' ? state.reason : '', /needs an OAuth login.*`toolscript-mcp login fake`/)
+    assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON)
     assert.match(await s.ping(downstream), /needs an OAuth login/)
   })
 

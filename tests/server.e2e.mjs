@@ -300,7 +300,7 @@ test('(k) an http entry whose URL does not parse fails alone, and the error name
 
 test('(p) an http server that answers 401 without tokens asks for a login, with this config file', async () => {
   const text = await search('')
-  const command = `toolscript-mcp login locked --config "${path.resolve(configFile)}"`
+  const command = `npx -y toolscript-mcp login locked --config "${path.resolve(configFile)}"`
   assert.ok(text.includes(`- locked: it needs an OAuth login. Ask the person to run \`${command}\``), text)
   const login = spawnSync(process.execPath, [MAIN, 'login', 'bench', '--config', configFile], {
     env: SERVER_ENV,

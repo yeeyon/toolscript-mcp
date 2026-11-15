@@ -286,7 +286,7 @@ export const initReport = (imp: Import, configFile: string, platform: string): s
   if (bare.length > 0)
     out.push(
       '',
-      `These HTTP servers have no headers: ${bare.join(', ')}. If one asks for an OAuth login, run toolscript-mcp login <server> for it.`,
+      `These HTTP servers have no headers: ${bare.join(', ')}. If one asks for an OAuth login, run npx -y toolscript-mcp login <server> for it.`,
     )
 
   const [first] = imp.servers.keys()

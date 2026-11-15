@@ -49,9 +49,12 @@ export type ServerEntry = ServerConfig | InvalidServer
 export const invalidReason = (errors: readonly string[]): string =>
   `invalid entry in the toolscript-mcp config: ${errors.join('; ')}`
 
-/** The command that logs in to a server. `config` is the config file, when it is not the default one. */
+/**
+ * The command that logs in to a server. `config` is the config file, when it is not the default one. It runs through
+ * npx, as the README installs toolscript-mcp: a person seldom has the command on PATH.
+ */
 export const loginCommand = (key: ServerKey, config?: string): string =>
-  `toolscript-mcp login ${key}${config === undefined ? '' : ` --config "${config}"`}`
+  `npx -y toolscript-mcp login ${key}${config === undefined ? '' : ` --config "${config}"`}`
 
 /** Why a server that needs an OAuth login, or whose refresh was refused, is not connected, as search_tools shows it. */
 export const loginReason = (command: string): string =>

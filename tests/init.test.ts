@@ -534,7 +534,7 @@ describe('the OAuth login in the report', () => {
     })
     assert.ok(
       out.includes(
-        'These HTTP servers have no headers: jira, docs. If one asks for an OAuth login, run toolscript-mcp login <server> for it.',
+        'These HTTP servers have no headers: jira, docs. If one asks for an OAuth login, run npx -y toolscript-mcp login <server> for it.',
       ),
       out,
     )
