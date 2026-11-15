@@ -49,9 +49,11 @@ const parseStored = (text: string): Stored => {
     OAuthClientInformationFullSchema.safeParse(client.info).data ??
     OAuthClientInformationSchema.safeParse(client.info).data
   const tokens = OAuthTokensSchema.safeParse(raw.tokens).data
+  const { redirectUrl } = client
+  // Login listens on the port of this URL, on this machine.
+  const loopback = typeof redirectUrl === 'string' && URL.canParse(redirectUrl) && isLoopbackHttp(new URL(redirectUrl))
   return {
-    ...(info !== undefined &&
-      typeof client.redirectUrl === 'string' && { client: { info, redirectUrl: client.redirectUrl } }),
+    ...(info !== undefined && loopback && { client: { info, redirectUrl } }),
     ...(tokens !== undefined && { tokens }),
   }
 }

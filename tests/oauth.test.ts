@@ -17,6 +17,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { parseConfig, type ServerConfig, type ServerKey } from '../src/core/config.ts'
 import { connectAll, type Downstream } from '../src/host/downstream.ts'
 import { runLogin } from '../src/host/login.ts'
+import { storeFile } from '../src/host/oauth.ts'
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-oauth-test-'))
 const KEY = 'fake' as ServerKey
@@ -290,6 +291,18 @@ describe('login', () => {
       const printed = s.lines.join('\n')
       assert.match(printed, /login to fake failed: the authorization URL .* is not https/, printed)
       assert.ok(!printed.includes(new URL(endpoint).href), printed)
+    }
+  })
+
+  test('a stored client whose redirect URL is not a loopback http URL is dropped, and login starts fresh', async () => {
+    for (const redirectUrl of ['not a url', 'https://fake.example:8765/callback']) {
+      const fake = await startFake()
+      const s = setup(fake)
+      const file = storeFile(s.home, KEY, fake.url)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify({ client: { info: { client_id: 'fake-old-client' }, redirectUrl } }))
+      assert.equal(await s.login(), 0, s.lines.join('\n'))
+      assert.equal(fake.seen.registrations, 1)
     }
   })
 
