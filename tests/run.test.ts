@@ -92,7 +92,9 @@ const fakeDownstream = (others: readonly ServerState[] = []) => {
     states: () => states,
     retry: async () => {},
     client: async (key: ServerKey) =>
-      key === 'f' ? { ok: true, client } : { ok: false, reason: `no MCP server "${key}" is connected` },
+      key === 'f'
+        ? { ok: true, client, hide: (text: string) => text }
+        : { ok: false, reason: `no MCP server "${key}" is connected` },
     close: async () => {},
   } as unknown as Downstream
   return { downstream, called, most: () => most }

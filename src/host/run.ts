@@ -319,7 +319,8 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
           error: `${tool} did not answer within the call limit of ${callSeconds} s and was cancelled`,
           code: 'timeout',
         }
-      return { ok: false, error: errorText(err), code: own.signal.aborted ? 'cancelled' : 'failed' }
+      // A server can echo a token of its own in an error, as an HTTP error body.
+      return { ok: false, error: link.hide(errorText(err)), code: own.signal.aborted ? 'cancelled' : 'failed' }
     } finally {
       cancel.signal.removeEventListener('abort', stop)
     }
