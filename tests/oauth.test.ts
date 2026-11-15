@@ -49,9 +49,15 @@ const startFake = async () => {
   /** Each refresh token and the client it was issued to. */
   const refresh = new Map<string, string>()
   const secrets = new Set<string>([STATIC_SECRET])
-  const seen = { registrations: 0, authorizations: [] as URL[], tokens: [] as URLSearchParams[], refreshes: 0 }
-  /** What a test changes in the answers of the fake. */
-  const change = { authorizationEndpoint: '' }
+  const seen = {
+    registrations: 0,
+    authorizations: [] as URL[],
+    tokens: [] as URLSearchParams[],
+    refreshes: 0,
+    requests: [] as { origin: string; path: string; header: string | string[] | undefined }[],
+  }
+  /** What a test changes in the answers of the fake. `authServer` is another origin of the fake for its OAuth part. */
+  const change = { authorizationEndpoint: '', authServer: '' }
   const issue = (clientId: string) => {
     const tokens = { access_token: `fake-access-${randomUUID()}`, refresh_token: `fake-refresh-${randomUUID()}` }
     access.add(tokens.access_token)
@@ -100,14 +106,20 @@ const startFake = async () => {
   }
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', base)
+    seen.requests.push({
+      origin: `http://${req.headers.host}`,
+      path: url.pathname,
+      header: req.headers['x-fake-header'],
+    })
+    const auth = change.authServer || base
     if (url.pathname.startsWith('/.well-known/oauth-protected-resource'))
-      return json(res, 200, { resource: `${base}/mcp`, authorization_servers: [base] })
+      return json(res, 200, { resource: `${base}/mcp`, authorization_servers: [auth] })
     if (url.pathname === '/.well-known/oauth-authorization-server')
       return json(res, 200, {
-        issuer: base,
-        authorization_endpoint: change.authorizationEndpoint || `${base}/authorize`,
-        token_endpoint: `${base}/token`,
-        registration_endpoint: `${base}/register`,
+        issuer: auth,
+        authorization_endpoint: change.authorizationEndpoint || `${auth}/authorize`,
+        token_endpoint: `${auth}/token`,
+        registration_endpoint: `${auth}/register`,
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
@@ -143,6 +155,7 @@ const startFake = async () => {
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   return {
     url: `${base}/mcp`,
+    port: (server.address() as AddressInfo).port,
     seen,
     secrets,
     change,
@@ -331,6 +344,22 @@ describe('login', () => {
     const [file] = s.store()
     assert.equal(fs.statSync(file!).mode & 0o777, 0o600)
     assert.equal(fs.statSync(path.dirname(file!)).mode & 0o777, 0o700)
+  })
+
+  test('the config headers go to the MCP server and never to an authorization server on another origin', async () => {
+    const fake = await startFake()
+    fake.change.authServer = `http://localhost:${fake.port}`
+    const s = setup(fake, { oauth: true, headers: { 'X-Fake-Header': 'fake-header-value-1' } })
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    fake.expire()
+    assert.equal(await s.ping(s.connect()), PONG)
+    assert.equal(fake.seen.refreshes, 1)
+    const at = (origin: string) => fake.seen.requests.filter(r => r.origin === origin && r.path !== '/authorize')
+    const mcp = at(new URL(fake.url).origin)
+    const auth = at(fake.change.authServer)
+    assert.ok(mcp.length > 0 && auth.length > 0)
+    assert.deepEqual(new Set(mcp.map(r => r.header)), new Set(['fake-header-value-1']))
+    assert.deepEqual(new Set(auth.map(r => r.header)), new Set([undefined]))
   })
 
   test('login names a server that is not an OAuth HTTP server', async () => {

@@ -26,7 +26,7 @@ import {
   type ServerKey,
 } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
-import { CONNECT_TIMEOUT_MS, listAll } from './downstream.ts'
+import { CONNECT_TIMEOUT_MS, listAll, serverFetch } from './downstream.ts'
 import { isLoopbackHttp, oauthProvider, readStore, storeFile, type Stored } from './oauth.ts'
 
 export const LOGIN_USAGE = 'usage: toolscript-mcp login <server> [--config <path>]'
@@ -190,7 +190,7 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
   const connect = async () => {
     const transport = new StreamableHTTPClientTransport(new URL(server.url), {
       authProvider: provider,
-      requestInit: { headers: { ...server.headers } },
+      fetch: serverFetch(server),
     })
     const client = new Client({ name: 'toolscript-mcp', version: io.version })
     try {

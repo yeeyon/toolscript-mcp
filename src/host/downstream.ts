@@ -13,7 +13,7 @@ import {
   StreamableHTTPError,
   type StreamableHTTPClientTransportOptions,
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import {
   childEnv,
@@ -21,6 +21,7 @@ import {
   loginCommand,
   loginReason,
   redact,
+  type HttpServer,
   type ServerConfig,
   type ServerEntry,
   type ServerKey,
@@ -123,6 +124,20 @@ class HttpTransport extends StreamableHTTPClientTransport {
 }
 
 /**
+ * fetch with the config headers on each request to the origin of the server only. The SDK sends its OAuth requests
+ * through it too, and a header for the MCP server must never reach an authorization server.
+ */
+export const serverFetch = (server: HttpServer): FetchLike => {
+  const origin = new URL(server.url).origin
+  return (url, init) => {
+    if (new URL(url).origin !== origin) return fetch(url, init)
+    const headers = new Headers(init?.headers)
+    for (const [name, value] of Object.entries(server.headers)) headers.set(name, value)
+    return fetch(url, { ...init, headers })
+  }
+}
+
+/**
  * The transport of one server, and the end of what its stdio child wrote to
  * stderr, as one line. The child's stderr still goes on to ours, as with `inherit`.
  */
@@ -135,7 +150,7 @@ const transportOf = (
     return {
       transport: new HttpTransport(
         new URL(server.url),
-        { requestInit: { headers: { ...server.headers } }, ...(authProvider && { authProvider }) },
+        { fetch: serverFetch(server), ...(authProvider && { authProvider }) },
         onSessionEnd,
       ),
       lastError: () => '',
