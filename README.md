@@ -217,6 +217,21 @@ again until the config file changes. If your client cannot ask, restart toolscri
 
 Do not let a tool that the policy allows write the config file. A program can call that tool to change its own policy.
 
+#### With Claude Code auto mode
+
+Claude Code checks each `run_code` call itself. In auto mode, its classifier reads the program and the tool names in
+it. To use that check alone, as Code Mode does, allow every tool in the policy:
+
+```json
+"policy": [
+  { "match": "mcp__azure-devops__*delete*", "action": "deny" },
+  { "match": "*", "action": "allow" }
+]
+```
+
+Put a `deny` rule before the `*` rule for each tool that must never run. Keep the default `ask` in a client that has
+no check of its own, such as Claude Desktop.
+
 If a tool does not answer in the call time limit, the call throws an error. toolscript-mcp cancels the request on the
 server. The program can catch the error and continue.
 
