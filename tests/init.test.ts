@@ -128,6 +128,9 @@ describe('toolscript-mcp init', () => {
     assert.match(out, /my-notes.*"my notes".*cwd/)
     assert.doesNotMatch(out, /project_only/)
     assert.match(out, /"policy"/)
+    has('toolscript-mcp reads the policy again at each run. It asks you to approve a new allow rule before it applies.')
+    has('If your client cannot ask, restart toolscript-mcp to apply a new allow rule.')
+    assert.doesNotMatch(out, /needs no restart/)
   })
 
   test('the config is readable by its owner only, and an existing config needs --force', async () => {
