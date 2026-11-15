@@ -515,6 +515,36 @@ describe('the printed Claude Code commands', () => {
   })
 })
 
+describe('the OAuth login in the report', () => {
+  const report = (servers: Record<string, unknown>) =>
+    initReport(
+      importServers([
+        { client: 'claude-code', path: '/c/.claude.json', kind: 'text', text: JSON.stringify({ mcpServers: servers }) },
+      ]),
+      '/c/config.json',
+      'linux',
+    )
+
+  test('names the HTTP servers without headers, which log in with toolscript-mcp login', () => {
+    const out = report({
+      jira: { type: 'http', url: 'https://mcp.example.com/mcp' },
+      docs: { type: 'http', url: 'https://docs.example.com/mcp' },
+      tracker: { type: 'http', url: 'https://t.example.com/mcp', headers: { Authorization: 'Bearer fake' } },
+      files: { command: 'fake' },
+    })
+    assert.ok(
+      out.includes(
+        'These HTTP servers have no headers: jira, docs. If one asks for an OAuth login, run npx -y toolscript-mcp login <server> for it.',
+      ),
+      out,
+    )
+  })
+
+  test('says nothing about a login without such a server', () => {
+    assert.doesNotMatch(report({ files: { command: 'fake' } }), /login/)
+  })
+})
+
 describe('the client files', () => {
   test('per system, from the home folder and the environment', () => {
     const files = (env: Record<string, string>, platform: string, home: string) =>

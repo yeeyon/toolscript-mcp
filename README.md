@@ -248,7 +248,8 @@ server. The program can catch the error and continue.
 - toolscript-mcp reads the file from `--config`, else from `TOOLSCRIPT_CONFIG`.
 - Without both, it reads `%APPDATA%\toolscript-mcp\config.json` on Windows.
 - On other systems, it reads `$XDG_CONFIG_HOME/toolscript-mcp/config.json`, else `~/.config/toolscript-mcp/config.json`.
-- A stdio server has `command`, `args` and `env`. An HTTP server has `"type": "http"`, `url` and `headers`.
+- A stdio server has `command`, `args` and `env`. An HTTP server has `"type": "http"`, `url`, `headers` and
+  `oauth`. See [OAuth login](#oauth-login).
 - The `url` of an HTTP server must be a valid URL that starts with `http://` or `https://`.
 - `${VAR}` in `args`, `env`, `url` and `headers` gets the value of `VAR` from the environment of toolscript-mcp.
 - If a server entry has an error, for example a variable that is not set, only that server fails.
@@ -273,6 +274,56 @@ toolscript-mcp refuses to start from its own config, so it cannot start copies o
 
 If a server fails or stops, toolscript-mcp connects to it again on the next search or call. It tries at most 3 times
 in 60 seconds for each server. Then `search_tools` shows the time until the next attempt.
+
+### OAuth login
+
+toolscript-mcp logs in to a remote HTTP server with OAuth. You do not need a proxy such as `mcp-remote`.
+
+1. Add the server to the config with `"type": "http"` and `url`, without `headers`.
+2. Run `npx -y toolscript-mcp login <server>`. If your config is not at the default path, add `--config <path>`.
+3. Log in and approve the access in the browser. If the browser does not open, open the URL that login prints.
+
+login waits 5 minutes for the browser. Then it connects to the server and prints the number of tools.
+
+- An HTTP server without `headers` logs in with OAuth. To log in to a server with other headers, add `"oauth": true`.
+- `"oauth": false` turns the login off. An entry with an `Authorization` header and `oauth` is an error.
+- login registers toolscript-mcp with the server, with dynamic client registration. Atlassian supports it, for
+  example.
+
+If a provider has no dynamic client registration, such as Google, register a client with the provider. Then give its
+ID in `oauth`:
+
+```json
+"google": {
+  "type": "http",
+  "url": "https://mcp.example.com/mcp",
+  "oauth": {
+    "clientId": "<client id>",
+    "clientSecret": "${GOOGLE_CLIENT_SECRET}",
+    "scopes": ["openid", "email"],
+    "callbackPort": 8765
+  }
+}
+```
+
+- `clientSecret` takes `${VAR}`, as other values do. Use a variable, so the secret stays out of the config.
+- `scopes` sets the scopes to ask for when the server names none.
+- `callbackPort` sets the port of the login callback on `127.0.0.1`. Register `http://127.0.0.1:<port>/callback` as
+  the redirect URI of your client.
+- A client that you register by hand needs `callbackPort`, so its redirect URI stays the same at each login.
+- Without `clientId`, login registers a client with a free port, and the next login uses that port again. If another
+  program has the port, login registers a new client.
+
+login writes the tokens to `~/.toolscript-mcp/oauth/<server>-<hash>.json`. The hash comes from the URL, so a new URL
+needs a new login. On Linux and macOS, only your user account can read the file.
+
+login opens only an authorization URL with `https`, or with `http` on `127.0.0.1`, `::1` or `localhost`. The `headers`
+of an entry go only to the origin of its `url`, never to its authorization server.
+
+toolscript-mcp refreshes the tokens when they expire. It never opens a browser while it runs as a server. If a
+server needs a new login, `search_tools` shows the login command. Run the command in a terminal. The next search or
+call connects again, with no restart. If the authorization server does not answer a refresh, `search_tools` shows the
+cause. The next search or call tries the refresh again.
 
 ### Run log
 
@@ -309,7 +360,6 @@ code. Read [SECURITY.md](SECURITY.md).
   programs use.
 - Elicitation is tested with the client of the MCP TypeScript SDK. It is not yet tested in the user interface of each
   client.
-- toolscript-mcp has no OAuth login. A remote server that needs an OAuth login does not connect.
 - If an HTTP server restarts or loses the session, one call to it can fail. The next use of the server connects
   again. toolscript-mcp sees a lost session in a 404, or in a 400 with a session error text of the MCP TypeScript
   SDK. If a server answers a lost session with a different 400, restart toolscript-mcp.
@@ -342,9 +392,9 @@ Code 2.1.325.
 - [x] Add `run_code` with allow, deny and ask rules.
 - [x] Write the docs and publish 0.1.0 to npm.
 - [x] Compare toolscript-mcp with Claude Code Code Mode in the bench.
+- [x] Log in to remote servers with OAuth.
 - [ ] Keep state between `run_code` calls, as an option.
 - [ ] Serve hint files and saved functions as tools.
-- [ ] Log in to remote servers with OAuth.
 
 ## Credits
 
