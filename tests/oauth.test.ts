@@ -222,14 +222,18 @@ const browser =
       await fetch(to)
     })()
 
-/** A browser where the person cancels the login: the callback gets an error. It keeps each URL it gets in `opened`. */
+/**
+ * A browser where the person cancels the login: the callback gets an error, with `error` as its code. It keeps each
+ * URL it gets in `opened`.
+ */
 const cancel =
-  (opened: string[] = []) =>
+  (opened: string[] = [], error = 'access_denied') =>
   (url: string) => {
     opened.push(url)
     const q = new URL(url).searchParams
     const to = new URL(q.get('redirect_uri') ?? '')
-    to.searchParams.set('error', 'access_denied')
+    to.searchParams.set('error', error)
+    to.searchParams.set('error_description', `${error} description`)
     to.searchParams.set('state', q.get('state') ?? '')
     void fetch(to).catch(() => {})
   }
@@ -402,6 +406,15 @@ describe('login', () => {
       assert.equal(await s.login(), 0, s.lines.join('\n'))
       assert.equal(fake.seen.registrations, 1)
     }
+  })
+
+  test('login prints the error of the callback with its control characters escaped', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(cancel([], 'denied\u001b[2J\r\nfake: Logged in\u009b')), 1)
+    const printed = s.lines.join('\n')
+    assert.ok(printed.includes('denied\\u001b[2J\\u000d\\u000afake: Logged in\\u009b description'), printed)
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(printed) && !printed.includes('\nfake:'), printed)
   })
 
   test('the store file is for the user only on Linux and macOS', { skip: process.platform === 'win32' }, async () => {

@@ -61,6 +61,10 @@ const openBrowser =
 
 type Callback = { readonly ok: true; readonly code: string } | { readonly ok: false; readonly why: string }
 
+/** `text` with each control character as `\uXXXX`, so text from the browser cannot move the cursor or fake a line. */
+const escapeControls = (text: string): string =>
+  text.replace(/[\u0000-\u001f\u007f-\u009f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+
 /** Listens on 127.0.0.1:`port` for the one callback of the login. Rejects with EADDRINUSE when the port is taken. */
 const listen = async (port: number, state: string) => {
   let settle: (callback: Callback) => void = () => {}
@@ -83,7 +87,7 @@ const listen = async (port: number, state: string) => {
       const detail = q.get('error_description')
       settle({
         ok: false,
-        why: `the authorization server answered ${error ?? 'no code'}${detail ? `: ${detail}` : ''}`,
+        why: escapeControls(`the authorization server answered ${error ?? 'no code'}${detail ? `: ${detail}` : ''}`),
       })
       return reply(400, 'login failed. See the terminal.')
     }
