@@ -434,6 +434,60 @@ describe('the secrets of a server', () => {
     )
   })
 
+  test('a JSON argument hides the value of each secret key and the secrets in other strings', () => {
+    const args = [
+      '{"token":"fakeJsonToken0123456789abcd"}',
+      '--config',
+      '{"apiKey": "fakepw1", "url": "postgres://u:fakepw2@db.example/x", "port": 8080, "auth": {"password": "fakepw3", "user": "fake"}, "headers": [{"name": "Accept", "value": "json"}], "secrets": ["fakepw4"]}',
+    ]
+    assert.deepEqual(hideArgSecrets(args).args, [
+      '{"token":"***"}',
+      '--config',
+      '{"apiKey":"***","url":"postgres://***@db.example/x","port":8080,"auth":{"password":"***","user":"fake"},"headers":[{"name":"Accept","value":"json"}],"secrets":["***"]}',
+    ])
+    assert.equal(
+      redact(`bad config ${args.join(' ')}`, stdio(args)),
+      'bad config {"token":"***"} --config {"apiKey": "***", "url": "postgres://***@db.example/x", "port": 8080, "auth": {"password": "***", "user": "fake"}, "headers": [{"name": "Accept", "value": "json"}], "secrets": ["***"]}',
+    )
+  })
+
+  test('the password of user:password after -u or --user is hidden, also in a script', () => {
+    const args = [
+      '-u',
+      'fake-admin:fakepw5',
+      '--user',
+      'fake-admin:fakepw6',
+      '--user=fake-admin:fakepw7',
+      '-c',
+      'curl -u fake-admin:fakepw8 https://h.example/x',
+    ]
+    assert.deepEqual(hideArgSecrets(args).args, [
+      '-u',
+      'fake-admin:***',
+      '--user',
+      'fake-admin:***',
+      '--user=fake-admin:***',
+      '-c',
+      'curl -u fake-admin:*** https://h.example/x',
+    ])
+    assert.equal(redact('401 for fake-admin:fakepw8', stdio(args)), '401 for fake-admin:***')
+  })
+
+  test('the value after an empty --name= with a secret name, the value of pw, and URL path parameters are hidden', () => {
+    assert.deepEqual(
+      hideArgSecrets([
+        '--password=',
+        'fakepw9',
+        '--pw',
+        'fakepw10',
+        'DB_PW=fakepw11',
+        'https://h.example/app;jsessionid=fakeSession1;v=2/x?q=1',
+      ]).args,
+      ['--password=', '***', '--pw', '***', 'DB_PW=***', 'https://h.example/app;jsessionid=***;v=***/x?q=***'],
+    )
+    assert.equal(hideUrlSecrets('https://h.example/;jsessionid=fakeSession2').url, 'https://h.example/;jsessionid=***')
+  })
+
   test('normal arguments stay readable', () => {
     const args = [
       '-y',
@@ -464,6 +518,22 @@ describe('the secrets of a server', () => {
       '-e',
       'GITHUB_PERSONAL_ACCESS_TOKEN',
       'ghcr.io/fake/fake-mcp-server:1.2.3',
+      '-u',
+      '1000:1000',
+      '--user',
+      'node:node',
+      '-u',
+      '1000:docker',
+      '-u',
+      'fake-user',
+      'python',
+      '-u',
+      'C:\\srv\\server.py',
+      '-u',
+      'https://h.example/x',
+      '--config',
+      '{"port":8080,"host":"localhost","tools":["a","b"],"maxItems":5}',
+      'https://h.example/a;b',
     ]
     assert.deepEqual(hideArgSecrets(args).args, args)
   })
