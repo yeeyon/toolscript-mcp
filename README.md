@@ -144,17 +144,19 @@ npm run build
 
 Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/config.json` in your client.
 
-### From GitHub
+### From GitHub (beta)
 
-npm can install a commit of this repository with no clone. It builds `dist/` during the install. Use a full commit
-SHA, so that everyone runs the same code:
+The `beta` branch points at a commit of `main` that passed every test. Clone it once, and `npm ci` builds `dist/`:
 
 ```sh
-npx -y github:yeeyon/toolscript-mcp#<commit> init
-claude mcp add --scope user toolscript -- npx -y github:yeeyon/toolscript-mcp#<commit> --config /path/to/config.json
+git clone --branch beta https://github.com/yeeyon/toolscript-mcp.git ~/toolscript-mcp
+cd ~/toolscript-mcp && npm ci
+node dist/host/main.js init
+claude mcp add --scope user toolscript -- node ~/toolscript-mcp/dist/host/main.js --config /path/to/config.json
 ```
 
-The first start downloads and builds the commit, so it takes about a minute. On Windows, put `cmd /c` before `npx`.
+To update, run `git pull && npm ci` in that folder, then start a new session of your client. Do not start the server
+with `npx github:…` in a client. npx checks GitHub at each start, so each start takes about 12 seconds.
 
 ### init
 
