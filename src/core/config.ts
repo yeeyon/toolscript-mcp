@@ -48,6 +48,14 @@ export type ServerEntry = ServerConfig | InvalidServer
 export const invalidReason = (errors: readonly string[]): string =>
   `invalid entry in the toolscript-mcp config: ${errors.join('; ')}`
 
+/** The command that logs in to a server. `config` is the config file, when it is not the default one. */
+export const loginCommand = (key: ServerKey, config?: string): string =>
+  `toolscript-mcp login ${key}${config === undefined ? '' : ` --config "${config}"`}`
+
+/** Why a server that needs an OAuth login, or whose refresh failed, is not connected, as search_tools shows it. */
+export const loginReason = (command: string): string =>
+  `it needs an OAuth login. Ask the person to run \`${command}\` in a terminal, then try again`
+
 export type Sandbox = {
   /** The Node binary that starts the sandbox. */
   readonly node: string

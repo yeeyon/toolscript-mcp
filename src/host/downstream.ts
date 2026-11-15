@@ -4,6 +4,8 @@
 // work. A failed server connects again on next use (a search or a call), at
 // most MAX_ATTEMPTS times in ATTEMPT_WINDOW_MS, and never after close.
 
+import os from 'node:os'
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import {
@@ -13,8 +15,18 @@ import {
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
-import { childEnv, invalidReason, redact, type ServerConfig, type ServerEntry, type ServerKey } from '../core/config.ts'
+import {
+  childEnv,
+  invalidReason,
+  loginCommand,
+  loginReason,
+  redact,
+  type ServerConfig,
+  type ServerEntry,
+  type ServerKey,
+} from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
+import { LoginNeeded, oauthProvider, storeFile } from './oauth.ts'
 
 /** The time that one server gets for its connect and for each page of its tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
@@ -74,12 +86,14 @@ const UNKNOWN_SESSION =
   /Server not initialized|Mcp-Session-Id header is required|No valid session ID|Session not found/i
 
 /**
- * True for an error of an HTTP request that shows the session is gone: the
+ * True for an error of an HTTP request that shows the session is gone: a
+ * person must log in again, the
  * server cannot be reached, it answers 404 to a request with a session id, as
  * the spec says, or 400 with an SDK text for an unknown session. Any other 400
  * is an error of that request only, as from a gateway that rejects a payload.
  */
 const endsSession = (err: unknown, hadSession: boolean): err is Error =>
+  err instanceof LoginNeeded ||
   (err instanceof TypeError && err.message === 'fetch failed') ||
   (err instanceof StreamableHTTPError &&
     ((err.code === 404 && hadSession) || (err.code === 400 && UNKNOWN_SESSION.test(err.message))))
@@ -115,12 +129,13 @@ class HttpTransport extends StreamableHTTPClientTransport {
 const transportOf = (
   server: ServerConfig,
   onSessionEnd: (err: Error) => void,
+  authProvider: OAuthClientProvider | undefined,
 ): { transport: Transport; lastError: () => string } => {
   if (server.kind === 'http')
     return {
       transport: new HttpTransport(
         new URL(server.url),
-        { requestInit: { headers: { ...server.headers } } },
+        { requestInit: { headers: { ...server.headers } }, ...(authProvider && { authProvider }) },
         onSessionEnd,
       ),
       lastError: () => '',
@@ -140,7 +155,7 @@ const transportOf = (
   return { transport, lastError }
 }
 
-const listAll = async (client: Client): Promise<DownstreamTool[]> => {
+export const listAll = async (client: Client): Promise<DownstreamTool[]> => {
   const tools: DownstreamTool[] = []
   let cursor: string | undefined
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -152,12 +167,20 @@ const listAll = async (client: Client): Promise<DownstreamTool[]> => {
   return tools
 }
 
-/** `now` gives the time in ms for the attempt cap: a test sets it. */
+export type ConnectOptions = {
+  /** The HOME of the OAuth store. */
+  readonly home?: string
+  /** The command that the reason of a server that needs an OAuth login names. */
+  readonly login?: (key: ServerKey) => string
+  /** The time in ms for the attempt cap: a test sets it. */
+  readonly now?: () => number
+}
+
 export const connectAll = (
   servers: ReadonlyMap<ServerKey, ServerEntry>,
   version: string,
   log: (line: string) => void,
-  now: () => number = Date.now,
+  { home = os.homedir(), login = key => loginCommand(key), now = Date.now }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
   const links = new Map<ServerKey, Link>()
@@ -185,7 +208,7 @@ export const connectAll = (
     // restarted shows only as an error of a request. The link fails before
     // that request rejects, and the next use connects again.
     const sessionEnded = (err: Error) => {
-      if (!lost(`the HTTP session ended: ${errorText(err)}`)) return
+      if (!lost(err instanceof LoginNeeded ? err.message : `the HTTP session ended: ${errorText(err)}`)) return
       // Later, so the failed request rejects with its own error first: close()
       // rejects each open request with "Connection closed".
       setImmediate(() => void client.close().catch(() => {}))
@@ -193,7 +216,14 @@ export const connectAll = (
     let lastError = () => ''
     try {
       // Inside the try: a transport that cannot be made fails this server only.
-      const made = transportOf(server, sessionEnded)
+      const auth =
+        server.kind === 'http' && server.oauth
+          ? oauthProvider(storeFile(home, key, server.url), server.oauth, {
+              kind: 'serve',
+              reason: loginReason(login(key)),
+            })
+          : undefined
+      const made = transportOf(server, sessionEnded, auth)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const tools = await listAll(client)
