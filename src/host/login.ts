@@ -72,15 +72,13 @@ const listen = async (port: number, state: string) => {
     const reply = (status: number, text: string) =>
       void res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`toolscript-mcp: ${text}\n`)
     if (done) return reply(409, 'this login is over. You can close this tab.')
-    done = true
     const q = url.searchParams
+    // The state comes back only from the browser that this login opened. Any local page can send a wrong one, so it
+    // gets no answer from the login, which waits on.
+    if (q.get('state') !== state) return reply(400, 'login refused: wrong state.')
+    done = true
     const error = q.get('error')
     const code = q.get('code')
-    // The state comes back only from the browser that this login opened, so a wrong one is a forged callback.
-    if (q.get('state') !== state) {
-      settle({ ok: false, why: 'the callback has a wrong state, so login refused it' })
-      return reply(400, 'login refused: wrong state.')
-    }
     if (error !== null || code === null) {
       const detail = q.get('error_description')
       settle({

@@ -256,13 +256,26 @@ describe('login', () => {
     assert.deepEqual(s.leaks(), [])
   })
 
-  test('a callback with a wrong state is refused, and no code is exchanged', async () => {
+  test('a callback with a wrong or no state is refused, and the right one still logs in', async () => {
     const fake = await startFake()
     const s = setup(fake)
-    assert.equal(await s.login(browser(state => `${state}x`)), 1)
-    assert.match(s.lines.join('\n'), /wrong state/)
-    assert.equal(fake.seen.tokens.length, 0)
-    assert.ok(!s.storeText().includes('access_token'))
+    const refused: number[] = []
+    const forge = (url: string) =>
+      void (async () => {
+        const callback = new URL(new URL(url).searchParams.get('redirect_uri') ?? '')
+        callback.searchParams.set('code', 'fake-forged-code')
+        refused.push((await fetch(callback)).status)
+        callback.searchParams.set('state', 'fake-wrong-state')
+        refused.push((await fetch(callback)).status)
+        browser()(url)
+      })()
+    assert.equal(await s.login(forge), 0, s.lines.join('\n'))
+    assert.deepEqual(refused, [400, 400])
+    assert.deepEqual(
+      fake.seen.tokens.map(form => form.get('code') === 'fake-forged-code'),
+      [false],
+      'only the right code is exchanged',
+    )
     assert.deepEqual(s.leaks(), [])
   })
 
