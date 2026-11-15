@@ -1,12 +1,14 @@
 // A stdio MCP server with one tool, `probe`, which returns the server's pid.
+// It answers a call of any tool name, also of a name it does not list.
 // At start it writes its pid and environment as JSON to the file in its first
-// argument. It appends each start and each cancelled request as a JSON line,
-// with its pid and its parent's pid, to that file plus `.log`. The mode in the
-// second argument:
+// argument. It appends each start, each call (with the tool name) and each
+// cancelled request as a JSON line, with its pid and its parent's pid, to that
+// file plus `.log`. The mode in the second argument:
 //   --exit-after-list  exits once it has listed its tools
 //   --exit-after-call  exits once it has answered one call
 //   --hang-calls       never answers a call
 //   --exit-on-call     exits when a call comes, with no answer
+//   --write-on-call    a call of `probe` writes its `text` argument to its `path` argument
 //
 //   node tests/probe-server.mjs /tmp/probe.json [mode]
 
@@ -38,6 +40,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     return
   }
   if (msg.method === 'tools/call') {
+    event({ event: 'call', name: msg.params.name })
+    if (mode === '--write-on-call' && msg.params.name === 'probe')
+      fs.writeFileSync(msg.params.arguments.path, msg.params.arguments.text)
     if (mode === '--hang-calls') return
     if (mode === '--exit-on-call') process.exit(3)
     reply({ content: [{ type: 'text', text: String(process.pid) }] })
