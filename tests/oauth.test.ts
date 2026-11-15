@@ -656,6 +656,17 @@ describe('the running server', () => {
     assert.deepEqual(await Promise.all([s.ping(one), s.ping(two)]), [PONG, PONG])
     assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
   })
+
+  test('a late invalid_grant of one of two calls at expiry needs no login', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    fake.expire()
+    fake.change.grantErrorMs = 300
+    assert.deepEqual(await Promise.all([s.ping(downstream), s.ping(downstream)]), [PONG, PONG])
+  })
 })
 
 describe('secrets that a server echoes', () => {

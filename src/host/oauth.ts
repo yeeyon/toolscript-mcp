@@ -32,9 +32,11 @@ export class LoginNeeded extends OAuthError {}
  */
 export class RefreshFailed extends OAuthError {}
 
-/** True for a request of the SDK that refreshes a token. */
-const isRefresh = (init: RequestInit | undefined): boolean =>
+/** The refresh token that a refresh request of the SDK sends, or undefined for any other request. */
+const refreshTokenOf = (init: RequestInit | undefined): string | undefined =>
   init?.body instanceof URLSearchParams && init.body.get('grant_type') === 'refresh_token'
+    ? (init.body.get('refresh_token') ?? '')
+    : undefined
 
 /** True for an answer of the token endpoint that refuses the request: the same request gets it again. */
 const isRefusal = (status: number): boolean => status >= 400 && status < 500 && status !== 408 && status !== 429
@@ -103,14 +105,14 @@ const updateStore = async (file: string, change: (stored: Stored) => Stored): Pr
 }
 
 /**
- * True when the store gets a refresh token other than `old` within ROTATE_WAIT_MS: the process that won a race for a
- * rotating refresh token saves the next one just after the authorization server refused it to this one.
+ * The tokens of the store once it gets a refresh token other than `old`, within ROTATE_WAIT_MS: the process that won
+ * a race for a rotating refresh token saves the next one just after the authorization server refused it to this one.
  */
-const rotated = async (file: string, old: string | undefined): Promise<boolean> => {
+const rotated = async (file: string, old: string): Promise<OAuthTokens | undefined> => {
   for (let waited = 0; ; waited += ROTATE_POLL_MS) {
-    const now = (await readStore(file)).tokens?.refresh_token
-    if (now !== undefined && now !== old) return true
-    if (waited >= ROTATE_WAIT_MS) return false
+    const { tokens } = await readStore(file)
+    if (tokens?.refresh_token !== undefined && tokens.refresh_token !== old) return tokens
+    if (waited >= ROTATE_WAIT_MS) return undefined
     await new Promise(resolve => setTimeout(resolve, ROTATE_POLL_MS))
   }
 }
@@ -153,8 +155,6 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   }
   let verifier: string | undefined
   let fresh: OAuthTokens | undefined
-  // The refresh token that the running server read last, which the SDK sends to refresh.
-  let sent: string | undefined
   // The client of this login, once it registered one or dropped the stored one. It goes into the store only with the
   // tokens: the old tokens refresh only with the old client, so a login that ends early leaves both.
   let own: { readonly info?: OAuthClientInformationMixed } | undefined
@@ -175,9 +175,9 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     if (login) return client?.redirectUrl === redirectUrl ? client.info : undefined
     return client?.info ?? needLogin()
   }
-  // A refresh of the running server. The SDK reads a refusal without an OAuth error code as a server error and starts
-  // a login after it, so this decides on each answer.
-  const refresh = async (send: () => Promise<Response>): Promise<Response> => {
+  // A refresh of the running server with the refresh token `sent`. The SDK reads a refusal without an OAuth error code
+  // as a server error and starts a login after it, so this decides on each answer.
+  const refresh = async (send: () => Promise<Response>, sent: string): Promise<Response> => {
     let response: Response
     try {
       response = await send()
@@ -189,16 +189,19 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     }
     if (response.ok) return response
     if (!isRefusal(response.status)) throw new RefreshFailed(refreshReason(`HTTP ${response.status}`))
-    // invalidateCredentials looks for a refresh of another process.
-    const answer = (await response
-      .clone()
-      .json()
-      .catch(() => ({}))) as { error?: unknown }
-    return answer.error === 'invalid_grant' ? response : needLogin()
+    // Another call or process can have refreshed `sent` first: then the SDK gets the tokens it saved.
+    const tokens = await rotated(file, sent)
+    return tokens ? Response.json(tokens) : needLogin()
   }
   return {
     secrets: () => [...known],
-    fetch: base => (login ? base : (url, init) => (isRefresh(init) ? refresh(() => base(url, init)) : base(url, init))),
+    fetch: base =>
+      login
+        ? base
+        : (url, init) => {
+            const sent = refreshTokenOf(init)
+            return sent === undefined ? base(url, init) : refresh(() => base(url, init), sent)
+          },
     redirectUrl,
     clientMetadata: {
       client_name: 'toolscript-mcp',
@@ -218,10 +221,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
         saveClientInformation: (info: OAuthClientInformationMixed) => void (own = { info: keepClient(info) }),
       }),
     tokens: async () => {
-      if (login) return keepTokens(fresh)
-      const { tokens } = await readStore(file)
-      sent = tokens?.refresh_token
-      return keepTokens(tokens)
+      return keepTokens(login ? fresh : (await readStore(file)).tokens)
     },
     saveTokens: async tokens => {
       fresh = keepTokens(tokens)
@@ -235,14 +235,10 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       add(code)
     },
     codeVerifier: () => verifier ?? needLogin(),
-    // The SDK calls this when the server refused the client or the refresh token. The running server keeps the
-    // store: another process can have saved new tokens since this one read them. When it has, with a rotating
-    // refresh token that both used, returning lets the SDK try once more with the store as it is now.
+    // The SDK calls this when the server refused the client or the code. The running server keeps the store: its
+    // refusals of a refresh never reach the SDK.
     invalidateCredentials: async scope => {
-      if (!login) {
-        if (scope === 'tokens' && (await rotated(file, sent))) return
-        needLogin()
-      }
+      if (!login) needLogin()
       if (scope === 'all' || scope === 'tokens') fresh = undefined
       if (scope === 'all' || scope === 'client') own = {}
     },
