@@ -439,7 +439,7 @@ describe('output projection', () => {
       'await call("mcp__f__echo", { n: 1 })\ntry { await call("mcp__f__fail", {}) } catch {}\nreturn "ok"',
     )
     assert.ok(r.text.includes('--- 2 MCP calls: '), r.text)
-    assert.match(r.text, /\n#1 mcp__f__echo \d+ \{echoed: \{n\}\} -> recall\(1\)\n- mcp__f__fail failed$/)
+    assert.match(r.text, /\n#1 mcp__f__echo \d+ \{echoed: \{n\}\} -> await recall\(1\)\n- mcp__f__fail failed$/)
   })
 
   test('a call that never answers is in the footer when the run times out', async () => {
@@ -536,7 +536,7 @@ describe('output projection', () => {
         `… [${big.length - 3000} more characters cut; await recall(2) returns the whole result: return a part of it]`,
         '',
         '--- 1 MCP call: 91k characters in, 91k out ---',
-        '#1 mcp__f__big 91k [3000 × {id, name}] -> recall(1)',
+        '#1 mcp__f__big 91k [3000 × {id, name}] -> await recall(1)',
       ].join('\n'),
     )
     const again = await run('const all = await recall(2)\nreturn all.length')
