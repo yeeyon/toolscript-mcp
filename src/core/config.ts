@@ -479,11 +479,20 @@ const hideJson = (value: unknown, secret: boolean, hide: Hide): unknown => {
   return secret && typeof value === 'number' ? hide(String(value)) : value
 }
 
+/** `hide` that also keeps each secret as JSON escapes it, the form in which a server echoes a JSON arg. */
+const hideEscapedToo =
+  (hide: Hide): Hide =>
+  secret => {
+    const escaped = JSON.stringify(secret).slice(1, -1)
+    if (escaped !== secret) hide(escaped)
+    return hide(secret)
+  }
+
 /** One arg, or one word or part of one, with its secrets hidden. */
 const hideText = (text: string, hide: Hide): string => {
   const json = /^[[{]/.test(text) ? parseJson(text) : undefined
   if (json?.ok && typeof json.value === 'object' && json.value !== null)
-    return JSON.stringify(hideJson(json.value, false, hide))
+    return JSON.stringify(hideJson(json.value, false, hideEscapedToo(hide)))
   const assign = ASSIGN.exec(text)
   const [, name = '', sep = '', value = ''] = assign ?? []
   if (assign && SECRET_NAME.test(name)) return value === '' ? text : `${name}${sep}${hide(value)}`

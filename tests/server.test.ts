@@ -451,6 +451,13 @@ describe('the secrets of a server', () => {
     )
   })
 
+  test('make it fail: a JSON secret with an escaped quote or backslash is hidden in the raw text that a server echoes', () => {
+    const args = ['{"apiKey":"fake\\"secret123","token":"fake\\\\back456"}']
+    assert.deepEqual(hideArgSecrets(args).args, ['{"apiKey":"***","token":"***"}'])
+    const echoed = redact(`bad config ${args[0]}`, stdio(args))
+    assert.ok(!echoed.includes('secret123') && !echoed.includes('back456'), echoed)
+  })
+
   test('the password of user:password after -u or --user is hidden, also in a script', () => {
     const args = [
       '-u',
