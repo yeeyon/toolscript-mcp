@@ -58,10 +58,10 @@ const quoted = (s: string): string =>
 
 const SHOWN_MATCH = 120
 
-/** A rule of the config file as the config writes it: `{"match": "mcp__x__*", "action": "deny"}`. A long match is cut. */
-const shownRule = ({ match, action }: Rule): string => {
+/** A rule of the config file as the config writes it: `{"match": "mcp__x__*", "action": "deny"}`. A long match is cut, unless `whole`. */
+const shownRule = ({ match, action }: Rule, whole = false): string => {
   const shown =
-    match.length <= SHOWN_MATCH
+    whole || match.length <= SHOWN_MATCH
       ? quoted(match)
       : `${quoted(match.slice(0, SHOWN_MATCH))}… (${match.length - SHOWN_MATCH} more characters)`
   return `{"match": ${shown}, "action": "${action}"}`
@@ -128,30 +128,71 @@ const minus = (a: Policy, b: Policy): Rule[] => {
 const SHOWN_RULES = 10
 
 const ruleList = (rules: readonly Rule[]): string => {
-  const shown = rules.slice(0, SHOWN_RULES).map(shownRule).join(', ')
+  const shown = rules
+    .slice(0, SHOWN_RULES)
+    .map(r => shownRule(r))
+    .join(', ')
   return rules.length <= SHOWN_RULES ? shown : `${shown} and ${rules.length - SHOWN_RULES} more`
 }
 
+/** Allow rules first, then ask, then deny, so a cut list never hides a looser rule behind a deny. */
+const loosestFirst = (rules: readonly Rule[]): Rule[] =>
+  rules.toSorted((a, b) => LOOSENESS[b.action] - LOOSENESS[a.action])
+
 /**
- * The rules added and removed, for the log, the note of a run and the prompt,
- * on one line. Empty when the rules are the same.
+ * True when the `common` rules that both policies have come in the same order
+ * in both: their longest common run of rules holds all of them. Above
+ * MAX_PAIRS it says true, and the prompt still lists the whole policy.
+ */
+const keepsOrder = (current: Policy, next: Policy, common: number): boolean => {
+  if ((current.length + 1) * (next.length + 1) > MAX_PAIRS) return true
+  const keys = next.map(ruleKey)
+  let row = new Array<number>(keys.length + 1).fill(0)
+  for (const key of current.map(ruleKey)) {
+    const below = [0]
+    keys.forEach((k, j) => below.push(k === key ? row[j]! + 1 : Math.max(row[j + 1]!, below[j]!)))
+    row = below
+  }
+  return row[keys.length] === common
+}
+
+/**
+ * The rules added and removed, and whether the others changed order, for the
+ * log, the note of a run and the prompt, on one line. Empty when the rules are the same.
  */
 export const policyChange = (current: Policy, next: Policy): string => {
   if (samePolicy(current, next)) return ''
   const added = minus(next, current)
   const removed = minus(current, next)
-  const parts = [
-    ...(added.length > 0 ? [`added ${ruleList(added)}`] : []),
-    ...(removed.length > 0 ? [`removed ${ruleList(removed)}`] : []),
-  ]
-  return parts.length > 0 ? parts.join('; ') : `the order of the rules changed to ${ruleList(next)}`
+  if (added.length + removed.length === 0) return `the order of the rules changed to ${ruleList(next)}`
+  return [
+    ...(added.length > 0 ? [`added ${ruleList(loosestFirst(added))}`] : []),
+    ...(removed.length > 0 ? [`removed ${ruleList(loosestFirst(removed))}`] : []),
+    ...(keepsOrder(current, next, current.length - removed.length) ? [] : ['the order of the other rules changed']),
+  ].join('; ')
 }
 
 const looser = (file: string, change: string): string =>
   `The toolscript-mcp policy in ${file} changed, and the change can let a tool run with less approval: ${change}.`
 
-/** The prompt before a looser policy from the config file applies. `change` comes from policyChange. */
-export const loosenText = (file: string, change: string): string => `${looser(file, change)} Apply the new policy?`
+/**
+ * The prompt before a looser policy from the config file applies. `change`
+ * comes from policyChange. It lists every rule of `next` in order and uncut,
+ * so no rule that the person approves hides behind a cut.
+ */
+export const loosenText = (file: string, change: string, next: Policy): string =>
+  [
+    looser(file, change),
+    '',
+    'The new policy. The first rule that matches a tool decides:',
+    ...(next.length === 0
+      ? ['No rules: each call needs the approval of the person.']
+      : next.map(r => `policy[${r.index}] ${shownRule(r, true)}`)),
+    '',
+    'If you decline, this run uses the policy in force. The file still holds the new policy, and it applies at the next start of toolscript-mcp.',
+    '',
+    'Apply the new policy?',
+  ].join('\n')
 
 /** The note after a run that kept the policy in force, because the person did not approve a looser one. */
 export const keptPolicyNote = (file: string, change: string, why: Refusal): string => {

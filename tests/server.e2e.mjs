@@ -512,10 +512,14 @@ test('run (n) a looser policy asks the person: decline keeps the policy in force
     assert.ok(declined.text.includes('is denied by policy[0]'), declined.text)
     assert.ok(declined.text.includes('The person did not approve it'), declined.text)
     assert.equal(asking.prompts.length, prompts + 1)
+    const asked = asking.prompts.at(-1).split('\n')
     assert.equal(
-      asking.prompts.at(-1),
-      `The toolscript-mcp policy in ${configFile} changed, and the change can let a tool run with less approval: added ${ALLOW_TICKET}; removed ${DENY_TICKET}. Apply the new policy?`,
+      asked[0],
+      `The toolscript-mcp policy in ${configFile} changed, and the change can let a tool run with less approval: added ${ALLOW_TICKET}; removed ${DENY_TICKET}.`,
     )
+    assert.ok(asked.includes(`policy[0] ${ALLOW_TICKET}`), asked.join('\n'))
+    assert.equal(asked.filter(l => l.startsWith('policy[')).length, JSON.parse(CONFIG_TEXT).policy.length)
+    assert.equal(asked.at(-1), 'Apply the new policy?')
     assert.equal(benchCalls('create_ticket'), 0)
 
     const silent = await run(TICKET, askingClient)
@@ -596,10 +600,13 @@ test('run (o) a program that writes a policy whose new allow is shadowed for eve
     assert.ok(refused.text.includes('The person did not approve it'), refused.text)
     assert.equal(hiddenCalls(), 0, 'the hidden tool never ran')
     assert.equal(asking.prompts.length, prompts + 1)
+    const asked = asking.prompts.at(-1).split('\n')
     assert.equal(
-      asking.prompts.at(-1),
-      `The toolscript-mcp policy in ${configFile} changed, and the change can let a tool run with less approval: added {"match": "mcp__x__", "action": "ask"}, {"match": "mcp__x__*", "action": "allow"}. Apply the new policy?`,
+      asked[0],
+      `The toolscript-mcp policy in ${configFile} changed, and the change can let a tool run with less approval: added {"match": "mcp__x__*", "action": "allow"}, {"match": "mcp__x__", "action": "ask"}.`,
     )
+    assert.ok(asked.includes('policy[0] {"match": "mcp__x__", "action": "ask"}'), asked.join('\n'))
+    assert.ok(asked.includes('policy[1] {"match": "mcp__x__*", "action": "allow"}'), asked.join('\n'))
 
     const again = await run(hidden, askingClient)
     assert.ok(again.text.includes('not approved: no policy rule allows mcp__x__hidden'), again.text)
