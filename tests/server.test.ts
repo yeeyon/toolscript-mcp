@@ -314,6 +314,17 @@ describe('the secrets of a server', () => {
     ])
   })
 
+  test('the word after Bearer or Basic is hidden when the scheme ends a longer word', () => {
+    const args = ['run X-Custom:Bearer fake-short-123', 'note=Basic fakeb64', 'Xbasic keep', 'no-bearer keep']
+    assert.deepEqual(hideArgSecrets(args).args, [
+      'run X-Custom:Bearer ***',
+      'note=Basic ***',
+      'Xbasic keep',
+      'no-bearer keep',
+    ])
+    assert.equal(redact('failed: run X-Custom:Bearer fake-short-123', stdio(args)), 'failed: run X-Custom:Bearer ***')
+  })
+
   test('JWTs, base64 keys and bot tokens are secret words', () => {
     const words = [
       'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.fakeSig0123456789abcDEF',

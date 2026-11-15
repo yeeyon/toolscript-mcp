@@ -356,7 +356,8 @@ const SHORT_FLAG = /^-[tp]$/
 const SHORT_KEEP = /^(?:[\d.:]+|[@./~]\S*|[A-Za-z]:[\\/]\S*)$/
 // `Name:` as a word of its own, before the value: `-H "X-Api-Key: <value>"` in a script.
 const NAME_COLON = /^[A-Za-z][\w.-]*:$/
-const BEARER = /^(?:bearer|basic)$/i
+// The scheme ends the word before the value, alone or after a name: `X-Custom:Bearer <value>`.
+const BEARER = /(?:^|[:=])(?:bearer|basic)$/i
 // `name=value` or `Name: value`, and not the `://` of a URL.
 const ASSIGN = /^(-{0,2}[A-Za-z][\w.-]*)(=|:(?!\/\/)\s*)([\s\S]*)$/
 const HEADER = /^([\w-]+:\s+)([\s\S]+)$/
