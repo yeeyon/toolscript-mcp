@@ -46,15 +46,16 @@ const startFake = async () => {
   const clients = new Map<string, { redirectUris: string[] }>([[STATIC_ID, { redirectUris: [] }]])
   const codes = new Map<string, { challenge: string; redirectUri: string; clientId: string }>()
   const access = new Set<string>()
-  const refresh = new Set<string>()
+  /** Each refresh token and the client it was issued to. */
+  const refresh = new Map<string, string>()
   const secrets = new Set<string>([STATIC_SECRET])
   const seen = { registrations: 0, authorizations: [] as URL[], tokens: [] as URLSearchParams[], refreshes: 0 }
   /** What a test changes in the answers of the fake. */
   const change = { authorizationEndpoint: '' }
-  const issue = () => {
+  const issue = (clientId: string) => {
     const tokens = { access_token: `fake-access-${randomUUID()}`, refresh_token: `fake-refresh-${randomUUID()}` }
     access.add(tokens.access_token)
-    refresh.add(tokens.refresh_token)
+    refresh.set(tokens.refresh_token, clientId)
     secrets.add(tokens.access_token).add(tokens.refresh_token)
     return { ...tokens, token_type: 'Bearer', expires_in: 3600 }
   }
@@ -82,9 +83,10 @@ const startFake = async () => {
       return json(res, 401, { error: 'invalid_client' })
     if (form.get('grant_type') === 'refresh_token') {
       const old = form.get('refresh_token') ?? ''
-      if (!refresh.delete(old)) return json(res, 400, { error: 'invalid_grant' })
+      if (refresh.get(old) !== clientId) return json(res, 400, { error: 'invalid_grant' })
+      refresh.delete(old)
       seen.refreshes++
-      return json(res, 200, issue())
+      return json(res, 200, issue(clientId))
     }
     const code = form.get('code') ?? ''
     const verifier = form.get('code_verifier') ?? ''
@@ -94,7 +96,7 @@ const startFake = async () => {
     const challenge = createHash('sha256').update(verifier).digest('base64url')
     if (grant?.challenge !== challenge || grant.redirectUri !== form.get('redirect_uri') || grant.clientId !== clientId)
       return json(res, 400, { error: 'invalid_grant' })
-    return json(res, 200, issue())
+    return json(res, 200, issue(clientId))
   }
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', base)
@@ -242,6 +244,22 @@ describe('login', () => {
     const [first, second] = fake.seen.authorizations.map(u => u.searchParams.get('redirect_uri'))
     assert.equal(first, second)
     assert.match(first ?? '', /^http:\/\/127\.0\.0\.1:\d+\/callback$/)
+  })
+
+  test('a login that registers a new client and is cancelled keeps the old client and tokens working', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const redirect = fake.seen.authorizations[0]?.searchParams.get('redirect_uri') ?? ''
+    // Another program now has the port of the registered redirect URL.
+    const taken = http.createServer()
+    await new Promise<void>(resolve => taken.listen(Number(new URL(redirect).port), '127.0.0.1', resolve))
+    servers.push(taken)
+    assert.equal(await s.login(cancel()), 1, s.lines.join('\n'))
+    assert.equal(fake.seen.registrations, 2, 'the second login registered a client on a free port')
+    fake.expire()
+    assert.equal(await s.ping(s.connect()), PONG, 'the old refresh token still refreshes with its own client')
+    assert.deepEqual(s.leaks(), [])
   })
 
   test('a static clientId skips the registration and sends its secret only to the token endpoint', async () => {

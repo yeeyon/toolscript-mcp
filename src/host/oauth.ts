@@ -113,6 +113,9 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   }
   let verifier: string | undefined
   let fresh: OAuthTokens | undefined
+  // The client of this login, once it registered one or dropped the stored one. It goes into the store only with the
+  // tokens: the old tokens refresh only with the old client, so a login that ends early leaves both.
+  let own: { readonly info?: OAuthClientInformationMixed } | undefined
   return {
     redirectUrl,
     clientMetadata: {
@@ -126,6 +129,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     state: () => login?.state ?? needLogin(),
     clientInformation: async () => {
       if (fixed) return fixed
+      if (own) return own.info
       const { client } = await readStore(file)
       // A client with another redirect URL cannot finish this login, so login registers a new one.
       if (login) return client?.redirectUrl === redirectUrl ? client.info : undefined
@@ -134,13 +138,13 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     // Only login registers. Without this method, the SDK never registers a client for the running server.
     ...(login &&
       !fixed && {
-        saveClientInformation: (info: OAuthClientInformationMixed) =>
-          updateStore(file, stored => ({ ...stored, client: { info, redirectUrl } })),
+        saveClientInformation: (info: OAuthClientInformationMixed) => void (own = { info }),
       }),
     tokens: async () => (login ? fresh : (await readStore(file)).tokens),
     saveTokens: async tokens => {
       fresh = tokens
-      await updateStore(file, stored => ({ ...stored, tokens }))
+      const client = own?.info && { info: own.info, redirectUrl }
+      await updateStore(file, stored => ({ ...stored, ...(client && { client }), tokens }))
     },
     redirectToAuthorization: url => (login ? login.open(url) : needLogin()),
     saveCodeVerifier: code => {
@@ -153,7 +157,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     invalidateCredentials: async scope => {
       if (!login) needLogin()
       if (scope === 'all' || scope === 'tokens') fresh = undefined
-      if (scope === 'all' || scope === 'client') await updateStore(file, ({ client: _, ...stored }) => stored)
+      if (scope === 'all' || scope === 'client') own = {}
     },
   }
 }
