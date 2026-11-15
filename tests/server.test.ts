@@ -443,11 +443,11 @@ describe('the secrets of a server', () => {
     assert.deepEqual(hideArgSecrets(args).args, [
       '{"token":"***"}',
       '--config',
-      '{"apiKey":"***","url":"postgres://***@db.example/x","port":8080,"auth":{"password":"***","user":"fake"},"headers":[{"name":"Accept","value":"json"}],"secrets":["***"]}',
+      '{"apiKey":"***","url":"postgres://***@db.example/x","port":8080,"auth":{"password":"***","user":"fake"},"headers":[{"name":"Accept","value":"***"}],"secrets":["***"]}',
     ])
     assert.equal(
       redact(`bad config ${args.join(' ')}`, stdio(args)),
-      'bad config {"token":"***"} --config {"apiKey": "***", "url": "postgres://***@db.example/x", "port": 8080, "auth": {"password": "***", "user": "fake"}, "headers": [{"name": "Accept", "value": "json"}], "secrets": ["***"]}',
+      'bad config {"token":"***"} --config {"apiKey": "***", "url": "postgres://***@db.example/x", "port": 8080, "auth": {"password": "***", "user": "fake"}, "headers": [{"name": "Accept", "value": "***"}], "secrets": ["***"]}',
     )
   })
 
@@ -478,6 +478,46 @@ describe('the secrets of a server', () => {
       'curl -u fake-admin:*** https://h.example/x',
     ])
     assert.equal(redact('401 for fake-admin:fakepw8', stdio(args)), '401 for fake-admin:***')
+  })
+
+  test('make it fail: an empty or unusual user before the password, and --proxy-user, are hidden', () => {
+    const args = [
+      '-u',
+      ':fakepat12',
+      '-u',
+      'bob@example.com:fakepw13',
+      '-u',
+      'CORP\\bob:fakepw14',
+      '--proxy-user',
+      'bob:fakepw15',
+    ]
+    assert.deepEqual(hideArgSecrets(args).args, [
+      '-u',
+      ':***',
+      '-u',
+      'bob@example.com:***',
+      '-u',
+      'CORP\\bob:***',
+      '--proxy-user',
+      'bob:***',
+    ])
+  })
+
+  test('make it fail: every value inside a JSON object or array under a secret key is hidden', () => {
+    const args = [
+      '{"auth":{"user":"fake-bob","value":"fakepw16"},"secrets":[{"name":"db","value":"fakepw17"}],"port":8080}',
+    ]
+    assert.deepEqual(hideArgSecrets(args).args, [
+      '{"auth":{"user":"fake-bob","value":"***"},"secrets":[{"name":"db","value":"***"}],"port":8080}',
+    ])
+    assert.equal(redact('tok fakepw16 and fakepw17', stdio(args)), 'tok *** and ***')
+  })
+
+  test('make it fail: a JSON argument nested too deep for the stack is hidden whole, and nothing throws', () => {
+    const deep = `${'['.repeat(5000)}"fakepw18"${']'.repeat(5000)}`
+    assert.deepEqual(hideArgSecrets(['--config', deep]).args, ['--config', '***'])
+    assert.equal(redact(`bad ${deep}`, stdio(['--config', deep])), 'bad ***')
+    assert.doesNotThrow(() => redact('bad', { kind: 'stdio', command: 'x', args: [], env: { J: deep } }))
   })
 
   test('the value after an empty --name= with a secret name, the value of pw, and URL path parameters are hidden', () => {

@@ -162,10 +162,10 @@ Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/con
   - the value of an argument whose name holds `key`, `token`, `secret`, `pass`, `pwd`, `auth`, `bearer`, `header`,
     `credential`, `cookie`, `session` or `dsn`
   - the value of an argument with the name part `pat`, `sig`, `sas` or `pw`, such as `GITHUB_PAT`
-  - in a JSON argument, the value of each key with such a name, and the secrets in the other strings. The JSON shows
-    on one line.
+  - in a JSON argument, each value under a key with such a name, also nested, except a label such as `name` or `user`.
+    Also the secrets in the other strings. The JSON shows on one line. A JSON argument nested too deep shows as `***`.
   - the value after `-t` or `-p`, unless the value is a number, a port such as `8080:80`, a path or a scoped package
-  - the password of `user:password` after `-u` or `--user`. A docker user and group such as `1000:1000` or
+  - the password of `user:password` after `-u`, `--user` or `--proxy-user`. A docker user and group such as `1000:1000` or
     `node:node` stays.
   - after `-H`, the value of a header with such a name, and the secrets in the value of a different header
   - the word after `Bearer` or `Basic`

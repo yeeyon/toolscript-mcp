@@ -333,8 +333,8 @@ describe('toolscript-mcp init', () => {
       '"-u",\n        "1000:1000"',
     ])
       assert.ok(out.includes(kept), `missing ${kept}:\n${out}`)
-    assert.match(out, /- in a JSON argument: the value of each key with such a name/)
-    assert.match(out, /- the password of user:password after -u or --user/)
+    assert.match(out, /- in a JSON argument: each value under a key with such a name/)
+    assert.match(out, /- the password of user:password after -u, --user or --proxy-user/)
   })
 
   test('the mode of the .bak file is named only on Linux and macOS', async () => {

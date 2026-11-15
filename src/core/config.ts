@@ -356,8 +356,9 @@ const FLAG = /^--?[A-Za-z][\w.-]*=?$/
 const SHORT_FLAG = /^-[tp]$/
 const SHORT_KEEP = /^(?:[\d.:]+|[@./~]\S*|[A-Za-z]:[\\/]\S*)$/
 // curl takes `user:password` after these, and docker takes `user:group`.
-const USER_FLAG = /^(?:-u|--user)$/
-const USER_PASS = /^([\w.-]+):(?!\/)(\S+)$/
+const USER_FLAG = /^(?:-u|--user|--proxy-user)$/
+// The user can be empty (`:<token>`), an email or `DOMAIN\name`.
+const USER_PASS = /^([^\s:/]*):(?!\/)(\S+)$/
 // `Name:` as a word of its own, before the value: `-H "X-Api-Key: <value>"` in a script.
 const NAME_COLON = /^[A-Za-z][\w.-]*:$/
 // The scheme ends the word before the value, alone or after a name: `X-Custom:Bearer <value>`.
@@ -470,11 +471,22 @@ const hideWords = (text: string, hide: Hide): string => {
     .join('')
 }
 
-/** A JSON value with the value of each key with a secret name hidden, and the secrets in each other string. */
+// Inside a secret object these name the secret, as in `{"auth": {"user": "bob", "value": "<secret>"}}`, so they stay.
+const JSON_LABEL = /^(?:name|user|username|type|id)$/i
+
+/**
+ * A JSON value with each value under a key with a secret name hidden, also inside an object or array there, except
+ * a label, and the secrets in each other string.
+ */
 const hideJson = (value: unknown, secret: boolean, hide: Hide): unknown => {
   if (Array.isArray(value)) return value.map(v => hideJson(v, secret, hide))
   if (isObject(value))
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, hideJson(v, SECRET_NAME.test(k), hide)]))
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        k,
+        hideJson(v, (secret && !JSON_LABEL.test(k)) || SECRET_NAME.test(k), hide),
+      ]),
+    )
   if (typeof value === 'string') return secret ? hide(value) : hideText(value, hide)
   return secret && typeof value === 'number' ? hide(String(value)) : value
 }
@@ -491,8 +503,14 @@ const hideEscapedToo =
 /** One arg, or one word or part of one, with its secrets hidden. */
 const hideText = (text: string, hide: Hide): string => {
   const json = /^[[{]/.test(text) ? parseJson(text) : undefined
-  if (json?.ok && typeof json.value === 'object' && json.value !== null)
-    return JSON.stringify(hideJson(json.value, false, hideEscapedToo(hide)))
+  if (json?.ok && typeof json.value === 'object' && json.value !== null) {
+    try {
+      return JSON.stringify(hideJson(json.value, false, hideEscapedToo(hide)))
+    } catch {
+      // Nested deeper than the stack allows: the whole arg is the secret, so a failed server never stops the others.
+      return hide(text)
+    }
+  }
   const assign = ASSIGN.exec(text)
   const [, name = '', sep = '', value = ''] = assign ?? []
   if (assign && SECRET_NAME.test(name)) return value === '' ? text : `${name}${sep}${hide(value)}`
@@ -514,9 +532,10 @@ const hideText = (text: string, hide: Hide): string => {
 /**
  * The args of a server with each secret in them as `***`, and the secrets. A secret is the value after a flag with a
  * secret name (the name of a header stays), also after an empty `--name=`, the value after `-t` or `-p` unless it is a
- * number, a path or a scoped package, the password of `user:password` after `-u` or `--user`, a secret header value
- * after `-H`, the value of `name=value` or `Name: value` with a secret name, also as a part of `Server=db;Password=x`,
- * the value of a key with a secret name in a JSON object or array, the word after Bearer or Basic, the user, password,
+ * number, a path or a scoped package, the password of `user:password` after `-u`, `--user` or `--proxy-user`, a secret
+ * header value after `-H`, the value of `name=value` or `Name: value` with a secret name, also as a part of
+ * `Server=db;Password=x`, each value under a key with a secret name in a JSON object or array (a JSON arg too deep for
+ * the stack is hidden whole), the word after Bearer or Basic, the user, password,
  * query values and bare parts, `;name=value` path values, fragment and secret path words of a URL, and a secret word.
  * An arg of several words, such as a `sh -c` script, gets the same rules word by word. Other text stays as it is. A
  * JSON arg shows on one line.
