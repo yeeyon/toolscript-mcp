@@ -507,6 +507,23 @@ describe('the running server', () => {
     assert.match(await s.ping(downstream), /needs an OAuth login/)
   })
 
+  test('a stored client of another authorization server asks for a login, and the login fixes it', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const [file] = s.store()
+    const stored = JSON.parse(fs.readFileSync(file!, 'utf8'))
+    stored.client.info.issuer = 'https://auth.example/'
+    fs.writeFileSync(file!, JSON.stringify(stored))
+    fake.expire()
+    const downstream = s.connect()
+    await downstream.settled
+    const state = downstream.states()[0]
+    assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    assert.equal(await s.ping(downstream), PONG)
+  })
+
   test('a server that answers 401 after a refresh ends the link with the login command', async () => {
     const fake = await startFake()
     const s = setup(fake)

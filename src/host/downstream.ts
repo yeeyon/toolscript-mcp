@@ -104,6 +104,15 @@ const endsSession = (err: unknown, hadSession: boolean): err is Error =>
   (err instanceof StreamableHTTPError &&
     ((err.code === 404 && hadSession) || (err.code === 400 && UNKNOWN_SESSION.test(err.message))))
 
+/**
+ * True for an error of the SDK's OAuth flow that only a new login fixes. With OAuth, the SDK answers a 401 itself:
+ * it refreshes the token and sends again, so a 401 that comes through is a server that still refuses the token. A
+ * stored client of another authorization server needs a new registration, and only login registers.
+ */
+const needsLogin = (err: unknown): boolean =>
+  (err instanceof StreamableHTTPError && err.code === 401) ||
+  (err instanceof Error && err.message.startsWith('OAuth client information is bound to authorization server'))
+
 /** An error of the provider whose message is the reason to show: a login is needed, or a refresh failed. */
 const isOAuthStop = (err: unknown): err is Error => err instanceof LoginNeeded || err instanceof RefreshFailed
 
@@ -140,12 +149,7 @@ class HttpTransport extends StreamableHTTPClientTransport {
     try {
       await super.send(...args)
     } catch (raw) {
-      // With OAuth, the SDK answers a 401 itself: it refreshes the token and sends again. A 401 that comes through
-      // is a server that still refuses the token, so only a new login helps.
-      const err =
-        this.#loginReason !== undefined && raw instanceof StreamableHTTPError && raw.code === 401
-          ? new LoginNeeded(this.#loginReason)
-          : raw
+      const err = this.#loginReason !== undefined && needsLogin(raw) ? new LoginNeeded(this.#loginReason) : raw
       if (endsSession(err, hadSession)) this.#onSessionEnd(err)
       throw err
     }
