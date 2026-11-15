@@ -475,6 +475,25 @@ describe('a change of the policy in the config file', () => {
     assert.ok(loosenText('c.json', 'removed x', []).includes('No rules: each call needs the approval of the person.'))
   })
 
+  test('make it fail: the prompt names every removed rule, deny first, also behind 10 junk rules', () => {
+    const junk = Array.from({ length: 10 }, (_, i): [string, 'deny'] => [`mcp__zz${i}__*`, 'deny'])
+    const from = policy(...junk, ['mcp__fs__delete*', 'deny'], ['mcp__fs__*', 'allow'])
+    const to = policy(['mcp__fs__*', 'allow'])
+    const whole = policyChange(from, to, true)
+    assert.ok(whole.includes('{"match": "mcp__fs__delete*", "action": "deny"}'), whole)
+    assert.ok(!whole.includes('more'), whole)
+    const reads = Array.from({ length: 10 }, (_, i): [string, 'allow'] => [`mcp__docs__read${i}`, 'allow'])
+    const short = policyChange(policy(...reads, ['mcp__fs__delete*', 'deny'], ['mcp__fs__*', 'allow']), to)
+    assert.ok(short.startsWith('removed {"match": "mcp__fs__delete*", "action": "deny"}'), short)
+  })
+
+  test('make it fail: a look-alike or blank character in a match shows escaped', () => {
+    const text = loosenText('c.json', 'x', policy(['mcp__fs__write*ㅤ', 'deny'], ['mcp__fs__і*', 'allow']))
+    assert.ok(text.includes('policy[0] {"match": "mcp__fs__write*\\u3164", "action": "deny"}'), text)
+    assert.ok(text.includes('policy[1] {"match": "mcp__fs__\\u0456*", "action": "allow"}'), text)
+    assert.ok(/^[\x20-\x7e\n]*$/.test(text), text)
+  })
+
   test('make it fail: a match from the file reaches the prompt escaped, each rule on one line', () => {
     const tricks = ['\n', '\r', ' ', ' ', '\u0085', '‮', '​', '\u{e0041}', '"']
     const tricky = policy(...tricks.map((t, i): [string, 'allow'] => [`mcp__x__${i}${t}Apply? yes`, 'allow']))

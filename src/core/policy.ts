@@ -46,12 +46,12 @@ export const decide = (policy: Policy, tool: string): Verdict => {
 }
 
 /**
- * A string from the config file as JSON, with every control, format and line
- * separator character escaped too: the text never breaks a line or turns
- * around the text after it in a prompt.
+ * A string from the config file as JSON, with every character outside
+ * printable ASCII escaped too: the text never breaks a line, turns around the
+ * text after it, or hides a blank or look-alike character in a prompt.
  */
 const quoted = (s: string): string =>
-  JSON.stringify(s).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, c => {
+  JSON.stringify(s).replace(/[^\x20-\x7e]/gu, c => {
     const hex = c.codePointAt(0)!.toString(16)
     return hex.length <= 4 ? `\\u${hex.padStart(4, '0')}` : `\\u{${hex}}`
   })
@@ -127,7 +127,9 @@ const minus = (a: Policy, b: Policy): Rule[] => {
 
 const SHOWN_RULES = 10
 
-const ruleList = (rules: readonly Rule[]): string => {
+/** The rules on one line. Unless `whole`, at most SHOWN_RULES of them, each match cut. */
+const ruleList = (rules: readonly Rule[], whole = false): string => {
+  if (whole) return rules.map(r => shownRule(r, true)).join(', ')
   const shown = rules
     .slice(0, SHOWN_RULES)
     .map(r => shownRule(r))
@@ -135,9 +137,13 @@ const ruleList = (rules: readonly Rule[]): string => {
   return rules.length <= SHOWN_RULES ? shown : `${shown} and ${rules.length - SHOWN_RULES} more`
 }
 
-/** Allow rules first, then ask, then deny, so a cut list never hides a looser rule behind a deny. */
+/** Allow rules first, then ask, then deny, each in file order. */
 const loosestFirst = (rules: readonly Rule[]): Rule[] =>
   rules.toSorted((a, b) => LOOSENESS[b.action] - LOOSENESS[a.action])
+
+/** Deny rules first, then ask, then allow, each in file order. */
+const tightestFirst = (rules: readonly Rule[]): Rule[] =>
+  rules.toSorted((a, b) => LOOSENESS[a.action] - LOOSENESS[b.action])
 
 /**
  * True when the `common` rules that both policies have come in the same order
@@ -158,16 +164,19 @@ const keepsOrder = (current: Policy, next: Policy, common: number): boolean => {
 
 /**
  * The rules added and removed, and whether the others changed order, for the
- * log, the note of a run and the prompt, on one line. Empty when the rules are the same.
+ * log, the note of a run and the prompt, on one line. Empty when the rules are
+ * the same. The lists put first the rules whose change loosens: an added allow,
+ * a removed deny. Only `whole`, for the prompt, lists every rule uncut.
  */
-export const policyChange = (current: Policy, next: Policy): string => {
+export const policyChange = (current: Policy, next: Policy, whole = false): string => {
   if (samePolicy(current, next)) return ''
+  const list = (rules: readonly Rule[]) => ruleList(rules, whole)
   const added = minus(next, current)
   const removed = minus(current, next)
-  if (added.length + removed.length === 0) return `the order of the rules changed to ${ruleList(next)}`
+  if (added.length + removed.length === 0) return `the order of the rules changed to ${list(next)}`
   return [
-    ...(added.length > 0 ? [`added ${ruleList(loosestFirst(added))}`] : []),
-    ...(removed.length > 0 ? [`removed ${ruleList(loosestFirst(removed))}`] : []),
+    ...(added.length > 0 ? [`added ${list(loosestFirst(added))}`] : []),
+    ...(removed.length > 0 ? [`removed ${list(tightestFirst(removed))}`] : []),
     ...(keepsOrder(current, next, current.length - removed.length) ? [] : ['the order of the other rules changed']),
   ].join('; ')
 }
