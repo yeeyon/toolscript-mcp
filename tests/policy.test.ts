@@ -414,15 +414,26 @@ describe('a change of the policy in the config file', () => {
   })
 
   test('the prompt and the note name the file and the rules added and removed, not tool names', () => {
-    const change = policyChange([], policy(['mcp__x__', 'ask'], ['mcp__x__*', 'allow']))
+    const next = policy(['mcp__x__', 'ask'], ['mcp__x__*', 'allow'])
+    const change = policyChange([], next)
     assert.equal(
-      loosenText('/home/u/.config/toolscript-mcp/config.json', change),
-      'The toolscript-mcp policy in /home/u/.config/toolscript-mcp/config.json changed, and the change can let a tool run with less approval: added {"match": "mcp__x__", "action": "ask"}, {"match": "mcp__x__*", "action": "allow"}. Apply the new policy?',
+      loosenText('/home/u/.config/toolscript-mcp/config.json', change, next),
+      [
+        'The toolscript-mcp policy in /home/u/.config/toolscript-mcp/config.json changed, and the change can let a tool run with less approval: added {"match": "mcp__x__*", "action": "allow"}, {"match": "mcp__x__", "action": "ask"}.',
+        '',
+        'The new policy. The first rule that matches a tool decides:',
+        'policy[0] {"match": "mcp__x__", "action": "ask"}',
+        'policy[1] {"match": "mcp__x__*", "action": "allow"}',
+        '',
+        'If you decline, this run uses the policy in force. The file still holds the new policy, and it applies at the next start of toolscript-mcp.',
+        '',
+        'Apply the new policy?',
+      ].join('\n'),
     )
     const restart = keptPolicyNote('c.json', change, 'unsupported')
     assert.ok(
       restart.startsWith(
-        '## Policy not reloaded\n\nThe toolscript-mcp policy in c.json changed, and the change can let a tool run with less approval: added {"match": "mcp__x__", ',
+        '## Policy not reloaded\n\nThe toolscript-mcp policy in c.json changed, and the change can let a tool run with less approval: added {"match": "mcp__x__*", ',
       ),
       restart,
     )
@@ -434,11 +445,42 @@ describe('a change of the policy in the config file', () => {
     )
   })
 
-  test('make it fail: a match from the file reaches the prompt escaped, cut and on one line', () => {
+  test('make it fail: an added deny does not hide a reorder that lets a denied tool run', () => {
+    const from = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__bench__*', 'allow'])
+    const to = policy(['mcp__bench__*', 'allow'], ['mcp__bench__create_ticket', 'deny'], ['mcp__zzz__x', 'deny'])
+    assert.equal(
+      policyChange(from, to),
+      'added {"match": "mcp__zzz__x", "action": "deny"}; the order of the other rules changed',
+    )
+    const inserted = policy(['mcp__zzz__x', 'deny'], ['mcp__bench__create_ticket', 'deny'], ['mcp__bench__*', 'allow'])
+    assert.equal(policyChange(from, inserted), 'added {"match": "mcp__zzz__x", "action": "deny"}')
+  })
+
+  test('make it fail: the prompt lists every rule of the new policy in order, uncut, so no loosening rule hides', () => {
+    const olds = Array.from({ length: 10 }, (_, i): [string, 'deny'] => [`mcp__old${i}__*`, 'deny'])
+    const long = `mcp__x__${'a'.repeat(500)}`
+    const next = policy(...olds, ['*', 'allow'], [long, 'ask'])
+    const change = policyChange([], next)
+    assert.ok(change.startsWith('added {"match": "*", "action": "allow"}, {"match": "mcp__x__aaa'), change)
+    const text = loosenText('c.json', change, next)
+    const lines = text.split('\n')
+    assert.ok(lines.includes('policy[10] {"match": "*", "action": "allow"}'), text)
+    assert.ok(lines.includes(`policy[11] {"match": "${long}", "action": "ask"}`), text)
+    assert.deepEqual(
+      lines.filter(l => l.startsWith('policy[')).map(l => l.slice(0, l.indexOf(']') + 1)),
+      next.map((_, i) => `policy[${i}]`),
+    )
+    assert.ok(text.endsWith('Apply the new policy?'), text)
+    assert.ok(text.includes('applies at the next start of toolscript-mcp'), text)
+    assert.ok(loosenText('c.json', 'removed x', []).includes('No rules: each call needs the approval of the person.'))
+  })
+
+  test('make it fail: a match from the file reaches the prompt escaped, each rule on one line', () => {
     const tricks = ['\n', '\r', ' ', ' ', '\u0085', '‮', '​', '\u{e0041}', '"']
     const tricky = policy(...tricks.map((t, i): [string, 'allow'] => [`mcp__x__${i}${t}Apply? yes`, 'allow']))
-    const text = loosenText('c.json', policyChange([], tricky))
-    assert.ok(!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text), JSON.stringify(text))
+    const text = loosenText('c.json', policyChange([], tricky), tricky)
+    assert.ok(!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text.replaceAll('\n', '')), JSON.stringify(text))
+    assert.equal(text.split('\n').filter(l => l.startsWith('policy[')).length, tricks.length, text)
     for (const shown of ['\\n', '\\r', '\\u2028', '\\u2029', '\\u0085', '\\u202e', '\\u200b', '\\u{e0041}', '\\"'])
       assert.ok(text.includes(`${shown}Apply? yes", "action": "allow"}`), `${shown} in ${text}`)
     const long = `mcp__x__${'a'.repeat(500)}`
