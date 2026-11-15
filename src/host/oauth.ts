@@ -86,6 +86,21 @@ const updateStore = async (file: string, change: (stored: Stored) => Stored): Pr
   }
 }
 
+/**
+ * True when the store gets a refresh token other than `old` within ROTATE_WAIT_MS: the process that won a race for a
+ * rotating refresh token saves the next one just after the authorization server refused it to this one.
+ */
+const rotated = async (file: string, old: string | undefined): Promise<boolean> => {
+  for (let waited = 0; ; waited += ROTATE_POLL_MS) {
+    const now = (await readStore(file)).tokens?.refresh_token
+    if (now !== undefined && now !== old) return true
+    if (waited >= ROTATE_WAIT_MS) return false
+    await new Promise(resolve => setTimeout(resolve, ROTATE_POLL_MS))
+  }
+}
+const ROTATE_WAIT_MS = 1000
+const ROTATE_POLL_MS = 100
+
 /** The provider of `login`: it opens the browser, and keeps the verifier and the state in memory. */
 export type LoginMode = {
   readonly kind: 'login'
@@ -116,6 +131,8 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   }
   let verifier: string | undefined
   let fresh: OAuthTokens | undefined
+  // The refresh token that the running server read last, which the SDK sends to refresh.
+  let sent: string | undefined
   // The client of this login, once it registered one or dropped the stored one. It goes into the store only with the
   // tokens: the old tokens refresh only with the old client, so a login that ends early leaves both.
   let own: { readonly info?: OAuthClientInformationMixed } | undefined
@@ -154,7 +171,12 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       !fixed && {
         saveClientInformation: (info: OAuthClientInformationMixed) => void (own = { info: keepClient(info) }),
       }),
-    tokens: async () => keepTokens(login ? fresh : (await readStore(file)).tokens),
+    tokens: async () => {
+      if (login) return keepTokens(fresh)
+      const { tokens } = await readStore(file)
+      sent = tokens?.refresh_token
+      return keepTokens(tokens)
+    },
     saveTokens: async tokens => {
       fresh = keepTokens(tokens)
       const client = own?.info && { info: own.info, redirectUrl }
@@ -168,9 +190,13 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     },
     codeVerifier: () => verifier ?? needLogin(),
     // The SDK calls this when the server refused the client or the refresh token. The running server keeps the
-    // store: another process can have saved new tokens since this one read them.
+    // store: another process can have saved new tokens since this one read them. When it has, with a rotating
+    // refresh token that both used, returning lets the SDK try once more with the store as it is now.
     invalidateCredentials: async scope => {
-      if (!login) needLogin()
+      if (!login) {
+        if (scope === 'tokens' && (await rotated(file, sent))) return
+        needLogin()
+      }
       if (scope === 'all' || scope === 'tokens') fresh = undefined
       if (scope === 'all' || scope === 'client') own = {}
     },

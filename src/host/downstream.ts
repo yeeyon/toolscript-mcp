@@ -5,14 +5,9 @@
 // most MAX_ATTEMPTS times in ATTEMPT_WINDOW_MS, and never after close.
 
 import os from 'node:os'
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import {
-  StreamableHTTPClientTransport,
-  StreamableHTTPError,
-  type StreamableHTTPClientTransportOptions,
-} from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import {
@@ -27,7 +22,7 @@ import {
   type ServerKey,
 } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
-import { LoginNeeded, oauthProvider, storeFile } from './oauth.ts'
+import { LoginNeeded, oauthProvider, storeFile, type Provider } from './oauth.ts'
 
 /** The time that one server gets for its connect and for each page of its tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
@@ -109,6 +104,9 @@ const endsSession = (err: unknown, hadSession: boolean): err is Error =>
   (err instanceof StreamableHTTPError &&
     ((err.code === 404 && hadSession) || (err.code === 400 && UNKNOWN_SESSION.test(err.message))))
 
+/** The OAuth provider of an HTTP server, and the reason that its link shows when a person must log in. */
+type Auth = { readonly provider: Provider; readonly reason: string }
+
 /**
  * The SDK HTTP client transport, which calls `onSessionEnd` before a request
  * that finds the session gone rejects. An error of the optional GET stream
@@ -116,17 +114,25 @@ const endsSession = (err: unknown, hadSession: boolean): err is Error =>
  */
 class HttpTransport extends StreamableHTTPClientTransport {
   readonly #onSessionEnd: (err: Error) => void
+  readonly #loginReason: string | undefined
 
-  constructor(url: URL, options: StreamableHTTPClientTransportOptions, onSessionEnd: (err: Error) => void) {
-    super(url, options)
+  constructor(server: HttpServer, onSessionEnd: (err: Error) => void, auth: Auth | undefined) {
+    super(new URL(server.url), { fetch: serverFetch(server), ...(auth && { authProvider: auth.provider }) })
     this.#onSessionEnd = onSessionEnd
+    this.#loginReason = auth?.reason
   }
 
   override async send(...args: Parameters<StreamableHTTPClientTransport['send']>): Promise<void> {
     const hadSession = this.sessionId !== undefined
     try {
       await super.send(...args)
-    } catch (err) {
+    } catch (raw) {
+      // With OAuth, the SDK answers a 401 itself: it refreshes the token and sends again. A 401 that comes through
+      // is a server that still refuses the token, so only a new login helps.
+      const err =
+        this.#loginReason !== undefined && raw instanceof StreamableHTTPError && raw.code === 401
+          ? new LoginNeeded(this.#loginReason)
+          : raw
       if (endsSession(err, hadSession)) this.#onSessionEnd(err)
       throw err
     }
@@ -154,17 +160,9 @@ export const serverFetch = (server: HttpServer): FetchLike => {
 const transportOf = (
   server: ServerConfig,
   onSessionEnd: (err: Error) => void,
-  authProvider: OAuthClientProvider | undefined,
+  auth: Auth | undefined,
 ): { transport: Transport; lastError: () => string } => {
-  if (server.kind === 'http')
-    return {
-      transport: new HttpTransport(
-        new URL(server.url),
-        { fetch: serverFetch(server), ...(authProvider && { authProvider }) },
-        onSessionEnd,
-      ),
-      lastError: () => '',
-    }
+  if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   const transport = new StdioClientTransport({
     command: server.command,
     args: [...server.args],
@@ -242,14 +240,15 @@ export const connectAll = (
     let lastError = () => ''
     try {
       // Inside the try: a transport that cannot be made fails this server only.
+      const reason = loginReason(login(key))
       const auth =
         server.kind === 'http' && server.oauth
-          ? oauthProvider(storeFile(home, key, server.url), server.oauth, {
-              kind: 'serve',
-              reason: loginReason(login(key)),
-            })
+          ? {
+              provider: oauthProvider(storeFile(home, key, server.url), server.oauth, { kind: 'serve', reason }),
+              reason,
+            }
           : undefined
-      if (auth) secrets = auth.secrets
+      if (auth) secrets = auth.provider.secrets
       const made = transportOf(server, sessionEnded, auth)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })

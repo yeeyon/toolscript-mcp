@@ -68,14 +68,19 @@ const startFake = async () => {
   /**
    * What a test changes in the answers of the fake. `authServer` is another origin of the fake for its OAuth part.
    * `echo` makes one kind of request fail with an error that echoes its secrets: a call, any MCP request, a refresh
-   * or the code exchange. `authMethods` are the client authentications that the token endpoint takes.
+   * or the code exchange. `authMethods` are the client authentications that the token endpoint takes. With
+   * `rejectAll`, the MCP endpoint answers 401 to every token. The token endpoint waits for `holdRefreshes` refresh
+   * requests before it answers the first, so two clients use one refresh token.
    */
   const change = {
     authorizationEndpoint: '',
     authServer: '',
     echo: '' as '' | 'call' | 'mcp' | 'refresh' | 'exchange',
     authMethods: ['none', 'client_secret_post', 'client_secret_basic'],
+    rejectAll: false,
+    holdRefreshes: 0,
   }
+  const held: (() => void)[] = []
   const issue = (clientId: string) => {
     const tokens = { access_token: `fake-access-${randomUUID()}`, refresh_token: `fake-refresh-${randomUUID()}` }
     access.add(tokens.access_token)
@@ -85,7 +90,7 @@ const startFake = async () => {
   }
   const mcp = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1]
-    if (bearer === undefined || !access.has(bearer))
+    if (bearer === undefined || !access.has(bearer) || change.rejectAll)
       return void res
         .writeHead(401, {
           'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
@@ -101,9 +106,16 @@ const startFake = async () => {
     await server.connect(transport)
     await transport.handleRequest(req, res, message)
   }
-  const token = (text: string, auth: string | undefined, res: http.ServerResponse) => {
+  const token = async (text: string, auth: string | undefined, res: http.ServerResponse) => {
     const form = new URLSearchParams(text)
     seen.tokens.push(form)
+    if (form.get('grant_type') === 'refresh_token' && change.holdRefreshes > 0)
+      await new Promise<void>(resolve => {
+        held.push(resolve)
+        if (held.length < change.holdRefreshes) return
+        change.holdRefreshes = 0
+        for (const release of held.splice(0)) release()
+      })
     if (change.echo === 'exchange' && form.get('grant_type') === 'authorization_code') {
       secrets.add(form.get('code') ?? '').add(form.get('code_verifier') ?? '')
       return void res.writeHead(400, { 'content-type': 'text/plain' }).end(`bad request: ${text} ${auth ?? ''}`)
@@ -475,6 +487,32 @@ describe('the running server', () => {
     assert.equal(await s.login(), 0, s.lines.join('\n'))
     const downstream = s.connect({ kind: 'http', url: `${fake.url}?v=2`, headers: {}, oauth: { scopes: [] } })
     assert.match(await s.ping(downstream), /needs an OAuth login/)
+  })
+
+  test('a server that answers 401 after a refresh ends the link with the login command', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    fake.change.rejectAll = true
+    await s.ping(downstream)
+    const state = downstream.states()[0]
+    assert.equal(state?.status, 'failed')
+    assert.match(state?.status === 'failed' ? state.reason : '', /needs an OAuth login.*`toolscript-mcp login fake`/)
+    assert.match(await s.ping(downstream), /needs an OAuth login/)
+  })
+
+  test('two processes that refresh one rotating refresh token at once both go on with no login', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const [one, two] = [s.connect(), s.connect()]
+    assert.deepEqual(await Promise.all([s.ping(one), s.ping(two)]), [PONG, PONG])
+    fake.expire()
+    fake.change.holdRefreshes = 2
+    assert.deepEqual(await Promise.all([s.ping(one), s.ping(two)]), [PONG, PONG])
+    assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
   })
 })
 
