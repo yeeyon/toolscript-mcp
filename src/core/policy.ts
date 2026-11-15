@@ -45,79 +45,126 @@ export const decide = (policy: Policy, tool: string): Verdict => {
   return rule === undefined ? { action: 'ask' } : { action: rule.action, rule }
 }
 
-/** A rule as the config writes it: `{"match": "mcp__x__*", "action": "deny"}`. */
-const ruleJson = (match: string, action: Action): string => `{"match": ${JSON.stringify(match)}, "action": "${action}"}`
+/**
+ * A string from the config file as JSON, with every control, format and line
+ * separator character escaped too: the text never breaks a line or turns
+ * around the text after it in a prompt.
+ */
+const quoted = (s: string): string =>
+  JSON.stringify(s).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, c => {
+    const hex = c.codePointAt(0)!.toString(16)
+    return hex.length <= 4 ? `\\u${hex.padStart(4, '0')}` : `\\u{${hex}}`
+  })
+
+const SHOWN_MATCH = 120
+
+/** A rule of the config file as the config writes it: `{"match": "mcp__x__*", "action": "deny"}`. A long match is cut. */
+const shownRule = ({ match, action }: Rule): string => {
+  const shown =
+    match.length <= SHOWN_MATCH
+      ? quoted(match)
+      : `${quoted(match.slice(0, SHOWN_MATCH))}… (${match.length - SHOWN_MATCH} more characters)`
+  return `{"match": ${shown}, "action": "${action}"}`
+}
 
 /** A rule as the config writes it, with its place: `policy[2] {"match": "mcp__x__*", "action": "deny"}`. */
-export const ruleText = (rule: Rule): string => `policy[${rule.index}] ${ruleJson(rule.match, rule.action)}`
+export const ruleText = (rule: Rule): string => `policy[${rule.index}] ${shownRule(rule)}`
 
-const allowRule = (tool: string): string => ruleJson(tool, 'allow')
+const allowRule = (tool: string): string => `{"match": ${JSON.stringify(tool)}, "action": "allow"}`
 
 /** Each step up this order lets a tool run with less from the person. */
 const LOOSENESS: Record<Action, number> = { deny: 0, ask: 1, allow: 2 }
 
+/** Above this many pairs of rules the comparison could stall the server, so the change counts as looser. */
+const MAX_PAIRS = 10_000_000
+
 /**
- * What `next` lets run that `current` does not: the names whose decision goes
- * up (deny to ask, deny or ask to allow). Each rule of either policy adds its
- * match with no `*`, a name that the rule matches, so a rule over tools of no
- * connected server counts too. Such a name shows as the match.
+ * True when `next` comes from `current` by these steps alone: insert a deny
+ * rule anywhere, remove an allow rule, lower the action of a rule in place.
+ * No step raises the decision of any name, so `next` lets no tool run with
+ * less approval. It reads the rules alone, never a tool name.
+ *
+ * The loop reads `current` from its last rule back. `fits[j]`: the rules of
+ * `next` from j on come by the steps from the rules of `current` read so far.
+ * The same match can repeat, so a rule of `next` does not simply pair with
+ * the first rule that has its match.
  */
-export const loosened = (current: Policy, next: Policy, names: Iterable<string>): string[] => {
-  const shown = new Map<string, string>()
-  for (const name of names) shown.set(name, name)
-  for (const rule of [...current, ...next]) {
-    const name = rule.match.replaceAll('*', '')
-    if (!shown.has(name)) shown.set(name, rule.match)
+export const onlyTightens = (current: Policy, next: Policy): boolean => {
+  if ((current.length + 1) * (next.length + 1) > MAX_PAIRS) return false
+  let fits = next.map(r => r.action === 'deny').concat(true)
+  for (let j = next.length - 1; j >= 0; j--) fits[j] = fits[j]! && fits[j + 1]!
+  for (const was of current.toReversed()) {
+    const row = fits.map((rest, j) => was.action === 'allow' && rest)
+    for (let j = next.length - 1; j >= 0; j--) {
+      const now = next[j]!
+      row[j] =
+        row[j]! ||
+        (now.action === 'deny' && row[j + 1]!) ||
+        (now.match === was.match && LOOSENESS[now.action] <= LOOSENESS[was.action] && fits[j + 1]!)
+    }
+    fits = row
   }
-  const looser = [...shown].filter(
-    ([name]) => LOOSENESS[decide(next, name).action] > LOOSENESS[decide(current, name).action],
-  )
-  return [...new Set(looser.map(([, label]) => label))].sort()
+  return fits[0]!
 }
 
+const ruleKey = (r: Rule): string => JSON.stringify([r.match, r.action])
+
+/** True when both have the same rules in the same order. */
+export const samePolicy = (a: Policy, b: Policy): boolean =>
+  a.length === b.length && a.every((r, i) => ruleKey(r) === ruleKey(b[i]!))
+
 /** The rules of `a` that `b` does not have, one for one. */
-const minus = (a: readonly string[], b: readonly string[]): string[] => {
-  const left = [...b]
+const minus = (a: Policy, b: Policy): Rule[] => {
+  const left = new Map<string, number>()
+  for (const key of b.map(ruleKey)) left.set(key, (left.get(key) ?? 0) + 1)
   return a.filter(rule => {
-    const at = left.indexOf(rule)
-    if (at >= 0) left.splice(at, 1)
-    return at < 0
+    const key = ruleKey(rule)
+    const count = left.get(key) ?? 0
+    left.set(key, count - 1)
+    return count <= 0
   })
 }
 
-/** The rules added and removed, for the log and the note of a run. Empty when the rules are the same. */
-export const policyChange = (current: Policy, next: Policy): string => {
-  const before = current.map(r => ruleJson(r.match, r.action))
-  const after = next.map(r => ruleJson(r.match, r.action))
-  if (before.join('\n') === after.join('\n')) return ''
-  const added = minus(after, before)
-  const removed = minus(before, after)
-  const parts = [
-    ...(added.length > 0 ? [`added ${added.join(', ')}`] : []),
-    ...(removed.length > 0 ? [`removed ${removed.join(', ')}`] : []),
-  ]
-  return parts.length > 0 ? parts.join('; ') : 'the order of the rules changed'
+const SHOWN_RULES = 10
+
+const ruleList = (rules: readonly Rule[]): string => {
+  const shown = rules.slice(0, SHOWN_RULES).map(shownRule).join(', ')
+  return rules.length <= SHOWN_RULES ? shown : `${shown} and ${rules.length - SHOWN_RULES} more`
 }
 
-const SHOWN_NAMES = 20
+/**
+ * The rules added and removed, for the log, the note of a run and the prompt,
+ * on one line. Empty when the rules are the same.
+ */
+export const policyChange = (current: Policy, next: Policy): string => {
+  if (samePolicy(current, next)) return ''
+  const added = minus(next, current)
+  const removed = minus(current, next)
+  const parts = [
+    ...(added.length > 0 ? [`added ${ruleList(added)}`] : []),
+    ...(removed.length > 0 ? [`removed ${ruleList(removed)}`] : []),
+  ]
+  return parts.length > 0 ? parts.join('; ') : `the order of the rules changed to ${ruleList(next)}`
+}
 
-const nameList = (names: readonly string[]): string =>
-  names.length <= SHOWN_NAMES
-    ? names.join(', ')
-    : `${names.slice(0, SHOWN_NAMES).join(', ')} and ${names.length - SHOWN_NAMES} more`
+const looser = (file: string, change: string): string =>
+  `The toolscript-mcp policy in ${file} changed, and the change can let a tool run with less approval: ${change}.`
 
-/** The prompt before a looser policy from the config file applies. */
-export const loosenText = (file: string, names: readonly string[]): string =>
-  `The toolscript-mcp policy in ${file} changed to allow: ${nameList(names)}. Apply the new policy?`
+/** The prompt before a looser policy from the config file applies. `change` comes from policyChange. */
+export const loosenText = (file: string, change: string): string => `${looser(file, change)} Apply the new policy?`
 
 /** The note after a run that kept the policy in force, because the person did not approve a looser one. */
-export const keptPolicyNote = (file: string, names: readonly string[], why: Refusal): string => {
+export const keptPolicyNote = (file: string, change: string, why: Refusal): string => {
   const kept =
     why === 'decline'
       ? 'The person did not approve it, so this run used the policy in force.'
       : 'A looser policy applies only after a restart, so this run used the policy in force. If the person made this change, ask them to restart toolscript-mcp.'
-  return `## Policy not reloaded\n\nThe toolscript-mcp policy in ${file} now allows ${nameList(names)}. ${kept} Do not change the config yourself.`
+  return `## Policy not reloaded\n\n${looser(file, change)} ${kept} Do not change the config yourself.`
 }
+
+/** The note after a run while the config file still holds the policy that the person declined. */
+export const declinedNote = (file: string): string =>
+  `## Policy not reloaded\n\nThe person declined the policy in ${file}, so this run used the policy in force. Do not change the config yourself.`
 
 /**
  * The decision before a run, from the tool names that the program writes as

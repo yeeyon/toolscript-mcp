@@ -27,8 +27,12 @@ Include:
 - A nested MCP call leaves the sandbox. The server checks each call against the `policy` rules of the config, before
   the run for the tool names the program writes as strings, and again at each call. A way past that check is in scope.
 - The server reads `policy` from the config file again at each run. Do not let any tool that the policy allows write
-  the config file, because a program can call that tool to change its own policy. A stricter policy applies at once.
-  A policy that lets a tool run with less approval applies only after the person approves it in a prompt. If the
-  client cannot ask, it applies only after a restart of toolscript-mcp.
+  the config file, because a program can call that tool to change its own policy. A changed policy applies at once
+  only when it comes from the policy in force by these steps alone: insert `deny` rules, remove `allow` rules, and
+  lower the action of a rule in place, with the same `match`. No step raises the decision of any tool name, so the
+  server compares the rules, not a list of tools. Any other change, a new order of the same rules too, applies only
+  after the person approves it in a prompt. If the client cannot ask, it applies only after a restart of
+  toolscript-mcp. A declined policy is not asked again until the config file changes. A changed policy that lets a
+  tool run with less approval and applies without the person's approval is in scope.
 - `saveFile` writes only in the session folder under `~/.toolscript-mcp/files/`, and `readFile` reads only files there.
   The files stay after the session, with read access for your user only on Linux and macOS.
