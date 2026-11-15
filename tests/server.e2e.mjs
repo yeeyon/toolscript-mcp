@@ -551,6 +551,27 @@ test('run (n) a looser policy asks the person: decline keeps the policy in force
   assert.equal(benchCalls('create_ticket'), 1)
 })
 
+test('run (n2) a looser policy whose prompt got no answer is asked again at the next run', async () => {
+  const prompts = asking.prompts.length
+  const tickets = benchCalls('create_ticket')
+  try {
+    fs.writeFileSync(configFile, looserConfig())
+    asking.answer = 'cancel'
+    const dismissed = await run(TICKET, askingClient)
+    assert.ok(dismissed.text.includes('is denied by policy[0]'), dismissed.text)
+    assert.ok(dismissed.text.includes('The person did not approve it'), dismissed.text)
+    assert.equal(asking.prompts.length, prompts + 1)
+
+    asking.answer = 'decline'
+    const again = await run(TICKET, askingClient)
+    assert.ok(again.text.includes('The person did not approve it'), again.text)
+    assert.equal(asking.prompts.length, prompts + 2, 'a prompt with no answer is asked again')
+    assert.equal(benchCalls('create_ticket'), tickets)
+  } finally {
+    fs.writeFileSync(configFile, CONFIG_TEXT)
+  }
+})
+
 test('run (o) a program that writes a policy whose new allow is shadowed for every listed tool is asked, and a decline keeps the built name refused', async () => {
   const prompts = asking.prompts.length
   const hiddenCalls = () =>

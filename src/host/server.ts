@@ -82,18 +82,23 @@ export const createServer = (
   const runs = new Set<Promise<unknown>>()
 
   const canAsk = () => mcp.server.getClientCapabilities()?.elicitation?.form !== undefined
-  const elicit = async (extra: Extra, message: string): Promise<Approval> => {
+  // 'unanswered': the person dismissed the prompt, or it failed, timed out or was cancelled.
+  const prompt = async (extra: Extra, message: string): Promise<Approval | 'unanswered'> => {
     if (!canAsk()) return 'unsupported'
     try {
       const r = await mcp.server.elicitInput(
         { mode: 'form', message, requestedSchema: { type: 'object', properties: {} } },
         { signal: extra.signal, timeout: ASK_TIMEOUT_MS, relatedRequestId: extra.requestId },
       )
-      return r.action === 'accept' ? 'accept' : 'decline'
+      return r.action === 'accept' ? 'accept' : r.action === 'decline' ? 'decline' : 'unanswered'
     } catch (err) {
       log(`the approval prompt failed: ${errorText(err)}`)
-      return 'decline'
+      return 'unanswered'
     }
+  }
+  const elicit = async (extra: Extra, message: string): Promise<Approval> => {
+    const answer = await prompt(extra, message)
+    return answer === 'unanswered' ? 'decline' : answer
   }
 
   // The policy is read again at each run, so an edit needs no restart. A
@@ -117,14 +122,20 @@ export const createServer = (
     const change = policyChange(policy, read.policy)
     if (change === '') return { policy, note: '' }
     if (!onlyTightens(policy, read.policy)) {
-      const answer = await elicit(extra, loosenText(configFile, change))
+      const answer = await prompt(extra, loosenText(configFile, change))
       if (answer !== 'accept') {
+        // Only an explicit decline stops the next prompts. A prompt with no answer is asked again at the next run.
         if (answer === 'decline') declined = read.policy
-        const why = answer === 'decline' ? 'the person declined it' : 'restart toolscript-mcp to apply it'
+        const why =
+          answer === 'decline'
+            ? 'the person declined it'
+            : answer === 'unanswered'
+              ? 'the prompt got no answer'
+              : 'restart toolscript-mcp to apply it'
         log(
           `the policy in ${configFile} was not applied, because it can let a tool run with less approval (${change}): ${why}`,
         )
-        return { policy, note: keptPolicyNote(configFile, change, answer) }
+        return { policy, note: keptPolicyNote(configFile, change, answer === 'unsupported' ? answer : 'decline') }
       }
     }
     policy = read.policy
