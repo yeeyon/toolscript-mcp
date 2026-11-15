@@ -87,6 +87,14 @@ Downstream servers:
 - An HTTP server that restarts, or loses the session, no longer fails every later call until toolscript-mcp restarts. The first call that finds the server unreachable, or the session unknown, fails, and the next use connects again. A session is unknown after a 404 to a request with a session id, or a 400 with a session error text of the MCP TypeScript SDK. Any other 400 fails only its call. An error of the optional GET stream does not end the session, so a server with only POST /mcp stays connected.
 - An HTTP `url` that does not parse, also after `${VAR}` expansion, fails only its entry. It no longer stops toolscript-mcp at the start. The error names the key, not the URL.
 
+OAuth login:
+
+- Added `toolscript-mcp login <server> [--config <path>]`. It logs in to a remote HTTP server with OAuth, with no proxy such as `mcp-remote`. It listens on `127.0.0.1`, opens the browser, checks the state, and connects and counts the tools after the token exchange. The MCP TypeScript SDK does the discovery, the dynamic client registration, PKCE and the refresh.
+- An HTTP server without `headers` logs in with OAuth. `"oauth": true` turns it on for a server with other headers, and `"oauth": false` turns it off. `"oauth": { "clientId", "clientSecret", "scopes", "callbackPort" }` sets a client registered by hand, as Google needs. A bad `oauth` entry, or `oauth` with an `Authorization` header, fails only its server. `clientSecret` takes `${VAR}`, and a failure reason hides it.
+- The tokens and the registered client go to `~/.toolscript-mcp/oauth/<server>-<hash of the URL>.json`, written with a rename, mode 0600 in a 0700 folder on Linux and macOS. A new URL needs a new login. The next login uses the port of the registered redirect URL again.
+- The running server refreshes the tokens and saves them in the store. It never opens a browser, registers a client or starts a login. A server that needs a login fails with a reason that names the login command. The next search or call after the login connects again, with no restart.
+- The init report names the imported HTTP servers without headers, and the login command for them.
+
 Tool search:
 
 - `search_tools` shows each of 3 or fewer matches in full: the description and a TypeScript declaration of `call()` with nested object types, enums, unions, local `$ref`s and the note of each argument. A tool with an `outputSchema` gets a `Promise<…>` result type. Without one, the search shows the shape of a result from an earlier run in the session (`returned earlier:`). 4 or more matches keep the one-line list.

@@ -36,3 +36,10 @@ Include:
   tool run with less approval and applies without the person's approval is in scope.
 - `saveFile` writes only in the session folder under `~/.toolscript-mcp/files/`, and `readFile` reads only files there.
   The files stay after the session, with read access for your user only on Linux and macOS.
+- `toolscript-mcp login` writes the OAuth tokens and the registered client of a server to
+  `~/.toolscript-mcp/oauth/<server>-<hash>.json`. On Linux and macOS the file has mode 0600 and the folder 0700. On
+  Windows the file gets the access rules of your profile folder. A static `clientSecret` stays in the config and does
+  not go into this file. The PKCE verifier and the state stay in the memory of the login process. The login callback
+  listens on `127.0.0.1` only, and refuses a callback with a wrong state. No log line, printed line or `search_tools`
+  reason holds a token, a code, a verifier or a client secret. A leak of one of them is in scope.
+- The running server only reads the store and saves refreshed tokens. It never opens a browser or registers a client.
