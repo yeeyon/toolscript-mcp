@@ -6,7 +6,11 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+  type StreamableHTTPClientTransportOptions,
+} from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import { childEnv, invalidReason, redact, type ServerConfig, type ServerEntry, type ServerKey } from '../core/config.ts'
@@ -65,16 +69,60 @@ export type Downstream = {
   close(): Promise<void>
 }
 
+/** The 400 texts of SDK servers, and of the SDK examples, for a session that the server does not know. */
+const UNKNOWN_SESSION =
+  /Server not initialized|Mcp-Session-Id header is required|No valid session ID|Session not found/i
+
+/**
+ * True for an error of an HTTP request that shows the session is gone: the
+ * server cannot be reached, it answers 404 to a request with a session id, as
+ * the spec says, or 400 with an SDK text for an unknown session. Any other 400
+ * is an error of that request only, as from a gateway that rejects a payload.
+ */
+const endsSession = (err: unknown, hadSession: boolean): err is Error =>
+  (err instanceof TypeError && err.message === 'fetch failed') ||
+  (err instanceof StreamableHTTPError &&
+    ((err.code === 404 && hadSession) || (err.code === 400 && UNKNOWN_SESSION.test(err.message))))
+
+/**
+ * The SDK HTTP client transport, which calls `onSessionEnd` before a request
+ * that finds the session gone rejects. An error of the optional GET stream
+ * rejects no request, so it never ends the session.
+ */
+class HttpTransport extends StreamableHTTPClientTransport {
+  readonly #onSessionEnd: (err: Error) => void
+
+  constructor(url: URL, options: StreamableHTTPClientTransportOptions, onSessionEnd: (err: Error) => void) {
+    super(url, options)
+    this.#onSessionEnd = onSessionEnd
+  }
+
+  override async send(...args: Parameters<StreamableHTTPClientTransport['send']>): Promise<void> {
+    const hadSession = this.sessionId !== undefined
+    try {
+      await super.send(...args)
+    } catch (err) {
+      if (endsSession(err, hadSession)) this.#onSessionEnd(err)
+      throw err
+    }
+  }
+}
+
 /**
  * The transport of one server, and the end of what its stdio child wrote to
  * stderr, as one line. The child's stderr still goes on to ours, as with `inherit`.
  */
-const transportOf = (server: ServerConfig): { transport: Transport; lastError: () => string } => {
+const transportOf = (
+  server: ServerConfig,
+  onSessionEnd: (err: Error) => void,
+): { transport: Transport; lastError: () => string } => {
   if (server.kind === 'http')
     return {
-      transport: new StreamableHTTPClientTransport(new URL(server.url), {
-        requestInit: { headers: { ...server.headers } },
-      }),
+      transport: new HttpTransport(
+        new URL(server.url),
+        { requestInit: { headers: { ...server.headers } } },
+        onSessionEnd,
+      ),
       lastError: () => '',
     }
   const transport = new StdioClientTransport({
@@ -91,14 +139,6 @@ const transportOf = (server: ServerConfig): { transport: Transport; lastError: (
   const lastError = () => tail.replace(/\s+/g, ' ').trim().slice(-300)
   return { transport, lastError }
 }
-
-/**
- * True for an error of the HTTP transport that ends the session: the server
- * cannot be reached (fetch throws a TypeError), or it does not know the
- * session (404, as the spec says, or 400 from an SDK server that restarted).
- */
-const sessionEnded = (err: Error): boolean =>
-  err instanceof TypeError || (err instanceof StreamableHTTPError && (err.code === 400 || err.code === 404))
 
 const listAll = async (client: Client): Promise<DownstreamTool[]> => {
   const tools: DownstreamTool[] = []
@@ -134,34 +174,35 @@ export const connectAll = (
   const connect = async (key: ServerKey, server: ServerConfig): Promise<void> => {
     const client = new Client({ name: 'toolscript-mcp', version })
     opened.add(client)
+    // Only while this client is still the link of `key`: a late event of an old client changes nothing.
+    const lost = (reason: string): boolean => {
+      const link = links.get(key)
+      if (closing || link?.status !== 'connected' || link.client !== client) return false
+      fail(key, server, reason)
+      return true
+    }
+    // The SDK HTTP transport fires onclose only from close(), so a server that
+    // restarted shows only as an error of a request. The link fails before
+    // that request rejects, and the next use connects again.
+    const sessionEnded = (err: Error) => {
+      if (!lost(`the HTTP session ended: ${errorText(err)}`)) return
+      // Later, so the failed request rejects with its own error first: close()
+      // rejects each open request with "Connection closed".
+      setImmediate(() => void client.close().catch(() => {}))
+    }
     let lastError = () => ''
     try {
       // Inside the try: a transport that cannot be made fails this server only.
-      const made = transportOf(server)
+      const made = transportOf(server, sessionEnded)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const tools = await listAll(client)
       links.set(key, { status: 'connected', client, tools })
       log(`${key}: connected, ${tools.length} tools`)
-      // Only while this client is still the link of `key`: a late event of an old client changes nothing.
-      const lost = (reason: string) => {
-        const link = links.get(key)
-        if (!closing && link?.status === 'connected' && link.client === client) fail(key, server, reason)
-      }
       client.onclose = () => {
         opened.delete(client)
         const stderr = lastError()
         lost(`the connection closed${stderr === '' ? '' : `. Its stderr ends with: ${stderr}`}`)
-      }
-      // The SDK HTTP transport fires onclose only from close(). A server that
-      // restarted shows only as an error of a request, reported here before
-      // the request rejects, so the next use connects again.
-      client.onerror = err => {
-        if (server.kind !== 'http' || !sessionEnded(err)) return
-        lost(`the HTTP session ended: ${errorText(err)}`)
-        // Later, so the failed request rejects with this error first: close()
-        // rejects each open request with "Connection closed".
-        setImmediate(() => void client.close().catch(() => {}))
       }
     } catch (err) {
       // A child that exits gives only "Connection closed": its stderr says
