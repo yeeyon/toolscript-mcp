@@ -144,6 +144,18 @@ npm run build
 
 Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/config.json` in your client.
 
+### From GitHub
+
+npm can install a commit of this repository with no clone. It builds `dist/` during the install. Use a full commit
+SHA, so that everyone runs the same code:
+
+```sh
+npx -y github:yeeyon/toolscript-mcp#<commit> init
+claude mcp add --scope user toolscript -- npx -y github:yeeyon/toolscript-mcp#<commit> --config /path/to/config.json
+```
+
+The first start downloads and builds the commit, so it takes about a minute. On Windows, put `cmd /c` before `npx`.
+
 ### init
 
 - `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code. It does not import the servers of a
