@@ -80,7 +80,7 @@ Downstream servers:
 - A server that failed to connect, or whose connection closed, connects again on the next `search_tools` or call. At most 3 attempts per server in 60 seconds. Concurrent callers share one attempt.
 - Added `sandbox.callTimeoutSeconds` (1 to `sandbox.timeoutSeconds`, default 60, or `sandbox.timeoutSeconds` when that is shorter). A call past it throws an error that the program can catch, and the server gets `notifications/cancelled`.
 - The end of a run no longer sends `notifications/cancelled` for calls that already finished.
-- An HTTP server that restarts, or loses the session, no longer fails every later call until toolscript-mcp restarts. The first call that finds the server unreachable, or the session unknown (HTTP 400 or 404), fails, and the next use connects again.
+- An HTTP server that restarts, or loses the session, no longer fails every later call until toolscript-mcp restarts. The first call that finds the server unreachable, or the session unknown, fails, and the next use connects again. A session is unknown after a 404 to a request with a session id, or a 400 with a session error text of the MCP TypeScript SDK. Any other 400 fails only its call. An error of the optional GET stream does not end the session, so a server with only POST /mcp stays connected.
 - An HTTP `url` that does not parse, also after `${VAR}` expansion, fails only its entry. It no longer stops toolscript-mcp at the start. The error names the key, not the URL.
 
 Tool search:

@@ -1,7 +1,8 @@
 // connectAll with real stdio children (tests/probe-server.mjs): a server whose
 // connection closed connects again on next use, once for all callers, at most
-// 3 times in 60 s, and never after close. An HTTP server built with the SDK
-// checks that a server that restarted connects again after one failed call.
+// 3 times in 60 s, and never after close. HTTP servers built with the SDK
+// check that a server that restarted connects again after one failed call, and
+// that an error of the GET stream or of one request does not end the session.
 
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -159,11 +160,14 @@ describe('reconnect', () => {
 })
 
 /**
- * A stateful HTTP MCP server with one tool, `ping`, built with the SDK. A
- * request with a session id that it does not know gets `unknown`: a new
- * transport, which answers 400 "Server not initialized", or a 404, as the spec says.
+ * A stateful HTTP MCP server built with the SDK, with the tools `ping` and
+ * `slow` (pong after 300 ms). A request with a session id that it does not
+ * know gets `unknown`: a new transport, which answers 400 "Server not
+ * initialized", or a 404, as the spec says. With `get`, each GET (the optional
+ * SSE stream) gets that status, as a server with only POST /mcp gives. Like a
+ * gateway that rejects one payload, it answers 400 to each call of `blocked`.
  */
-const startHttp = async (port: number, unknown: 'new transport' | 404) => {
+const startHttp = async (port: number, unknown: 'new transport' | 404, get?: 400 | 404) => {
   const sessions = new Map<string, StreamableHTTPServerTransport>()
   const fresh = async () => {
     const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
@@ -171,20 +175,38 @@ const startHttp = async (port: number, unknown: 'new transport' | 404) => {
       onsessioninitialized: id => void sessions.set(id, transport),
     })
     const mcp = new McpServer({ name: 'fake-http', version: '1.0.0' })
-    mcp.registerTool('ping', { description: 'Ping.' }, async () => ({ content: [{ type: 'text', text: 'pong' }] }))
+    const pong = { content: [{ type: 'text' as const, text: 'pong' }] }
+    mcp.registerTool('ping', { description: 'Ping.' }, async () => pong)
+    mcp.registerTool('slow', { description: 'Slow ping.' }, async () => {
+      await new Promise(r => setTimeout(r, 300))
+      return pong
+    })
     await mcp.connect(transport)
     return transport
   }
+  let gets = 0
   const server = http.createServer(async (req, res) => {
+    // Later than the tool list, as from a server that is not on this host.
+    if (req.method === 'GET' && get !== undefined) {
+      await new Promise(r => setTimeout(r, 200))
+      res.writeHead(get).end(http.STATUS_CODES[get])
+      return void gets++
+    }
     const id = req.headers['mcp-session-id']
     const known = typeof id === 'string' ? sessions.get(id) : undefined
     if (known === undefined && id !== undefined && unknown === 404)
       return void res.writeHead(404).end('Session not found')
-    await (known ?? (await fresh())).handleRequest(req, res)
+    if (req.method !== 'POST') return void (await (known ?? (await fresh())).handleRequest(req, res))
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk)
+    const body = Buffer.concat(chunks).toString('utf8')
+    if (body.includes('"name":"blocked"')) return void res.writeHead(400).end('Request blocked')
+    await (known ?? (await fresh())).handleRequest(req, res, JSON.parse(body))
   })
   await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve))
   return {
     port: (server.address() as AddressInfo).port,
+    gets: () => gets,
     forget: () => sessions.clear(),
     close: () =>
       new Promise<void>(resolve => {
@@ -194,7 +216,62 @@ const startHttp = async (port: number, unknown: 'new transport' | 404) => {
   }
 }
 
+const PONG = JSON.stringify([{ type: 'text', text: 'pong' }])
+
+/** connectAll with one HTTP server, its log, and a call of one of its tools that gives the content or the error. */
+const connectHttp = (port: number) => {
+  const lines: string[] = []
+  const downstream = connectAll(
+    new Map([[KEY, { kind: 'http', url: `http://127.0.0.1:${port}/mcp`, headers: {} } as const]]),
+    '0',
+    line => lines.push(line),
+  )
+  opened.push(downstream)
+  const call = async (name = 'ping'): Promise<string> => {
+    const link = await downstream.client(KEY)
+    if (!link.ok) return link.reason
+    const r = await link.client.callTool({ name, arguments: {} }).catch((err: Error) => err)
+    return r instanceof Error ? r.message : JSON.stringify(r.content)
+  }
+  return { downstream, call, lines }
+}
+
 describe('http', () => {
+  for (const get of [404, 400] as const)
+    test(`a server that answers ${get} to the GET stream stays connected`, async () => {
+      const fake = await startHttp(0, 'new transport', get)
+      const { downstream, call, lines } = connectHttp(fake.port)
+      try {
+        await downstream.settled
+        for (let i = 0; i < 100 && fake.gets() === 0; i++) await new Promise(r => setTimeout(r, 20))
+        assert.ok(fake.gets() > 0, 'the server answered the GET stream')
+        await new Promise(r => setImmediate(r))
+        assert.equal(downstream.states()[0]?.status, 'connected')
+        assert.deepEqual([await call(), await call(), await call()], [PONG, PONG, PONG])
+        assert.deepEqual(lines, ['p: connected, 2 tools'])
+      } finally {
+        await downstream.close()
+        await fake.close()
+      }
+    })
+
+  test('a 400 to one request fails only that call, and a call in flight still answers', async () => {
+    const fake = await startHttp(0, 'new transport')
+    const { downstream, call, lines } = connectHttp(fake.port)
+    try {
+      await downstream.settled
+      const slow = call('slow')
+      const blocked = await Promise.all([call('blocked'), call('blocked'), call('blocked')])
+      for (const message of blocked) assert.match(message, /Request blocked/)
+      assert.equal(await slow, PONG, 'the call in flight answers')
+      assert.equal(await call(), PONG)
+      assert.deepEqual(lines, ['p: connected, 2 tools'])
+    } finally {
+      await downstream.close()
+      await fake.close()
+    }
+  })
+
   const cases = [
     { name: 'a server that restarted', unknown: 'new transport', restart: true, failure: /fetch failed/ },
     {
@@ -213,28 +290,16 @@ describe('http', () => {
   for (const { name, unknown, restart, failure } of cases)
     test(`${name} fails one call, and the next call connects again`, async () => {
       let fake = await startHttp(0, unknown)
-      const downstream = connectAll(
-        new Map([[KEY, { kind: 'http', url: `http://127.0.0.1:${fake.port}/mcp`, headers: {} } as const]]),
-        '0',
-        () => {},
-      )
-      opened.push(downstream)
-      const ping = async (): Promise<string> => {
-        const link = await downstream.client(KEY)
-        if (!link.ok) return link.reason
-        const r = await link.client.callTool({ name: 'ping', arguments: {} }).catch((err: Error) => err)
-        return r instanceof Error ? r.message : JSON.stringify(r.content)
-      }
-      const pong = JSON.stringify([{ type: 'text', text: 'pong' }])
+      const { downstream, call } = connectHttp(fake.port)
       try {
         await downstream.settled
-        assert.equal(await ping(), pong)
+        assert.equal(await call(), PONG)
         if (restart) {
           await fake.close()
           fake = await startHttp(fake.port, unknown)
         } else fake.forget()
-        assert.match(await ping(), failure)
-        assert.equal(await ping(), pong, 'the call after the failed one connects again')
+        assert.match(await call(), failure)
+        assert.equal(await call(), PONG, 'the call after the failed one connects again')
       } finally {
         await downstream.close()
         await fake.close()
