@@ -306,8 +306,14 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
       })
       return reply.ok ? reply : { ...reply, code: 'tool-error' }
     } catch (err) {
-      // An abort at the end of the run is also a RequestTimeout to the SDK.
-      if (!own.signal.aborted && err instanceof McpError && err.code === ErrorCode.RequestTimeout)
+      // An abort at the end of the run is also a RequestTimeout to the SDK. The SDK's own timer puts the limit in
+      // `data`. A server can send the same code for its own error (mcp-remote does, for a failed login): its text stays.
+      if (
+        !own.signal.aborted &&
+        err instanceof McpError &&
+        err.code === ErrorCode.RequestTimeout &&
+        (err.data as { timeout?: unknown } | undefined)?.timeout === callSeconds * 1000
+      )
         return {
           ok: false,
           error: `${tool} did not answer within the call limit of ${callSeconds} s and was cancelled`,

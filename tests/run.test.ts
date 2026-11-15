@@ -3,6 +3,7 @@
 // and approval tests that apply to a standalone server. tests/server.e2e.mjs
 // runs the same path through the built server over stdio.
 
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import childProcess, { type ChildProcess } from 'node:child_process'
@@ -43,6 +44,10 @@ const TOOLS: Record<string, Tool> = {
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
   big: () => json(Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `item ${i}` }))),
   none: () => json({ results: [], next_cursor: null }),
+  // A server's own error with the code of a timeout, as mcp-remote sends for a failed login.
+  authfail: () => {
+    throw new McpError(ErrorCode.RequestTimeout, 'mcp-remote: Incompatible auth server')
+  },
 }
 const SCHEMAS: Record<string, unknown> = {
   echo: { type: 'object', properties: { n: {}, a: {}, b: {}, x: {} } },
@@ -199,6 +204,14 @@ describe('run_code', () => {
       assert.ok(r.text.startsWith('TypeError: the return value cannot be sent as JSON: '), r.text)
       assert.ok(!r.text.includes('[object Object]'), r.text)
     }
+  })
+
+  test('make it fail: a server error with the timeout code shows its own text, not the call limit', async () => {
+    const { run, lines } = setup()
+    const r = await run('try {\n  await call("mcp__f__authfail", {})\n} catch (e) {\n  return e.message\n}')
+    assert.ok(r.text.includes('mcp-remote: Incompatible auth server'), r.text)
+    assert.ok(!r.text.includes('call limit'), r.text)
+    assert.equal(lines().at(-1)?.calls[0]?.error, 'failed')
   })
 
   test('runs at most 8 nested calls at a time', async () => {
