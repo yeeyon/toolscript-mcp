@@ -17,11 +17,16 @@ import {
   type OAuthClientInformationMixed,
   type OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js'
-import { basicCredentials, parseJson, type OAuth, type ServerKey } from '../core/config.ts'
+import { basicCredentials, parseJson, refreshReason, type OAuth, type ServerKey } from '../core/config.ts'
 import { oauthFile } from '../core/paths.ts'
 
 /** The provider of the running server throws this where a person must log in. Its message is the reason. */
 export class LoginNeeded extends Error {}
+/**
+ * The provider of the running server throws this when a refresh failed but was not refused, as when the
+ * authorization server is down: the tokens can still work, so the next use tries again. Its message is the reason.
+ */
+export class RefreshFailed extends Error {}
 
 /** What the store keeps for one server. */
 export type Stored = {
@@ -108,8 +113,15 @@ export type LoginMode = {
   readonly state: string
   readonly open: (url: URL) => void
 }
-/** The provider of the running server: where a person must log in, it throws LoginNeeded with `reason`. */
-export type ServeMode = { readonly kind: 'serve'; readonly reason: string }
+/**
+ * The provider of the running server: where a person must log in, it throws LoginNeeded with `reason`.
+ * `lastFailure` gives the cause of the last failed request of this server, for the reason of a failed refresh.
+ */
+export type ServeMode = {
+  readonly kind: 'serve'
+  readonly reason: string
+  readonly lastFailure: () => string | undefined
+}
 
 /** The SDK's provider, and the secrets that it handed out so far, for `redact`: a server can echo one in an error. */
 export type Provider = OAuthClientProvider & { readonly secrets: () => readonly string[] }
@@ -164,7 +176,14 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       token_endpoint_auth_method: 'none',
       ...(oauth.scopes.length > 0 && { scope: oauth.scopes.join(' ') }),
     },
-    state: () => login?.state ?? needLogin(),
+    // The SDK asks for the state only to start a new authorization. It starts one after a refresh that failed without
+    // a refusal too: then the running server keeps its tokens for the next use.
+    state: () => {
+      if (login) return login.state
+      if (mode.kind === 'serve' && sent !== undefined)
+        throw new RefreshFailed(refreshReason(mode.lastFailure() ?? 'no answer'))
+      return needLogin()
+    },
     clientInformation: async () => keepClient(await client()),
     // Only login registers. Without this method, the SDK never registers a client for the running server.
     ...(login &&

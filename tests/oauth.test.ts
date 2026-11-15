@@ -70,7 +70,8 @@ const startFake = async () => {
    * `echo` makes one kind of request fail with an error that echoes its secrets: a call, any MCP request, a refresh
    * or the code exchange. `authMethods` are the client authentications that the token endpoint takes. With
    * `rejectAll`, the MCP endpoint answers 401 to every token. The token endpoint waits for `holdRefreshes` refresh
-   * requests before it answers the first, so two clients use one refresh token.
+   * requests before it answers the first, so two clients use one refresh token. With `tokenDown`, the token endpoint
+   * drops each connection.
    */
   const change = {
     authorizationEndpoint: '',
@@ -79,6 +80,7 @@ const startFake = async () => {
     authMethods: ['none', 'client_secret_post', 'client_secret_basic'],
     rejectAll: false,
     holdRefreshes: 0,
+    tokenDown: false,
   }
   const held: (() => void)[] = []
   const issue = (clientId: string) => {
@@ -186,6 +188,7 @@ const startFake = async () => {
       to.searchParams.set('state', q.get('state') ?? '')
       return void res.writeHead(302, { location: to.href }).end()
     }
+    if (url.pathname === '/token' && change.tokenDown) return void req.socket.destroy()
     if (url.pathname === '/token') return token(await body(req), req.headers.authorization, res)
     if (url.pathname.startsWith('/mcp')) return mcp(req, res)
     res.writeHead(404).end()
@@ -501,6 +504,23 @@ describe('the running server', () => {
     assert.equal(state?.status, 'failed')
     assert.match(state?.status === 'failed' ? state.reason : '', /needs an OAuth login.*`toolscript-mcp login fake`/)
     assert.match(await s.ping(downstream), /needs an OAuth login/)
+  })
+
+  test('an authorization server that is down during a refresh needs no login, and the next use refreshes', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    fake.expire()
+    fake.change.tokenDown = true
+    await s.ping(downstream)
+    const state = downstream.states()[0]
+    const reason = state?.status === 'failed' ? state.reason : ''
+    assert.match(reason, /^could not refresh the OAuth token: .+\. It tries again on next use/, reason)
+    fake.change.tokenDown = false
+    assert.equal(await s.ping(downstream), PONG)
+    assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
   })
 
   test('two processes that refresh one rotating refresh token at once both go on with no login', async () => {

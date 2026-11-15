@@ -53,9 +53,13 @@ export const invalidReason = (errors: readonly string[]): string =>
 export const loginCommand = (key: ServerKey, config?: string): string =>
   `toolscript-mcp login ${key}${config === undefined ? '' : ` --config "${config}"`}`
 
-/** Why a server that needs an OAuth login, or whose refresh failed, is not connected, as search_tools shows it. */
+/** Why a server that needs an OAuth login, or whose refresh was refused, is not connected, as search_tools shows it. */
 export const loginReason = (command: string): string =>
   `it needs an OAuth login. Ask the person to run \`${command}\` in a terminal, then try again`
+
+/** Why a server is not connected when its token refresh got no answer, or an error that is not a refusal. */
+export const refreshReason = (cause: string): string =>
+  `could not refresh the OAuth token: ${cause}. It tries again on next use`
 
 export type Sandbox = {
   /** The Node binary that starts the sandbox. */

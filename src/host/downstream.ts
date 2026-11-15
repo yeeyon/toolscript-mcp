@@ -22,7 +22,7 @@ import {
   type ServerKey,
 } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
-import { LoginNeeded, oauthProvider, storeFile, type Provider } from './oauth.ts'
+import { LoginNeeded, oauthProvider, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 
 /** The time that one server gets for its connect and for each page of its tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
@@ -99,13 +99,23 @@ const UNKNOWN_SESSION =
  * is an error of that request only, as from a gateway that rejects a payload.
  */
 const endsSession = (err: unknown, hadSession: boolean): err is Error =>
-  err instanceof LoginNeeded ||
+  isOAuthStop(err) ||
   (err instanceof TypeError && err.message === 'fetch failed') ||
   (err instanceof StreamableHTTPError &&
     ((err.code === 404 && hadSession) || (err.code === 400 && UNKNOWN_SESSION.test(err.message))))
 
-/** The OAuth provider of an HTTP server, and the reason that its link shows when a person must log in. */
-type Auth = { readonly provider: Provider; readonly reason: string }
+/** An error of the provider whose message is the reason to show: a login is needed, or a refresh failed. */
+const isOAuthStop = (err: unknown): err is Error => err instanceof LoginNeeded || err instanceof RefreshFailed
+
+/**
+ * The OAuth provider of an HTTP server, the reason that its link shows when a person must log in, and what gets the
+ * cause of each failed request (see serverFetch).
+ */
+type Auth = {
+  readonly provider: Provider
+  readonly reason: string
+  readonly answered: (failure: string | undefined) => void
+}
 
 /**
  * The SDK HTTP client transport, which calls `onSessionEnd` before a request
@@ -117,7 +127,10 @@ class HttpTransport extends StreamableHTTPClientTransport {
   readonly #loginReason: string | undefined
 
   constructor(server: HttpServer, onSessionEnd: (err: Error) => void, auth: Auth | undefined) {
-    super(new URL(server.url), { fetch: serverFetch(server), ...(auth && { authProvider: auth.provider }) })
+    super(new URL(server.url), {
+      fetch: serverFetch(server, auth?.answered),
+      ...(auth && { authProvider: auth.provider }),
+    })
     this.#onSessionEnd = onSessionEnd
     this.#loginReason = auth?.reason
   }
@@ -141,15 +154,27 @@ class HttpTransport extends StreamableHTTPClientTransport {
 
 /**
  * fetch with the config headers on each request to the origin of the server only. The SDK sends its OAuth requests
- * through it too, and a header for the MCP server must never reach an authorization server.
+ * through it too, and a header for the MCP server must never reach an authorization server. `answered` gets the
+ * cause of the failure of each request, or undefined for a success: the SDK drops the cause of a failed refresh.
  */
-export const serverFetch = (server: HttpServer): FetchLike => {
+export const serverFetch = (
+  server: HttpServer,
+  answered: (failure: string | undefined) => void = () => {},
+): FetchLike => {
   const origin = new URL(server.url).origin
-  return (url, init) => {
-    if (new URL(url).origin !== origin) return fetch(url, init)
+  return async (url, init) => {
     const headers = new Headers(init?.headers)
-    for (const [name, value] of Object.entries(server.headers)) headers.set(name, value)
-    return fetch(url, { ...init, headers })
+    if (new URL(url).origin === origin)
+      for (const [name, value] of Object.entries(server.headers)) headers.set(name, value)
+    try {
+      const response = await fetch(url, { ...init, headers })
+      answered(response.ok ? undefined : `HTTP ${response.status}`)
+      return response
+    } catch (err) {
+      // fetch fails with "fetch failed": its cause says why, as "connect ECONNREFUSED".
+      answered(errorText(err instanceof Error && err.cause !== undefined ? err.cause : err))
+      throw err
+    }
   }
 }
 
@@ -232,7 +257,7 @@ export const connectAll = (
     // restarted shows only as an error of a request. The link fails before
     // that request rejects, and the next use connects again.
     const sessionEnded = (err: Error) => {
-      if (!lost(err instanceof LoginNeeded ? err.message : `the HTTP session ended: ${errorText(err)}`)) return
+      if (!lost(isOAuthStop(err) ? err.message : `the HTTP session ended: ${errorText(err)}`)) return
       // Later, so the failed request rejects with its own error first: close()
       // rejects each open request with "Connection closed".
       setImmediate(() => void client.close().catch(() => {}))
@@ -241,11 +266,17 @@ export const connectAll = (
     try {
       // Inside the try: a transport that cannot be made fails this server only.
       const reason = loginReason(login(key))
-      const auth =
+      let failure: string | undefined
+      const auth: Auth | undefined =
         server.kind === 'http' && server.oauth
           ? {
-              provider: oauthProvider(storeFile(home, key, server.url), server.oauth, { kind: 'serve', reason }),
+              provider: oauthProvider(storeFile(home, key, server.url), server.oauth, {
+                kind: 'serve',
+                reason,
+                lastFailure: () => failure,
+              }),
               reason,
+              answered: cause => (failure = cause),
             }
           : undefined
       if (auth) secrets = auth.provider.secrets
