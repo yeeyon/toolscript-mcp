@@ -311,6 +311,8 @@ It solves a similar problem inside Claude Code.
 
 If you use only Claude Code, try Code Mode or the [claude-code-mode](https://github.com/gabe4coding/claude-code-mode)
 plugin first. The bench in [Measured](#measured) ran on Claude Code 2.1.322, the release before Code Mode.
+[bench/RESULTS-codemode.md](bench/RESULTS-codemode.md) compares direct calls, Code Mode and toolscript-mcp in Claude
+Code 2.1.325.
 
 ## Roadmap
 
@@ -319,10 +321,10 @@ plugin first. The bench in [Measured](#measured) ran on Claude Code 2.1.322, the
 - [x] Read a server config, connect to your MCP servers and add `search_tools`.
 - [x] Add `run_code` with allow, deny and ask rules.
 - [x] Write the docs and publish 0.1.0 to npm.
+- [x] Compare toolscript-mcp with Claude Code Code Mode in the bench.
 - [ ] Keep state between `run_code` calls, as an option.
 - [ ] Serve hint files and saved functions as tools.
 - [ ] Log in to remote servers with OAuth.
-- [ ] Compare toolscript-mcp with Claude Code Code Mode in the bench.
 
 ## Credits
 

@@ -9,6 +9,7 @@ import {
   type ServerState,
 } from '../src/core/catalog.ts'
 import { serverKey } from '../src/core/config.ts'
+import { checkCalls } from '../src/core/protocol.ts'
 
 const server = (tools: DownstreamTool[]): ServerState[] => [{ key: serverKey('x')!, status: 'connected', tools }]
 const one = (tool: DownstreamTool, shapes?: Map<string, string>): string =>
@@ -389,6 +390,17 @@ describe('the argument check of a closed schema', () => {
       assert.deepEqual(argSpec({ ...closed, [key]: value }), { names: ['q'], required: ['q'], isOpen: true }, key)
     }
   })
+
+  test('a required argument that the properties leave out is no unknown argument', () => {
+    const spec = argSpec({ type: 'object', properties: { a: {} }, required: ['a', 'b'] })
+    const problems = (keys: string[]) =>
+      checkCalls([{ tool: 'mcp__x__t', line: 1, keys }], new Set(['mcp__x__t']), () => spec, {}, new Map()).map(
+        p => p.text,
+      )
+    assert.deepEqual(problems(['a', 'b']), [])
+    assert.deepEqual(problems(['a']), ['mcp__x__t: missing required argument "b"'])
+    assert.deepEqual(problems(['a', 'b', 'other']), ['mcp__x__t: unknown argument "other"'])
+  })
 })
 
 describe('search_tools with more than 3 hits', () => {
@@ -407,5 +419,17 @@ describe('search_tools with more than 3 hits', () => {
       searchResult(server(tools.slice(0, 3)), '', 15),
       /^3 of 3 MCP tools\.\n\n### mcp__x__a\nTool a\. More\.\ncall\(/,
     )
+  })
+
+  test('a tool whose array items nest 20,000 deep does not break the search', () => {
+    let deep: unknown = { type: 'string' }
+    for (let i = 0; i < 20_000; i++) deep = { type: 'array', items: deep }
+    const tools = ['a', 'b', 'c', 'd'].map(name => ({
+      name,
+      inputSchema: { type: 'object', properties: { id: name === 'd' ? deep : { type: 'string' } } },
+    }))
+    const text = searchResult(server(tools), '', 15)
+    assert.match(text, /### mcp__x__d\n\nargs: \{ id\?: unknown(\[\])+ \}/)
+    assert.match(one(tools[3]!), /^### mcp__x__d\ncall\("mcp__x__d", \{\n {2}id\?: unknown(\[\])+\n\}\)$/)
   })
 })

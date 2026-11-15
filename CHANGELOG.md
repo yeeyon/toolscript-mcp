@@ -52,6 +52,11 @@ The bench:
 - `bench/run.mjs` compares two arms in headless Claude Code: the fake server's tools called directly, and the same server behind toolscript-mcp. It records correctness, cost, the token kinds, turns, wall time and the calls of each run, and prints the median and range per arm and per task. Removed the plugin-only parts and `scripts/projection-report.mjs`.
 - `bench/forget.mjs` removes only the Claude Code project folder of each run's temp cwd, where Claude Code saves a large MCP result.
 - `bench/RESULTS.md` holds the first measurement with Haiku 5.5 and its limits.
+- `bench/interactive.mjs` compares three arms in interactive Claude Code: direct calls, Claude Code Code Mode and toolscript-mcp. It drives the TUI through node-pty, stops before a run that the estimate puts past `--max-spend`, and counts the saved runs of a resumed `--out`. It refuses a spend flag that is not a number of dollars and a model with no price before any run, and saves the cost of a run that fails.
+- `bench/RESULTS-codemode.md` holds that comparison with Sonnet 5.5 (2026-11-14, 54 runs).
+- `bench/CODEX.md` is the test plan for the same three arms in Codex.
+- `bench/check.mjs` judges one answer of another agent with the check of `bench/run.mjs`.
+- `bench/spend.mjs` holds the spend cap of `bench/interactive.mjs`: the spend so far and the estimate of the next run.
 
 The release:
 

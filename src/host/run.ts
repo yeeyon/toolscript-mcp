@@ -197,13 +197,23 @@ const NO_RESOURCES: Reply = { ok: false, error: 'resources() and readResource() 
 // blocked its timer, and the CPU limit or the host kill timer ended it.
 // `ulimit -t` sets the soft and the hard limit to one value, so Linux sends
 // SIGKILL, not SIGXCPU. A SIGKILL that the run sent itself (an abort) is no limit.
-const stoppedOutcome = (ending: Ending, limitSeconds: number, aborted: boolean): RunnerError | undefined => {
+// The CPU time of a run cannot reach the limit long before its wall time does,
+// so an earlier signal came from outside (the OOM killer, kill -9).
+const stoppedOutcome = (
+  ending: Ending,
+  limitSeconds: number,
+  elapsedMs: number,
+  aborted: boolean,
+): RunnerError | undefined => {
   const past = `the program ran past the time limit of ${limitSeconds} s and was stopped`
   if (ending.kind === 'timeout') return { t: 'error', message: past, logs: [], timedOut: true }
-  if (ending.kind === 'exit' && !aborted && (ending.signal === 'SIGXCPU' || ending.signal === 'SIGKILL'))
+  const nearLimit = elapsedMs >= CPU_LIMIT_SHARE * limitSeconds * 1000
+  if (ending.kind === 'exit' && !aborted && nearLimit && (ending.signal === 'SIGXCPU' || ending.signal === 'SIGKILL'))
     return { t: 'error', message: `${past} (CPU limit)`, logs: [], timedOut: true }
   return undefined
 }
+
+const CPU_LIMIT_SHARE = 0.9
 
 const endingText = (ending: Ending, node: string): string =>
   ending.kind === 'failed'
@@ -238,6 +248,8 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   let outcome: RunnerDone | RunnerError | undefined
   let stderr = ''
   let ending: Ending | undefined
+  // How long the sandbox ran, from its launch to its end.
+  let ranMs = 0
   // Set by the run's own kill (an abort or a lost reply), so the ending is not read as the time limit.
   let killedByUs = false
   let kill = () => {}
@@ -392,6 +404,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   }
 
   try {
+    const launchedAt = performance.now()
     const sandbox = launch({
       node: config.sandbox.node,
       runner: RUNNER,
@@ -415,6 +428,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     sandbox.child.stderr.setEncoding('utf8')
     sandbox.child.stderr.on('data', (piece: string) => (stderr = (stderr + piece).slice(-MAX_STDERR_CHARS)))
     ending = await sandbox.ended
+    ranMs = performance.now() - launchedAt
     ctx.signal.removeEventListener('abort', kill)
     ended = true
     let timer: NodeJS.Timeout | undefined
@@ -431,7 +445,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
 
   // Trust the runner's own message: a run that ends at the limit can still have sent its result.
   if (outcome === undefined && ending !== undefined) {
-    outcome = stoppedOutcome(ending, limitSeconds, killedByUs)
+    outcome = stoppedOutcome(ending, limitSeconds, ranMs, killedByUs)
     if (outcome === undefined) stderr = `${stderr}\n${endingText(ending, config.sandbox.node)}`
   }
   // A call can have its audit entry and no record: its reply was still being written at the end.
