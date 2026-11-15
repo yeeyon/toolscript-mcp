@@ -9,19 +9,21 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { catalogOf, searchResult } from '../core/catalog.ts'
+import { searchResult } from '../core/catalog.ts'
 import { policyOf, type Config } from '../core/config.ts'
 import { appPath } from '../core/paths.ts'
 import {
   askText,
+  declinedNote,
   keptPolicyNote,
   loosenText,
-  loosened,
+  onlyTightens,
   policyChange,
+  samePolicy,
   stalePolicyNote,
   type Policy,
 } from '../core/policy.ts'
-import { errorText, literalCalls, newKept, serverInstructions } from '../core/protocol.ts'
+import { errorText, newKept, serverInstructions } from '../core/protocol.ts'
 import { SEARCH_LIMIT, SERVED, parseInput, registration, type ServedName } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { runCode, type Approval, type RunContext } from './run.ts'
@@ -80,26 +82,33 @@ export const createServer = (
   const runs = new Set<Promise<unknown>>()
 
   const canAsk = () => mcp.server.getClientCapabilities()?.elicitation?.form !== undefined
-  const elicit = async (extra: Extra, message: string): Promise<Approval> => {
+  // 'unanswered': the person dismissed the prompt, or it failed, timed out or was cancelled.
+  const prompt = async (extra: Extra, message: string): Promise<Approval | 'unanswered'> => {
     if (!canAsk()) return 'unsupported'
     try {
       const r = await mcp.server.elicitInput(
         { mode: 'form', message, requestedSchema: { type: 'object', properties: {} } },
         { signal: extra.signal, timeout: ASK_TIMEOUT_MS, relatedRequestId: extra.requestId },
       )
-      return r.action === 'accept' ? 'accept' : 'decline'
+      return r.action === 'accept' ? 'accept' : r.action === 'decline' ? 'decline' : 'unanswered'
     } catch (err) {
       log(`the approval prompt failed: ${errorText(err)}`)
-      return 'decline'
+      return 'unanswered'
     }
+  }
+  const elicit = async (extra: Extra, message: string): Promise<Approval> => {
+    const answer = await prompt(extra, message)
+    return answer === 'unanswered' ? 'decline' : answer
   }
 
   // The policy is read again at each run, so an edit needs no restart. A
   // program can write the config through a tool that the policy allows, so a
   // looser policy applies only when the person approves it, or at a restart.
   // A config that does not read keeps the policy in force, and the result says so.
+  // A policy that the person declined is not asked again until the file holds another one.
   let policy = config.policy
-  const reload = async (code: string, extra: Extra): Promise<{ policy: Policy; note: string }> => {
+  let declined: Policy | undefined
+  const reload = async (extra: Extra): Promise<{ policy: Policy; note: string }> => {
     const read = await fs.promises.readFile(configFile, 'utf8').then(policyOf, err => ({
       ok: false as const,
       errors: [`cannot read the config: ${errorText(err)}`],
@@ -108,17 +117,25 @@ export const createServer = (
       log(`the policy was not reloaded: ${read.errors.join('; ')}`)
       return { policy, note: stalePolicyNote(read.errors) }
     }
+    if (declined !== undefined && samePolicy(declined, read.policy)) return { policy, note: declinedNote(configFile) }
+    declined = undefined
     const change = policyChange(policy, read.policy)
     if (change === '') return { policy, note: '' }
-    await downstream.settled
-    const names = [...catalogOf(downstream.states()).map(t => t.name), ...literalCalls(code).map(c => c.tool)]
-    const looser = loosened(policy, read.policy, names)
-    if (looser.length > 0) {
-      const answer = await elicit(extra, loosenText(configFile, looser))
+    if (!onlyTightens(policy, read.policy)) {
+      const answer = await prompt(extra, loosenText(configFile, change))
       if (answer !== 'accept') {
-        const why = answer === 'decline' ? 'the person declined it' : 'restart toolscript-mcp to apply it'
-        log(`the policy in ${configFile} was not applied, because it allows ${looser.join(', ')}: ${why}`)
-        return { policy, note: keptPolicyNote(configFile, looser, answer) }
+        // Only an explicit decline stops the next prompts. A prompt with no answer is asked again at the next run.
+        if (answer === 'decline') declined = read.policy
+        const why =
+          answer === 'decline'
+            ? 'the person declined it'
+            : answer === 'unanswered'
+              ? 'the prompt got no answer'
+              : 'restart toolscript-mcp to apply it'
+        log(
+          `the policy in ${configFile} was not applied, because it can let a tool run with less approval (${change}): ${why}`,
+        )
+        return { policy, note: keptPolicyNote(configFile, change, answer === 'unsupported' ? answer : 'decline') }
       }
     }
     policy = read.policy
@@ -127,14 +144,14 @@ export const createServer = (
   }
   // One reload at a time: two runs never ask at once, and a run sees the answer to the prompt before it.
   let reloading: Promise<unknown> = Promise.resolve()
-  const freshPolicy = (code: string, extra: Extra): Promise<{ policy: Policy; note: string }> => {
-    const fresh = reloading.then(() => reload(code, extra))
+  const freshPolicy = (extra: Extra): Promise<{ policy: Policy; note: string }> => {
+    const fresh = reloading.then(() => reload(extra))
     reloading = fresh.catch(() => {})
     return fresh
   }
 
   const run = async (code: string, extra: Extra): Promise<CallToolResult> => {
-    const fresh = await freshPolicy(code, extra)
+    const fresh = await freshPolicy(extra)
     const ctx: RunContext = {
       downstream,
       config: { ...config, policy: fresh.policy },
