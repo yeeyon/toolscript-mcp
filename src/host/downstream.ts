@@ -49,13 +49,23 @@ const ATTEMPT_WINDOW_MS = 60_000
 /** The longest time a search or a run waits for reconnects in `retry`. */
 const RETRY_WAIT_MS = 5_000
 
+/** Hides the secrets of one server, its OAuth tokens too, in the text of one of its errors. */
+type Hide = (text: string) => string
+
 /** One server: an attempt in progress, the client to call, or why it failed. */
 type Link =
   | { readonly status: 'connecting'; readonly done: Promise<void> }
-  | { readonly status: 'connected'; readonly client: Client; readonly tools: readonly DownstreamTool[] }
+  | {
+      readonly status: 'connected'
+      readonly client: Client
+      readonly tools: readonly DownstreamTool[]
+      readonly hide: Hide
+    }
   | { readonly status: 'failed'; readonly reason: string }
 
-export type Linked = { readonly ok: true; readonly client: Client } | { readonly ok: false; readonly reason: string }
+export type Linked =
+  | { readonly ok: true; readonly client: Client; readonly hide: Hide }
+  | { readonly ok: false; readonly reason: string }
 
 export type Downstream = {
   /**
@@ -203,20 +213,21 @@ export const connectAll = (
   const attempts = new Map<ServerKey, number[]>()
   const opened = new Set<Client>()
 
-  const fail = (key: ServerKey, server: ServerConfig, reason: string) => {
-    const safe = redact(reason, server)
-    log(`${key}: failed: ${safe}`)
-    links.set(key, { status: 'failed', reason: safe })
-  }
-
   const connect = async (key: ServerKey, server: ServerConfig): Promise<void> => {
     const client = new Client({ name: 'toolscript-mcp', version })
     opened.add(client)
+    let secrets = (): readonly string[] => []
+    const hide: Hide = text => redact(text, server, secrets())
+    const fail = (reason: string) => {
+      const safe = hide(reason)
+      log(`${key}: failed: ${safe}`)
+      links.set(key, { status: 'failed', reason: safe })
+    }
     // Only while this client is still the link of `key`: a late event of an old client changes nothing.
     const lost = (reason: string): boolean => {
       const link = links.get(key)
       if (closing || link?.status !== 'connected' || link.client !== client) return false
-      fail(key, server, reason)
+      fail(reason)
       return true
     }
     // The SDK HTTP transport fires onclose only from close(), so a server that
@@ -238,11 +249,12 @@ export const connectAll = (
               reason: loginReason(login(key)),
             })
           : undefined
+      if (auth) secrets = auth.secrets
       const made = transportOf(server, sessionEnded, auth)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const tools = await listAll(client)
-      links.set(key, { status: 'connected', client, tools })
+      links.set(key, { status: 'connected', client, tools, hide })
       log(`${key}: connected, ${tools.length} tools`)
       client.onclose = () => {
         opened.delete(client)
@@ -256,7 +268,7 @@ export const connectAll = (
       // After an await: a failure that comes at once must not come before `attempt` marks the link connecting.
       await client.close().catch(() => {})
       opened.delete(client)
-      fail(key, server, stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`)
+      fail(stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`)
     }
   }
 
@@ -328,7 +340,7 @@ export const connectAll = (
       if (link === undefined) return { ok: false, reason: `no MCP server "${key}" is connected` }
       await pending(key)
       const after = links.get(key) ?? link
-      if (after.status === 'connected') return { ok: true, client: after.client }
+      if (after.status === 'connected') return { ok: true, client: after.client, hide: after.hide }
       return { ok: false, reason: notConnected(stateOf(key, after))! }
     },
     close: () => (closing ??= Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})),

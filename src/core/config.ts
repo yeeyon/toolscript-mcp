@@ -5,8 +5,9 @@
 
 import { ACTIONS, type Action, type Policy, type Rule } from './policy.ts'
 
-// The WHATWG URL of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
+// The WHATWG URL and btoa of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
 declare const URL: { canParse(url: string): boolean; new (url: string): { readonly href: string } }
+declare const btoa: (data: string) => string
 
 /** A server key that makes `mcp__<key>__<tool>` split back into the key and the tool. */
 export type ServerKey = string & { readonly __brand: 'ServerKey' }
@@ -626,26 +627,51 @@ const decoded = (text: string): string => {
 }
 
 /**
+ * The client ID and secret as an HTTP Basic Authorization header holds them, or undefined when btoa cannot encode
+ * them: the SDK then sends no header either.
+ */
+export const basicCredentials = (id: string, secret: string): string | undefined => {
+  try {
+    return btoa(`${id}:${secret}`)
+  } catch {
+    return undefined
+  }
+}
+
+/** `value` as encodeURIComponent and as an HTML form write it: an error can echo a URL or a form it sent. */
+const encodings = (value: string): string[] => {
+  const uri = encodeURIComponent(value)
+  const form = uri.replace(/[!'()~]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%20/g, '+')
+  return [uri, form]
+}
+
+/**
  * `text` with the secrets of the server replaced by `***`: a failed child's stderr can echo a token, and the reason
  * goes to the model. The secrets are the ones that hideArgSecrets finds in the args or the URL, the `env` and `headers`
- * values with a secret name or a secret word or of 12 characters or more, the OAuth client secret, the secrets inside
- * every such value, each
- * word of 8 or more in one ("Bearer <token>"), and the URL-decoded form of each. A number shorter than 12 digits is
- * never replaced, and a plain word only as a whole word, so `localhost:3000` stays readable. The user and password
- * of any URL in `text` are hidden too.
+ * values with a secret name or a secret word or of 12 characters or more, the OAuth client secret and its Basic
+ * header value, the secrets in `more` (the OAuth tokens, code and verifier of this server), the secrets inside every
+ * such value, each word of 8 or more in one ("Bearer <token>"), and the URL-decoded, URL-encoded and form-encoded
+ * form of each. A number shorter than 12 digits is never replaced, and a plain word only as a whole word, so
+ * `localhost:3000` stays readable. The user and password of any URL in `text` are hidden too.
  */
-export const redact = (text: string, server: ServerConfig): string => {
+export const redact = (text: string, server: ServerConfig, more: readonly string[] = []): string => {
+  const client = server.kind === 'http' ? server.oauth?.client : undefined
   const values = [
     ...(server.kind === 'stdio' ? hideArgSecrets(server.args) : hideUrlSecrets(server.url)).secrets,
     ...Object.entries(server.kind === 'stdio' ? server.env : server.headers).flatMap(([key, value]) => [
       ...(SECRET_NAME.test(key) || isSecretWord(value) || value.length >= LONG ? [value] : []),
       ...hideArgSecrets([value]).secrets,
     ]),
-    ...(server.kind === 'http' && server.oauth?.client?.secret !== undefined ? [server.oauth.client.secret] : []),
+    ...(client?.secret === undefined ? [] : [client.secret, basicCredentials(client.id, client.secret) ?? '']),
+    ...more,
   ]
   const secrets = [
     ...new Set(
-      [...values, ...values.flatMap(v => v.split(/\s+/).filter(w => w.length >= 8))].flatMap(v => [v, decoded(v)]),
+      [...values, ...values.flatMap(v => v.split(/\s+/).filter(w => w.length >= 8))].flatMap(v => [
+        v,
+        decoded(v),
+        ...encodings(v),
+      ]),
     ),
   ].filter(v => v.length >= 4 && !(/^\d+$/.test(v) && v.length < LONG))
   const hidden = secrets

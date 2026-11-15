@@ -14,15 +14,24 @@ import os from 'node:os'
 import path from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { parseConfig, type ServerConfig, type ServerKey } from '../src/core/config.ts'
+import { parseConfig, type Config, type ServerConfig, type ServerKey } from '../src/core/config.ts'
+import { newKept } from '../src/core/protocol.ts'
 import { connectAll, type Downstream } from '../src/host/downstream.ts'
 import { runLogin } from '../src/host/login.ts'
 import { storeFile } from '../src/host/oauth.ts'
+import { runCode, type RunContext } from '../src/host/run.ts'
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-oauth-test-'))
 const KEY = 'fake' as ServerKey
 const STATIC_ID = 'fake-static-id'
-const STATIC_SECRET = 'fake-static-secret-0123'
+// A space and the characters that a URL, an HTML form and base64 each write in their own way.
+const STATIC_SECRET = 'fake static secret+/=0123'
+/** The static secret as an error can echo it: in a form, in a URL and in a Basic Authorization header. */
+const STATIC_FORMS = [
+  new URLSearchParams({ s: STATIC_SECRET }).toString().slice(2),
+  encodeURIComponent(STATIC_SECRET),
+  Buffer.from(`${STATIC_ID}:${STATIC_SECRET}`).toString('base64'),
+]
 const opened: Downstream[] = []
 const servers: http.Server[] = []
 after(async () => {
@@ -48,7 +57,7 @@ const startFake = async () => {
   const access = new Set<string>()
   /** Each refresh token and the client it was issued to. */
   const refresh = new Map<string, string>()
-  const secrets = new Set<string>([STATIC_SECRET])
+  const secrets = new Set<string>([STATIC_SECRET, ...STATIC_FORMS])
   const seen = {
     registrations: 0,
     authorizations: [] as URL[],
@@ -56,8 +65,17 @@ const startFake = async () => {
     refreshes: 0,
     requests: [] as { origin: string; path: string; header: string | string[] | undefined }[],
   }
-  /** What a test changes in the answers of the fake. `authServer` is another origin of the fake for its OAuth part. */
-  const change = { authorizationEndpoint: '', authServer: '' }
+  /**
+   * What a test changes in the answers of the fake. `authServer` is another origin of the fake for its OAuth part.
+   * `echo` makes one kind of request fail with an error that echoes its secrets: a call, any MCP request, a refresh
+   * or the code exchange. `authMethods` are the client authentications that the token endpoint takes.
+   */
+  const change = {
+    authorizationEndpoint: '',
+    authServer: '',
+    echo: '' as '' | 'call' | 'mcp' | 'refresh' | 'exchange',
+    authMethods: ['none', 'client_secret_post', 'client_secret_basic'],
+  }
   const issue = (clientId: string) => {
     const tokens = { access_token: `fake-access-${randomUUID()}`, refresh_token: `fake-refresh-${randomUUID()}` }
     access.add(tokens.access_token)
@@ -74,14 +92,24 @@ const startFake = async () => {
         })
         .end()
     if (req.method !== 'POST') return void res.writeHead(405).end()
+    const message = JSON.parse(await body(req)) as { method?: string }
+    if (change.echo === 'mcp' || (change.echo === 'call' && message.method === 'tools/call'))
+      return void res.writeHead(500).end(`boom for Bearer ${bearer}`)
     const server = new McpServer({ name: 'fake-oauth', version: '1.0.0' })
     server.registerTool('ping', { description: 'Ping.' }, async () => ({ content: [{ type: 'text', text: 'pong' }] }))
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     await server.connect(transport)
-    await transport.handleRequest(req, res, JSON.parse(await body(req)))
+    await transport.handleRequest(req, res, message)
   }
-  const token = (form: URLSearchParams, auth: string | undefined, res: http.ServerResponse) => {
+  const token = (text: string, auth: string | undefined, res: http.ServerResponse) => {
+    const form = new URLSearchParams(text)
     seen.tokens.push(form)
+    if (change.echo === 'exchange' && form.get('grant_type') === 'authorization_code') {
+      secrets.add(form.get('code') ?? '').add(form.get('code_verifier') ?? '')
+      return void res.writeHead(400, { 'content-type': 'text/plain' }).end(`bad request: ${text} ${auth ?? ''}`)
+    }
+    if (change.echo === 'refresh' && form.get('grant_type') === 'refresh_token')
+      return json(res, 400, { error: 'invalid_request', error_description: `bad ${form.get('refresh_token')}` })
     const basic = auth?.startsWith('Basic ') ? Buffer.from(auth.slice(6), 'base64').toString().split(':') : []
     const clientId = form.get('client_id') ?? decodeURIComponent(basic[0] ?? '')
     const secret = form.get('client_secret') ?? decodeURIComponent(basic[1] ?? '')
@@ -123,7 +151,7 @@ const startFake = async () => {
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
-        token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+        token_endpoint_auth_methods_supported: change.authMethods,
       })
     if (url.pathname === '/register') {
       const metadata = JSON.parse(await body(req)) as { redirect_uris: string[] }
@@ -146,7 +174,7 @@ const startFake = async () => {
       to.searchParams.set('state', q.get('state') ?? '')
       return void res.writeHead(302, { location: to.href }).end()
     }
-    if (url.pathname === '/token') return token(new URLSearchParams(await body(req)), req.headers.authorization, res)
+    if (url.pathname === '/token') return token(await body(req), req.headers.authorization, res)
     if (url.pathname.startsWith('/mcp')) return mcp(req, res)
     res.writeHead(404).end()
   })
@@ -215,6 +243,28 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
     opened.push(downstream)
     return downstream
   }
+  /** The text of a run_code run of `code` in the real sandbox, with `downstream`. */
+  const run = async (downstream: Downstream, code: string): Promise<string> => {
+    const config: Config = {
+      servers: new Map(),
+      sandbox: { node: process.execPath, timeoutSeconds: 30, callTimeoutSeconds: 30 },
+      policy: [{ match: 'mcp__*', action: 'allow', index: 0 }],
+      log: false,
+    }
+    const ctx: RunContext = {
+      downstream,
+      config,
+      kept: newKept(),
+      shapes: new Map(),
+      filesDir: path.join(home, 'files'),
+      ask: async () => 'accept',
+      canAsk: () => true,
+      signal: new AbortController().signal,
+      log: () => {},
+      home,
+    }
+    return (await runCode(ctx, code)).text
+  }
   const ping = async (downstream: Downstream): Promise<string> => {
     const link = await downstream.client(KEY)
     if (!link.ok) return link.reason
@@ -229,7 +279,7 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
       .join('\n')
   /** The lines printed and logged so far that hold a token, code, verifier or client secret. */
   const leaks = () => lines.filter(line => [...fake.secrets].some(s => line.includes(s)))
-  return { home, lines, login, connect, ping, store, storeText, leaks }
+  return { home, lines, login, connect, run, ping, store, storeText, leaks }
 }
 
 const PONG = JSON.stringify([{ type: 'text', text: 'pong' }])
@@ -425,5 +475,67 @@ describe('the running server', () => {
     assert.equal(await s.login(), 0, s.lines.join('\n'))
     const downstream = s.connect({ kind: 'http', url: `${fake.url}?v=2`, headers: {}, oauth: { scopes: [] } })
     assert.match(await s.ping(downstream), /needs an OAuth login/)
+  })
+})
+
+describe('secrets that a server echoes', () => {
+  const CALL = 'try { return await call("mcp__fake__ping", {}) } catch (e) { return e.message }'
+  const leaked = (fake: Fake, text: string) => [...fake.secrets].filter(v => text.includes(v))
+
+  test('an access token in the error of a call is hidden from the program', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    await downstream.settled
+    fake.change.echo = 'call'
+    const text = await s.run(downstream, CALL)
+    assert.match(text, /boom for Bearer \*\*\*/, text)
+    assert.deepEqual(leaked(fake, text), [])
+  })
+
+  test('an access token in the error of a connect is hidden from the reason and the log', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    fake.change.echo = 'mcp'
+    const downstream = s.connect()
+    await downstream.settled
+    const state = downstream.states()[0]
+    const reason = state?.status === 'failed' ? state.reason : ''
+    assert.match(reason, /boom for Bearer \*\*\*/, reason)
+    assert.deepEqual(leaked(fake, reason), [])
+    assert.ok(s.lines.some(line => line.includes('boom for Bearer ***')))
+    assert.deepEqual(s.leaks(), [])
+  })
+
+  test('a refresh token that the authorization server echoes is hidden from the program', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    fake.expire()
+    fake.change.echo = 'refresh'
+    const text = await s.run(downstream, CALL)
+    assert.match(text, /bad \*\*\*/, text)
+    assert.deepEqual(leaked(fake, text), [])
+  })
+
+  test('login hides the code, the verifier and the client secret that a token endpoint echoes', async () => {
+    for (const method of ['client_secret_post', 'client_secret_basic']) {
+      const fake = await startFake()
+      fake.change.echo = 'exchange'
+      fake.change.authMethods = [method]
+      const s = setup(
+        fake,
+        { oauth: { clientId: STATIC_ID, clientSecret: '${FAKE_SECRET}' } },
+        { FAKE_SECRET: STATIC_SECRET },
+      )
+      assert.equal(await s.login(), 1, method)
+      const printed = s.lines.join('\n')
+      assert.match(printed, /login to fake failed: .*bad request: .*\*\*\*/, printed)
+      assert.deepEqual(s.leaks(), [], method)
+    }
   })
 })

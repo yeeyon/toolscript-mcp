@@ -205,6 +205,9 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
 
   let timer: NodeJS.Timeout | undefined
   let client: Client | undefined
+  let code: string | undefined
+  // A server can echo the request in an error: the state, the code, the verifier, the client secret or a token.
+  const hide = (text: string) => redact(text, server, [...provider.secrets(), ...(code === undefined ? [] : [code])])
   try {
     const first = await connect()
     client = first.client
@@ -217,10 +220,11 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     })
     const answer = await Promise.race([callback.answer, timeout])
     if (!answer.ok) {
-      io.print(`login to ${key} failed: ${answer.why}`)
+      io.print(`login to ${key} failed: ${hide(answer.why)}`)
       return 1
     }
-    await first.transport.finishAuth(answer.code)
+    code = answer.code
+    await first.transport.finishAuth(code)
     client = (await connect()).client
     if (client === undefined) throw new Error('the server still asks for a login after the token exchange')
     const tools = await listAll(client)
@@ -228,7 +232,7 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     io.print(`Logged in to ${key}. It has ${plural(tools.length)}. The tokens are in ${store}${mode}.`)
     return 0
   } catch (err) {
-    io.print(`login to ${key} failed: ${redact(errorText(err), server)}`)
+    io.print(`login to ${key} failed: ${hide(errorText(err))}`)
     return 1
   } finally {
     clearTimeout(timer)
