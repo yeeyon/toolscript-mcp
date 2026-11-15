@@ -200,9 +200,14 @@ const parseOAuth = (
       : expand(nonEmpty(clientId, `${path}.clientId`, errors), env, `${path}.clientId`, errors)
   let secret: string | undefined
   if (clientSecret !== undefined) {
-    if (typeof clientSecret !== 'string') errors.push(`${path}.clientSecret: must be a string`)
-    else if (id === undefined) errors.push(`${path}.clientSecret: needs clientId`)
-    else secret = expand(clientSecret, env, `${path}.clientSecret`, errors)
+    const where = `${path}.clientSecret`
+    if (typeof clientSecret !== 'string') errors.push(`${where}: must be a string`)
+    else if (id === undefined) errors.push(`${where}: needs clientId`)
+    else {
+      // An empty secret is a variable set to nothing, not a client without a secret: then leave the key out.
+      secret = expand(clientSecret, env, where, errors)
+      if (secret === '') errors.push(`${where}: must be a non-empty string`)
+    }
   }
   const okScopes = Array.isArray(scopes) && scopes.every(s => typeof s === 'string' && /^\S+$/.test(s))
   if (scopes !== undefined && !okScopes) errors.push(`${path}.scopes: must be an array of scope names without spaces`)

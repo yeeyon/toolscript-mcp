@@ -220,6 +220,7 @@ describe('the config', () => {
         c: { type: 'http', url, oauth: { clientId: '', extra: 1, scopes: ['a b'], callbackPort: 1.5 } },
         d: { type: 'http', url, headers: { authorization: 'Bearer x' }, oauth: true },
         e: { type: 'http', url, oauth: { clientId: 'x', clientSecret: '${UNSET}' } },
+        f: { type: 'http', url, oauth: { clientId: 'x', clientSecret: '' } },
         good: { type: 'http', url, oauth: {} },
       },
     })
@@ -239,8 +240,17 @@ describe('the config', () => {
       ),
       d: invalid('mcpServers.d.oauth: an entry with an Authorization header does not log in: remove one of them'),
       e: invalid('mcpServers.e.oauth.clientSecret: the environment variable UNSET is not set'),
+      f: invalid('mcpServers.f.oauth.clientSecret: must be a non-empty string'),
       good: { kind: 'http', url, headers: {}, oauth: { scopes: [] } },
     })
+    const empty = ok(
+      { mcpServers: { g: { type: 'http', url, oauth: { clientId: 'x', clientSecret: '${E}' } } } },
+      { E: '' },
+    )
+    assert.deepEqual(
+      empty.servers.get('g' as ServerKey),
+      invalid('mcpServers.g.oauth.clientSecret: must be a non-empty string'),
+    )
     assert.ok(!JSON.stringify(Object.fromEntries(config.servers)).includes('fake-secret-value'))
   })
 
