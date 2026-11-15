@@ -154,17 +154,25 @@ Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/con
 - On Linux and macOS, only your user account can read the config that init writes.
 - `--dry-run` shows the config and the steps, and writes nothing. These values show as `***`:
   - the values of `env` and `headers`
-  - the user, password, query values and fragment of a URL
-  - a URL path segment or an argument of 20 or more letters, digits, `_` and `-`, with letters and digits
-  - the value of an argument whose name holds `key`, `token`, `secret`, `pass`, `auth`, `bearer`, `header` or `credential`
+  - the user, the password, each query value, each query part without `=`, and the fragment of a URL
+  - a URL path segment or a word of 20 or more letters, digits, `_` and `-`, with letters and digits
+  - the same long word with mixed case letters and also `. / + = : ~ %`, such as a JWT or a base64 key. A word
+    that starts with `/`, `.`, `~` or a drive letter stays as it is.
+  - the value of an argument whose name holds `key`, `token`, `secret`, `pass`, `pwd`, `auth`, `bearer`, `header`,
+    `credential`, `cookie`, `session` or `dsn`
+  - the value of an argument with the name part `pat`, `sig` or `sas`, such as `GITHUB_PAT`
+  - the value after `-t` or `-p`, unless the value is a number, a port such as `8080:80`, a path or a scoped package
+  - after `-H`, the value of a header with such a name, and the secrets in the value of a different header
   - the word after `Bearer` or `Basic`
 
-  The forms are `--name value`, `--name=value`, `NAME=value` and `Name: value`. Other arguments show as they are.
-  If an argument holds a secret in a different form, do not share the output.
-- `--force` replaces a config that exists. Before it does, init keeps the old config as `<config>.bak`, with mode
-  0600. It replaces an older `.bak` file. init lists the top-level keys and the servers of the old config that the new
-  config leaves out or changes. Copy the parts that you need from the `.bak` file. Without `--force`, init does not
-  change an existing config. With `--force`, `--dry-run` says what init replaces.
+  The forms are `--name value`, `--name=value`, `NAME=value`, `Name: value` and the parts of
+  `Server=db;Password=value`. An argument of several words, such as a `sh -c` script, gets the same rules word by
+  word. Other arguments show as they are. If an argument holds a secret in a different form, do not share the output.
+- `--force` replaces a config that exists. Before it does, init keeps the old config as `<config>.bak`. On Linux and
+  macOS, the `.bak` file has mode 0600. It replaces an older `.bak` file. init lists the top-level keys and the
+  servers of the old config that the new config leaves out or changes. Copy the parts that you need from the `.bak`
+  file. Without `--force`, init does not change an existing config. With `--force`, `--dry-run` says what init
+  replaces.
 - `--config <path>` writes the config to a different path.
 - The config from init has an empty `policy`, so each tool is `ask`.
 

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { configPath, SECRET_NAMES, SECRET_WORD_LENGTH, type Env } from '../core/config.ts'
+import { configPath, SECRET_NAMES, SECRET_PARTS, SECRET_WORD_LENGTH, type Env } from '../core/config.ts'
 import {
   clientFiles,
   configText,
@@ -21,17 +21,19 @@ import { errorText } from '../core/protocol.ts'
 
 export const INIT_USAGE = 'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run]'
 
-const LONG_WORD = `${SECRET_WORD_LENGTH} or more letters, digits, _ and -, with letters and digits`
-const NAMES = `${SECRET_NAMES.slice(0, -1).join(', ')} or ${SECRET_NAMES.at(-1)}`
+const list = (words: readonly string[]) => `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`
 
-/** What the dry run shows as `***`: the rules of hideArgSecrets. */
+/** What the dry run shows as `***`: the rules of hideUrlSecrets and hideArgSecrets. */
 const HIDDEN = [
   'These show as ***:',
   '- the values of env and headers',
-  `- in a URL: the user and password, each query value, the fragment, and each path segment of ${LONG_WORD}`,
-  `- the value of an argument whose name holds ${NAMES}: --name value, --name=value, NAME=value, Name: value`,
+  '- in a URL: the user and password, each query value or part, the fragment, and each path segment that is a long word',
+  `- the value of a name that holds ${list(SECRET_NAMES)}, or the part ${list(SECRET_PARTS)}: --name value, --name=value, NAME=value, Name: value, Server=db;Password=value`,
+  '- the value after -t or -p, unless it is a number, a port such as 8080:80, a path or an @scope package',
+  '- after -H, the value of a header with such a name, and the secrets in other header values',
   '- the word after Bearer or Basic',
-  `- an argument of ${LONG_WORD}`,
+  `- a long word: ${SECRET_WORD_LENGTH} or more letters, digits, _ and - with letters and digits, or with upper and lower case also . / + = : ~ %, when it does not start as a path`,
+  'An argument of several words, such as a sh -c script, gets these rules word by word.',
   'Other arguments show as they are. If one of them holds a secret, do not share this output.',
 ]
 
@@ -56,12 +58,15 @@ const readIfAny = (file: string): Promise<Buffer | undefined> =>
  * Writes a config, which holds the env and header values of the servers, so that only the user reads it: a new
  * 0600 file in the same folder, then a rename onto `file`. The secrets never go into an old file that others can
  * read, and `file` never holds a part of a config. Without `replace`, the link fails with EEXIST when `file` exists.
+ * A file system without hard links (vfat, exFAT, some SMB and FUSE mounts) gets an exclusive copy, which also fails
+ * with EEXIST.
  */
 const writeConfig = async (file: string, text: string | Uint8Array, replace: boolean): Promise<void> => {
   const temp = `${file}.${randomUUID()}.tmp`
   try {
     await fs.promises.writeFile(temp, text, { mode: 0o600, flag: 'wx' })
-    await (replace ? fs.promises.rename(temp, file) : fs.promises.link(temp, file))
+    if (replace) await fs.promises.rename(temp, file)
+    else await fs.promises.link(temp, file).catch(() => fs.promises.copyFile(temp, file, fs.constants.COPYFILE_EXCL))
   } finally {
     await fs.promises.rm(temp, { force: true })
   }
@@ -135,7 +140,9 @@ export const runInit = async (
     print(`cannot write ${file}: ${errorText(err)}`)
     return 1
   }
-  const kept = old === undefined ? [] : [`${bak} holds the old config (mode 0600).`, ...oldReport]
+  // Windows does not apply the mode.
+  const mode = platform === 'win32' ? '' : ' (mode 0600)'
+  const kept = old === undefined ? [] : [`${bak} holds the old config${mode}.`, ...oldReport]
   print([`Wrote ${file}.`, ...kept, '', report].join('\n'))
   return 0
 }
