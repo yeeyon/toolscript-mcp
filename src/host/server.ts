@@ -122,7 +122,8 @@ export const createServer = (
     const change = policyChange(policy, read.policy)
     if (change === '') return { policy, note: '' }
     if (!onlyTightens(policy, read.policy)) {
-      const answer = await prompt(extra, loosenText(configFile, change, read.policy))
+      // The prompt names every changed rule uncut. The log and the note keep the short form.
+      const answer = await prompt(extra, loosenText(configFile, policyChange(policy, read.policy, true), read.policy))
       if (answer !== 'accept') {
         // Only an explicit decline stops the next prompts. A prompt with no answer is asked again at the next run.
         if (answer === 'decline') declined = read.policy
