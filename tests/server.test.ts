@@ -132,7 +132,7 @@ describe('the config', () => {
       good: { kind: 'stdio', command: 'fake', args: [], env: {} },
       b: invalid('mcpServers.b.type: must be "stdio" or "http", not "sse"'),
       c: invalid(
-        'mcpServers.c.header: unknown key (known: type, url, headers)',
+        'mcpServers.c.header: unknown key (known: type, url, headers, oauth)',
         'mcpServers.c.url: must start with http:// or https://',
       ),
       d: invalid('mcpServers.d.args[0]: must be a string', 'mcpServers.d.env.N: must be a string'),
@@ -168,6 +168,80 @@ describe('the config', () => {
     assert.match(errors('{"mcpServers": ')[0]!, /^the config is not valid JSON/)
     assert.deepEqual(errors('[]'), ['the config must be a JSON object with an mcpServers object'])
     assert.deepEqual(errors('{}'), ['mcpServers: must be an object'])
+  })
+
+  test('an http server without headers logs in with OAuth, and "oauth" sets the client, scopes and port', () => {
+    const config = ok(
+      {
+        mcpServers: {
+          bare: { type: 'http', url: 'https://mcp.example.com/mcp' },
+          off: { type: 'http', url: 'https://mcp.example.com/mcp', oauth: false },
+          token: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer x' } },
+          team: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { 'X-Team': 'a' }, oauth: true },
+          google: {
+            type: 'http',
+            url: 'https://mcp.example.com/mcp',
+            oauth: {
+              clientId: 'fake-id.example.com',
+              clientSecret: '${SECRET}',
+              scopes: ['openid', 'email'],
+              callbackPort: 8765,
+            },
+          },
+        },
+      },
+      { SECRET: 'fake-client-secret-1' },
+    )
+    const url = 'https://mcp.example.com/mcp'
+    assert.deepEqual(Object.fromEntries(config.servers), {
+      bare: { kind: 'http', url, headers: {}, oauth: { scopes: [] } },
+      off: { kind: 'http', url, headers: {} },
+      token: { kind: 'http', url, headers: { Authorization: 'Bearer x' } },
+      team: { kind: 'http', url, headers: { 'X-Team': 'a' }, oauth: { scopes: [] } },
+      google: {
+        kind: 'http',
+        url,
+        headers: {},
+        oauth: {
+          client: { id: 'fake-id.example.com', secret: 'fake-client-secret-1' },
+          scopes: ['openid', 'email'],
+          callbackPort: 8765,
+        },
+      },
+    })
+  })
+
+  test('a bad oauth entry fails that server alone, and names the key', () => {
+    const url = 'https://mcp.example.com/mcp'
+    const config = ok({
+      mcpServers: {
+        a: { type: 'http', url, oauth: 'yes' },
+        b: { type: 'http', url, oauth: { clientSecret: 'fake-secret-value', scopes: 'x', callbackPort: 70000 } },
+        c: { type: 'http', url, oauth: { clientId: '', extra: 1, scopes: ['a b'], callbackPort: 1.5 } },
+        d: { type: 'http', url, headers: { authorization: 'Bearer x' }, oauth: true },
+        e: { type: 'http', url, oauth: { clientId: 'x', clientSecret: '${UNSET}' } },
+        good: { type: 'http', url, oauth: {} },
+      },
+    })
+    const invalid = (...errors: string[]) => ({ kind: 'invalid', errors })
+    assert.deepEqual(Object.fromEntries(config.servers), {
+      a: invalid('mcpServers.a.oauth: must be true, false or an object'),
+      b: invalid(
+        'mcpServers.b.oauth.clientSecret: needs clientId',
+        'mcpServers.b.oauth.scopes: must be an array of scope names without spaces',
+        'mcpServers.b.oauth.callbackPort: must be a whole number from 1 to 65535',
+      ),
+      c: invalid(
+        'mcpServers.c.oauth.extra: unknown key (known: clientId, clientSecret, scopes, callbackPort)',
+        'mcpServers.c.oauth.clientId: must be a non-empty string',
+        'mcpServers.c.oauth.scopes: must be an array of scope names without spaces',
+        'mcpServers.c.oauth.callbackPort: must be a whole number from 1 to 65535',
+      ),
+      d: invalid('mcpServers.d.oauth: an entry with an Authorization header does not log in: remove one of them'),
+      e: invalid('mcpServers.e.oauth.clientSecret: the environment variable UNSET is not set'),
+      good: { kind: 'http', url, headers: {}, oauth: { scopes: [] } },
+    })
+    assert.ok(!JSON.stringify(Object.fromEntries(config.servers)).includes('fake-secret-value'))
   })
 
   test('a server key that breaks mcp__<key>__<tool> is refused at parse', () => {
@@ -252,6 +326,16 @@ describe('redact', () => {
     ])
     const stdio: StdioServer = { kind: 'stdio', command: 'x', args: ['--password', '-fake-pass-1'], env: {} }
     assert.equal(redact('denied: -fake-pass-1', stdio), 'denied: ***')
+  })
+
+  test('hides the OAuth client secret of a server', () => {
+    const http = {
+      kind: 'http',
+      url: 'https://x',
+      headers: {},
+      oauth: { client: { id: 'fake-id', secret: 'fake-client-secret-2' }, scopes: [] },
+    } as const
+    assert.equal(redact('invalid_client: fake-client-secret-2', http), 'invalid_client: ***')
   })
 
   test('hides the password of a URL also when it shows without the user', () => {

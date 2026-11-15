@@ -19,10 +19,22 @@ export type StdioServer = {
   readonly env: Readonly<Record<string, string>>
 }
 
+/** How an HTTP server logs in with OAuth: `toolscript-mcp login <key>` gets the tokens. */
+export type OAuth = {
+  /** A client that the person registered by hand, as Google needs. Without it, login registers one. */
+  readonly client?: { readonly id: string; readonly secret?: string }
+  /** The scopes to ask for when the server names none. */
+  readonly scopes: readonly string[]
+  /** The port of the login callback on 127.0.0.1. Without it, login takes a free port and keeps it. */
+  readonly callbackPort?: number
+}
+
 export type HttpServer = {
   readonly kind: 'http'
   readonly url: string
   readonly headers: Readonly<Record<string, string>>
+  /** Absent when the server takes no OAuth login: it has headers, or `"oauth": false`. */
+  readonly oauth?: OAuth
 }
 
 export type ServerConfig = StdioServer | HttpServer
@@ -145,6 +157,51 @@ const nonEmpty = (v: unknown, path: string, errors: string[]): string => {
   return ''
 }
 
+const OAUTH_KEYS = ['clientId', 'clientSecret', 'scopes', 'callbackPort']
+
+/**
+ * The OAuth login of an HTTP server. A server without headers logs in by default. A server with headers logs in
+ * only with `"oauth"`, and never with an Authorization header, which the SDK would send in place of the token.
+ */
+const parseOAuth = (
+  raw: unknown,
+  headers: Readonly<Record<string, string>>,
+  path: string,
+  env: Env,
+  errors: string[],
+): OAuth | undefined => {
+  if (raw === false) return undefined
+  if (raw === undefined) return Object.keys(headers).length === 0 ? { scopes: [] } : undefined
+  if (raw !== true && !isObject(raw)) {
+    errors.push(`${path}: must be true, false or an object`)
+    return undefined
+  }
+  if (Object.keys(headers).some(name => name.toLowerCase() === 'authorization'))
+    errors.push(`${path}: an entry with an Authorization header does not log in: remove one of them`)
+  if (raw === true) return { scopes: [] }
+  unknownKeys(raw, OAUTH_KEYS, path, errors)
+  const { clientId, clientSecret, scopes, callbackPort } = raw
+  const id =
+    clientId === undefined
+      ? undefined
+      : expand(nonEmpty(clientId, `${path}.clientId`, errors), env, `${path}.clientId`, errors)
+  let secret: string | undefined
+  if (clientSecret !== undefined) {
+    if (typeof clientSecret !== 'string') errors.push(`${path}.clientSecret: must be a string`)
+    else if (id === undefined) errors.push(`${path}.clientSecret: needs clientId`)
+    else secret = expand(clientSecret, env, `${path}.clientSecret`, errors)
+  }
+  const okScopes = Array.isArray(scopes) && scopes.every(s => typeof s === 'string' && /^\S+$/.test(s))
+  if (scopes !== undefined && !okScopes) errors.push(`${path}.scopes: must be an array of scope names without spaces`)
+  const okPort = Number.isInteger(callbackPort) && (callbackPort as number) >= 1 && (callbackPort as number) <= 65535
+  if (callbackPort !== undefined && !okPort) errors.push(`${path}.callbackPort: must be a whole number from 1 to 65535`)
+  return {
+    ...(id !== undefined && { client: { id, ...(secret !== undefined && { secret }) } }),
+    scopes: okScopes ? (scopes as string[]) : [],
+    ...(okPort && { callbackPort: callbackPort as number }),
+  }
+}
+
 const parseServer = (raw: unknown, path: string, env: Env, errors: string[]): ServerConfig | undefined => {
   if (!isObject(raw)) {
     errors.push(`${path}: must be an object`)
@@ -167,7 +224,7 @@ const parseServer = (raw: unknown, path: string, env: Env, errors: string[]): Se
     return { kind: 'stdio', command, args, env: stringMap(raw.env, `${path}.env`, env, errors) }
   }
   if (type === 'http') {
-    unknownKeys(raw, ['type', 'url', 'headers'], path, errors)
+    unknownKeys(raw, ['type', 'url', 'headers', 'oauth'], path, errors)
     const found = errors.length
     const url = expand(nonEmpty(raw.url, `${path}.url`, errors), env, `${path}.url`, errors)
     // An empty or unexpanded url has its error already. The text names only the
@@ -176,7 +233,9 @@ const parseServer = (raw: unknown, path: string, env: Env, errors: string[]): Se
       if (!/^https?:\/\//i.test(url)) errors.push(`${path}.url: must start with http:// or https://`)
       else if (!URL.canParse(url)) errors.push(`${path}.url: must be a valid URL`)
     }
-    return { kind: 'http', url, headers: stringMap(raw.headers, `${path}.headers`, env, errors) }
+    const headers = stringMap(raw.headers, `${path}.headers`, env, errors)
+    const oauth = parseOAuth(raw.oauth, headers, `${path}.oauth`, env, errors)
+    return { kind: 'http', url, headers, ...(oauth && { oauth }) }
   }
   errors.push(`${path}.type: must be "stdio" or "http", not ${JSON.stringify(type)}`)
   return undefined
@@ -561,7 +620,8 @@ const decoded = (text: string): string => {
 /**
  * `text` with the secrets of the server replaced by `***`: a failed child's stderr can echo a token, and the reason
  * goes to the model. The secrets are the ones that hideArgSecrets finds in the args or the URL, the `env` and `headers`
- * values with a secret name or a secret word or of 12 characters or more, the secrets inside every such value, each
+ * values with a secret name or a secret word or of 12 characters or more, the OAuth client secret, the secrets inside
+ * every such value, each
  * word of 8 or more in one ("Bearer <token>"), and the URL-decoded form of each. A number shorter than 12 digits is
  * never replaced, and a plain word only as a whole word, so `localhost:3000` stays readable. The user and password
  * of any URL in `text` are hidden too.
@@ -573,6 +633,7 @@ export const redact = (text: string, server: ServerConfig): string => {
       ...(SECRET_NAME.test(key) || isSecretWord(value) || value.length >= LONG ? [value] : []),
       ...hideArgSecrets([value]).secrets,
     ]),
+    ...(server.kind === 'http' && server.oauth?.client?.secret !== undefined ? [server.oauth.client.secret] : []),
   ]
   const secrets = [
     ...new Set(
