@@ -154,18 +154,23 @@ Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/con
 - On Linux and macOS, only your user account can read the config that init writes.
 - `--dry-run` shows the config and the steps, and writes nothing. These values show as `***`:
   - the values of `env` and `headers`
-  - the user, the password, each query value, each query part without `=`, and the fragment of a URL
+  - the user, the password, each query value, each query part without `=`, each `;name=value` path value, and the
+    fragment of a URL
   - a URL path segment or a word of 20 or more letters, digits, `_` and `-`, with letters and digits
   - the same long word with mixed case letters and also `. / + = : ~ %`, such as a JWT or a base64 key. A word
     that starts with `/`, `.`, `~` or a drive letter stays as it is.
   - the value of an argument whose name holds `key`, `token`, `secret`, `pass`, `pwd`, `auth`, `bearer`, `header`,
     `credential`, `cookie`, `session` or `dsn`
-  - the value of an argument with the name part `pat`, `sig` or `sas`, such as `GITHUB_PAT`
+  - the value of an argument with the name part `pat`, `sig`, `sas` or `pw`, such as `GITHUB_PAT`
+  - in a JSON argument, each value under a key with such a name, also nested, except a label such as `name` or `user`.
+    Also the secrets in the other strings. The JSON shows on one line. A JSON argument nested too deep shows as `***`.
   - the value after `-t` or `-p`, unless the value is a number, a port such as `8080:80`, a path or a scoped package
+  - the password of `user:password` after `-u`, `--user` or `--proxy-user`. A docker user and group such as `1000:1000` or
+    `node:node` stays.
   - after `-H`, the value of a header with such a name, and the secrets in the value of a different header
   - the word after `Bearer` or `Basic`
 
-  The forms are `--name value`, `--name=value`, `NAME=value`, `Name: value` and the parts of
+  The forms are `--name value`, `--name=value`, `--name= value`, `NAME=value`, `Name: value` and the parts of
   `Server=db;Password=value`. An argument of several words, such as a `sh -c` script, gets the same rules word by
   word. Other arguments show as they are. If an argument holds a secret in a different form, do not share the output.
 - `--force` replaces a config that exists. Before it does, init keeps the old config as `<config>.bak`. On Linux and
