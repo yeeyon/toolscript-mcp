@@ -10,6 +10,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
+import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import {
   OAuthClientInformationFullSchema,
   OAuthClientInformationSchema,
@@ -17,16 +18,26 @@ import {
   type OAuthClientInformationMixed,
   type OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js'
+import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { basicCredentials, parseJson, refreshReason, type OAuth, type ServerKey } from '../core/config.ts'
 import { oauthFile } from '../core/paths.ts'
+import { errorText } from '../core/protocol.ts'
 
+// Both are OAuthErrors: the SDK passes on an OAuthError from a refresh, and starts a login after any other error.
 /** The provider of the running server throws this where a person must log in. Its message is the reason. */
-export class LoginNeeded extends Error {}
+export class LoginNeeded extends OAuthError {}
 /**
  * The provider of the running server throws this when a refresh failed but was not refused, as when the
  * authorization server is down: the tokens can still work, so the next use tries again. Its message is the reason.
  */
-export class RefreshFailed extends Error {}
+export class RefreshFailed extends OAuthError {}
+
+/** True for a request of the SDK that refreshes a token. */
+const isRefresh = (init: RequestInit | undefined): boolean =>
+  init?.body instanceof URLSearchParams && init.body.get('grant_type') === 'refresh_token'
+
+/** True for an answer of the token endpoint that refuses the request: the same request gets it again. */
+const isRefusal = (status: number): boolean => status >= 400 && status < 500 && status !== 408 && status !== 429
 
 /** What the store keeps for one server. */
 export type Stored = {
@@ -113,18 +124,17 @@ export type LoginMode = {
   readonly state: string
   readonly open: (url: URL) => void
 }
-/**
- * The provider of the running server: where a person must log in, it throws LoginNeeded with `reason`.
- * `lastFailure` gives why the last request of this server failed, or undefined when it got a good answer.
- */
-export type ServeMode = {
-  readonly kind: 'serve'
-  readonly reason: string
-  readonly lastFailure: () => string | undefined
-}
+/** The provider of the running server: where a person must log in, it throws LoginNeeded with `reason`. */
+export type ServeMode = { readonly kind: 'serve'; readonly reason: string }
 
-/** The SDK's provider, and the secrets that it handed out so far, for `redact`: a server can echo one in an error. */
-export type Provider = OAuthClientProvider & { readonly secrets: () => readonly string[] }
+/**
+ * The SDK's provider, the secrets that it handed out so far, for `redact`: a server can echo one in an error, and
+ * `fetch`, which gives the fetch of the transport. The running server answers each refresh in it.
+ */
+export type Provider = OAuthClientProvider & {
+  readonly secrets: () => readonly string[]
+  readonly fetch: (base: FetchLike) => FetchLike
+}
 
 /**
  * The SDK's OAuth provider for one server over its store `file`. In login mode, `tokens` gives only the tokens of
@@ -165,8 +175,30 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     if (login) return client?.redirectUrl === redirectUrl ? client.info : undefined
     return client?.info ?? needLogin()
   }
+  // A refresh of the running server. The SDK reads a refusal without an OAuth error code as a server error and starts
+  // a login after it, so this decides on each answer.
+  const refresh = async (send: () => Promise<Response>): Promise<Response> => {
+    let response: Response
+    try {
+      response = await send()
+    } catch (err) {
+      // fetch fails with "fetch failed": its cause says why, as "connect ECONNREFUSED".
+      throw new RefreshFailed(
+        refreshReason(errorText(err instanceof Error && err.cause !== undefined ? err.cause : err)),
+      )
+    }
+    if (response.ok) return response
+    if (!isRefusal(response.status)) throw new RefreshFailed(refreshReason(`HTTP ${response.status}`))
+    // invalidateCredentials looks for a refresh of another process.
+    const answer = (await response
+      .clone()
+      .json()
+      .catch(() => ({}))) as { error?: unknown }
+    return answer.error === 'invalid_grant' ? response : needLogin()
+  }
   return {
     secrets: () => [...known],
+    fetch: base => (login ? base : (url, init) => (isRefresh(init) ? refresh(() => base(url, init)) : base(url, init))),
     redirectUrl,
     clientMetadata: {
       client_name: 'toolscript-mcp',
@@ -176,15 +208,9 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       token_endpoint_auth_method: 'none',
       ...(oauth.scopes.length > 0 && { scope: oauth.scopes.join(' ') }),
     },
-    // The SDK asks for the state only to start a new authorization. It starts one after a refresh that failed without
-    // a refusal too: then the last request of the flow failed, and the running server keeps its tokens for the next
-    // use. Without a failure, the SDK did not refresh: it found no refresh token for this authorization server.
-    state: () => {
-      if (login) return login.state
-      const failure = mode.kind === 'serve' && sent !== undefined ? mode.lastFailure() : undefined
-      if (failure !== undefined) throw new RefreshFailed(refreshReason(failure))
-      return needLogin()
-    },
+    // The SDK asks for the state only to start a new authorization: the running server found no refresh token for
+    // this authorization server.
+    state: () => login?.state ?? needLogin(),
     clientInformation: async () => keepClient(await client()),
     // Only login registers. Without this method, the SDK never registers a client for the running server.
     ...(login &&
