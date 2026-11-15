@@ -10,7 +10,12 @@ enforces; the others rely on discipline.
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
   `config.ts`, `catalog.ts` and `policy.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
-- `src/host/` holds the code that runs in Node. It builds with `tsconfig.host.json`, which adds the Node types.
+- `src/host/` holds the code that runs in Node. `tsconfig.host.json` checks it with the Node types.
+- The package runs one file: `scripts/build.mjs` bundles `src/host/main.ts` and the packages it imports into
+  `dist/host/main.js`, and writes their licences to `dist/third-party-licenses.txt`. Node loads one file faster than
+  the modules of the SDK: see `scripts/start-time.mjs`. Add a package that the host needs at run time to
+  `devDependencies`, because the bundle holds it.
+  `[test: build.mjs fails on a bundled package without a licence file; pack-check.mjs fails when the package installs a dependency]`
 - Parse the config only in `parseConfig` (`src/core/config.ts`). The host trusts a `Config`. Each error names the
   key it is about. `[test: server.test.ts]`
 - stdout carries only MCP JSON-RPC. Log to stderr with `console.error`.
@@ -19,9 +24,11 @@ enforces; the others rely on discipline.
   failed. `[test: server.e2e.mjs]`
 - A failed or closed server connects again on next use: a search, or a call of a program. All callers wait for one
   attempt, at most 3 attempts in 60 s, and none after `close`. `[test: downstream.test.ts, server.e2e.mjs]`
-- The SDK HTTP client transport fires `onclose` only from `close()`. An HTTP link that a request finds unreachable,
-  or whose session the server no longer knows (400 or 404), fails in `client.onerror`, before that request rejects.
-  `[test: downstream.test.ts, describe http]`
+- The SDK HTTP client transport fires `onclose` only from `close()`. So an HTTP link fails in `HttpTransport.send`
+  (`src/host/downstream.ts`), before the request rejects, when the request finds the server unreachable or the
+  session unknown: a 404 to a request with a session id, or a 400 with an SDK session text. Any other 400 fails only
+  its call. Never end a link in `client.onerror`: it also gets the errors of the optional GET stream, and a server
+  without GET answers 400 or 404 there. `[test: downstream.test.ts, describe http]`
 - Every nested call has the time limit `sandbox.callTimeoutSeconds`, through the SDK's `timeout`, so the SDK sends
   `notifications/cancelled` when it ends. `[test: server.e2e.mjs, case run (l)]`
 - `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there
@@ -57,7 +64,7 @@ enforces; the others rely on discipline.
 - The checks:
   - `npm test`: the pure-core tests and `tests/run.test.ts`, which runs `run_code` with the real sandbox
     (`tests/*.test.ts`, `node:test`).
-  - `npm run typecheck` and `npm run build`: `tsc` with the pinned TypeScript.
+  - `npm run typecheck`: `tsc` with the pinned TypeScript. `npm run build` runs it, then `scripts/build.mjs`.
   - `npm run check`: `tests/docs.check.mjs` (the doc rules below) and `tests/code.check.mjs` (the code rules).
   - `node tests/runner.integration.mjs`: the real sandbox under Node, on Linux, macOS and Windows.
   - `node tests/server.e2e.mjs`: the built server over stdio, with the bench fake server and a probe server. Run

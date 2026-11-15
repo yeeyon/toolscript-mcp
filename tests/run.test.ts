@@ -232,7 +232,7 @@ describe('run_code', () => {
       'sleep(0).then(() => { while (true) {} })\nreturn "x".repeat(1_000_000)',
     )
     assert.equal(r.isError, false, r.text.slice(0, 300))
-    assert.ok(r.text.startsWith('"xxx'), r.text.slice(0, 300))
+    assert.ok(r.text.startsWith('shape: text, 1 line\n"xxx'), r.text.slice(0, 300))
     assert.ok(performance.now() - started < 3000, 'the run does not wait for the time limit')
   })
 
@@ -394,9 +394,7 @@ describe('output projection', () => {
       'await call("mcp__f__echo", { n: 1 })\ntry { await call("mcp__f__fail", {}) } catch {}\nreturn "ok"',
     )
     assert.ok(r.text.includes('--- 2 MCP calls: '), r.text)
-    assert.match(r.text, /#1 mcp__f__echo \d+ \{echoed: \{n\}\}/)
-    assert.ok(r.text.includes('- mcp__f__fail failed'), r.text)
-    assert.ok(r.text.includes('await recall(n) returns result #n again'), r.text)
+    assert.match(r.text, /\n#1 mcp__f__echo \d+ \{echoed: \{n\}\} -> recall\(1\)\n- mcp__f__fail failed$/)
   })
 
   test('a call that never answers is in the footer when the run times out', async () => {
@@ -484,7 +482,18 @@ describe('output projection', () => {
     const kept = newKept()
     const { run, called } = setup({ kept })
     const cut = await run('return await call("mcp__f__big", {})')
-    assert.ok(cut.text.includes('more characters cut; await recall(2) returns the whole result'), cut.text)
+    const big = JSON.stringify(Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `item ${i}` })))
+    assert.equal(
+      cut.text,
+      [
+        'shape: [3000 × {id, name}]',
+        big.slice(0, 3000),
+        `… [${big.length - 3000} more characters cut; await recall(2) returns the whole result: return a part of it]`,
+        '',
+        '--- 1 MCP call: 91k characters in, 91k out ---',
+        '#1 mcp__f__big 91k [3000 × {id, name}] -> recall(1)',
+      ].join('\n'),
+    )
     const again = await run('const all = await recall(2)\nreturn all.length')
     assert.ok(again.text.startsWith('3000'), again.text)
     assert.equal(called.length, 1)
@@ -495,11 +504,16 @@ describe('output projection', () => {
     const { run } = setup({ kept })
     const rows = 'Array.from({ length: 800 }, (_, i) => ({ id: i, ok: true }))'
     const cut = await run(`return ${rows}`)
-    assert.ok(
-      cut.text.endsWith(
-        '… [11092 more characters cut; await recall(1) returns the whole result: return a part of it]\n\n--- 0 MCP calls: 0 characters in, 17k out ---',
-      ),
-      cut.text.slice(-300),
+    const compact = JSON.stringify(Array.from({ length: 800 }, (_, i) => ({ id: i, ok: true })))
+    assert.equal(
+      cut.text,
+      [
+        'shape: [800 × {id, ok}]',
+        compact.slice(0, 3000),
+        `… [${compact.length - 3000} more characters cut; await recall(1) returns the whole result: return a part of it]`,
+        '',
+        '--- 0 MCP calls: 0 characters in, 17k out ---',
+      ].join('\n'),
     )
     const back = await run('const r = await recall(1)\nreturn [r.length, r[799]]')
     assert.ok(back.text.startsWith('[\n  800,\n  {\n    "id": 799,\n    "ok": true'), back.text)
