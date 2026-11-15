@@ -310,14 +310,20 @@ ID in `oauth`:
 - `scopes` sets the scopes to ask for when the server names none.
 - `callbackPort` sets the port of the login callback on `127.0.0.1`. Register `http://127.0.0.1:<port>/callback` as
   the redirect URI of your client.
-- Without `callbackPort`, login takes a free port. The next login uses the same port again.
+- A client that you register by hand needs `callbackPort`, so its redirect URI stays the same at each login.
+- Without `clientId`, login registers a client with a free port, and the next login uses that port again. If another
+  program has the port, login registers a new client.
 
 login writes the tokens to `~/.toolscript-mcp/oauth/<server>-<hash>.json`. The hash comes from the URL, so a new URL
 needs a new login. On Linux and macOS, only your user account can read the file.
 
+login opens only an authorization URL with `https`, or with `http` on `127.0.0.1`, `::1` or `localhost`. The `headers`
+of an entry go only to the origin of its `url`, never to its authorization server.
+
 toolscript-mcp refreshes the tokens when they expire. It never opens a browser while it runs as a server. If a
 server needs a new login, `search_tools` shows the login command. Run the command in a terminal. The next search or
-call connects again, with no restart.
+call connects again, with no restart. If the authorization server does not answer a refresh, `search_tools` shows the
+cause. The next search or call tries the refresh again.
 
 ### Run log
 

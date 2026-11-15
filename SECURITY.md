@@ -39,7 +39,14 @@ Include:
 - `toolscript-mcp login` writes the OAuth tokens and the registered client of a server to
   `~/.toolscript-mcp/oauth/<server>-<hash>.json`. On Linux and macOS the file has mode 0600 and the folder 0700. On
   Windows the file gets the access rules of your profile folder. A static `clientSecret` stays in the config and does
-  not go into this file. The PKCE verifier and the state stay in the memory of the login process. The login callback
-  listens on `127.0.0.1` only, and refuses a callback with a wrong state. No log line, printed line or `search_tools`
-  reason holds a token, a code, a verifier or a client secret. A leak of one of them is in scope.
+  not go into this file. The PKCE verifier and the state stay in the memory of the login process. A client that a
+  login registers goes into the file only with the tokens of that login. The login callback listens on `127.0.0.1`
+  only. It answers a callback with a wrong or no state with 400 and waits for the right one.
+- login opens only an authorization URL with `https`, or with `http` on `127.0.0.1`, `::1` or `localhost`. The server
+  metadata names this URL, and the browser opener of the system also runs files and other schemes.
+- The `headers` of an HTTP entry go only to the origin of its `url`, never to its authorization server.
+- No log line, printed line, `search_tools` reason or error of a nested call holds a token, a code, a verifier or a
+  client secret, also when a server echoes one. toolscript-mcp hides each one that it sent, and the state, as it is,
+  URL- or form-encoded, and as the Basic header value of the client ID and secret. Only the authorization URL that
+  login prints for the browser holds the state. A leak of one of them is in scope.
 - The running server only reads the store and saves refreshed tokens. It never opens a browser or registers a client.
