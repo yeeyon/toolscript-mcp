@@ -48,6 +48,8 @@ const startFake = async () => {
   const refresh = new Set<string>()
   const secrets = new Set<string>([STATIC_SECRET])
   const seen = { registrations: 0, authorizations: [] as URL[], tokens: [] as URLSearchParams[], refreshes: 0 }
+  /** What a test changes in the answers of the fake. */
+  const change = { authorizationEndpoint: '' }
   const issue = () => {
     const tokens = { access_token: `fake-access-${randomUUID()}`, refresh_token: `fake-refresh-${randomUUID()}` }
     access.add(tokens.access_token)
@@ -100,7 +102,7 @@ const startFake = async () => {
     if (url.pathname === '/.well-known/oauth-authorization-server')
       return json(res, 200, {
         issuer: base,
-        authorization_endpoint: `${base}/authorize`,
+        authorization_endpoint: change.authorizationEndpoint || `${base}/authorize`,
         token_endpoint: `${base}/token`,
         registration_endpoint: `${base}/register`,
         response_types_supported: ['code'],
@@ -140,6 +142,7 @@ const startFake = async () => {
     url: `${base}/mcp`,
     seen,
     secrets,
+    change,
     /** Every access token stops working, as when they expire. */
     expire: () => access.clear(),
     /** Every refresh token stops working too, as when the person revokes the grant. */
@@ -159,6 +162,18 @@ const browser =
       to.searchParams.set('state', change(to.searchParams.get('state') ?? ''))
       await fetch(to)
     })()
+
+/** A browser where the person cancels the login: the callback gets an error. It keeps each URL it gets in `opened`. */
+const cancel =
+  (opened: string[] = []) =>
+  (url: string) => {
+    opened.push(url)
+    const q = new URL(url).searchParams
+    const to = new URL(q.get('redirect_uri') ?? '')
+    to.searchParams.set('error', 'access_denied')
+    to.searchParams.set('state', q.get('state') ?? '')
+    void fetch(to).catch(() => {})
+  }
 
 /** A home folder and a config with one HTTP server `fake`. */
 const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<string, string> = {}) => {
@@ -249,6 +264,20 @@ describe('login', () => {
     assert.equal(fake.seen.tokens.length, 0)
     assert.ok(!s.storeText().includes('access_token'))
     assert.deepEqual(s.leaks(), [])
+  })
+
+  test('login never prints or opens an authorization URL that is not https or http on loopback', async () => {
+    for (const endpoint of ['file:///C:/fake/run.cmd', 'ms-settings:display', 'http://auth.example/authorize']) {
+      const fake = await startFake()
+      fake.change.authorizationEndpoint = endpoint
+      const s = setup(fake)
+      const opened: string[] = []
+      assert.equal(await s.login(cancel(opened)), 1, endpoint)
+      assert.deepEqual(opened, [], endpoint)
+      const printed = s.lines.join('\n')
+      assert.match(printed, /login to fake failed: the authorization URL .* is not https/, printed)
+      assert.ok(!printed.includes(new URL(endpoint).href), printed)
+    }
   })
 
   test('the store file is for the user only on Linux and macOS', { skip: process.platform === 'win32' }, async () => {

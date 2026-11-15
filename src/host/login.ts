@@ -27,7 +27,7 @@ import {
 } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
 import { CONNECT_TIMEOUT_MS, listAll } from './downstream.ts'
-import { oauthProvider, readStore, storeFile, type Stored } from './oauth.ts'
+import { isLoopbackHttp, oauthProvider, readStore, storeFile, type Stored } from './oauth.ts'
 
 export const LOGIN_USAGE = 'usage: toolscript-mcp login <server> [--config <path>]'
 
@@ -180,6 +180,11 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     redirectUrl: `http://127.0.0.1:${callback.port}/callback`,
     state,
     open: url => {
+      // The URL comes from the metadata of the server. The browser opener also runs files and custom schemes.
+      if (url.protocol !== 'https:' && !isLoopbackHttp(url))
+        throw new Error(
+          'the authorization URL from the server is not https, or http on 127.0.0.1, ::1 or localhost, so login did not open it',
+        )
       io.print(`Log in to ${key} in the browser. If the browser does not open, open this URL:\n${url.href}`)
       open(url.href)
     },

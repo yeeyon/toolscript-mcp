@@ -34,6 +34,10 @@ export type Stored = {
 export const storeFile = (home: string, key: ServerKey, url: string): string =>
   oauthFile(home, key, createHash('sha256').update(url).digest('hex').slice(0, 16))
 
+/** True for an http URL on this machine: 127.0.0.1, ::1 or localhost. */
+export const isLoopbackHttp = (url: URL): boolean =>
+  url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
+
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** The store in `text`. A part that does not parse is left out, so a broken file asks for a login again. */
