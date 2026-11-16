@@ -451,10 +451,14 @@ describe('login', () => {
   test('login prints the error of the callback with its control characters escaped', async () => {
     const fake = await startFake()
     const s = setup(fake)
-    assert.equal(await s.login(cancel([], 'denied\u001b[2J\r\nfake: Logged in\u009b')), 1)
+    assert.equal(await s.login(cancel([], 'denied\u001b[2J\r\nfake: Logged in\u009b\u2028\u202e\u2066')), 1)
     const printed = s.lines.join('\n')
-    assert.ok(printed.includes('denied\\u001b[2J\\u000d\\u000afake: Logged in\\u009b description'), printed)
-    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(printed) && !printed.includes('\nfake:'), printed)
+    assert.ok(
+      printed.includes('denied\\u001b[2J\\u000d\\u000afake: Logged in\\u009b\\u2028\\u202e\\u2066 description'),
+      printed,
+    )
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/.test(printed), printed)
+    assert.ok(!printed.includes('\nfake:'), printed)
   })
 
   test('the store file is for the user only on Linux and macOS', { skip: process.platform === 'win32' }, async () => {
