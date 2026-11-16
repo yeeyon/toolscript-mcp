@@ -747,6 +747,33 @@ describe('a tool whose server requires a person', () => {
     }
   })
 
+  test('the run log keeps the decision of the check: a call that ran before its server marked it is allow', async () => {
+    const fake = fakeDownstream()
+    const [f] = fake.downstream.states()
+    if (f?.status !== 'connected') throw new Error('the fake server is connected')
+    let states: ServerState[] = [{ ...f, tools: f.tools.map(({ _meta, ...t }) => t) }]
+    const downstream = {
+      ...fake.downstream,
+      states: () => states,
+      client: async (key: ServerKey) => {
+        const link = await fake.downstream.client(key)
+        if (!link.ok) return link
+        const callTool = async (...args: Parameters<typeof link.client.callTool>) => {
+          const r = await link.client.callTool(...args)
+          states = [f]
+          return r
+        }
+        return { ...link, client: { callTool } }
+      },
+    } as Downstream
+    const { run, lines } = setup({ policy, downstream })
+    assert.equal((await run(grant)).isError, false)
+    assert.deepEqual(
+      lines().map(l => l.calls.map(({ decision, ok }) => ({ decision, ok }))),
+      [[{ decision: 'allow', ok: true }]],
+    )
+  })
+
   test('the run log records an approved call of it as ask-approved, and a refused one as unapproved', async () => {
     const { run, lines } = setup({ policy })
     await run(grant)

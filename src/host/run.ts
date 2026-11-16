@@ -16,7 +16,6 @@ import {
   planRun,
   refusedReport,
   type Asks,
-  type CallCheck,
   type Policy,
 } from '../core/policy.ts'
 import {
@@ -46,7 +45,15 @@ import {
   type RunnerError,
   type RunnerMessage,
 } from '../core/protocol.ts'
-import { callDecision, runLine, runRecord, type CallError, type CallLog, type RunEnding } from '../core/runlog.ts'
+import {
+  callDecision,
+  runLine,
+  runRecord,
+  type CallDecision,
+  type CallError,
+  type CallLog,
+  type RunEnding,
+} from '../core/runlog.ts'
 import { SERVER_NAME } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
@@ -247,6 +254,8 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   const started = new Map<number, string>()
   const unapproved = new Set<string>()
   const needPerson = new Set<string>()
+  // The decision of the last check of each call, by id: the run log records what let the call run or refused it.
+  const decided = new Map<number, CallDecision>()
   // A server that connects again during the run lists its tools anew, maybe with a new mark.
   const interactiveNow = () => interactiveTools(downstream.states())
   const recalled: { ref: number; ageMs: number }[] = []
@@ -285,26 +294,37 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   }
 
   // `error` is the short code for the run log: a message from a server can hold data.
-  const callTool = async (tool: string, args: Record<string, unknown>): Promise<Reply & { code?: CallError }> => {
+  const callTool = async (
+    id: number,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<Reply & { code?: CallError }> => {
     const target = isCallable(tool, SERVER_NAME) ? splitToolName(tool) : undefined
-    if (target === undefined)
+    if (target === undefined) {
+      decided.set(id, 'invalid')
       return {
         ok: false,
         error: `only MCP tools (mcp__<server>__<tool>) can be called, not "${tool}"`,
         code: 'invalid',
       }
-    const refusal = (check: Extract<CallCheck, { ok: false }>): Reply & { code: CallError } => {
+    }
+    const checkNow = (): (Reply & { code: CallError }) | undefined => {
+      const interactive = interactiveNow()
+      const decision = callDecision(config.policy, approved, tool, interactive)
+      decided.set(id, decision)
+      const check = checkCall(config.policy, approved, tool, interactive)
+      if (check.ok) return undefined
       if (check.needs === 'rule') unapproved.add(tool)
       if (check.needs === 'person') needPerson.add(tool)
-      return { ok: false, error: check.error, code: callDecision(config.policy, approved, tool, interactiveNow()) }
+      return { ok: false, error: check.error, code: decision }
     }
-    const check = checkCall(config.policy, approved, tool, interactiveNow())
-    if (!check.ok) return refusal(check)
+    const refused = checkNow()
+    if (refused !== undefined) return refused
     const link = await downstream.client(target.server as ServerKey)
     if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
     // The link can be new, with a new list of tools: check again.
-    const again = checkCall(config.policy, approved, tool, interactiveNow())
-    if (!again.ok) return refusal(again)
+    const again = checkNow()
+    if (again !== undefined) return again
     // A reconnect can outlast the sandbox: then the call has no reader and does not start.
     if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }
     // The SDK keeps its abort listener after the answer and then sends a
@@ -348,11 +368,11 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   const answerCall = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
     if (ended) return
     const began = performance.now()
-    const { code: failure, ...r } = await callTool(tool, args)
+    const { code: failure, ...r } = await callTool(id, tool, args)
     if (closed) return
     audits.set(id, {
       tool,
-      decision: callDecision(config.policy, approved, tool, interactiveNow()),
+      decision: decided.get(id)!,
       ms: performance.now() - began,
       ok: r.ok,
       ...(r.ok ? {} : { error: failure ?? 'failed' }),
@@ -478,9 +498,10 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   for (const [id, tool] of started) {
     if (!records.has(id)) records.set(id, { tool, status: 'unfinished', chars: 0 })
     if (audits.has(id)) continue
+    // A call still in the queue at the end was never checked.
     audits.set(id, {
       tool,
-      decision: callDecision(config.policy, approved, tool, interactiveNow()),
+      decision: decided.get(id) ?? callDecision(config.policy, approved, tool, interactiveNow()),
       ms: 0,
       ok: false,
       error: 'unfinished',
