@@ -22,7 +22,7 @@ import {
   type ServerKey,
 } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
-import { LoginNeeded, oauthProvider, RefreshFailed, storeFile, type Provider } from './oauth.ts'
+import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 
 /** The time that one server gets for its connect and for each page of its tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
@@ -207,13 +207,20 @@ export type ConnectOptions = {
   readonly login?: (key: ServerKey) => string
   /** The time in ms for the attempt cap: a test sets it. */
   readonly now?: () => number
+  /** The longest wait in ms for the answer to an OAuth refresh: a test sets it. */
+  readonly refreshTimeoutMs?: number
 }
 
 export const connectAll = (
   servers: ReadonlyMap<ServerKey, ServerEntry>,
   version: string,
   log: (line: string) => void,
-  { home = os.homedir(), login = key => loginCommand(key), now = Date.now }: ConnectOptions = {},
+  {
+    home = os.homedir(),
+    login = key => loginCommand(key),
+    now = Date.now,
+    refreshTimeoutMs = REFRESH_TIMEOUT_MS,
+  }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
   const links = new Map<ServerKey, Link>()
@@ -254,7 +261,11 @@ export const connectAll = (
       const auth: Auth | undefined =
         server.kind === 'http' && server.oauth
           ? {
-              provider: oauthProvider(storeFile(home, key, server.url), server.oauth, { kind: 'serve', reason }),
+              provider: oauthProvider(storeFile(home, key, server.url), server.oauth, {
+                kind: 'serve',
+                reason,
+                refreshTimeoutMs,
+              }),
               reason,
             }
           : undefined

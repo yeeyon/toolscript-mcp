@@ -16,7 +16,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { parseConfig, type Config, type ServerConfig, type ServerKey } from '../src/core/config.ts'
 import { newKept } from '../src/core/protocol.ts'
-import { connectAll, type Downstream } from '../src/host/downstream.ts'
+import { connectAll, type ConnectOptions, type Downstream } from '../src/host/downstream.ts'
 import { runLogin } from '../src/host/login.ts'
 import { storeFile } from '../src/host/oauth.ts'
 import { runCode, type RunContext } from '../src/host/run.ts'
@@ -70,8 +70,8 @@ const startFake = async () => {
    * `echo` makes one kind of request fail with an error that echoes its secrets: a call, any MCP request, a refresh
    * or the code exchange. `authMethods` are the client authentications that the token endpoint takes. With
    * `rejectAll`, the MCP endpoint answers 401 to every token. The token endpoint waits for `holdRefreshes` refresh
-   * requests before it answers the first, so two clients use one refresh token. With `tokenDown`, the token endpoint
-   * drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
+   * requests before it answers the first, so two clients use one refresh token. With `stallRefreshes`, it never answers
+   * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
    * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`.
    */
   const change = {
@@ -81,6 +81,7 @@ const startFake = async () => {
     authMethods: ['none', 'client_secret_post', 'client_secret_basic'],
     rejectAll: false,
     holdRefreshes: 0,
+    stallRefreshes: false,
     tokenDown: false,
     refreshAnswer: undefined as { status: number; type: string; body: string } | undefined,
     grantErrorMs: 0,
@@ -115,6 +116,7 @@ const startFake = async () => {
   const token = async (text: string, auth: string | undefined, res: http.ServerResponse) => {
     const form = new URLSearchParams(text)
     seen.tokens.push(form)
+    if (form.get('grant_type') === 'refresh_token' && change.stallRefreshes) return
     if (form.get('grant_type') === 'refresh_token' && change.holdRefreshes > 0)
       await new Promise<void>(resolve => {
         held.push(resolve)
@@ -273,8 +275,8 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
       print: t => void lines.push(t),
       open,
     })
-  const connect = (config: ServerConfig = server) => {
-    const downstream = connectAll(new Map([[KEY, config]]), '0', line => void lines.push(line), { home })
+  const connect = (config: ServerConfig = server, options: ConnectOptions = {}) => {
+    const downstream = connectAll(new Map([[KEY, config]]), '0', line => void lines.push(line), { home, ...options })
     opened.push(downstream)
     return downstream
   }
@@ -690,6 +692,26 @@ describe('the running server', () => {
       assert.equal(await s.ping(downstream), PONG, name)
       assert.equal(fake.seen.authorizations.length, 1, `${name}: only the login authorized`)
     }
+  })
+
+  test('a refresh with no answer fails in time, and the next use refreshes', { timeout: 20_000 }, async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const short = { refreshTimeoutMs: 300 }
+    const downstream = s.connect(undefined, short)
+    assert.equal(await s.ping(downstream), PONG)
+    fake.expire()
+    fake.change.stallRefreshes = true
+    const start = Date.now()
+    const second = s.connect(undefined, short)
+    const texts = await Promise.all([s.ping(downstream), s.ping(second)])
+    assert.ok(Date.now() - start < 5000, `the calls waited ${Date.now() - start} ms`)
+    const silent = /could not refresh the OAuth token: the token endpoint did not answer in 0\.3 s\. No login/
+    for (const text of texts) assert.match(text, silent, text)
+    fake.change.stallRefreshes = false
+    assert.deepEqual(await Promise.all([s.ping(downstream), s.ping(second)]), [PONG, PONG])
+    assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
   })
 
   test('a refresh token that another process used first gives its saved tokens, with no login', async () => {

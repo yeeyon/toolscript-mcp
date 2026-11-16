@@ -156,8 +156,14 @@ export type LoginMode = {
   readonly state: string
   readonly open: (url: URL) => void
 }
-/** The provider of the running server: where a person must log in, it throws LoginNeeded with `reason`. */
-export type ServeMode = { readonly kind: 'serve'; readonly reason: string }
+/**
+ * The provider of the running server: where a person must log in, it throws LoginNeeded with `reason`. A refresh
+ * without an answer in `refreshTimeoutMs` throws RefreshFailed.
+ */
+export type ServeMode = { readonly kind: 'serve'; readonly reason: string; readonly refreshTimeoutMs: number }
+
+/** Under CONNECT_TIMEOUT_MS of downstream.ts, so a new link fails with the reason of the refresh. */
+export const REFRESH_TIMEOUT_MS = 20_000
 
 /**
  * The SDK's provider, the secrets that it handed out so far, for `redact`: a server can echo one in an error, and
@@ -208,14 +214,22 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   }
   // A refresh of the running server with the refresh token `sent`, which saves the new tokens. The SDK reads a refusal
   // without an OAuth error code as a server error and starts a login after it, so this decides on each answer.
-  const renew = async (send: () => Promise<Response>, sent: string): Promise<OAuthTokens> => {
+  const renew = async (
+    send: (signal: AbortSignal) => Promise<Response>,
+    sent: string,
+    timeoutMs: number,
+  ): Promise<OAuthTokens> => {
     // A call that read the tokens before the last refresh saved them sends a refresh token that is used up.
     const now = await current()
     if (now?.refresh_token !== undefined && now.refresh_token !== sent) return now
+    // Every call and link of the server waits for this refresh, so a token endpoint that never answers must not hold it.
+    const signal = AbortSignal.timeout(timeoutMs)
+    const silent = () => new RefreshFailed(refreshReason(`the token endpoint did not answer in ${timeoutMs / 1000} s`))
     let response: Response
     try {
-      response = await send()
+      response = await send(signal)
     } catch (err) {
+      if (signal.aborted) throw silent()
       // fetch fails with "fetch failed": its cause says why, as "connect ECONNREFUSED".
       throw new RefreshFailed(
         refreshReason(errorText(err instanceof Error && err.cause !== undefined ? err.cause : err)),
@@ -223,6 +237,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     }
     if (response.ok) {
       const answer = OAuthTokensSchema.safeParse(await response.json().catch(() => undefined)).data
+      if (answer === undefined && signal.aborted) throw silent()
       if (answer === undefined) return needLogin()
       // The SDK keeps the refresh token when the answer has none, and stamps the authorization server.
       const tokens = { refresh_token: sent, ...answer, ...(now?.issuer !== undefined && { issuer: now.issuer }) }
@@ -243,10 +258,14 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     return (await rotated(file, sent)) ?? needLogin()
   }
   const current = async () => unsaved.get(file) ?? (await readStore(file)).tokens
-  const refresh = async (send: () => Promise<Response>, sent: string): Promise<Response> => {
+  const refresh = async (
+    send: (signal: AbortSignal) => Promise<Response>,
+    sent: string,
+    timeoutMs: number,
+  ): Promise<Response> => {
     let flight = refreshes.get(file)
     if (flight === undefined) {
-      flight = renew(send, sent).finally(() => refreshes.delete(file))
+      flight = renew(send, sent, timeoutMs).finally(() => refreshes.delete(file))
       refreshes.set(file, flight)
     }
     return Response.json(keepTokens(await flight))
@@ -254,11 +273,13 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   return {
     secrets: () => [...known],
     fetch: base =>
-      login
+      mode.kind === 'login'
         ? base
         : (url, init) => {
             const sent = refreshTokenOf(init)
-            return sent === undefined ? base(url, init) : refresh(() => base(url, init), sent)
+            return sent === undefined
+              ? base(url, init)
+              : refresh(signal => base(url, { ...init, signal }), sent, mode.refreshTimeoutMs)
           },
     redirectUrl,
     clientMetadata: {

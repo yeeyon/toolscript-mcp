@@ -341,8 +341,8 @@ of an entry go only to the origin of its `url`, never to its authorization serve
 
 toolscript-mcp refreshes the tokens when they expire. It never opens a browser while it runs as a server. If a
 server needs a new login, `search_tools` shows the login command. Run the command in a terminal. The next search or
-call connects again, with no restart. If the authorization server does not answer a refresh, `search_tools` shows the
-cause. The next search or call tries the refresh again.
+call connects again, with no restart. If the authorization server does not answer a refresh in 20 s, `search_tools`
+shows the cause. The next search or call tries the refresh again.
 
 ### Run log
 
