@@ -77,7 +77,7 @@ Setup and configuration:
 - The prompt shows every rule added and removed, uncut, added `allow` and removed `deny` rules first, and says when the other rules changed order. Below that it lists every rule of the new policy in order, with its whole `match`. Each `match` from the file shows as JSON on one line, with every character outside printable ASCII escaped, so a blank or look-alike character shows. The log line and the note of a run cut a `match` at 120 characters and a list at 10 rules. The prompt also says that a declined policy still applies at the next start.
 - A declined policy is remembered: while the config file holds it, runs keep the policy in force with a short note and no new prompt. A change of the file asks again. A prompt that fails, times out or gets no answer is asked again at the next run.
 - The init report says that a new `allow` rule applies after the person approves it in a prompt, or after a restart when the client cannot ask. Before, it said that a new rule needs no restart. With a client that cannot ask, the note that names the `allow` rule to add also says that the rule applies only after a restart.
-- `npm pack` and `npm publish` build `dist/` first (`prepack`).
+- `npm pack` and `npm publish` build `dist/` first (`prepack`). `npm ci` in a clone, and an install from GitHub, build it too (`prepare`). The `beta` workflow moves the `beta` branch to a commit of `main` after every test passes on it.
 
 Downstream servers:
 
