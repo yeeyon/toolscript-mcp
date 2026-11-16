@@ -28,7 +28,7 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
 - `hints/` holds the bundled hints and `hints/sha256.json`.
 - `.claude-plugin/marketplace.json` makes the repo a Claude Code plugin marketplace with one plugin, `plugin/`. Its
-  skill `toolscript-setup` installs toolscript-mcp from the `beta` branch, and `config.mjs` beside it changes the
+  skill `setup` installs toolscript-mcp from the `beta` branch, and `config.mjs` beside it changes the
   config without printing secrets. The npm package does not hold them.
 - `bench/` holds the token and cost bench. `run.mjs` and `interactive.mjs` start Claude Code and spend money.
   - `run.mjs`: direct MCP tools against toolscript-mcp in headless Claude Code. Results in `RESULTS.md`.

@@ -16,7 +16,7 @@ import { bundledListOnDisk, bundledListText } from '../scripts/bundled-hints.mjs
 import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const USER_DOCS = ['README.md', 'plugin/skills/toolscript-setup/SKILL.md'].map(f => path.join(ROOT, f))
+const USER_DOCS = ['README.md', 'plugin/skills/setup/SKILL.md'].map(f => path.join(ROOT, f))
 // Not written to the STE rules, but their links must keep working.
 const LINK_ONLY = ['AGENTS.md', 'CODING_STANDARDS.md', 'CONTRIBUTING.md', 'SECURITY.md'].map(f => path.join(ROOT, f))
 

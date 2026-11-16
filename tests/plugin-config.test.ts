@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, describe, it } from 'node:test'
 
-const SCRIPT = fileURLToPath(new URL('../plugin/skills/toolscript-setup/config.mjs', import.meta.url))
+const SCRIPT = fileURLToPath(new URL('../plugin/skills/setup/config.mjs', import.meta.url))
 const SECRETS = [
   'fake-secret-123',
   'fake-header-456',

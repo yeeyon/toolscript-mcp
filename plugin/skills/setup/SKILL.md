@@ -1,5 +1,5 @@
 ---
-name: toolscript-setup
+name: setup
 description: Install, update or uninstall toolscript-mcp from its GitHub beta branch and connect it to Claude Code. Use when the person asks to set up, install, update or remove toolscript-mcp. Also use it to add an MCP server to toolscript-mcp, log in to an OAuth server through it, or change its policy.
 argument-hint: "[install|update|add|login|policy|uninstall]"
 ---
@@ -196,7 +196,7 @@ Ask before each step:
 3. Delete `<folder>`, then `<config>` and `<config>.bak`. Delete each path with
    `node -e "require('fs').rmSync(process.argv[1], { recursive: true, force: true })" "<path>"`.
 4. `<home>/.toolscript-mcp` holds the OAuth tokens, the run log and the files of programs. Delete it only on request.
-5. To remove this plugin, the person runs `/plugin uninstall toolscript-setup@toolscript-mcp`, then
+5. To remove this plugin, the person runs `/plugin uninstall toolscript@toolscript-mcp`, then
    `/plugin marketplace remove toolscript-mcp`.
 
 ## What stays on this computer

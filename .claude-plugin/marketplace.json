@@ -7,7 +7,7 @@
   "description": "Setup for toolscript-mcp, a standalone MCP server for code mode.",
   "plugins": [
     {
-      "name": "toolscript-setup",
+      "name": "toolscript",
       "source": "./plugin",
       "description": "Install, update and set up toolscript-mcp from its GitHub beta branch: config, Claude Code registration, policy and OAuth login."
     }

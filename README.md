@@ -163,15 +163,16 @@ for example `node ~/toolscript-mcp/dist/host/main.js login <server>`.
 
 #### With the Claude Code plugin
 
-This repo is also a Claude Code plugin marketplace. Its plugin `toolscript-setup` installs the beta with you. In
+This repo is also a Claude Code plugin marketplace. Its plugin `toolscript` installs the beta with you. In
 Claude Code, run:
 
 ```text
 /plugin marketplace add yeeyon/toolscript-mcp
-/plugin install toolscript-setup@toolscript-mcp
+/plugin install toolscript@toolscript-mcp
 ```
 
-Then ask Claude to set up toolscript-mcp. The skill asks you before each step that changes something:
+Then run `/toolscript:setup`, or ask Claude to set up toolscript-mcp. The skill asks you before each step that changes
+something:
 
 1. It checks Node and git, then clones the `beta` branch, or updates a clone that exists.
 2. It runs `init` when you agree, and shows the servers that init imported.
