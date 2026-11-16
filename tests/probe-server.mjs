@@ -18,6 +18,8 @@
 //                      plus `.changes`, so a restarted server keeps it. A list answers after the `listDelayMs`
 //                      argument of the last call. After a call with `failList`, each list of this process answers
 //                      an error. It logs each list.
+//   --changes-before   declares tools.listChanged and sends notifications/tools/list_changed before each list reply
+//   --changes-after    the same, after each list reply
 //
 //   node tests/probe-server.mjs /tmp/probe.json [mode]
 
@@ -37,6 +39,8 @@ let failList = false
 let calls = 0
 
 const send = msg => process.stdout.write(`${JSON.stringify(msg)}\n`)
+const changed = () => send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
+const announces = ['--list-changed', '--changes-before', '--changes-after'].includes(mode)
 
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const msg = JSON.parse(line)
@@ -46,7 +50,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (msg.method === 'initialize')
     return reply({
       protocolVersion: msg.params.protocolVersion,
-      capabilities: { tools: mode === '--list-changed' ? { listChanged: true } : {} },
+      capabilities: { tools: announces ? { listChanged: true } : {} },
       serverInfo: { name: 'probe', version: '1.0.0' },
     })
   if (msg.method === 'tools/list') {
@@ -61,7 +65,11 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     const tools = [{ name: 'probe', description, inputSchema: { type: 'object' }, ...meta }]
     if (mode === '--add-later')
       for (let n = 1; n <= calls; n++) tools.push({ name: `added${n}`, inputSchema: { type: 'object' } })
-    setTimeout(() => reply(mode === '--endless-list' ? { tools, nextCursor: 'more' } : { tools }), listDelayMs)
+    if (mode === '--changes-before') changed()
+    setTimeout(() => {
+      reply(mode === '--endless-list' ? { tools, nextCursor: 'more' } : { tools })
+      if (mode === '--changes-after') changed()
+    }, listDelayMs)
     if (mode === '--exit-after-list') setTimeout(() => process.exit(3), 200)
     return
   }
@@ -78,8 +86,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       fs.writeFileSync(changesFile, String(changes() + 1))
       listDelayMs = Number(msg.params.arguments?.listDelayMs ?? 0)
       failList = msg.params.arguments?.failList === true
-      for (let i = 0; i < Number(msg.params.arguments?.notifications ?? 1); i++)
-        send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
+      for (let i = 0; i < Number(msg.params.arguments?.notifications ?? 1); i++) changed()
     }
     return
   }
