@@ -18,7 +18,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { getEventListeners } from 'node:events'
 import type { ServerConfig, ServerKey } from '../src/core/config.ts'
-import { connectAll, serverFetch, type Downstream } from '../src/host/downstream.ts'
+import { connectAll, serverFetch, startLists, type Downstream } from '../src/host/downstream.ts'
 
 const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-downstream-test-'))
@@ -472,6 +472,32 @@ const startStorm = async () => {
       }),
   }
 }
+
+describe('lists', () => {
+  test('a wait for the lists covers each change that comes while it waits', async () => {
+    const answers: ((tools: []) => void)[] = []
+    const lists = startLists(
+      [],
+      () => new Promise(resolve => answers.push(resolve)),
+      () => {},
+      0,
+    )
+    const tick = () => new Promise(resolve => setTimeout(resolve, 20))
+    lists.changed()
+    await tick()
+    let settled = false
+    const done = lists.until(performance.now() + 3000).then(covered => ((settled = true), covered))
+    lists.changed()
+    answers[0]!([])
+    await tick()
+    lists.changed()
+    answers[1]!([])
+    await tick()
+    assert.equal(settled, false, 'the third change has no list yet')
+    answers[2]!([])
+    assert.equal(await done, true)
+  })
+})
 
 describe('http lists', () => {
   test('an endless stream of tools/list_changed on the GET stream fails the link at the cap, with no listener warning', async () => {

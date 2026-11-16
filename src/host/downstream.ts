@@ -112,7 +112,7 @@ type Lists = {
  * storm or an endless stream of changes costs one list per `floorMs`. A list that fails, or more than MAX_CHANGES
  * lists for a change in CHANGE_WINDOW_MS, stops the lists and gives `stop` the reason.
  */
-const startLists = (
+export const startLists = (
   first: readonly DownstreamTool[],
   list: () => Promise<DownstreamTool[]>,
   stop: (reason: string) => void,
@@ -170,9 +170,11 @@ const startLists = (
     tools: () => tools,
     changed: () => void (lastChange = ask()),
     miss: ask,
-    until: async (end, n = lastChange) => {
-      while (covered < n && !stopped && !isPast(end)) await within(ended, end)
-      return covered >= n
+    // The target is read at each look: a change that comes during the wait must be covered too.
+    until: async (end, n) => {
+      const target = () => n ?? lastChange
+      while (covered < target() && !stopped && !isPast(end)) await within(ended, end)
+      return covered >= target()
     },
   }
 }
