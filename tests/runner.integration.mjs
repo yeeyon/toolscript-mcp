@@ -374,8 +374,9 @@ const cases = {
   'a call with no reply ends at the time limit, and try/catch does not hide it': async () => {
     const answer = m => (m.tool === 'mcp__s__hang' ? undefined : echo(m))
     const code = 'await call("mcp__s__a"); try { await call("mcp__s__hang") } catch { return "caught" }'
-    const r = await run(code, { timeoutMs: 500, answer })
-    assert.equal(failure(r), 'timeout after 500 ms')
+    // The limit counts from the spawn: a slow machine can take 0.5 to 2 s to start Node.
+    const r = await run(code, { timeoutMs: 3000, answer })
+    assert.equal(failure(r), 'timeout after 3000 ms')
     assert.equal(r.calls, 2)
   },
 
