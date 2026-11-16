@@ -287,10 +287,14 @@ server. The program can catch the error and continue.
 - toolscript-mcp reads the file from `--config`, else from `TOOLSCRIPT_CONFIG`.
 - Without both, it reads `%APPDATA%\toolscript-mcp\config.json` on Windows.
 - On other systems, it reads `$XDG_CONFIG_HOME/toolscript-mcp/config.json`, else `~/.config/toolscript-mcp/config.json`.
-- A stdio server has `command`, `args` and `env`. An HTTP server has `"type": "http"`, `url`, `headers` and
+- A stdio server has `command`, `args`, `env` and `cwd`. An HTTP server has `"type": "http"`, `url`, `headers` and
   `oauth`. See [OAuth login](#oauth-login).
+- `cwd` is the folder that a stdio server starts in. It must be an absolute path. Without `cwd`, the server starts in
+  the folder of toolscript-mcp.
+- On Windows, `cwd` needs a drive letter or a share, for example `C:/work/app`.
+- If the `cwd` folder does not exist, only that server fails. toolscript-mcp tries again on the next use.
 - The `url` of an HTTP server must be a valid URL that starts with `http://` or `https://`.
-- `${VAR}` in `args`, `env`, `url` and `headers` gets the value of `VAR` from the environment of toolscript-mcp.
+- `${VAR}` in `args`, `env`, `cwd`, `url` and `headers` gets the value of `VAR` from the environment of toolscript-mcp.
 - If a server entry has an error, for example a variable that is not set, only that server fails.
 - `search_tools` shows the error of the server. The error names the variable, not its value.
 - An error outside `mcpServers` stops toolscript-mcp at the start.

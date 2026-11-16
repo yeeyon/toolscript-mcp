@@ -87,6 +87,7 @@ Downstream servers:
 - The end of a run no longer sends `notifications/cancelled` for calls that already finished.
 - An HTTP server that restarts, or loses the session, no longer fails every later call until toolscript-mcp restarts. The first call that finds the server unreachable, or the session unknown, fails, and the next use connects again. A session is unknown after a 404 to a request with a session id, or a 400 with a session error text of the MCP TypeScript SDK. Any other 400 fails only its call. An error of the optional GET stream does not end the session, so a server with only POST /mcp stays connected.
 - An HTTP `url` that does not parse, also after `${VAR}` expansion, fails only its entry. It no longer stops toolscript-mcp at the start. The error names the key, not the URL.
+- A stdio entry takes `cwd`, the absolute folder that the server starts in, with `${VAR}` expansion. A relative `cwd` fails only its entry. A `cwd` folder that does not exist fails only its server, with a reason that names the folder, and the next use tries again. Before, every stdio server started in the folder of toolscript-mcp.
 
 OAuth login:
 

@@ -301,3 +301,57 @@ describe('http', () => {
       }
     })
 })
+
+describe('cwd', () => {
+  /** connectAll with one probe server, started in `cwd` when it is given, and the folder that the probe reports. */
+  const start = (cwd?: string) => {
+    const file = path.join(DIR, `${randomUUID()}.json`)
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file],
+      env: {},
+      ...(cwd !== undefined && { cwd }),
+    }
+    const downstream = connectAll(new Map([[KEY, server]]), '0', () => {})
+    opened.push(downstream)
+    const folder = (): string => fs.realpathSync.native(JSON.parse(fs.readFileSync(file, 'utf8')).cwd)
+    return { downstream, file, folder }
+  }
+
+  test('a stdio server starts in the folder of its cwd, also with a space in the path', async () => {
+    const project = path.join(DIR, 'my project')
+    fs.mkdirSync(project)
+    const { downstream, folder } = start(project)
+    await downstream.settled
+    assert.equal(downstream.states()[0]?.status, 'connected')
+    assert.equal(folder(), fs.realpathSync.native(project))
+  })
+
+  test('without cwd, a stdio server starts in the folder of toolscript-mcp', async () => {
+    const { downstream, folder } = start()
+    await downstream.settled
+    assert.equal(downstream.states()[0]?.status, 'connected')
+    assert.equal(folder(), fs.realpathSync.native(process.cwd()))
+  })
+
+  test('a cwd that does not exist fails its server with a reason that names the folder, and connects once it exists', async () => {
+    const missing = path.join(DIR, 'not yet')
+    const { downstream, file } = start(missing)
+    await downstream.settled
+    const state = downstream.states()[0]
+    assert.equal(state?.status === 'failed' ? state.reason : state?.status, `its cwd folder does not exist: ${missing}`)
+    assert.equal(fs.existsSync(file), false, 'the server did not start')
+    fs.mkdirSync(missing)
+    assert.equal((await downstream.client(KEY)).ok, true)
+  })
+
+  test('a cwd that is a file fails its server', async () => {
+    const notFolder = path.join(DIR, 'a file')
+    fs.writeFileSync(notFolder, '')
+    const { downstream } = start(notFolder)
+    await downstream.settled
+    const state = downstream.states()[0]
+    assert.equal(state?.status === 'failed' ? state.reason : state?.status, `its cwd is not a folder: ${notFolder}`)
+  })
+})
