@@ -10,6 +10,7 @@ export type DownstreamTool = {
   readonly description?: string
   readonly inputSchema?: unknown
   readonly outputSchema?: unknown
+  readonly _meta?: unknown
 }
 
 /**
@@ -28,6 +29,8 @@ export type CatalogEntry = ToolEntry & {
   readonly inputSchema: unknown
   /** What call() returns: the structuredContent of the result. */
   readonly outputSchema: unknown
+  /** Its server marks it to need a person's approval on every call, so an allow rule does not let it run. */
+  readonly requiresUserInteraction: boolean
 }
 
 /** The full name of a downstream tool, as splitToolName reads it. */
@@ -38,6 +41,9 @@ const CONTROLS = new RegExp(CONTROL.source, 'g')
 
 /** Downstream text on one line, so it cannot start a block of its own, and at most `max` characters. */
 const oneLine = (text: string, max: number): string => text.replace(CONTROLS, ' ').slice(0, max)
+
+/** The mark that Claude Code documents: only the JSON true counts. */
+const REQUIRES_USER_INTERACTION = 'anthropic/requiresUserInteraction'
 
 /** Every tool of every connected server. A tool whose name is empty or holds a control character is left out: no call can name it. */
 export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
@@ -52,6 +58,7 @@ export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
             tool: t.name,
             inputSchema: t.inputSchema,
             outputSchema: t.outputSchema,
+            requiresUserInteraction: isObject(t._meta) && t._meta[REQUIRES_USER_INTERACTION] === true,
           }))
       : [],
   )
