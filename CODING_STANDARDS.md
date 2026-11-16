@@ -60,6 +60,10 @@ enforces; the others rely on discipline.
   `[test: runner.integration.mjs fails when the runner sends a kind that is not in RUNNER_FIELDS]`
 - Every nested call of a program goes through `checkCall` (`src/core/policy.ts`) at call time, also when the check
   before the run passed: a tool name built at run time is never asked. `[test: run.test.ts and server.e2e.mjs, case (e)]`
+- A tool whose server sets `_meta["anthropic/requiresUserInteraction"]` to `true` needs the person's approval before
+  each run, also under an allow rule: `planRun` asks for it and `checkCall` refuses it unless approved. `checkCall` runs
+  again after `downstream.client`, because a server that connects again lists its tools anew.
+  `[test: run.test.ts and server.e2e.mjs, cases run (q) and run (r)]`
 - A program can write the config file through a tool. So a policy read at a run applies at once only when
   `onlyTightens` (`src/core/policy.ts`) says it comes from the policy in force by inserted deny rules, removed allow
   rules and actions lowered in place. Decide it from the rules alone: a check that tries tool names misses a name

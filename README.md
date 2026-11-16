@@ -239,6 +239,9 @@ of your config.
 
 A refused call throws an error in the program. The program can catch it.
 
+The policy matches tool names only. It does not read the arguments of a call, such as a command or a file path. If a
+tool needs limits on its arguments, set those limits in its server.
+
 toolscript-mcp reads `policy` again at the start of each run. If the config has errors at that time, the run uses the
 last valid policy, and the result tells you so.
 
@@ -256,10 +259,24 @@ again until the config file changes. If your client cannot ask, restart toolscri
 
 Do not let a tool that the policy allows write the config file. A program can call that tool to change its own policy.
 
+#### Tools that require a person
+
+A server can set `_meta["anthropic/requiresUserInteraction"]` to `true` on a tool. Claude Code then asks the person at
+each call of that tool, also when an allow rule matches it. toolscript-mcp keeps this mark:
+
+- An `allow` rule does not let the tool run. toolscript-mcp asks you before each run that calls the tool.
+- The prompt names the tool and tells you that a policy rule cannot allow it.
+- Your approval covers each call of the tool in that run. The next run asks again.
+- A `deny` rule still denies the tool. An `ask` rule asks as before.
+- If your client cannot ask, the program does not start.
+- A tool name that the program builds at run time is refused at call time, because toolscript-mcp cannot ask for it.
+
+Only the JSON value `true` counts. toolscript-mcp ignores any other value.
+
 #### With Claude Code auto mode
 
 Claude Code checks each `run_code` call itself. In auto mode, its classifier reads the program and the tool names in
-it. To use that check alone, as Code Mode does, allow every tool in the policy:
+it. To use that check in place of the toolscript-mcp prompts, allow every tool in the policy:
 
 ```json
 "policy": [
@@ -270,6 +287,16 @@ it. To use that check alone, as Code Mode does, allow every tool in the policy:
 
 Put a `deny` rule before the `*` rule for each tool that must never run. Keep the default `ask` in a client that has
 no check of its own, such as Claude Desktop.
+
+This setup does not give the checks of Code Mode. Code Mode checks each tool call of a program with your Claude Code
+rules and hooks. Claude Code sees only the `run_code` call of toolscript-mcp, not its nested calls:
+
+- The permission rules of Claude Code, such as `Bash` and file rules, do not apply to the nested calls.
+- `PreToolUse` hooks do not run for the nested calls.
+- The classifier reads the program before it runs. It does not see a value that the program computes at run time.
+- The toolscript-mcp policy matches tool names only, not arguments or file paths.
+
+A tool that requires a person still asks you with this policy. See [Tools that require a person](#tools-that-require-a-person).
 
 If a tool does not answer in the call time limit, the call throws an error. toolscript-mcp cancels the request on the
 server. The program can catch the error and continue.
@@ -416,6 +443,8 @@ It solves a similar problem inside Claude Code.
 - Code Mode works only in Claude Code. It is off by default, and it has more conditions, for example the interactive
   terminal and the Anthropic API.
 - Code Mode reaches the built-in tools of Claude Code and the shell. toolscript-mcp reaches only MCP tools.
+- Code Mode checks each tool call of a program with the permission rules and hooks of Claude Code. toolscript-mcp
+  checks each nested call with its own policy, which matches tool names only.
 - toolscript-mcp is for each MCP client that can start a stdio server. It is open source, with a documented sandbox
   and allow, deny and ask rules.
 - toolscript-mcp is tested with the client of the MCP TypeScript SDK and with Claude Code.
