@@ -281,6 +281,13 @@ export const initReport = (imp: Import, configFile: string, platform: string): s
   if (left.length > 0) out.push('', 'Not imported:', ...left)
   if (imp.servers.size === 0) return [...out, '', 'No server to import. init wrote nothing.'].join('\n')
   out.push('', `Imported ${plural(imp.servers.size, 'server')}:`, ...imported)
+  // The config gives each of them an OAuth login by default.
+  const bare = [...imp.servers].flatMap(([key, e]) => ('type' in e && e.headers === undefined ? [key] : []))
+  if (bare.length > 0)
+    out.push(
+      '',
+      `These HTTP servers have no headers: ${bare.join(', ')}. If one asks for an OAuth login, run npx -y toolscript-mcp login <server> for it.`,
+    )
 
   const [first] = imp.servers.keys()
   out.push(

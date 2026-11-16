@@ -41,6 +41,13 @@ export const runLogFile = (home: string): string => appPath(home, 'runs.jsonl')
 export const oldRunLogFile = (home: string): string => appPath(home, 'runs.1.jsonl')
 
 /**
+ * The OAuth store of one HTTP server under HOME. `urlHash` is a hash of its URL, so a changed URL never gets the
+ * tokens of the old one. A server key holds only letters, digits, `-` and `_`, so it is a safe file name.
+ */
+export const oauthFile = (home: string, key: string, urlHash: string): string =>
+  appPath(home, 'oauth', `${key}-${urlHash}.json`)
+
+/**
  * The folders whose files steer the model, as written: the person's and the
  * project's hints (the project's even while projectHints is off, so none can
  * be planted to load later), and the person's saved functions. The model's

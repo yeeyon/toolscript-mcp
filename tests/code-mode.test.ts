@@ -613,9 +613,9 @@ describe('output projection', () => {
       text,
       [
         '--- 4 MCP calls: 120k characters in, 13 out ---',
-        '#3 mcp__x__get_deploys 71k, the same call as #1 {deploys: [400]} -> recall(3)',
-        '#4 mcp__x__list_issues 49k {issues: [180]} -> recall(4)',
-        '#5 mcp__x__ping 2 -> recall(5)',
+        '#3 mcp__x__get_deploys 71k, the same call as #1 {deploys: [400]} -> await recall(3)',
+        '#4 mcp__x__list_issues 49k {issues: [180]} -> await recall(4)',
+        '#5 mcp__x__ping 2 -> await recall(5)',
         '- mcp__x__create_ticket failed',
       ].join('\n'),
     )

@@ -31,6 +31,12 @@ enforces; the others rely on discipline.
   without GET answers 400 or 404 there. `[test: downstream.test.ts, describe http]`
 - Every nested call has the time limit `sandbox.callTimeoutSeconds`, through the SDK's `timeout`, so the SDK sends
   `notifications/cancelled` when it ends. `[test: server.e2e.mjs, case run (l)]`
+- The running server never opens a browser, registers an OAuth client or starts a login: its provider in
+  `src/host/oauth.ts` throws `LoginNeeded` at each of these steps, and the link fails with the login command as its
+  reason. Only `toolscript-mcp login` does them. A refresh that gets no answer throws `RefreshFailed`: the tokens
+  stay, and the next use tries again. No log line, printed line, reason or nested-call error holds a token, code,
+  verifier or client secret: each downstream error goes through the `hide` of its link, which passes the secrets of
+  the provider to `redact`. `[test: oauth.test.ts, server.e2e.mjs case (p)]`
 - `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there
   and in the sandbox table of `README.md`. `[test: runner.integration.mjs checks each layer that LAYERS names]`
 - Imports between files use the `.ts` extension, so Node can run the sources and `tsc` rewrites them. Use only

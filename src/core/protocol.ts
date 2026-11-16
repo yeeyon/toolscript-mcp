@@ -969,7 +969,8 @@ const callLine = (c: CallRecord): string => {
   if (c.status === 'unfinished') return `${id} ${c.tool} did not finish`
   if (c.status === 'failed') return `${id} ${c.tool} failed`
   const repeat = c.repeatOf === undefined || c.repeatOf === 0 ? '' : `, the same call as #${c.repeatOf}`
-  const recall = c.ref === undefined ? '' : ` -> recall(${c.ref})`
+  // The model copies this handle as written, so it carries the await that recall needs.
+  const recall = c.ref === undefined ? '' : ` -> await recall(${c.ref})`
   return `${`${id} ${c.tool} ${charCount(c.chars)}${repeat} ${c.shape ?? ''}`.trimEnd()}${recall}`
 }
 

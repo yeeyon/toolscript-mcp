@@ -44,7 +44,7 @@ The first server (M3):
 - `approvalNote` moved to `src/core/policy.ts` and names the rule to add in the config. The check before a run no longer says that a deny rule hides a tool.
 - `normalizePath` keeps a Windows drive, so `appPath` works with a Windows home folder.
 - A return value cut at 20,000 characters now shows its shape first, then the first 3,000 characters as compact JSON, then the `recall(n)` note. Before, it showed 20,000 characters of indented JSON and the shape came after the cut. A 71k-character result now takes 3,414 characters, not 20,342.
-- Each kept call in the footer names its handle, as `#1 mcp__bench__get_deploys 71k {…} -> recall(1)`. The `run_code` description lists `recall(n)`. In the bench, 5 of 9 second programs called the same tool again instead of `recall(n)`.
+- Each kept call in the footer names its handle, as `#1 mcp__bench__get_deploys 71k {…} -> await recall(1)`. The handle carries `await`, because the model copies it as written: in real use, `recall(n)` without `await` gave a Promise and failed the next program. The `run_code` description lists `recall(n)`. In the bench, 5 of 9 second programs called the same tool again instead of `recall(n)`.
 - `tests/run.test.ts` runs `run_code` with the real sandbox and fake servers: the run_code, files, check, output projection and approval cases of the plugin that apply. `tests/policy.test.ts` covers the rules and the config. `tests/server.e2e.mjs` covers paging, deny, ask with and without elicitation, a name built at run time, a busy loop, a wrong name, a secret probe, a cut result with recall, and the cleanup of the exchange dir.
 
 The bench:
@@ -86,6 +86,18 @@ Downstream servers:
 - The end of a run no longer sends `notifications/cancelled` for calls that already finished.
 - An HTTP server that restarts, or loses the session, no longer fails every later call until toolscript-mcp restarts. The first call that finds the server unreachable, or the session unknown, fails, and the next use connects again. A session is unknown after a 404 to a request with a session id, or a 400 with a session error text of the MCP TypeScript SDK. Any other 400 fails only its call. An error of the optional GET stream does not end the session, so a server with only POST /mcp stays connected.
 - An HTTP `url` that does not parse, also after `${VAR}` expansion, fails only its entry. It no longer stops toolscript-mcp at the start. The error names the key, not the URL.
+
+OAuth login:
+
+- Added `toolscript-mcp login <server> [--config <path>]`. It logs in to a remote HTTP server with OAuth, with no proxy such as `mcp-remote`. It listens on `127.0.0.1`, opens the browser, checks the state, and connects and counts the tools after the token exchange. The MCP TypeScript SDK does the discovery, the dynamic client registration, PKCE and the refresh.
+- login opens only an authorization URL with `https`, or with `http` on `127.0.0.1`, `::1` or `localhost`, and refuses any other before it prints or opens it. A callback with a wrong or no state gets 400, and login waits for the right one. login prints the error of a callback with its control characters escaped.
+- An HTTP server without `headers` logs in with OAuth. `"oauth": true` turns it on for a server with other headers, and `"oauth": false` turns it off. `"oauth": { "clientId", "clientSecret", "scopes", "callbackPort" }` sets a client registered by hand, as Google needs. A bad `oauth` entry, an empty `clientSecret`, or `oauth` with an `Authorization` header, fails only its server. `clientSecret` takes `${VAR}`, and a failure reason hides it.
+- The `headers` of an HTTP entry go only to the origin of its `url`, never to its authorization server.
+- The tokens and the registered client go to `~/.toolscript-mcp/oauth/<server>-<hash of the URL>.json`, written with a rename, mode 0600 in a 0700 folder on Linux and macOS. A new URL needs a new login. A client that login registers goes into the file only with the tokens of that login, so a cancelled login keeps the old client and tokens. The next login uses the port of the registered redirect URL again. A stored redirect URL that is not `http` on a loopback host is dropped.
+- The running server refreshes the tokens and saves them in the store. It never opens a browser, registers a client or starts a login. A server that needs a login fails with a reason that names `npx -y toolscript-mcp login <server>`. So does a server that answers 401 after a refresh, and a stored client of another authorization server. The next search or call after the login connects again, with no restart.
+- When another process with the same store refreshed a rotating refresh token first, the running server uses the new token from the store and needs no login. A refresh that gets no answer shows "could not refresh the OAuth token" and its cause, and the next use tries again.
+- A log line, a printed line, a `search_tools` reason or an error of a nested call hides each OAuth token, code, verifier, state and client secret that toolscript-mcp sent, also URL- or form-encoded and as a Basic header value.
+- The init report names the imported HTTP servers without headers, and `npx -y toolscript-mcp login <server>` for them.
 
 Tool search:
 

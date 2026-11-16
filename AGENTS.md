@@ -21,6 +21,9 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
     readFile, recall and the result.
   - `downstream.ts`: connects to the servers of the config in parallel. A failed or closed server connects again on
     next use, at most 3 times in 60 s.
+  - `oauth.ts`: the token store under `~/.toolscript-mcp/oauth/` and the SDK OAuth provider over it, in login mode
+    or in the mode of the running server, which never starts a login.
+  - `login.ts`: `toolscript-mcp login <server>`: the callback listener, the browser and the token exchange.
   - `launch.ts`: starts the runner with the sandbox layers of each OS, the host kill timer and the exchange dir.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
 - `hints/` holds the bundled hints and `hints/sha256.json`.

@@ -36,12 +36,7 @@ const setup = () => {
     env: {},
   }
   const clock = { now: 0 }
-  const downstream = connectAll(
-    new Map([[KEY, server]]),
-    '0',
-    () => {},
-    () => clock.now,
-  )
+  const downstream = connectAll(new Map([[KEY, server]]), '0', () => {}, { now: () => clock.now })
   opened.push(downstream)
   const starts = () =>
     fs

@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
@@ -53,6 +54,9 @@ const SERVER_ENV = {
   HOME,
   USERPROFILE: HOME,
 }
+const locked = http.createServer((req, res) => void res.writeHead(req.url?.startsWith('/mcp') ? 401 : 404).end())
+await new Promise(resolve => locked.listen(0, '127.0.0.1', resolve))
+const LOCKED_URL = `http://127.0.0.1:${locked.address().port}`
 fs.writeFileSync(
   configFile,
   JSON.stringify({
@@ -97,6 +101,8 @@ fs.writeFileSync(
       // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
       badurl: { type: 'http', url: 'http://' },
       badvar: { type: 'http', url: '${TOOLSCRIPT_E2E_BAD_URL}' },
+      // Answers 401 to everything, and HOME has no tokens: it needs a login.
+      locked: { type: 'http', url: `${LOCKED_URL}/mcp` },
     },
   }),
 )
@@ -197,6 +203,8 @@ after(async () => {
   await client.close().catch(() => {})
   await askingClient.close().catch(() => {})
   if (transport.child.exitCode === null) transport.child.kill()
+  locked.closeAllConnections()
+  locked.close()
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 })
 })
 
@@ -288,6 +296,19 @@ test('(k) an http entry whose URL does not parse fails alone, and the error name
   )
   assert.match(text, /### mcp__bench__/, text)
   assert.ok(!text.includes(BAD_URL) && !transport.stderr.includes(BAD_URL), 'the URL of the variable is not shown')
+})
+
+test('(p) an http server that answers 401 without tokens asks for a login, with this config file', async () => {
+  const text = await search('')
+  const command = `npx -y toolscript-mcp login locked --config "${path.resolve(configFile)}"`
+  assert.ok(text.includes(`- locked: it needs an OAuth login. Ask the person to run \`${command}\``), text)
+  const login = spawnSync(process.execPath, [MAIN, 'login', 'bench', '--config', configFile], {
+    env: SERVER_ENV,
+    encoding: 'utf8',
+  })
+  assert.equal(login.status, 1, login.stderr)
+  assert.match(login.stderr, /bench is a stdio server\. Only an HTTP server logs in with OAuth\./)
+  assert.equal(login.stdout, '')
 })
 
 test('(e) a nested toolscript-mcp refuses to start', async () => {
