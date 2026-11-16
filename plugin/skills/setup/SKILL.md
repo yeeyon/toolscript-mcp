@@ -157,7 +157,7 @@ applies after the person approves it in a prompt, or after a restart of toolscri
 
 ## 7. Use the tools of Claude Code in programs
 
-With this step, programs call the Read, Grep, Glob, Edit and Bash tools of Claude Code. toolscript-mcp starts
+With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell tools of Claude Code. toolscript-mcp starts
 `claude mcp serve` as the server `claude-code`.
 
 1. Find the `claude` executable. Its path is `<claude>`.
