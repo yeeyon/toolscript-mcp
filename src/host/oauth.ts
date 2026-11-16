@@ -86,6 +86,24 @@ export const readStore = async (file: string): Promise<Stored> => {
 }
 
 /**
+ * Renames `from` over `to`. Windows refuses it while another reader or writer has `to` open, so it tries again for up
+ * to RENAME_WAIT_MS.
+ */
+const renameOver = async (from: string, to: string): Promise<void> => {
+  for (let waited = 0; ; waited += RENAME_POLL_MS) {
+    try {
+      return await fs.promises.rename(from, to)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? ''
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(code) || waited >= RENAME_WAIT_MS) throw err
+      await new Promise(resolve => setTimeout(resolve, RENAME_POLL_MS))
+    }
+  }
+}
+const RENAME_WAIT_MS = 1000
+const RENAME_POLL_MS = 10
+
+/**
  * Changes the store: a new 0600 file in a 0700 folder, then a rename, so a reader in another process never sees a
  * part of a file. Windows does not apply the modes.
  */
@@ -98,7 +116,7 @@ const updateStore = async (file: string, change: (stored: Stored) => Stored): Pr
   const temp = `${file}.${randomUUID()}.tmp`
   try {
     await fs.promises.writeFile(temp, text, { mode: 0o600, flag: 'wx' })
-    await fs.promises.rename(temp, file)
+    await renameOver(temp, file)
   } finally {
     await fs.promises.rm(temp, { force: true })
   }
@@ -124,6 +142,12 @@ const ROTATE_POLL_MS = 100
  * refresh: a rotating refresh token works once, so a second refresh with it is refused.
  */
 const refreshes = new Map<string, Promise<OAuthTokens>>()
+
+/**
+ * The tokens of the last refresh of each store file that the store did not take. This process uses them: the store
+ * still holds the refresh token that the refresh used up.
+ */
+const unsaved = new Map<string, OAuthTokens>()
 
 /** The provider of `login`: it opens the browser, and keeps the verifier and the state in memory. */
 export type LoginMode = {
@@ -185,7 +209,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   // without an OAuth error code as a server error and starts a login after it, so this decides on each answer.
   const renew = async (send: () => Promise<Response>, sent: string): Promise<OAuthTokens> => {
     // A call that read the tokens before the last refresh saved them sends a refresh token that is used up.
-    const { tokens: now } = await readStore(file)
+    const now = await current()
     if (now?.refresh_token !== undefined && now.refresh_token !== sent) return now
     let response: Response
     try {
@@ -201,13 +225,23 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       if (answer === undefined) return needLogin()
       // The SDK keeps the refresh token when the answer has none, and stamps the authorization server.
       const tokens = { refresh_token: sent, ...answer, ...(now?.issuer !== undefined && { issuer: now.issuer }) }
-      await updateStore(file, stored => ({ ...stored, tokens }))
+      try {
+        await updateStore(file, stored => ({ ...stored, tokens }))
+        unsaved.delete(file)
+      } catch (err) {
+        unsaved.set(file, tokens)
+        const cause = (err as NodeJS.ErrnoException).code ?? errorText(err)
+        console.error(
+          `toolscript-mcp: could not save the refreshed OAuth tokens in ${file} (${cause}). They work until toolscript-mcp stops.`,
+        )
+      }
       return tokens
     }
     if (!isRefusal(response.status)) throw new RefreshFailed(refreshReason(`HTTP ${response.status}`))
     // Another process can have refreshed `sent` first: then the SDK gets the tokens it saved.
     return (await rotated(file, sent)) ?? needLogin()
   }
+  const current = async () => unsaved.get(file) ?? (await readStore(file)).tokens
   const refresh = async (send: () => Promise<Response>, sent: string): Promise<Response> => {
     let flight = refreshes.get(file)
     if (flight === undefined) {
@@ -244,7 +278,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
         saveClientInformation: (info: OAuthClientInformationMixed) => void (own = { info: keepClient(info) }),
       }),
     tokens: async () => {
-      return keepTokens(login ? fresh : (await readStore(file)).tokens)
+      return keepTokens(login ? fresh : await current())
     },
     saveTokens: async tokens => {
       // The refresh of the running server saved them.

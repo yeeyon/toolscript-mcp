@@ -4,7 +4,7 @@
 // PKCE verifier and refreshes, and an MCP endpoint that answers 401 without a
 // valid Bearer token. `runLogin` gets a browser that follows the redirect.
 
-import { after, describe, test } from 'node:test'
+import { after, describe, mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
@@ -681,6 +681,56 @@ describe('the running server', () => {
     const calls = links.flatMap(link => Array.from({ length: 4 }, () => s.ping(link)))
     assert.deepEqual(await Promise.all(calls), Array(8).fill(PONG))
     assert.equal(fake.refreshRequests(), 1)
+  })
+
+  test('a store that refuses the rename of refreshed tokens for a while gets them, and the call goes on', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    const rename = fs.promises.rename
+    let refusals = 3
+    mock.method(fs.promises, 'rename', async (from: string, to: string) => {
+      if (refusals-- > 0) throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      return rename(from, to)
+    })
+    fake.expire()
+    try {
+      assert.equal(await s.ping(downstream), PONG)
+    } finally {
+      mock.restoreAll()
+    }
+    assert.equal(await s.ping(s.connect()), PONG, 'a new link uses the saved tokens')
+    assert.equal(fake.seen.refreshes, 1)
+  })
+
+  test('refreshed tokens that the store never takes work until the process ends, with one log line each', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    mock.method(fs.promises, 'rename', async () => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' })
+    })
+    const logged = mock.method(console, 'error', () => {})
+    try {
+      fake.expire()
+      assert.equal(await s.ping(downstream), PONG)
+      fake.expire()
+      assert.equal(await s.ping(downstream), PONG, 'the next refresh sends the refresh token in memory')
+    } finally {
+      mock.restoreAll()
+    }
+    assert.equal(fake.seen.refreshes, 2)
+    const lines = logged.mock.calls.map(call => call.arguments.join(' '))
+    assert.equal(lines.length, 2, lines.join('\n'))
+    assert.match(lines[0] ?? '', /could not save the refreshed OAuth tokens.*EBUSY/)
+    assert.deepEqual(
+      [...fake.secrets].filter(secret => lines.join('\n').includes(secret)),
+      [],
+    )
   })
 
   test('a late invalid_grant of one of two calls at expiry needs no login', async () => {
