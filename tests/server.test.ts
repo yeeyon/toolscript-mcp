@@ -76,6 +76,82 @@ describe('the config', () => {
     })
   })
 
+  test('a stdio entry takes an absolute cwd, with ${VAR} expanded', () => {
+    const linux = ok(
+      { mcpServers: { a: { command: 'x', cwd: '/srv/my app' }, b: { command: 'x', cwd: '${WORK}/app' } } },
+      { WORK: '/work' },
+    )
+    assert.deepEqual(linux.servers.get(key('a')), {
+      kind: 'stdio',
+      command: 'x',
+      args: [],
+      env: {},
+      cwd: '/srv/my app',
+    })
+    assert.equal((linux.servers.get(key('b')) as StdioServer).cwd, '/work/app')
+    const windows = ok(
+      {
+        mcpServers: {
+          a: { command: 'x', cwd: 'C:\\work\\my app' },
+          b: { command: 'x', cwd: 'c:/work' },
+          c: { command: 'x', cwd: '\\\\server\\share\\app' },
+        },
+      },
+      {},
+      'win32',
+    )
+    assert.deepEqual(
+      [...windows.servers.values()].map(s => (s as StdioServer).cwd),
+      ['C:\\work\\my app', 'c:/work', '\\\\server\\share\\app'],
+    )
+  })
+
+  test('a cwd that is not an absolute path fails only its entry', () => {
+    const invalid = (...errors: string[]) => ({ kind: 'invalid', errors })
+    const linux = ok({
+      mcpServers: {
+        rel: { command: 'x', cwd: 'app' },
+        home: { command: 'x', cwd: '~/app' },
+        drive: { command: 'x', cwd: 'C:/work' },
+        empty: { command: 'x', cwd: '' },
+        num: { command: 'x', cwd: 1 },
+        unset: { command: 'x', cwd: '${NOPE}/app' },
+        good: { command: 'x' },
+      },
+    })
+    const posix = (name: string, value: string) =>
+      invalid(`mcpServers.${name}.cwd: must be an absolute path, such as "/home/me/app", not ${JSON.stringify(value)}`)
+    assert.deepEqual(Object.fromEntries(linux.servers), {
+      rel: posix('rel', 'app'),
+      home: posix('home', '~/app'),
+      drive: posix('drive', 'C:/work'),
+      empty: invalid('mcpServers.empty.cwd: must be a non-empty string'),
+      num: invalid('mcpServers.num.cwd: must be a non-empty string'),
+      unset: invalid('mcpServers.unset.cwd: the environment variable NOPE is not set'),
+      good: { kind: 'stdio', command: 'x', args: [], env: {} },
+    })
+    const windows = ok(
+      {
+        mcpServers: {
+          root: { command: 'x', cwd: '/srv' },
+          drive: { command: 'x', cwd: 'C:work' },
+          rel: { command: 'x', cwd: 'work\\app' },
+        },
+      },
+      {},
+      'win32',
+    )
+    const win = (name: string, value: string) =>
+      invalid(
+        `mcpServers.${name}.cwd: must be an absolute path with a drive letter or a share, such as "C:/work/app", not ${JSON.stringify(value)}`,
+      )
+    assert.deepEqual(Object.fromEntries(windows.servers), {
+      root: win('root', '/srv'),
+      drive: win('drive', 'C:work'),
+      rel: win('rel', 'work\\app'),
+    })
+  })
+
   test('a variable that is not set is an error that names the variable and the key, never a value', () => {
     const config = ok(
       { mcpServers: { gh: { command: 'gh-mcp', env: { TOKEN: '${GITHUB_TOKEN}', OTHER: '${SET_ONE}' } } } },
