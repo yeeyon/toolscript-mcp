@@ -6,7 +6,15 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { argSpec, catalogOf, interactiveTools, learnShape, notConnected } from '../core/catalog.ts'
+import {
+  argSpec,
+  catalogOf,
+  interactiveTools,
+  learnShape,
+  listedNames,
+  notConnected,
+  type ServerState,
+} from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
 import {
   approvalNote,
@@ -32,6 +40,7 @@ import {
   limiter,
   literalCalls,
   mcpReply,
+  notListedText,
   problemReport,
   recallReply,
   shapeOf,
@@ -109,9 +118,14 @@ const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallL
   known,
 })
 
-/** A call that a refused program names. It never started; `error` says why the policy stops it. */
-const notMade = (policy: Policy, interactive: ReadonlySet<string>, tool: string): CallLog => {
-  const decision = callDecision(policy, new Set(), tool, interactive)
+/** A call that a refused program names. It never started; `error` says why the policy or its server stops it. */
+const notMade = (policy: Policy, states: readonly ServerState[], tool: string): CallLog => {
+  const server = splitToolName(tool)?.server
+  const names = server === undefined ? undefined : listedNames(states, server)
+  const decision =
+    names !== undefined && !names.includes(tool)
+      ? 'invalid'
+      : callDecision(policy, new Set(), tool, interactiveTools(states))
   return { tool, decision, ms: 0, ok: false, ...(decision === 'allow' ? {} : { error: decision }) }
 }
 
@@ -156,7 +170,7 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     if (reason !== undefined) down.set(s.key, reason)
   }
   const interactive = interactiveTools(states)
-  const notRun = named.map(c => notMade(ctx.config.policy, interactive, c.tool))
+  const notRun = named.map(c => notMade(ctx.config.policy, states, c.tool))
   const refuse = (text: string) => refused(text, known, notRun)
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
@@ -322,6 +336,11 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     if (refused !== undefined) return refused
     const link = await downstream.client(target.server as ServerKey)
     if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
+    const names = listedNames(downstream.states(), target.server) ?? []
+    if (!names.includes(tool)) {
+      decided.set(id, 'invalid')
+      return { ok: false, error: notListedText(tool, target.server, names), code: 'invalid' }
+    }
     // The link can be new, with a new list of tools: check again.
     const again = checkNow()
     if (again !== undefined) return again

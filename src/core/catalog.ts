@@ -71,6 +71,15 @@ export const interactiveTools = (states: readonly ServerState[]): Set<string> =>
       .map(t => t.name),
   )
 
+/**
+ * The tool names that the connected server `server` lists, or undefined when it is not connected. Rules and marks
+ * match a listed name, and a server can answer a name that it does not list, so a call of another name is refused.
+ */
+export const listedNames = (states: readonly ServerState[], server: string): string[] | undefined => {
+  const state = states.find(s => s.key === server)
+  return state?.status === 'connected' ? catalogOf([state]).map(t => t.name) : undefined
+}
+
 /** Why a call cannot reach a server now, or undefined when it is connected. */
 export const notConnected = (s: ServerState): string | undefined =>
   s.status === 'connected'

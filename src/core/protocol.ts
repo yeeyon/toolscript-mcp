@@ -836,6 +836,13 @@ const nearest = (name: string, names: readonly string[], most: number): string |
 const typoOf = (key: string, names: readonly string[]): string | undefined =>
   key.length < 4 ? undefined : nearest(key, names, key.length <= 6 ? 1 : 2)
 
+/** The error of a tool that its connected server does not list, with the nearest name of `names`. */
+export const notListedText = (tool: string, server: string, names: readonly string[]): string => {
+  const near = nearest(tool, names, 3)
+  const help = near === undefined ? '. Find its tools with search_tools' : ` (did you mean "${near}"?)`
+  return `no tool "${tool}" on the connected server "${server}"${help}`
+}
+
 /** A wrong name in a program, found before it runs. `isGuess`: from learned names, not a declaration. */
 export type CallProblem = { line: number; text: string; isGuess: boolean }
 
@@ -862,10 +869,9 @@ export const checkCalls = (
         continue
       }
       const near = nearest(c.tool, [...tools], 3)
-      const guess = near === undefined ? '' : ` (did you mean "${near}"?)`
       const text = [...tools].some(t => splitToolName(t)?.server === server)
-        ? `no tool "${c.tool}" on the connected server "${server}"${guess}`
-        : `no MCP tool "${c.tool}" is connected${guess}`
+        ? notListedText(c.tool, server, [...tools])
+        : `no MCP tool "${c.tool}" is connected${near === undefined ? '' : ` (did you mean "${near}"?)`}`
       problems.push({ line: c.line, text, isGuess: false })
       continue
     }

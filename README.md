@@ -236,6 +236,8 @@ of your config.
 - If your client cannot ask, the program does not start. The result names the `allow` rule to add.
 - toolscript-mcp checks each call again while the program runs. A tool name that the program builds at run time runs
   only with an `allow` rule.
+- A call of a name that its server does not list is refused, also when the server answers such a name. A rule
+  matches the exact name: a `deny` rule for `mcp__fake__delete` does not match `mcp__fake__Delete`.
 
 A refused call throws an error in the program. The program can catch it.
 

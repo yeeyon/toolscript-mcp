@@ -747,6 +747,40 @@ describe('a tool whose server requires a person', () => {
     }
   })
 
+  test('a name that its server does not list is refused at call time, also when the server answers it', async () => {
+    const file = path.join(ROOT, 'unlisted.json')
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file, '--requires-person'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['c' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked, lines } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      const r = await run(
+        'const out = []\nfor (const n of ["Probe", "PROBE", "probe "]) {\n  try { out.push(await call("mcp__c__" + n, {})) } catch (e) { out.push(e.message) }\n}\nreturn out',
+      )
+      assert.deepEqual(asked, [])
+      const refusal = JSON.stringify(
+        'no tool "mcp__c__Probe" on the connected server "c" (did you mean "mcp__c__probe"?)',
+      )
+      assert.ok(r.text.includes(refusal.slice(1, -1)), r.text)
+      assert.equal(r.text.match(/no tool \\"mcp__c__/g)?.length, 3, r.text)
+      const calls = fs
+        .readFileSync(`${file}.log`, 'utf8')
+        .split('\n')
+        .filter(l => l.includes('"event":"call"'))
+      assert.deepEqual(calls, [], 'no call reached the server')
+      assert.deepEqual(
+        lines().map(l => l.calls.map(({ decision, ok, error }) => [decision, ok, error])),
+        [Array(3).fill(['invalid', false, 'invalid'])],
+      )
+    } finally {
+      await downstream.close()
+    }
+  })
+
   test('the run log keeps the decision of the check: a call that ran before its server marked it is allow', async () => {
     const fake = fakeDownstream()
     const [f] = fake.downstream.states()
@@ -865,7 +899,7 @@ describe('the run log', () => {
     ]
     assert.deepEqual(entries(denied.lines()), [['refused', ...named, 'mcp__f__fail denied false 0 denied']])
     assert.deepEqual(entries(declined.lines()), [['refused', ...named]])
-    assert.deepEqual(entries(wrong.lines()), [['refused', named[0], 'unknown unapproved false 0 unapproved']])
+    assert.deepEqual(entries(wrong.lines()), [['refused', named[0], 'unknown invalid false 0 invalid']])
   })
 
   test('a run past the time limit ends as timeout, and an abort as cancelled', async () => {

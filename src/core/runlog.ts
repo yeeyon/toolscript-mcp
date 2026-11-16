@@ -11,7 +11,7 @@ import { SERVER_NAME } from './tools.ts'
 /** How a run ended. `refused`: it never started. `failed`: the sandbox gave no answer. */
 export type RunEnding = 'done' | 'error' | 'timeout' | 'refused' | 'cancelled' | 'failed'
 
-/** What the policy and the approval said of one nested call. `invalid`: not an MCP tool name. */
+/** What the policy and the approval said of one nested call. `invalid`: not an MCP tool name, or one its connected server does not list. */
 export type CallDecision = 'allow' | 'ask-approved' | 'denied' | 'unapproved' | 'invalid'
 
 /** Why a nested call did not work, as a short code. */
