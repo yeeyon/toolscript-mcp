@@ -463,6 +463,20 @@ describe('login', () => {
     assert.ok(!printed.includes('\nfake:'), printed)
   })
 
+  test('a code exchange refused with a bare invalid_grant prints the error code', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    const wrongCode = (url: string) =>
+      void (async () => {
+        const answer = await fetch(url, { redirect: 'manual' })
+        const to = new URL(answer.headers.get('location') ?? '')
+        to.searchParams.set('code', 'fake-wrong-code')
+        await fetch(to)
+      })()
+    assert.equal(await s.login(wrongCode), 1, s.lines.join('\n'))
+    assert.match(s.lines.at(-1) ?? '', /^login to fake failed: the authorization server answered invalid_grant$/)
+  })
+
   test('the store file is for the user only on Linux and macOS', { skip: process.platform === 'win32' }, async () => {
     const fake = await startFake()
     const s = setup(fake)

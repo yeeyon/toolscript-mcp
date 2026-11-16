@@ -12,6 +12,7 @@ import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
+import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import {
@@ -30,6 +31,13 @@ import { CONNECT_TIMEOUT_MS, listAll, serverFetch } from './downstream.ts'
 import { isLoopbackHttp, oauthProvider, readStore, storeFile, type Stored } from './oauth.ts'
 
 export const LOGIN_USAGE = 'usage: toolscript-mcp login <server> [--config <path>]'
+
+/** The reason of a failed login. The SDK gives an OAuth error without an error_description an empty message. */
+const failure = (err: unknown): string =>
+  errorText(err) ||
+  (err instanceof OAuthError && err.errorCode
+    ? `the authorization server answered ${err.errorCode}`
+    : 'no reason given')
 
 /** The longest wait for the person to finish the login in the browser. */
 const LOGIN_TIMEOUT_MS = 5 * 60_000
@@ -242,7 +250,7 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     io.print(`Logged in to ${key}. It has ${plural(tools.length)}. The tokens are in ${store}${mode}.`)
     return 0
   } catch (err) {
-    io.print(`login to ${key} failed: ${hide(errorText(err))}`)
+    io.print(`login to ${key} failed: ${hide(failure(err))}`)
     return 1
   } finally {
     clearTimeout(timer)
