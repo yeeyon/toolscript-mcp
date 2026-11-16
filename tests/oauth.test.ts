@@ -813,6 +813,22 @@ describe('secrets that a server echoes', () => {
     assert.deepEqual(leaked(fake, text), [])
   })
 
+  test('a token shorter than 8 characters is never hidden, so a server cannot blank the words of a reason', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const [file] = s.store()
+    const stored = JSON.parse(fs.readFileSync(file!, 'utf8'))
+    fs.writeFileSync(
+      file!,
+      JSON.stringify({ ...stored, tokens: { ...stored.tokens, access_token: 'login', refresh_token: 'OAuth' } }),
+    )
+    const downstream = s.connect()
+    await downstream.settled
+    const state = downstream.states()[0]
+    assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON)
+  })
+
   test('login hides the code, the verifier and the client secret that a token endpoint echoes', async () => {
     for (const method of ['client_secret_post', 'client_secret_basic']) {
       const fake = await startFake()

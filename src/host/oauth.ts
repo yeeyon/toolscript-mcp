@@ -189,8 +189,9 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   // with the old client, so a login that ends early leaves both.
   let own: OAuthClientInformationMixed | undefined
   const known = new Set<string>(login ? [login.state] : [])
+  // A server could make a common word a token, to blank it in each reason.
   const add = (...values: (string | undefined)[]) => {
-    for (const value of values) if (value) known.add(value)
+    for (const value of values) if (value !== undefined && value.length >= 8) known.add(value)
   }
   const keepTokens = (tokens: OAuthTokens | undefined) => (add(tokens?.access_token, tokens?.refresh_token), tokens)
   const keepClient = (info: OAuthClientInformationMixed | undefined) => {
