@@ -185,9 +185,9 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   }
   let verifier: string | undefined
   let fresh: OAuthTokens | undefined
-  // The client of this login, once it registered one or dropped the stored one. It goes into the store only with the
-  // tokens: the old tokens refresh only with the old client, so a login that ends early leaves both.
-  let own: { readonly info?: OAuthClientInformationMixed } | undefined
+  // The client that this login registered. It goes into the store only with the tokens: the old tokens refresh only
+  // with the old client, so a login that ends early leaves both.
+  let own: OAuthClientInformationMixed | undefined
   const known = new Set<string>(login ? [login.state] : [])
   const add = (...values: (string | undefined)[]) => {
     for (const value of values) if (value) known.add(value)
@@ -199,7 +199,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   }
   const client = async (): Promise<OAuthClientInformationMixed | undefined> => {
     if (fixed) return fixed
-    if (own) return own.info
+    if (own) return own
     const { client } = await readStore(file)
     // A client with another redirect URL cannot finish this login, so login registers a new one.
     if (login) return client?.redirectUrl === redirectUrl ? client.info : undefined
@@ -275,7 +275,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     // Only login registers. Without this method, the SDK never registers a client for the running server.
     ...(login &&
       !fixed && {
-        saveClientInformation: (info: OAuthClientInformationMixed) => void (own = { info: keepClient(info) }),
+        saveClientInformation: (info: OAuthClientInformationMixed) => void (own = keepClient(info)),
       }),
     tokens: async () => {
       return keepTokens(login ? fresh : await current())
@@ -284,7 +284,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       // The refresh of the running server saved them.
       if (!login) return
       fresh = keepTokens(tokens)
-      const client = own?.info && { info: own.info, redirectUrl }
+      const client = own && { info: own, redirectUrl }
       await updateStore(file, stored => ({ ...stored, ...(client && { client }), tokens }))
     },
     redirectToAuthorization: url => (login ? login.open(url) : needLogin()),
@@ -299,7 +299,14 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     invalidateCredentials: async scope => {
       if (!login) needLogin()
       if (scope === 'all' || scope === 'tokens') fresh = undefined
-      if (scope === 'all' || scope === 'client') own = {}
+      if (scope === 'all' || scope === 'client') {
+        if (fixed) throw new Error('the authorization server refused the OAuth client ID and secret of the config')
+        // The code works only with the client it was issued to. A stored client goes, so the next login registers.
+        if (own === undefined) await updateStore(file, ({ tokens }) => (tokens ? { tokens } : {}))
+        throw new Error(
+          'the authorization server refused the OAuth client of this login. Run login again: it registers a new one.',
+        )
+      }
     },
   }
 }

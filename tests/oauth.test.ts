@@ -362,6 +362,30 @@ describe('login', () => {
     assert.deepEqual(s.leaks(), [])
   })
 
+  test('a registered client that the token endpoint refuses is removed, and the next login registers again', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    fake.change.refuseClient = 'fake-client-1'
+    assert.equal(await s.login(), 1, s.lines.join('\n'))
+    const refused = s.lines.at(-1) ?? ''
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    assert.equal(fake.seen.registrations, 2)
+    assert.match(refused, /refused the OAuth client of this login\. Run login again/)
+    fake.expire()
+    assert.equal(await s.ping(s.connect()), PONG)
+    assert.deepEqual(s.leaks(), [])
+  })
+
+  test('a static client that the token endpoint refuses fails the login with the config to check', async () => {
+    const fake = await startFake()
+    fake.change.refuseClient = STATIC_ID
+    const s = setup(fake, { oauth: { clientId: STATIC_ID, clientSecret: '${S}' } }, { S: STATIC_SECRET })
+    assert.equal(await s.login(), 1, s.lines.join('\n'))
+    assert.match(s.lines.at(-1) ?? '', /refused the OAuth client ID and secret of the config/)
+    assert.deepEqual(s.leaks(), [])
+  })
+
   test('a static clientId skips the registration and sends its secret only to the token endpoint', async () => {
     const fake = await startFake()
     const oauth = { clientId: STATIC_ID, clientSecret: '${FAKE_SECRET}' }

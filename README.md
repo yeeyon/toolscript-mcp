@@ -313,6 +313,8 @@ ID in `oauth`:
 - A client that you register by hand needs `callbackPort`, so its redirect URI stays the same at each login.
 - Without `clientId`, login registers a client with a free port, and the next login uses that port again. If another
   program has the port, login registers a new client.
+- If the server refuses the registered client, login fails and removes the client. Run login again to register a new
+  client.
 
 login writes the tokens to `~/.toolscript-mcp/oauth/<server>-<hash>.json`. The hash comes from the URL, so a new URL
 needs a new login. On Linux and macOS, only your user account can read the file.
