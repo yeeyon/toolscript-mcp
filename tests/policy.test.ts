@@ -228,7 +228,8 @@ describe('the decision before a run', () => {
     const declined = refusedReport({ ask: ['mcp__x__y'], interactive: ['mcp__x__grant'] }, 'decline')
     assert.ok(declined.includes('{"match": "mcp__x__y", "action": "allow"}'), declined)
     assert.ok(!declined.includes('{"match": "mcp__x__grant"'), declined)
-    assert.ok(declined.includes('Write the tool name as a string in call("…")'), declined)
+    assert.ok(!declined.includes('Write the tool name as a string'), 'the name was a string, and the person said no')
+    assert.ok(!declined.includes('Run the program again'), declined)
   })
 
   test('a client that cannot ask, and a decline, refuse the run with the allow rule to add', () => {

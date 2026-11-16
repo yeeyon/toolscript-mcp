@@ -337,21 +337,49 @@ export const refusedReport = ({ ask, interactive }: Asks, why: Refusal): string 
       ? 'Error: the program did not run, because the person did not approve the tools that need approval. No call was made.'
       : 'Error: the program did not run, because some tools need approval and this MCP client cannot ask the person. No call was made.'
   const canAsk = why === 'decline'
-  return [head, approvalNote(ask, canAsk), interactiveNote(interactive, canAsk)].filter(t => t !== '').join('\n\n')
+  return [head, approvalNote(ask, canAsk), interactiveNote(interactive, canAsk ? 'declined' : 'cannot-ask')]
+    .filter(t => t !== '')
+    .join('\n\n')
 }
+
+/**
+ * Why calls of tools whose server requires a person were refused: the client
+ * cannot ask, the person declined, or the prompt before the run did not name
+ * them. `written` holds the names that the program writes as strings: one of
+ * them got its mark during the run. Any other name was built at run time.
+ */
+export type NoPerson = 'cannot-ask' | 'declined' | { readonly written: ReadonlySet<string> }
 
 /**
  * The note after calls of tools whose server requires a person on every call.
  * No rule can allow them: only the prompt before a run can, and only for a
  * name that the program writes as a string.
  */
-export const interactiveNote = (tools: readonly string[], canAsk: boolean): string => {
+export const interactiveNote = (tools: readonly string[], why: NoPerson): string => {
   if (tools.length === 0) return ''
   const one = tools.length === 1
-  const how = canAsk
-    ? ' Write the tool name as a string in call("…"), so the person is asked before the run.'
-    : ` This MCP client cannot ask the person, so a program cannot call ${one ? 'it' : 'them'}.`
+  const how =
+    why === 'cannot-ask'
+      ? ` This MCP client cannot ask the person, so a program cannot call ${one ? 'it' : 'them'}.`
+      : why === 'declined'
+        ? ''
+        : askNextRun(tools, why.written)
   return `## A person must approve\n\n${tools.join(', ')} ${one ? 'needs' : 'need'} the person's approval at each run, because ${one ? 'its server marks it' : 'their servers mark them'} so. An allow rule does not replace that approval.${how}`
+}
+
+// A name built at run time is asked only as a string. A written name got its mark after the prompt: the next run asks.
+const askNextRun = (tools: readonly string[], written: ReadonlySet<string>): string => {
+  const built = tools.filter(t => !written.has(t))
+  const late = tools.filter(t => written.has(t))
+  const write =
+    built.length === 0
+      ? ''
+      : ` Write ${built.length === tools.length ? 'the tool name' : built.join(', ')} as a string in call("…"), so the person is asked before the run.`
+  const again =
+    late.length === 0
+      ? ''
+      : ` The mark of ${late.join(', ')} came during the run. Run the program again, so the person is asked before the run.`
+  return write + again
 }
 
 /**

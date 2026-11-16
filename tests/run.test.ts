@@ -722,6 +722,11 @@ describe('a tool whose server requires a person', () => {
     const r = await run(`try { ${grant} } catch (e) { return e.message }`)
     assert.deepEqual(asked, [], 'the tool had no mark before the run')
     assert.ok(r.text.includes("not approved: mcp__f__grant needs the person's approval at each run"), r.text)
+    assert.ok(
+      r.text.includes('The mark of mcp__f__grant came during the run. Run the program again, so the person is asked'),
+      r.text,
+    )
+    assert.ok(!r.text.includes('Write the tool name as a string'), 'the program wrote it as a string already')
     assert.deepEqual(fake.called, [])
   })
 

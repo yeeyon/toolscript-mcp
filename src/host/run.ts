@@ -182,7 +182,8 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     if (answer !== 'accept') return refuse(refusedReport(plan, answer))
   }
   if (ctx.signal.aborted) return refuse('Error: the server is shutting down. The program did not run.')
-  return { ...(await execute(ctx, code, new Set([...plan.ask, ...plan.interactive]))), known }
+  const approved = new Set([...plan.ask, ...plan.interactive])
+  return { ...(await execute(ctx, code, approved, new Set(literal.map(c => c.tool)))), known }
 }
 
 /** True when `file` is inside `dir`. Both are real paths. */
@@ -254,7 +255,13 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
-const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<string>): Promise<Ran> => {
+/** `written`: the tool names that the program writes as strings. */
+const execute = async (
+  ctx: RunContext,
+  code: string,
+  approved: ReadonlySet<string>,
+  written: ReadonlySet<string>,
+): Promise<Ran> => {
   const { config, downstream, kept } = ctx
   const limitSeconds = config.sandbox.timeoutSeconds
   const timeoutMs = limitSeconds * 1000
@@ -533,7 +540,10 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   const isCut = returned !== undefined && shownText(returned).length > MAX_RESULT_CHARS
   const wholeRef = isCut ? keep(kept, returned, Date.now()) : undefined
   const text = formatOutcome(outcome, calls.length, stderr, MAX_RESULT_CHARS, { calls, recalls, recalled, wholeRef })
-  const note = [approvalNote([...unapproved], ctx.canAsk()), interactiveNote([...needPerson], ctx.canAsk())]
+  const note = [
+    approvalNote([...unapproved], ctx.canAsk()),
+    interactiveNote([...needPerson], ctx.canAsk() ? { written } : 'cannot-ask'),
+  ]
     .filter(n => n !== '')
     .join('\n\n')
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
