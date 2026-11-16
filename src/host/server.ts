@@ -38,6 +38,7 @@ type Extra = { readonly signal: AbortSignal; readonly requestId: string | number
 type Context = {
   readonly downstream: Downstream
   readonly shapes: ReadonlyMap<string, string>
+  readonly canAsk: () => boolean
   readonly run: (code: string, extra: Extra) => Promise<CallToolResult>
   readonly extra: Extra
 }
@@ -45,12 +46,12 @@ type Context = {
 type Handler = (args: object, ctx: Context) => Promise<CallToolResult>
 
 const HANDLERS: Record<ServedName, Handler> = {
-  search_tools: async (args, { downstream, shapes }) => {
+  search_tools: async (args, { downstream, shapes, canAsk }) => {
     const { query, limit: asked } = parseInput('search_tools', args)
     const limit = Math.min(100, Math.max(1, asked || SEARCH_LIMIT))
     await downstream.settled
     await downstream.retry()
-    return text(searchResult(downstream.states(), query, limit, shapes))
+    return text(searchResult(downstream.states(), query, limit, shapes, canAsk()))
   },
   run_code: async (args, { run, extra }) => run(parseInput('run_code', args).code, extra),
 }
@@ -179,7 +180,7 @@ export const createServer = (
   mcp.server.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     const { name, arguments: args = {} } = req.params
     return isServed(name)
-      ? HANDLERS[name](args, { downstream, shapes, run, extra })
+      ? HANDLERS[name](args, { downstream, shapes, canAsk, run, extra })
       : text(`Unknown tool: ${name}`, true)
   })
   return {

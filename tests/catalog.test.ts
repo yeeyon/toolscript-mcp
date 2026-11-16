@@ -27,6 +27,23 @@ describe('search_tools and a tool whose server requires a person', () => {
     assert.ok(!one({ name: 'grant', description: 'Grant access.' }).includes(NOTE))
   })
 
+  test('with a client that cannot ask, the note says that a program cannot call it', () => {
+    const text = searchResult(
+      server([{ name: 'grant', description: 'Grant access.', _meta: MARK }]),
+      '',
+      15,
+      new Map(),
+      false,
+    )
+    assert.ok(
+      text.includes(
+        'A person approves each run that calls it. This MCP client cannot ask the person, so a program cannot call it.',
+      ),
+      text,
+    )
+    assert.ok(!text.includes('Write its name as a string'), text)
+  })
+
   test('a hit on one line among many says so too', () => {
     const tools = ['a', 'b', 'c', 'd'].map(name => ({
       name: `grant_${name}`,

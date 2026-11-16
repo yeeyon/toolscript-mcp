@@ -343,30 +343,36 @@ const declaration = (t: CatalogEntry, maxLevel: number, notes: boolean): string 
 // A tool in full. A declaration too large to show loses its nested objects
 // first, then its notes and its result type, and last its argument types
 // past MAX_ARGS characters.
-const detailBlock = (t: CatalogEntry, shapes: ReadonlyMap<string, string>): string => {
+const detailBlock = (t: CatalogEntry, shapes: ReadonlyMap<string, string>, canAsk: boolean): string => {
   const call =
     declaration(t, MAX_LEVEL, true) ??
     declaration(t, 1, true) ??
     declaration(t, 1, false) ??
     `call(${JSON.stringify(t.name)}, ${argsText(t.inputSchema)})`
   const shape = t.outputSchema === undefined ? shapes.get(t.name) : undefined
-  const lines = [`### ${t.name}`, prose(t.description, MAX_DESCRIPTION), ...personNote(t), call]
+  const lines = [`### ${t.name}`, prose(t.description, MAX_DESCRIPTION), ...personNote(t, canAsk), call]
   if (shape !== undefined) lines.push(`returned earlier: ${shape}`)
   return lines.filter(line => line !== '').join('\n')
 }
 
-const summaryBlock = (t: CatalogEntry): string =>
+const summaryBlock = (t: CatalogEntry, canAsk: boolean): string =>
   [
     `### ${t.name}`,
     oneLine(t.description.split('\n')[0] ?? '', 300),
-    ...personNote(t),
+    ...personNote(t, canAsk),
     `args: ${argsText(t.inputSchema)}`,
   ].join('\n')
 
 // An allow rule does not let such a tool run, and only a name written as a string is asked before the run.
-const personNote = (t: CatalogEntry): string[] =>
+const personNote = (t: CatalogEntry, canAsk: boolean): string[] =>
   t.requiresUserInteraction
-    ? ['A person approves each run that calls it. Write its name as a string in call("…").']
+    ? [
+        `A person approves each run that calls it. ${
+          canAsk
+            ? 'Write its name as a string in call("…").'
+            : 'This MCP client cannot ask the person, so a program cannot call it.'
+        }`,
+      ]
     : []
 
 /**
@@ -384,18 +390,23 @@ export const learnShape = (shapes: Map<string, string>, tool: string, value: unk
 /**
  * The text of a search_tools result: the best matches, then the servers that
  * are not connected. Up to DETAIL_HITS matches show in full, with the shape of
- * a result seen earlier in the session (`shapes`, by tool name).
+ * a result seen earlier in the session (`shapes`, by tool name). `canAsk`: the
+ * client can show an approval prompt.
  */
 export const searchResult = (
   states: readonly ServerState[],
   query: string,
   limit: number,
   shapes: ReadonlyMap<string, string> = new Map(),
+  canAsk = true,
 ): string => {
   const all = catalogOf(states)
   const found = rankTools(all, query, limit)
   const tail = notConnectedText(states)
   if (found.length === 0) return `No MCP tool matches "${query}". ${all.length} MCP tools are connected.${tail}`
-  const blocks = found.length <= DETAIL_HITS ? found.map(t => detailBlock(t, shapes)) : found.map(summaryBlock)
+  const blocks =
+    found.length <= DETAIL_HITS
+      ? found.map(t => detailBlock(t, shapes, canAsk))
+      : found.map(t => summaryBlock(t, canAsk))
   return `${found.length} of ${all.length} MCP tools.\n\n${blocks.join('\n\n')}${tail}`
 }
