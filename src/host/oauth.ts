@@ -90,12 +90,13 @@ export const readStore = async (file: string): Promise<Stored> => {
  * to RENAME_WAIT_MS.
  */
 const renameOver = async (from: string, to: string): Promise<void> => {
-  for (let waited = 0; ; waited += RENAME_POLL_MS) {
+  const start = Date.now()
+  for (;;) {
     try {
       return await fs.promises.rename(from, to)
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code ?? ''
-      if (!['EPERM', 'EBUSY', 'EACCES'].includes(code) || waited >= RENAME_WAIT_MS) throw err
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(code) || Date.now() - start >= RENAME_WAIT_MS) throw err
       await new Promise(resolve => setTimeout(resolve, RENAME_POLL_MS))
     }
   }

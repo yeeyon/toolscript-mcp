@@ -802,6 +802,27 @@ describe('the running server', () => {
     )
   })
 
+  test('a store that stays locked holds the refresh for about 1 s, also when each rename is slow', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    mock.method(fs.promises, 'rename', async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+    })
+    mock.method(console, 'error', () => {})
+    fake.expire()
+    const start = Date.now()
+    try {
+      assert.equal(await s.ping(downstream), PONG)
+    } finally {
+      mock.restoreAll()
+    }
+    assert.ok(Date.now() - start < 3000, `the call waited ${Date.now() - start} ms`)
+  })
+
   /** One refresh at expiry whose tokens the store never takes, so this process keeps them in memory. */
   const refreshUnsaved = async (fake: Fake, s: ReturnType<typeof setup>, downstream: Downstream) => {
     mock.method(fs.promises, 'rename', async () => {
