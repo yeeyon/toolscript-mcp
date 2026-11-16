@@ -33,8 +33,10 @@ enforces; the others rely on discipline.
   `notifications/cancelled` when it ends. `[test: server.e2e.mjs, case run (l)]`
 - The running server never opens a browser, registers an OAuth client or starts a login: its provider in
   `src/host/oauth.ts` throws `LoginNeeded` at each of these steps, and the link fails with the login command as its
-  reason. Only `toolscript-mcp login` does them. A refresh that gets no answer throws `RefreshFailed`: the tokens
-  stay, and the next use tries again. No log line, printed line, reason or nested-call error holds a token, code,
+  reason. Only `toolscript-mcp login` does them. The provider answers each refresh in its `fetch`: a 4xx other than
+  408 and 429 is a refusal and throws `LoginNeeded`. No answer, none within `REFRESH_TIMEOUT_MS`, a 5xx, 408 or 429 throws `RefreshFailed`: the tokens
+  stay, and the next use tries again. One refresh of a store file runs at a time in a process (`refreshes`): a
+  rotating refresh token works once, so every other caller waits for that refresh and gets its tokens. Both are an `OAuthError`, so the SDK passes them on and starts no login. No log line, printed line, reason or nested-call error holds a token, code,
   verifier or client secret: each downstream error goes through the `hide` of its link, which passes the secrets of
   the provider to `redact`. `[test: oauth.test.ts, server.e2e.mjs case (p)]`
 - `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there

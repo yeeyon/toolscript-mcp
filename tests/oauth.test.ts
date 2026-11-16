@@ -4,7 +4,7 @@
 // PKCE verifier and refreshes, and an MCP endpoint that answers 401 without a
 // valid Bearer token. `runLogin` gets a browser that follows the redirect.
 
-import { after, describe, test } from 'node:test'
+import { after, describe, mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
@@ -16,7 +16,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { parseConfig, type Config, type ServerConfig, type ServerKey } from '../src/core/config.ts'
 import { newKept } from '../src/core/protocol.ts'
-import { connectAll, type Downstream } from '../src/host/downstream.ts'
+import { connectAll, type ConnectOptions, type Downstream } from '../src/host/downstream.ts'
 import { runLogin } from '../src/host/login.ts'
 import { storeFile } from '../src/host/oauth.ts'
 import { runCode, type RunContext } from '../src/host/run.ts'
@@ -70,8 +70,9 @@ const startFake = async () => {
    * `echo` makes one kind of request fail with an error that echoes its secrets: a call, any MCP request, a refresh
    * or the code exchange. `authMethods` are the client authentications that the token endpoint takes. With
    * `rejectAll`, the MCP endpoint answers 401 to every token. The token endpoint waits for `holdRefreshes` refresh
-   * requests before it answers the first, so two clients use one refresh token. With `tokenDown`, the token endpoint
-   * drops each connection.
+   * requests before it answers the first, so two clients use one refresh token. With `stallRefreshes`, it never answers
+   * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
+   * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`.
    */
   const change = {
     authorizationEndpoint: '',
@@ -80,7 +81,11 @@ const startFake = async () => {
     authMethods: ['none', 'client_secret_post', 'client_secret_basic'],
     rejectAll: false,
     holdRefreshes: 0,
+    stallRefreshes: false,
     tokenDown: false,
+    refreshAnswer: undefined as { status: number; type: string; body: string } | undefined,
+    grantErrorMs: 0,
+    refuseClient: '',
   }
   const held: (() => void)[] = []
   const issue = (clientId: string) => {
@@ -111,6 +116,7 @@ const startFake = async () => {
   const token = async (text: string, auth: string | undefined, res: http.ServerResponse) => {
     const form = new URLSearchParams(text)
     seen.tokens.push(form)
+    if (form.get('grant_type') === 'refresh_token' && change.stallRefreshes) return
     if (form.get('grant_type') === 'refresh_token' && change.holdRefreshes > 0)
       await new Promise<void>(resolve => {
         held.push(resolve)
@@ -124,14 +130,24 @@ const startFake = async () => {
     }
     if (change.echo === 'refresh' && form.get('grant_type') === 'refresh_token')
       return json(res, 400, { error: 'invalid_request', error_description: `bad ${form.get('refresh_token')}` })
+    const answer = change.refreshAnswer
+    if (answer !== undefined && form.get('grant_type') === 'refresh_token')
+      return void res.writeHead(answer.status, { 'content-type': answer.type }).end(answer.body)
     const basic = auth?.startsWith('Basic ') ? Buffer.from(auth.slice(6), 'base64').toString().split(':') : []
     const clientId = form.get('client_id') ?? decodeURIComponent(basic[0] ?? '')
     const secret = form.get('client_secret') ?? decodeURIComponent(basic[1] ?? '')
-    if (!clients.has(clientId) || (clientId === STATIC_ID && secret !== STATIC_SECRET))
+    if (
+      !clients.has(clientId) ||
+      clientId === change.refuseClient ||
+      (clientId === STATIC_ID && secret !== STATIC_SECRET)
+    )
       return json(res, 401, { error: 'invalid_client' })
     if (form.get('grant_type') === 'refresh_token') {
       const old = form.get('refresh_token') ?? ''
-      if (refresh.get(old) !== clientId) return json(res, 400, { error: 'invalid_grant' })
+      if (refresh.get(old) !== clientId) {
+        await new Promise(resolve => setTimeout(resolve, change.grantErrorMs))
+        return json(res, 400, { error: 'invalid_grant' })
+      }
       refresh.delete(old)
       seen.refreshes++
       return json(res, 200, issue(clientId))
@@ -206,6 +222,8 @@ const startFake = async () => {
     expire: () => access.clear(),
     /** Every refresh token stops working too, as when the person revokes the grant. */
     revoke: () => (access.clear(), refresh.clear()),
+    /** The refresh requests that the token endpoint got, answered or not. */
+    refreshRequests: () => seen.tokens.filter(form => form.get('grant_type') === 'refresh_token').length,
   }
 }
 
@@ -257,8 +275,8 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
       print: t => void lines.push(t),
       open,
     })
-  const connect = (config: ServerConfig = server) => {
-    const downstream = connectAll(new Map([[KEY, config]]), '0', line => void lines.push(line), { home })
+  const connect = (config: ServerConfig = server, options: ConnectOptions = {}) => {
+    const downstream = connectAll(new Map([[KEY, config]]), '0', line => void lines.push(line), { home, ...options })
     opened.push(downstream)
     return downstream
   }
@@ -346,6 +364,30 @@ describe('login', () => {
     assert.deepEqual(s.leaks(), [])
   })
 
+  test('a registered client that the token endpoint refuses is removed, and the next login registers again', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    fake.change.refuseClient = 'fake-client-1'
+    assert.equal(await s.login(), 1, s.lines.join('\n'))
+    const refused = s.lines.at(-1) ?? ''
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    assert.equal(fake.seen.registrations, 2)
+    assert.match(refused, /refused the OAuth client of this login\. Run login again/)
+    fake.expire()
+    assert.equal(await s.ping(s.connect()), PONG)
+    assert.deepEqual(s.leaks(), [])
+  })
+
+  test('a static client that the token endpoint refuses fails the login with the config to check', async () => {
+    const fake = await startFake()
+    fake.change.refuseClient = STATIC_ID
+    const s = setup(fake, { oauth: { clientId: STATIC_ID, clientSecret: '${S}' } }, { S: STATIC_SECRET })
+    assert.equal(await s.login(), 1, s.lines.join('\n'))
+    assert.match(s.lines.at(-1) ?? '', /refused the OAuth client ID and secret of the config/)
+    assert.deepEqual(s.leaks(), [])
+  })
+
   test('a static clientId skips the registration and sends its secret only to the token endpoint', async () => {
     const fake = await startFake()
     const oauth = { clientId: STATIC_ID, clientSecret: '${FAKE_SECRET}' }
@@ -411,10 +453,28 @@ describe('login', () => {
   test('login prints the error of the callback with its control characters escaped', async () => {
     const fake = await startFake()
     const s = setup(fake)
-    assert.equal(await s.login(cancel([], 'denied\u001b[2J\r\nfake: Logged in\u009b')), 1)
+    assert.equal(await s.login(cancel([], 'denied\u001b[2J\r\nfake: Logged in\u009b\u2028\u202e\u2066')), 1)
     const printed = s.lines.join('\n')
-    assert.ok(printed.includes('denied\\u001b[2J\\u000d\\u000afake: Logged in\\u009b description'), printed)
-    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(printed) && !printed.includes('\nfake:'), printed)
+    assert.ok(
+      printed.includes('denied\\u001b[2J\\u000d\\u000afake: Logged in\\u009b\\u2028\\u202e\\u2066 description'),
+      printed,
+    )
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/.test(printed), printed)
+    assert.ok(!printed.includes('\nfake:'), printed)
+  })
+
+  test('a code exchange refused with a bare invalid_grant prints the error code', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    const wrongCode = (url: string) =>
+      void (async () => {
+        const answer = await fetch(url, { redirect: 'manual' })
+        const to = new URL(answer.headers.get('location') ?? '')
+        to.searchParams.set('code', 'fake-wrong-code')
+        await fetch(to)
+      })()
+    assert.equal(await s.login(wrongCode), 1, s.lines.join('\n'))
+    assert.match(s.lines.at(-1) ?? '', /^login to fake failed: the authorization server answered invalid_grant$/)
   })
 
   test('the store file is for the user only on Linux and macOS', { skip: process.platform === 'win32' }, async () => {
@@ -564,22 +624,301 @@ describe('the running server', () => {
     await s.ping(downstream)
     const state = downstream.states()[0]
     const reason = state?.status === 'failed' ? state.reason : ''
-    assert.match(reason, /^could not refresh the OAuth token: .+\. It tries again on next use/, reason)
+    assert.match(reason, /^could not refresh the OAuth token: .+\. No login is needed/, reason)
     fake.change.tokenDown = false
     assert.equal(await s.ping(downstream), PONG)
     assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
   })
 
-  test('two processes that refresh one rotating refresh token at once both go on with no login', async () => {
+  test('a refresh that fails at each attempt says once that toolscript-mcp tries again', async () => {
     const fake = await startFake()
     const s = setup(fake)
     assert.equal(await s.login(), 0, s.lines.join('\n'))
-    const [one, two] = [s.connect(), s.connect()]
-    assert.deepEqual(await Promise.all([s.ping(one), s.ping(two)]), [PONG, PONG])
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    fake.expire()
+    fake.change.tokenDown = true
+    for (let attempt = 0; attempt < 3; attempt++) await s.ping(downstream)
+    const state = downstream.states()[0]
+    const reason = state?.status === 'failed' ? state.reason : ''
+    assert.match(
+      reason,
+      /^could not refresh the OAuth token: .+ toolscript-mcp tries again on next use after \d+ s$/,
+      reason,
+    )
+    assert.equal(reason.match(/tries again/g)?.length, 1, reason)
+  })
+
+  test('a refresh that the token endpoint refuses ends the link with the login command', async () => {
+    const refusals = [
+      { status: 401, type: 'application/json', body: '{"error":"token_revoked"}' },
+      { status: 403, type: 'text/html', body: '<html>Forbidden</html>' },
+      { status: 400, type: 'application/json', body: '{"error":"invalid_token"}' },
+      { status: 400, type: 'application/json', body: '{"error":"invalid_request"}' },
+    ]
+    for (const answer of refusals) {
+      const fake = await startFake()
+      const s = setup(fake)
+      assert.equal(await s.login(), 0, s.lines.join('\n'))
+      const downstream = s.connect()
+      assert.equal(await s.ping(downstream), PONG)
+      fake.expire()
+      fake.change.refreshAnswer = answer
+      assert.match(await s.ping(downstream), LOGIN_REASON, answer.body)
+      const state = downstream.states()[0]
+      assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON, answer.body)
+    }
+  })
+
+  test('a refresh that gets no answer, 503 or 429 needs no login, and the next use refreshes', async () => {
+    const failures = [
+      {
+        name: 'network',
+        fail: (fake: Fake) => void (fake.change.tokenDown = true),
+        cause: /other side closed|ECONNRESET|socket/,
+      },
+      {
+        name: '503',
+        fail: (fake: Fake) => void (fake.change.refreshAnswer = { status: 503, type: 'text/plain', body: 'down' }),
+        cause: /HTTP 503/,
+      },
+      {
+        name: '429',
+        fail: (fake: Fake) =>
+          void (fake.change.refreshAnswer = { status: 429, type: 'application/json', body: '{"error":"slow_down"}' }),
+        cause: /HTTP 429/,
+      },
+    ]
+    for (const { name, fail, cause } of failures) {
+      const fake = await startFake()
+      const s = setup(fake)
+      assert.equal(await s.login(), 0, s.lines.join('\n'))
+      const downstream = s.connect()
+      assert.equal(await s.ping(downstream), PONG)
+      fake.expire()
+      fail(fake)
+      const text = await s.ping(downstream)
+      assert.match(text, /^could not refresh the OAuth token: /, `${name}: ${text}`)
+      assert.match(text, cause, `${name}: ${text}`)
+      assert.equal(downstream.states()[0]?.status, 'failed', name)
+      fake.change.tokenDown = false
+      fake.change.refreshAnswer = undefined
+      assert.equal(await s.ping(downstream), PONG, name)
+      assert.equal(fake.seen.authorizations.length, 1, `${name}: only the login authorized`)
+    }
+  })
+
+  test('a refresh with no answer fails in time, and the next use refreshes', { timeout: 20_000 }, async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const short = { refreshTimeoutMs: 300 }
+    const downstream = s.connect(undefined, short)
+    assert.equal(await s.ping(downstream), PONG)
+    fake.expire()
+    fake.change.stallRefreshes = true
+    const start = Date.now()
+    const second = s.connect(undefined, short)
+    const texts = await Promise.all([s.ping(downstream), s.ping(second)])
+    assert.ok(Date.now() - start < 5000, `the calls waited ${Date.now() - start} ms`)
+    const silent = /could not refresh the OAuth token: the token endpoint did not answer in 0\.3 s\. No login/
+    for (const text of texts) assert.match(text, silent, text)
+    fake.change.stallRefreshes = false
+    assert.deepEqual(await Promise.all([s.ping(downstream), s.ping(second)]), [PONG, PONG])
+    assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
+  })
+
+  test('a refresh token that another process used first gives its saved tokens, with no login', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
     fake.expire()
     fake.change.holdRefreshes = 2
-    assert.deepEqual(await Promise.all([s.ping(one), s.ping(two)]), [PONG, PONG])
+    // The other process sends the stored refresh token first, so it wins, and saves the next tokens.
+    const [file] = s.store()
+    const stored = JSON.parse(fs.readFileSync(file!, 'utf8'))
+    const other = (async () => {
+      const form = { grant_type: 'refresh_token', refresh_token: stored.tokens.refresh_token }
+      const answer = await fetch(new URL('/token', fake.url), {
+        method: 'POST',
+        body: new URLSearchParams({ ...form, client_id: stored.client.info.client_id }),
+      })
+      fs.writeFileSync(file!, JSON.stringify({ ...stored, tokens: await answer.json() }))
+    })()
+    while (fake.refreshRequests() === 0) await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(await s.ping(downstream), PONG)
+    await other
+    assert.equal(fake.refreshRequests(), 2)
     assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
+  })
+
+  test('eight calls of two links at expiry all go on, and the token endpoint gets one refresh', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const links = [s.connect(), s.connect()]
+    assert.deepEqual(await Promise.all(links.map(s.ping)), [PONG, PONG])
+    fake.expire()
+    const calls = links.flatMap(link => Array.from({ length: 4 }, () => s.ping(link)))
+    assert.deepEqual(await Promise.all(calls), Array(8).fill(PONG))
+    assert.equal(fake.refreshRequests(), 1)
+  })
+
+  test('a store that refuses the rename of refreshed tokens for a while gets them, and the call goes on', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    const rename = fs.promises.rename
+    let refusals = 3
+    mock.method(fs.promises, 'rename', async (from: string, to: string) => {
+      if (refusals-- > 0) throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      return rename(from, to)
+    })
+    fake.expire()
+    try {
+      assert.equal(await s.ping(downstream), PONG)
+    } finally {
+      mock.restoreAll()
+    }
+    assert.equal(await s.ping(s.connect()), PONG, 'a new link uses the saved tokens')
+    assert.equal(fake.seen.refreshes, 1)
+  })
+
+  test('refreshed tokens that the store never takes work until the process ends, with one log line each', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    mock.method(fs.promises, 'rename', async () => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' })
+    })
+    const logged = mock.method(console, 'error', () => {})
+    try {
+      fake.expire()
+      assert.equal(await s.ping(downstream), PONG)
+      fake.expire()
+      assert.equal(await s.ping(downstream), PONG, 'the next refresh sends the refresh token in memory')
+    } finally {
+      mock.restoreAll()
+    }
+    assert.equal(fake.seen.refreshes, 2)
+    const lines = logged.mock.calls.map(call => call.arguments.join(' '))
+    assert.equal(lines.length, 2, lines.join('\n'))
+    assert.match(lines[0] ?? '', /could not save the refreshed OAuth tokens.*EBUSY/)
+    assert.deepEqual(
+      [...fake.secrets].filter(secret => lines.join('\n').includes(secret)),
+      [],
+    )
+  })
+
+  test('a store that stays locked holds the refresh for about 1 s, also when each rename is slow', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    mock.method(fs.promises, 'rename', async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+    })
+    mock.method(console, 'error', () => {})
+    fake.expire()
+    const start = Date.now()
+    try {
+      assert.equal(await s.ping(downstream), PONG)
+    } finally {
+      mock.restoreAll()
+    }
+    assert.ok(Date.now() - start < 3000, `the call waited ${Date.now() - start} ms`)
+  })
+
+  /** One refresh at expiry whose tokens the store never takes, so this process keeps them in memory. */
+  const refreshUnsaved = async (fake: Fake, s: ReturnType<typeof setup>, downstream: Downstream) => {
+    mock.method(fs.promises, 'rename', async () => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' })
+    })
+    mock.method(console, 'error', () => {})
+    try {
+      fake.expire()
+      assert.equal(await s.ping(downstream), PONG)
+    } finally {
+      mock.restoreAll()
+    }
+  }
+
+  test('a login after a revoke replaces refreshed tokens that the store never took', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    await refreshUnsaved(fake, s, downstream)
+    fake.revoke()
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    assert.equal(await s.ping(downstream), PONG)
+    assert.equal(await s.ping(s.connect()), PONG, 'a new link uses the tokens of the login')
+  })
+
+  test('refreshed tokens that the store never took do not replace the grant of a later login', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    await refreshUnsaved(fake, s, downstream)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const login = JSON.parse(s.storeText()).tokens.refresh_token
+    fake.expire()
+    assert.equal(await s.ping(downstream), PONG)
+    const refreshes = fake.seen.tokens.filter(form => form.get('grant_type') === 'refresh_token')
+    assert.equal(refreshes.at(-1)?.get('refresh_token'), login, 'the refresh sent the refresh token of the login')
+  })
+
+  test('a refresh answer that holds no tokens keeps refreshed tokens that the store never took', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    await refreshUnsaved(fake, s, downstream)
+    fake.expire()
+    fake.change.refreshAnswer = { status: 200, type: 'text/html', body: '<html>maintenance</html>' }
+    assert.notEqual(await s.ping(downstream), PONG)
+    fake.change.refreshAnswer = undefined
+    assert.equal(await s.ping(downstream), PONG, 'the refresh token in memory still refreshes')
+  })
+
+  test('refreshed tokens that the store never took work while the store cannot be read', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    await refreshUnsaved(fake, s, downstream)
+    mock.method(fs.promises, 'readFile', async () => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, open'), { code: 'EBUSY' })
+    })
+    try {
+      assert.equal(await s.ping(downstream), PONG)
+    } finally {
+      mock.restoreAll()
+    }
+  })
+
+  test('a late invalid_grant of one of two calls at expiry needs no login', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    fake.expire()
+    fake.change.grantErrorMs = 300
+    assert.deepEqual(await Promise.all([s.ping(downstream), s.ping(downstream)]), [PONG, PONG])
   })
 })
 
@@ -614,7 +953,7 @@ describe('secrets that a server echoes', () => {
     assert.deepEqual(s.leaks(), [])
   })
 
-  test('a refresh token that the authorization server echoes is hidden from the program', async () => {
+  test('a refresh token that the authorization server echoes in a refusal never reaches the program', async () => {
     const fake = await startFake()
     const s = setup(fake)
     assert.equal(await s.login(), 0, s.lines.join('\n'))
@@ -623,8 +962,24 @@ describe('secrets that a server echoes', () => {
     fake.expire()
     fake.change.echo = 'refresh'
     const text = await s.run(downstream, CALL)
-    assert.match(text, /bad \*\*\*/, text)
+    assert.match(text, /needs an OAuth login/, text)
     assert.deepEqual(leaked(fake, text), [])
+  })
+
+  test('a token shorter than 8 characters is never hidden, so a server cannot blank the words of a reason', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const [file] = s.store()
+    const stored = JSON.parse(fs.readFileSync(file!, 'utf8'))
+    fs.writeFileSync(
+      file!,
+      JSON.stringify({ ...stored, tokens: { ...stored.tokens, access_token: 'login', refresh_token: 'OAuth' } }),
+    )
+    const downstream = s.connect()
+    await downstream.settled
+    const state = downstream.states()[0]
+    assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON)
   })
 
   test('login hides the code, the verifier and the client secret that a token endpoint echoes', async () => {

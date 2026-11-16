@@ -158,6 +158,9 @@ claude mcp add --scope user toolscript -- node ~/toolscript-mcp/dist/host/main.j
 To update, run `git pull && npm ci` in that folder, then start a new session of your client. Do not start the server
 with `npx github:…` in a client. npx checks GitHub at each start, so each start takes about 12 seconds.
 
+With a clone, write `node ~/toolscript-mcp/dist/host/main.js` in place of `npx -y toolscript-mcp` in the commands below,
+for example `node ~/toolscript-mcp/dist/host/main.js login <server>`.
+
 ### init
 
 - `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code. It does not import the servers of a
@@ -327,6 +330,8 @@ ID in `oauth`:
 - A client that you register by hand needs `callbackPort`, so its redirect URI stays the same at each login.
 - Without `clientId`, login registers a client with a free port, and the next login uses that port again. If another
   program has the port, login registers a new client.
+- If the server refuses the registered client, login fails and removes the client. Run login again to register a new
+  client.
 
 login writes the tokens to `~/.toolscript-mcp/oauth/<server>-<hash>.json`. The hash comes from the URL, so a new URL
 needs a new login. On Linux and macOS, only your user account can read the file.
@@ -336,8 +341,8 @@ of an entry go only to the origin of its `url`, never to its authorization serve
 
 toolscript-mcp refreshes the tokens when they expire. It never opens a browser while it runs as a server. If a
 server needs a new login, `search_tools` shows the login command. Run the command in a terminal. The next search or
-call connects again, with no restart. If the authorization server does not answer a refresh, `search_tools` shows the
-cause. The next search or call tries the refresh again.
+call connects again, with no restart. If the authorization server does not answer a refresh in 20 s, `search_tools`
+shows the cause. The next search or call tries the refresh again.
 
 ### Run log
 

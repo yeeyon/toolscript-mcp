@@ -60,9 +60,12 @@ export const loginCommand = (key: ServerKey, config?: string): string =>
 export const loginReason = (command: string): string =>
   `it needs an OAuth login. Ask the person to run \`${command}\` in a terminal, then try again`
 
-/** Why a server is not connected when its token refresh got no answer, or an error that is not a refusal. */
+/**
+ * Why a server is not connected when its token refresh got no answer, or an error that is not a refusal. Like any
+ * failed server, it connects again on next use.
+ */
 export const refreshReason = (cause: string): string =>
-  `could not refresh the OAuth token: ${cause}. It tries again on next use`
+  `could not refresh the OAuth token: ${cause}. No login is needed`
 
 export type Sandbox = {
   /** The Node binary that starts the sandbox. */
@@ -650,11 +653,15 @@ export const basicCredentials = (id: string, secret: string): string | undefined
   }
 }
 
-/** `value` as encodeURIComponent and as an HTML form write it: an error can echo a URL or a form it sent. */
+/**
+ * `value` as encodeURIComponent and as an HTML form write it, also with lowercase hex digits, and inside a JSON
+ * string: an error can echo a URL, a form or a JSON body that it got.
+ */
 const encodings = (value: string): string[] => {
   const uri = encodeURIComponent(value)
   const form = uri.replace(/[!'()~]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%20/g, '+')
-  return [uri, form]
+  const lower = (encoded: string) => encoded.replace(/%[0-9A-F]{2}/g, hex => hex.toLowerCase())
+  return [uri, form, lower(uri), lower(form), JSON.stringify(value).slice(1, -1)]
 }
 
 /**

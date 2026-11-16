@@ -22,7 +22,7 @@ import {
   type ServerKey,
 } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
-import { LoginNeeded, oauthProvider, RefreshFailed, storeFile, type Provider } from './oauth.ts'
+import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 
 /** The time that one server gets for its connect and for each page of its tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
@@ -116,15 +116,8 @@ const needsLogin = (err: unknown): boolean =>
 /** An error of the provider whose message is the reason to show: a login is needed, or a refresh failed. */
 const isOAuthStop = (err: unknown): err is Error => err instanceof LoginNeeded || err instanceof RefreshFailed
 
-/**
- * The OAuth provider of an HTTP server, the reason that its link shows when a person must log in, and what gets the
- * cause of each failed request (see serverFetch).
- */
-type Auth = {
-  readonly provider: Provider
-  readonly reason: string
-  readonly answered: (failure: string | undefined) => void
-}
+/** The OAuth provider of an HTTP server, and the reason that its link shows when a person must log in. */
+type Auth = { readonly provider: Provider; readonly reason: string }
 
 /**
  * The SDK HTTP client transport, which calls `onSessionEnd` before a request
@@ -137,7 +130,7 @@ class HttpTransport extends StreamableHTTPClientTransport {
 
   constructor(server: HttpServer, onSessionEnd: (err: Error) => void, auth: Auth | undefined) {
     super(new URL(server.url), {
-      fetch: serverFetch(server, auth?.answered),
+      fetch: auth ? auth.provider.fetch(serverFetch(server)) : serverFetch(server),
       ...(auth && { authProvider: auth.provider }),
     })
     this.#onSessionEnd = onSessionEnd
@@ -158,27 +151,15 @@ class HttpTransport extends StreamableHTTPClientTransport {
 
 /**
  * fetch with the config headers on each request to the origin of the server only. The SDK sends its OAuth requests
- * through it too, and a header for the MCP server must never reach an authorization server. `answered` gets the
- * cause of the failure of each request, or undefined for a success: the SDK drops the cause of a failed refresh.
+ * through it too, and a header for the MCP server must never reach an authorization server.
  */
-export const serverFetch = (
-  server: HttpServer,
-  answered: (failure: string | undefined) => void = () => {},
-): FetchLike => {
+export const serverFetch = (server: HttpServer): FetchLike => {
   const origin = new URL(server.url).origin
-  return async (url, init) => {
+  return (url, init) => {
     const headers = new Headers(init?.headers)
     if (new URL(url).origin === origin)
       for (const [name, value] of Object.entries(server.headers)) headers.set(name, value)
-    try {
-      const response = await fetch(url, { ...init, headers })
-      answered(response.ok ? undefined : `HTTP ${response.status}`)
-      return response
-    } catch (err) {
-      // fetch fails with "fetch failed": its cause says why, as "connect ECONNREFUSED".
-      answered(errorText(err instanceof Error && err.cause !== undefined ? err.cause : err))
-      throw err
-    }
+    return fetch(url, { ...init, headers })
   }
 }
 
@@ -226,13 +207,20 @@ export type ConnectOptions = {
   readonly login?: (key: ServerKey) => string
   /** The time in ms for the attempt cap: a test sets it. */
   readonly now?: () => number
+  /** The longest wait in ms for the answer to an OAuth refresh: a test sets it. */
+  readonly refreshTimeoutMs?: number
 }
 
 export const connectAll = (
   servers: ReadonlyMap<ServerKey, ServerEntry>,
   version: string,
   log: (line: string) => void,
-  { home = os.homedir(), login = key => loginCommand(key), now = Date.now }: ConnectOptions = {},
+  {
+    home = os.homedir(),
+    login = key => loginCommand(key),
+    now = Date.now,
+    refreshTimeoutMs = REFRESH_TIMEOUT_MS,
+  }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
   const links = new Map<ServerKey, Link>()
@@ -270,17 +258,15 @@ export const connectAll = (
     try {
       // Inside the try: a transport that cannot be made fails this server only.
       const reason = loginReason(login(key))
-      let failure: string | undefined
       const auth: Auth | undefined =
         server.kind === 'http' && server.oauth
           ? {
               provider: oauthProvider(storeFile(home, key, server.url), server.oauth, {
                 kind: 'serve',
                 reason,
-                lastFailure: () => failure,
+                refreshTimeoutMs,
               }),
               reason,
-              answered: cause => (failure = cause),
             }
           : undefined
       if (auth) secrets = auth.provider.secrets
