@@ -67,7 +67,8 @@ enforces; the others rely on discipline.
   each run, also under an allow rule: `planRun` asks for it and `checkCall` refuses it unless approved. `checkCall` runs
   again after `downstream.client`, because a server that connects again, or that sends `tools/list_changed`, lists
   its tools anew. One list of a server runs at a time, and a change during a list lists once more at its end
-  (`src/host/downstream.ts`).
+  (`src/host/downstream.ts`). `downstream.client` waits for a list in flight. A list that fails fails the link, so
+  no call uses a list that can lack a new mark.
   `[test: run.test.ts and server.e2e.mjs, cases run (q) and run (r)]`
 - A program can write the config file through a tool. So a policy read at a run applies at once only when
   `onlyTightens` (`src/core/policy.ts`) says it comes from the policy in force by inserted deny rules, removed allow

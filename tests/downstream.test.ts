@@ -207,6 +207,27 @@ describe('tools/list_changed', () => {
     assert.equal(description(), 'Probe, 2 changes.', 'the slow list answered last and did not replace the newer one')
   })
 
+  test('a call waits for the list in flight, so it sees the new list', async () => {
+    const { downstream, call, description, lists } = await setupChanged()
+    await call({ listDelayMs: 1000 })
+    await until(() => lists() === 2, 'the slow list started')
+    assert.equal((await downstream.client(KEY)).ok, true)
+    assert.equal(description(), 'Probe, 1 changes.', 'the client came after the list in flight')
+  })
+
+  test('a list that fails fails the link, and the next use connects again and lists anew', async () => {
+    const { downstream, call, description, lines } = await setupChanged()
+    await call({ failList: true, notifications: 50 })
+    await until(() => downstream.states()[0]?.status === 'failed', 'the link failed')
+    assert.equal((await downstream.client(KEY)).ok, true)
+    assert.equal(description(), 'Probe, 1 changes.')
+    assert.deepEqual(lines.slice(1), [
+      'p: failed: could not list the tools again: MCP error -32603: the tool list failed',
+      'p: connecting again',
+      'p: connected, 1 tools',
+    ])
+  })
+
   test('a storm of tools/list_changed costs one list in flight and one more after it', async () => {
     const { call, description, lists, lines } = await setupChanged()
     await call({ listDelayMs: 100, notifications: 300 })

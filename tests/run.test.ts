@@ -752,6 +752,50 @@ describe('a tool whose server requires a person', () => {
     }
   })
 
+  test('a server whose new list fails after it marks a tool: the next run asks the person', async () => {
+    const file = path.join(ROOT, 'list-fails.json')
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file, '--list-changed'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      assert.equal((await run('return await call("mcp__p__probe", { failList: true })')).isError, false)
+      const lists = () =>
+        fs
+          .readFileSync(`${file}.log`, 'utf8')
+          .split('\n')
+          .filter(l => l.includes('"event":"list"'))
+      for (let i = 0; i < 250 && lists().length < 2; i++) await new Promise(r => setTimeout(r, 20))
+      await new Promise(r => setTimeout(r, 100))
+      for (let i = 0; i < 3; i++) await run('return await call("mcp__p__probe", {})')
+      assert.deepEqual(asked, Array(3).fill(['mcp__p__probe']), 'each run after the failed list asks')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a server that lists a tool slowly after it marks it: a run waits for the list and asks the person', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, 'slow-list.json'), '--list-changed'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      assert.equal((await run('return await call("mcp__p__probe", { listDelayMs: 1500 })')).isError, false)
+      assert.equal((await run('return await call("mcp__p__probe", {})')).isError, false)
+      assert.deepEqual(asked, [['mcp__p__probe']], 'the second run waited for the list in flight')
+    } finally {
+      await downstream.close()
+    }
+  })
+
   test('a name that its server does not list is refused at call time, also when the server answers it', async () => {
     const file = path.join(ROOT, 'unlisted.json')
     const server: ServerConfig = {

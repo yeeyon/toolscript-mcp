@@ -56,6 +56,8 @@ type Link =
       readonly client: Client
       readonly tools: readonly DownstreamTool[]
       readonly hide: Hide
+      /** Settles when the list in flight ends, or undefined when none is. Never rejects. */
+      readonly listed: () => Promise<void> | undefined
     }
   | { readonly status: 'failed'; readonly reason: string }
 
@@ -278,10 +280,14 @@ export const connectAll = (
       return listing
     }
     // A server whose tools change, also in their marks, says so: list again, so the checks of a call see the new list.
+    // The old list can lack a new mark, so a list that fails fails the link, and the next use connects and lists anew.
     client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
       if (listing !== undefined) return void (dirty = true)
-      list().catch(err => log(`${key}: could not list the tools again: ${hide(errorText(err))}`))
+      list().catch(err => {
+        if (lost(`could not list the tools again: ${errorText(err)}`)) void client.close().catch(() => {})
+      })
     })
+    const listed = () => listing?.catch(() => {})
     let lastError = () => ''
     try {
       // Inside the try: a transport that cannot be made fails this server only.
@@ -302,7 +308,7 @@ export const connectAll = (
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       await list()
-      links.set(key, { status: 'connected', client, tools, hide })
+      links.set(key, { status: 'connected', client, tools, hide, listed })
       log(`${key}: connected, ${tools.length} tools`)
       client.onclose = () => {
         opened.delete(client)
@@ -346,10 +352,22 @@ export const connectAll = (
     return attempt(key, server)
   }
 
-  /** The attempt that a caller of `key` waits for: a new one, or the one in progress, whoever started it. */
-  const pending = (key: ServerKey): Promise<void> | undefined => {
-    const link = links.get(key)
-    return reconnect(key) ?? (link?.status === 'connecting' ? link.done : undefined)
+  /**
+   * Waits until `key` is ready for a call: for one connect attempt at most (a new one when the cap allows it, or the
+   * one in progress, whoever started it), and for each list in flight. A list that fails fails the link, and then
+   * the attempt lists anew.
+   */
+  const settle = async (key: ServerKey): Promise<void> => {
+    let attempted = false
+    for (;;) {
+      const link = links.get(key)
+      if (link?.status !== 'connected' && attempted) return
+      const wait =
+        link?.status === 'connected' ? link.listed() : link?.status === 'connecting' ? link.done : reconnect(key)
+      if (wait === undefined) return
+      attempted ||= link?.status !== 'connected'
+      await wait
+    }
   }
 
   const stateOf = (key: ServerKey, link: Link): ServerState => {
@@ -373,10 +391,7 @@ export const connectAll = (
     settled: Promise.race([ready, new Promise(r => setTimeout(r, FIRST_WAIT_MS).unref())]).then(() => {}),
     states: () => [...links].map(([key, link]) => stateOf(key, link)),
     retry: async keys => {
-      const waits =
-        keys === undefined
-          ? [...servers.keys()].flatMap(key => reconnect(key) ?? [])
-          : keys.flatMap(key => pending(key) ?? [])
+      const waits = keys === undefined ? [...servers.keys()].flatMap(key => reconnect(key) ?? []) : keys.map(settle)
       if (waits.length === 0) return
       let timer: NodeJS.Timeout | undefined
       await Promise.race([Promise.all(waits), new Promise(r => (timer = setTimeout(r, RETRY_WAIT_MS)))])
@@ -386,7 +401,7 @@ export const connectAll = (
       if (closing) return { ok: false, reason: 'toolscript-mcp is shutting down' }
       const link = links.get(key)
       if (link === undefined) return { ok: false, reason: `no MCP server "${key}" is connected` }
-      await pending(key)
+      await settle(key)
       const after = links.get(key) ?? link
       if (after.status === 'connected') return { ok: true, client: after.client, hide: after.hide }
       return { ok: false, reason: notConnected(stateOf(key, after))! }
