@@ -278,6 +278,9 @@ each call of that tool, also when an allow rule matches it. toolscript-mcp keeps
 - `recall(n)` returns a result of an earlier call of the tool again. It makes no new call, so it does not ask you.
 - If a server sends `notifications/tools/list_changed`, toolscript-mcp lists its tools again. A run and each call wait
   for that list. If the list fails, toolscript-mcp connects to the server again on next use.
+- A server that does not send this notification keeps its old marks until it connects again. An HTTP server that
+  refuses the GET stream sends no notification between calls. To apply a new mark of such a server, restart
+  toolscript-mcp.
 
 Only the JSON value `true` counts. toolscript-mcp ignores any other value.
 
