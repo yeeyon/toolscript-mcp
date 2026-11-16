@@ -255,23 +255,33 @@ export const connectAll = (
       // rejects each open request with "Connection closed".
       setImmediate(() => void client.close().catch(() => {}))
     }
-    // The lists of this client, by the order they started: the one that started last wins, also when it answers first.
-    let started = 0
-    let shown = 0
+    // The list state of this client: idle (no `listing`), listing, or listing and `dirty`, when a change came during
+    // the list. One list runs at a time, and a dirty one lists once more at its end, so the last list is the newest
+    // and a storm of changes costs two lists.
     let tools: readonly DownstreamTool[] = []
-    const list = async (): Promise<void> => {
-      const n = ++started
-      const listed = await listAll(client)
-      if (n < shown) return
-      shown = n
-      tools = listed
-      const link = links.get(key)
-      if (link?.status === 'connected' && link.client === client) links.set(key, { ...link, tools })
+    let listing: Promise<void> | undefined
+    let dirty = false
+    const list = (): Promise<void> => {
+      dirty = true
+      listing ??= (async () => {
+        try {
+          while (dirty) {
+            dirty = false
+            tools = await listAll(client)
+            const link = links.get(key)
+            if (link?.status === 'connected' && link.client === client) links.set(key, { ...link, tools })
+          }
+        } finally {
+          listing = undefined
+        }
+      })()
+      return listing
     }
     // A server whose tools change, also in their marks, says so: list again, so the checks of a call see the new list.
-    client.setNotificationHandler(ToolListChangedNotificationSchema, () =>
-      list().catch(err => log(`${key}: could not list the tools again: ${hide(errorText(err))}`)),
-    )
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      if (listing !== undefined) return void (dirty = true)
+      list().catch(err => log(`${key}: could not list the tools again: ${hide(errorText(err))}`))
+    })
     let lastError = () => ''
     try {
       // Inside the try: a transport that cannot be made fails this server only.

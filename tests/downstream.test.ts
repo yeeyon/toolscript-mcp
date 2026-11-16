@@ -170,12 +170,14 @@ describe('tools/list_changed', () => {
       args: [PROBE, file, '--list-changed'],
       env: {},
     }
-    const downstream = connectAll(new Map([[KEY, server]]), '0', () => {})
+    const lines: string[] = []
+    const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line))
     opened.push(downstream)
     await downstream.settled
     const link = await downstream.client(KEY)
     if (!link.ok) throw new Error(link.reason)
-    const call = (listDelayMs = 0) => link.client.callTool({ name: 'probe', arguments: { listDelayMs } })
+    const call = (args: { listDelayMs?: number; notifications?: number; failList?: boolean } = {}) =>
+      link.client.callTool({ name: 'probe', arguments: args })
     const description = () => {
       const state = downstream.states()[0]
       return state?.status === 'connected' ? state.tools[0]?.description : undefined
@@ -185,7 +187,7 @@ describe('tools/list_changed', () => {
         .readFileSync(`${file}.log`, 'utf8')
         .split('\n')
         .filter(line => line.includes('"event":"list"')).length
-    return { call, description, lists }
+    return { downstream, call, description, lists, lines }
   }
 
   test('a server that sends tools/list_changed is listed again, and the new list replaces the old', async () => {
@@ -195,14 +197,23 @@ describe('tools/list_changed', () => {
     await until(() => description() === 'Probe, 1 changes.', `listed again: ${description()}`)
   })
 
-  test('the list that started last wins over a slower list that started first', async () => {
+  test('a change during a slow list lists once more at its end, and that newer list stays', async () => {
     const { call, description, lists } = await setupChanged()
-    await call(500)
+    await call({ listDelayMs: 500 })
     await until(() => lists() === 2, 'the slow list started')
     await call()
     await until(() => description() === 'Probe, 2 changes.', `the fast list: ${description()}`)
     await new Promise(r => setTimeout(r, 700))
     assert.equal(description(), 'Probe, 2 changes.', 'the slow list answered last and did not replace the newer one')
+  })
+
+  test('a storm of tools/list_changed costs one list in flight and one more after it', async () => {
+    const { call, description, lists, lines } = await setupChanged()
+    await call({ listDelayMs: 100, notifications: 300 })
+    await until(() => description() === 'Probe, 1 changes.', `listed again: ${description()}`)
+    await new Promise(r => setTimeout(r, 300))
+    assert.equal(lists(), 3, 'the list at connect, the list in flight and one more')
+    assert.deepEqual(lines, ['p: connected, 1 tools'])
   })
 })
 

@@ -10,9 +10,12 @@
 //   --exit-on-call     exits when a call comes, with no answer
 //   --write-on-call    a call of `probe` writes its `text` argument to its `path` argument
 //   --requires-person  lists `probe` with _meta["anthropic/requiresUserInteraction"] = true
-//   --list-changed     declares tools.listChanged. After each call it sends notifications/tools/list_changed,
-//                      and its next lists mark `probe` and name the number of changes in its description. The
-//                      list answers after the `listDelayMs` argument of the last call. It logs each list.
+//   --list-changed     declares tools.listChanged. After each call it sends notifications/tools/list_changed, as
+//                      many times as the `notifications` argument of the call (1 when absent). Its next lists mark
+//                      `probe` and name the number of changes in its description. The number is kept in the file
+//                      plus `.changes`, so a restarted server keeps it. A list answers after the `listDelayMs`
+//                      argument of the last call. After a call with `failList`, each list of this process answers
+//                      an error. It logs each list.
 //
 //   node tests/probe-server.mjs /tmp/probe.json [mode]
 
@@ -25,8 +28,10 @@ const event = e =>
 fs.writeFileSync(file, JSON.stringify({ pid: process.pid, env: process.env }))
 event({ event: 'start' })
 
-let changes = 0
+const changesFile = `${file}.changes`
+const changes = () => (fs.existsSync(changesFile) ? Number(fs.readFileSync(changesFile, 'utf8')) : 0)
 let listDelayMs = 0
+let failList = false
 
 const send = msg => process.stdout.write(`${JSON.stringify(msg)}\n`)
 
@@ -43,9 +48,13 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     })
   if (msg.method === 'tools/list') {
     event({ event: 'list' })
-    const marked = mode === '--requires-person' || changes > 0
+    if (failList) {
+      const error = { code: -32603, message: 'the tool list failed' }
+      return void setTimeout(() => send({ jsonrpc: '2.0', id: msg.id, error }), listDelayMs)
+    }
+    const marked = mode === '--requires-person' || changes() > 0
     const meta = marked ? { _meta: { 'anthropic/requiresUserInteraction': true } } : {}
-    const description = mode === '--list-changed' ? `Probe, ${changes} changes.` : 'Probe.'
+    const description = mode === '--list-changed' ? `Probe, ${changes()} changes.` : 'Probe.'
     const tools = [{ name: 'probe', description, inputSchema: { type: 'object' }, ...meta }]
     setTimeout(() => reply({ tools }), listDelayMs)
     if (mode === '--exit-after-list') setTimeout(() => process.exit(3), 200)
@@ -60,9 +69,11 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     reply({ content: [{ type: 'text', text: String(process.pid) }] })
     if (mode === '--exit-after-call') setTimeout(() => process.exit(3), 50)
     if (mode === '--list-changed') {
-      changes++
+      fs.writeFileSync(changesFile, String(changes() + 1))
       listDelayMs = Number(msg.params.arguments?.listDelayMs ?? 0)
-      send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
+      failList = msg.params.arguments?.failList === true
+      for (let i = 0; i < Number(msg.params.arguments?.notifications ?? 1); i++)
+        send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
     }
     return
   }
