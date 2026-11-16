@@ -965,7 +965,8 @@ describe('a server whose tools change', () => {
         const { run } = setup({ downstream, timeoutSeconds: 6 })
         const startedAt = performance.now()
         const r = await run('return await call("mcp__p__nope", {})')
-        assert.ok(performance.now() - startedAt < 6000, `the run answered in ${performance.now() - startedAt} ms`)
+        // Before the sandbox, a run waits at most twice RETRY_WAIT_MS (the connect, then the list after the miss).
+        assert.ok(performance.now() - startedAt < 12_000, `the run answered in ${performance.now() - startedAt} ms`)
         assert.ok(r.text.includes('no tool "mcp__p__nope" on the connected server "p"'), r.text)
       } finally {
         await downstream.close()
