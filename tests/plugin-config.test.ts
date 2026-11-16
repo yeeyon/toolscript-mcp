@@ -108,6 +108,45 @@ describe('plugin config helper', () => {
     assert.ok(read(file).endsWith('}\n'))
   })
 
+  it('puts new rules first and keeps the other rules after them', () => {
+    const file = makeConfig(
+      JSON.stringify({
+        ...FIXTURE,
+        policy: [
+          { match: 'mcp__fake__*', action: 'allow' },
+          { match: 'mcp__cc__Bash', action: 'allow' },
+          { match: '*', action: 'deny' },
+        ],
+      }),
+    )
+    const rules = ['allow', 'mcp__cc__Read', 'ask', 'mcp__cc__Bash', 'deny', 'mcp__cc__*']
+    const expected = [
+      { match: 'mcp__cc__Read', action: 'allow' },
+      { match: 'mcp__cc__Bash', action: 'ask' },
+      { match: 'mcp__cc__*', action: 'deny' },
+      { match: 'mcp__fake__*', action: 'allow' },
+      { match: '*', action: 'deny' },
+    ]
+    for (let round = 0; round < 2; round++) {
+      const { code, out } = run(file, 'prepend', ...rules)
+      assert.equal(code, 0)
+      assert.ok(out.includes('{"match":"mcp__cc__*","action":"deny"}\n{"match":"mcp__fake__*","action":"allow"}'))
+      const saved = JSON.parse(read(file))
+      assert.deepEqual(saved.policy, expected)
+      assert.deepEqual(saved.mcpServers, FIXTURE.mcpServers)
+      assert.deepEqual(saved.sandbox, FIXTURE.sandbox)
+    }
+  })
+
+  it('refuses prepend with no pairs or a bad rule and leaves the file as it was', () => {
+    const file = makeConfig()
+    const before = read(file)
+    assert.equal(run(file, 'prepend').code, 2)
+    assert.equal(run(file, 'prepend', 'permit', 'mcp__fake__x').code, 2)
+    assert.equal(run(file, 'prepend', 'allow', 'fake__x').code, 2)
+    assert.equal(read(file), before)
+  })
+
   it('empties the policy with no pairs', () => {
     const file = makeConfig()
     assert.equal(run(file, 'policy').code, 0)
