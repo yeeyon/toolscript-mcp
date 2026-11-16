@@ -1,6 +1,6 @@
 // A stdio MCP server with one tool, `probe`, which returns the server's pid.
 // It answers a call of any tool name, also of a name it does not list.
-// At start it writes its pid and environment as JSON to the file in its first
+// At start it writes its pid, folder and environment as JSON to the file in its first
 // argument. It appends each start, each call (with the tool name) and each
 // cancelled request as a JSON line, with its pid and its parent's pid, to that
 // file plus `.log`. The mode in the second argument:
@@ -18,7 +18,7 @@ import readline from 'node:readline'
 const [file, mode] = process.argv.slice(2)
 const event = e =>
   fs.appendFileSync(`${file}.log`, `${JSON.stringify({ ...e, pid: process.pid, ppid: process.ppid })}\n`)
-fs.writeFileSync(file, JSON.stringify({ pid: process.pid, env: process.env }))
+fs.writeFileSync(file, JSON.stringify({ pid: process.pid, cwd: process.cwd(), env: process.env }))
 event({ event: 'start' })
 
 const send = msg => process.stdout.write(`${JSON.stringify(msg)}\n`)

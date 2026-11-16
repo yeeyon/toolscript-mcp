@@ -18,6 +18,8 @@ export type StdioServer = {
   readonly args: readonly string[]
   /** Only these and the SDK's short default list reach the child. */
   readonly env: Readonly<Record<string, string>>
+  /** The absolute folder that the child starts in. Without it, the child starts in the folder of toolscript-mcp. */
+  readonly cwd?: string
 }
 
 /** How an HTTP server logs in with OAuth: `toolscript-mcp login <key>` gets the tokens. */
@@ -226,14 +228,37 @@ const parseOAuth = (
   }
 }
 
-const parseServer = (raw: unknown, path: string, env: Env, errors: string[]): ServerConfig | undefined => {
+/**
+ * An absolute folder. The config file can live anywhere, and toolscript-mcp starts in the folder of its client, so
+ * a relative path has no base that a person can predict. On Windows a path needs a drive letter or a share: `/srv`
+ * is on the drive of the moment.
+ */
+const parseCwd = (raw: unknown, path: string, env: Env, platform: string, errors: string[]): string | undefined => {
+  if (raw === undefined) return undefined
+  const found = errors.length
+  const cwd = expand(nonEmpty(raw, path, errors), env, path, errors)
+  if (errors.length > found) return undefined
+  const windows = platform === 'win32'
+  if (windows ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(cwd) : cwd.startsWith('/')) return cwd
+  const example = windows ? ' with a drive letter or a share, such as "C:/work/app"' : ', such as "/home/me/app"'
+  errors.push(`${path}: must be an absolute path${example}, not ${JSON.stringify(raw)}`)
+  return undefined
+}
+
+const parseServer = (
+  raw: unknown,
+  path: string,
+  env: Env,
+  platform: string,
+  errors: string[],
+): ServerConfig | undefined => {
   if (!isObject(raw)) {
     errors.push(`${path}: must be an object`)
     return undefined
   }
   const type = raw.type ?? 'stdio'
   if (type === 'stdio') {
-    unknownKeys(raw, ['type', 'command', 'args', 'env'], path, errors)
+    unknownKeys(raw, ['type', 'command', 'args', 'env', 'cwd'], path, errors)
     const command = nonEmpty(raw.command, `${path}.command`, errors)
     let args: string[] = []
     if (raw.args !== undefined) {
@@ -245,7 +270,8 @@ const parseServer = (raw: unknown, path: string, env: Env, errors: string[]): Se
         })
       else errors.push(`${path}.args: must be an array of strings`)
     }
-    return { kind: 'stdio', command, args, env: stringMap(raw.env, `${path}.env`, env, errors) }
+    const cwd = parseCwd(raw.cwd, `${path}.cwd`, env, platform, errors)
+    return { kind: 'stdio', command, args, env: stringMap(raw.env, `${path}.env`, env, errors), ...(cwd && { cwd }) }
   }
   if (type === 'http') {
     unknownKeys(raw, ['type', 'url', 'headers', 'oauth'], path, errors)
@@ -367,7 +393,7 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
         continue
       }
       const entryErrors: string[] = []
-      const server = parseServer(entry, path, env, entryErrors)
+      const server = parseServer(entry, path, env, platform, entryErrors)
       servers.set(key, server && entryErrors.length === 0 ? server : { kind: 'invalid', errors: entryErrors })
     }
 

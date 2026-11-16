@@ -36,6 +36,7 @@ const CURSOR = {
     github: { command: 'other-github' },
     // A server in a clone of toolscript-mcp is not toolscript-mcp itself.
     bench: { command: 'node', args: ['/src/toolscript-mcp/bench/fake-server.mjs'] },
+    badcwd: { command: 'fake', cwd: 1 },
     tracker: {
       url: 'https://mcp.example.com/mcp?key=fake-secret-query',
       headers: { Authorization: 'Bearer fake-secret-header' },
@@ -90,6 +91,7 @@ describe('toolscript-mcp init', () => {
         command: 'node',
         args: ['notes.js', 'postgres://user:fake-secret-pass@db.example.com/x'],
         env: {},
+        cwd: '/srv',
       },
       bench: { kind: 'stdio', command: 'node', args: ['/src/toolscript-mcp/bench/fake-server.mjs'], env: {} },
       tracker: {
@@ -125,7 +127,8 @@ describe('toolscript-mcp init', () => {
     assert.match(out, /- Claude Code "events": .*sse/)
     assert.match(out, /- Claude Desktop "off": .*disabled/)
     assert.match(out, /- Cursor "github": .*Claude Code/)
-    assert.match(out, /my-notes.*"my notes".*cwd/)
+    has('- my-notes, from Claude Desktop "my notes"')
+    assert.match(out, /- Cursor "badcwd": "cwd" is not a string/)
     assert.doesNotMatch(out, /project_only/)
     assert.match(out, /"policy"/)
     has('toolscript-mcp reads the policy again at each run. It asks you to approve a new allow rule before it applies.')

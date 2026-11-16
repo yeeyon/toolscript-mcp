@@ -4,6 +4,7 @@
 // work. A failed server connects again on next use (a search or a call), at
 // most MAX_ATTEMPTS times in ATTEMPT_WINDOW_MS, and never after close.
 
+import fs from 'node:fs'
 import os from 'node:os'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -177,6 +178,7 @@ const transportOf = (
     command: server.command,
     args: [...server.args],
     env: childEnv(server),
+    ...(server.cwd !== undefined && { cwd: server.cwd }),
     stderr: 'pipe',
   })
   let tail = ''
@@ -186,6 +188,20 @@ const transportOf = (
   })
   const lastError = () => tail.replace(/\s+/g, ' ').trim().slice(-300)
   return { transport, lastError }
+}
+
+/**
+ * Why the cwd of a stdio server cannot be its folder, or undefined when it can. Without this check, the spawn of a
+ * child in a missing folder fails with "spawn <command> ENOENT", which blames the command.
+ */
+const cwdProblem = async (server: ServerConfig): Promise<string | undefined> => {
+  if (server.kind !== 'stdio' || server.cwd === undefined) return undefined
+  try {
+    return (await fs.promises.stat(server.cwd)).isDirectory() ? undefined : `its cwd is not a folder: ${server.cwd}`
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return `its cwd folder does not exist: ${server.cwd}`
+    return `cannot read its cwd folder: ${errorText(err)}`
+  }
 }
 
 export const listAll = async (client: Client): Promise<DownstreamTool[]> => {
@@ -270,6 +286,10 @@ export const connectAll = (
             }
           : undefined
       if (auth) secrets = auth.provider.secrets
+      const problem = await cwdProblem(server)
+      if (problem !== undefined) throw new Error(problem)
+      // close() closes only the clients that it sees: a shutdown during the check must not start a process after it.
+      if (closing) throw new Error('toolscript-mcp is shutting down')
       const made = transportOf(server, sessionEnded, auth)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })

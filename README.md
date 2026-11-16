@@ -190,6 +190,7 @@ toolscript-mcp, ask Claude again.
 - If two clients have a server with the same name, init keeps the first one. The order is Claude Code, Claude
   Desktop, Cursor.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
+- init keeps the `cwd` of a stdio server. If that `cwd` is not an absolute path, only that server fails until you fix it.
 - On Linux and macOS, only your user account can read the config that init writes.
 - `--dry-run` shows the config and the steps, and writes nothing. These values show as `***`:
   - the values of `env` and `headers`
@@ -287,10 +288,14 @@ server. The program can catch the error and continue.
 - toolscript-mcp reads the file from `--config`, else from `TOOLSCRIPT_CONFIG`.
 - Without both, it reads `%APPDATA%\toolscript-mcp\config.json` on Windows.
 - On other systems, it reads `$XDG_CONFIG_HOME/toolscript-mcp/config.json`, else `~/.config/toolscript-mcp/config.json`.
-- A stdio server has `command`, `args` and `env`. An HTTP server has `"type": "http"`, `url`, `headers` and
+- A stdio server has `command`, `args`, `env` and `cwd`. An HTTP server has `"type": "http"`, `url`, `headers` and
   `oauth`. See [OAuth login](#oauth-login).
+- `cwd` is the folder that a stdio server starts in. It must be an absolute path. Without `cwd`, the server starts in
+  the folder of toolscript-mcp.
+- On Windows, `cwd` needs a drive letter or a share, for example `C:/work/app`.
+- If the `cwd` folder does not exist, only that server fails. toolscript-mcp tries again on the next use.
 - The `url` of an HTTP server must be a valid URL that starts with `http://` or `https://`.
-- `${VAR}` in `args`, `env`, `url` and `headers` gets the value of `VAR` from the environment of toolscript-mcp.
+- `${VAR}` in `args`, `env`, `cwd`, `url` and `headers` gets the value of `VAR` from the environment of toolscript-mcp.
 - If a server entry has an error, for example a variable that is not set, only that server fails.
 - `search_tools` shows the error of the server. The error names the variable, not its value.
 - An error outside `mcpServers` stops toolscript-mcp at the start.
@@ -408,6 +413,100 @@ code. Read [SECURITY.md](SECURITY.md).
 - Each `run_code` call starts a new program. No variables stay between two calls. The files of `saveFile` and the
   results of `recall(n)` stay.
 
+## Claude Code as a downstream server
+
+`claude mcp serve` runs Claude Code as a stdio MCP server. With it in your config, one program can find, read and
+edit the files of a project and run its tests. The program returns only the result, for example the failing test lines.
+
+This bridge is optional, and it gives programs a shell. Read [The risks](#the-risks) before you add it.
+
+### The entry and the policy
+
+Add the entry to `mcpServers`, and the rules to `policy`, in your config:
+
+```json
+{
+  "mcpServers": {
+    "claude-code": {
+      "command": "C:/Users/me/.local/bin/claude.exe",
+      "args": ["mcp", "serve"],
+      "cwd": "C:/work/my project"
+    }
+  },
+  "policy": [
+    { "match": "mcp__claude-code__Read", "action": "allow" },
+    { "match": "mcp__claude-code__Grep", "action": "allow" },
+    { "match": "mcp__claude-code__Glob", "action": "allow" },
+    { "match": "mcp__claude-code__Bash", "action": "ask" },
+    { "match": "mcp__claude-code__PowerShell", "action": "ask" },
+    { "match": "mcp__claude-code__Edit", "action": "ask" },
+    { "match": "mcp__claude-code__Write", "action": "ask" },
+    { "match": "mcp__claude-code__*", "action": "deny" }
+  ]
+}
+```
+
+- On Windows, `command` is the full path of `claude.exe`. To find it, run `(Get-Command claude.exe).Source` in
+  PowerShell.
+- Do not use the `claude.ps1` or `claude.cmd` shim on Windows. In a test, the `claude.ps1` shim did not connect.
+- On Linux and macOS, `command` is `claude`.
+- `cwd` is the folder of the project. Bash commands start there, and Grep and Glob search there.
+- Without `cwd`, Claude Code works in the folder where your client started toolscript-mcp.
+- Put the rules before a broad rule, such as `{ "match": "*", "action": "allow" }`. The first rule that matches decides.
+- The last rule denies the other tools of Claude Code, for example `Agent`, `WebFetch` and `CronCreate`.
+- `ask` needs a client with MCP elicitation. If your client cannot ask, toolscript-mcp refuses each `ask` tool.
+
+### The risks
+
+Keep `Bash`, `PowerShell`, `Edit` and `Write` on `ask`. On this path, the toolscript-mcp policy is the only check
+on what a program does.
+
+- The permission rules and hooks of Claude Code do not apply. In a test, a project `deny` rule did not stop a Bash
+  command, and no hook ran.
+- The policy matches tool names only. If you approve `Bash` for a run, each Bash command of that program runs, with
+  any command text.
+- Bash and PowerShell run as your user. They can reach the network and any folder, also outside `cwd`.
+- Write and Edit take any absolute path, also outside `cwd`. In a test, a Write outside the project folder succeeded.
+
+### In a program
+
+- A command that exits with an error throws. The error message starts with `Exit code N` and holds the output. Use
+  `try` and `catch` to read the output of a failing test.
+- Grep and Glob return paths relative to `cwd`, with `\` on Windows. Read and Edit take an absolute `file_path`, so
+  join each path to `cwd` first.
+- A call that takes longer than `sandbox.callTimeoutSeconds` (default 60 s) throws, and toolscript-mcp cancels it.
+- For a longer test run, raise `sandbox.callTimeoutSeconds` and `sandbox.timeoutSeconds`, and give Bash a
+  `timeout` in milliseconds.
+
+This program finds a line, reads its file and runs the tests. If you approve `Bash`, it returns the pass and fail
+counts, also when a test fails:
+
+```js
+const cwd = 'C:/work/my project'
+const hits = await call('mcp__claude-code__Grep', { pattern: 'DEFAULT_RETRIES =', output_mode: 'content', '-n': true })
+const [path, line] = hits.content.split('\n')[0].split(':')
+const file = await call('mcp__claude-code__Read', { file_path: `${cwd}/${path.replaceAll('\\', '/')}` })
+let test
+try {
+  test = (await call('mcp__claude-code__Bash', { command: 'npm test' })).stdout
+} catch (err) {
+  test = err.message
+}
+return { path, line, lines: file.file.numLines, test: test.split('\n').filter(l => /^# (pass|fail)/.test(l)) }
+```
+
+### Measured with Claude Code 2.1.325
+
+These numbers are from Claude Code 2.1.325 on Windows 11, with Node 22.
+
+- `tools/list` answered about 1.5 s after the start of `claude mcp serve`.
+- The first Bash call of each server took about 9 to 10 s. Later Bash calls took 1 to 5 s.
+- Glob, Grep, Read and Edit calls took less than 0.6 s.
+- Each `claude mcp serve` process used about 205 MB of memory when idle. After Bash and Edit calls, its private
+  memory was about 390 MB.
+- `claude mcp serve` lists 30 built-in tools. It does not start the MCP servers of your Claude Code config, so it
+  does not start toolscript-mcp again.
+
 ## toolscript-mcp and Claude Code Code Mode
 
 Claude Code 2.1.323 added Code Mode, an experimental option. With it, Claude writes JavaScript that calls its tools.
@@ -415,7 +514,8 @@ It solves a similar problem inside Claude Code.
 
 - Code Mode works only in Claude Code. It is off by default, and it has more conditions, for example the interactive
   terminal and the Anthropic API.
-- Code Mode reaches the built-in tools of Claude Code and the shell. toolscript-mcp reaches only MCP tools.
+- Code Mode reaches the built-in tools of Claude Code and the shell. toolscript-mcp reaches only MCP tools. To reach the
+  tools of Claude Code, see [Claude Code as a downstream server](#claude-code-as-a-downstream-server).
 - toolscript-mcp is for each MCP client that can start a stdio server. It is open source, with a documented sandbox
   and allow, deny and ask rules.
 - toolscript-mcp is tested with the client of the MCP TypeScript SDK and with Claude Code.

@@ -46,7 +46,12 @@ type StringMap = Readonly<Record<string, string>>
 
 /** A server as the toolscript-mcp config writes it. `${VAR}` stays as the client file has it. */
 export type Entry =
-  | { readonly command: string; readonly args?: readonly string[]; readonly env?: StringMap }
+  | {
+      readonly command: string
+      readonly args?: readonly string[]
+      readonly env?: StringMap
+      readonly cwd?: string
+    }
   | { readonly type: 'http'; readonly url: string; readonly headers?: StringMap }
 
 /** What init did with one server of a client file. */
@@ -91,7 +96,7 @@ const isSelf = (name: string, raw: unknown): boolean =>
   (isObject(raw) &&
     [raw.command, ...(Array.isArray(raw.args) ? raw.args : [])].some(a => typeof a === 'string' && SELF.test(a)))
 
-const STDIO_KEYS = ['type', 'command', 'args', 'env', 'disabled']
+const STDIO_KEYS = ['type', 'command', 'args', 'env', 'cwd', 'disabled']
 const HTTP_KEYS = ['type', 'url', 'headers', 'disabled']
 
 const extraKeys = (raw: Record<string, unknown>, known: readonly string[]): string[] =>
@@ -105,12 +110,18 @@ const toEntry = (raw: unknown): { entry: Entry; dropped: string[] } | { why: str
   if (raw.disabled === true) return { why: 'disabled in this client' }
   const type = raw.type ?? (raw.command === undefined && raw.url !== undefined ? 'http' : 'stdio')
   if (type === 'stdio') {
-    const { command, args, env } = raw
+    const { command, args, env, cwd } = raw
     if (typeof command !== 'string' || command.trim() === '') return { why: 'no command' }
     if (args !== undefined && !isStrings(args)) return { why: '"args" is not a list of strings' }
     if (env !== undefined && !isStringMap(env)) return { why: '"env" is not an object of strings' }
+    if (cwd !== undefined && typeof cwd !== 'string') return { why: '"cwd" is not a string' }
     const map = nonEmpty(env)
-    const entry = { command, ...(args?.length ? { args: [...args] } : {}), ...(map ? { env: map } : {}) }
+    const entry = {
+      command,
+      ...(args?.length ? { args: [...args] } : {}),
+      ...(map ? { env: map } : {}),
+      ...(cwd ? { cwd } : {}),
+    }
     return { entry, dropped: extraKeys(raw, STDIO_KEYS) }
   }
   if (type === 'http') {
