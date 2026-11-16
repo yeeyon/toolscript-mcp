@@ -879,6 +879,37 @@ describe('the running server', () => {
     assert.equal(refreshes.at(-1)?.get('refresh_token'), login, 'the refresh sent the refresh token of the login')
   })
 
+  test('a refresh answer that holds no tokens keeps refreshed tokens that the store never took', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    await refreshUnsaved(fake, s, downstream)
+    fake.expire()
+    fake.change.refreshAnswer = { status: 200, type: 'text/html', body: '<html>maintenance</html>' }
+    assert.notEqual(await s.ping(downstream), PONG)
+    fake.change.refreshAnswer = undefined
+    assert.equal(await s.ping(downstream), PONG, 'the refresh token in memory still refreshes')
+  })
+
+  test('refreshed tokens that the store never took work while the store cannot be read', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    await refreshUnsaved(fake, s, downstream)
+    mock.method(fs.promises, 'readFile', async () => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, open'), { code: 'EBUSY' })
+    })
+    try {
+      assert.equal(await s.ping(downstream), PONG)
+    } finally {
+      mock.restoreAll()
+    }
+  })
+
   test('a late invalid_grant of one of two calls at expiry needs no login', async () => {
     const fake = await startFake()
     const s = setup(fake)

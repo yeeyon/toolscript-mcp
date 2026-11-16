@@ -239,10 +239,8 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     if (response.ok) {
       const answer = OAuthTokensSchema.safeParse(await response.json().catch(() => undefined)).data
       if (answer === undefined && signal.aborted) throw silent()
-      if (answer === undefined) {
-        unsaved.delete(file)
-        return needLogin()
-      }
+      // The refresh token in memory was not used up: the next use refreshes with it again.
+      if (answer === undefined) return needLogin()
       // The SDK keeps the refresh token when the answer has none, and stamps the authorization server.
       const tokens = { refresh_token: sent, ...answer, ...(now?.issuer !== undefined && { issuer: now.issuer }) }
       try {
@@ -264,8 +262,15 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     return (await rotated(file, sent)) ?? needLogin()
   }
   const current = async (): Promise<OAuthTokens | undefined> => {
-    const { tokens } = await readStore(file)
     const kept = unsaved.get(file)
+    let tokens: OAuthTokens | undefined
+    try {
+      tokens = (await readStore(file)).tokens
+    } catch (err) {
+      // A store that another program holds open still leaves this process the tokens in memory.
+      if (kept !== undefined) return kept.tokens
+      throw err
+    }
     if (kept !== undefined && tokens?.refresh_token === kept.storeHad) return kept.tokens
     unsaved.delete(file)
     return tokens
