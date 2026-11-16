@@ -450,6 +450,19 @@ test('run (q) an allow rule does not let a tool that requires a person run: a cl
   assert.equal(consentCalls(), 1)
 })
 
+test('run (r) a tool that requires a person, with a name built at run time, is refused at call time with no prompt', async () => {
+  const prompts = asking.prompts.length
+  const calls = consentCalls()
+  const r = await run(
+    'try {\n  return await call("mcp__consent__" + "probe", {})\n} catch (e) {\n  return "caught: " + e.message\n}',
+    askingClient,
+  )
+  assert.equal(r.isError, false, r.text)
+  assert.ok(r.text.startsWith('"caught: not approved: mcp__consent__probe needs the person\'s approval'), r.text)
+  assert.equal(asking.prompts.length, prompts, 'a name built at run time is never asked')
+  assert.equal(consentCalls(), calls)
+})
+
 test('run (f) a busy loop ends at the limit, and the server stays usable', async () => {
   const started = performance.now()
   const r = await run('while (true) {}')

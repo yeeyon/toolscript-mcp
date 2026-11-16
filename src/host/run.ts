@@ -12,9 +12,11 @@ import {
   approvalNote,
   checkCall,
   deniedReport,
+  interactiveNote,
   planRun,
   refusedReport,
   type Asks,
+  type CallCheck,
   type Policy,
 } from '../core/policy.ts'
 import {
@@ -101,8 +103,8 @@ const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallL
 })
 
 /** A call that a refused program names. It never started; `error` says why the policy stops it. */
-const notMade = (policy: Policy, tool: string): CallLog => {
-  const decision = callDecision(policy, new Set(), tool)
+const notMade = (policy: Policy, interactive: ReadonlySet<string>, tool: string): CallLog => {
+  const decision = callDecision(policy, new Set(), tool, interactive)
   return { tool, decision, ms: 0, ok: false, ...(decision === 'allow' ? {} : { error: decision }) }
 }
 
@@ -146,12 +148,13 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     const reason = notConnected(s)
     if (reason !== undefined) down.set(s.key, reason)
   }
-  const notRun = named.map(c => notMade(ctx.config.policy, c.tool))
+  const interactive = interactiveTools(states)
+  const notRun = named.map(c => notMade(ctx.config.policy, interactive, c.tool))
   const refuse = (text: string) => refused(text, known, notRun)
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
 
-  const plan = planRun(ctx.config.policy, literal, interactiveTools(states))
+  const plan = planRun(ctx.config.policy, literal, interactive)
   if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
   if (plan.ask.length + plan.interactive.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan, code) : 'unsupported'
@@ -243,6 +246,9 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   // Every call the program made, by id: one with no record at the end did not finish.
   const started = new Map<number, string>()
   const unapproved = new Set<string>()
+  const needPerson = new Set<string>()
+  // A server that connects again during the run lists its tools anew, maybe with a new mark.
+  const interactiveNow = () => interactiveTools(downstream.states())
   const recalled: { ref: number; ageMs: number }[] = []
   let recalls = 0
   const answers: Promise<void>[] = []
@@ -287,13 +293,18 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
         error: `only MCP tools (mcp__<server>__<tool>) can be called, not "${tool}"`,
         code: 'invalid',
       }
-    const check = checkCall(config.policy, approved, tool)
-    if (!check.ok) {
-      if (check.needsRule) unapproved.add(tool)
-      return { ok: false, error: check.error, code: callDecision(config.policy, approved, tool) }
+    const refusal = (check: Extract<CallCheck, { ok: false }>): Reply & { code: CallError } => {
+      if (check.needs === 'rule') unapproved.add(tool)
+      if (check.needs === 'person') needPerson.add(tool)
+      return { ok: false, error: check.error, code: callDecision(config.policy, approved, tool, interactiveNow()) }
     }
+    const check = checkCall(config.policy, approved, tool, interactiveNow())
+    if (!check.ok) return refusal(check)
     const link = await downstream.client(target.server as ServerKey)
     if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
+    // The link can be new, with a new list of tools: check again.
+    const again = checkCall(config.policy, approved, tool, interactiveNow())
+    if (!again.ok) return refusal(again)
     // A reconnect can outlast the sandbox: then the call has no reader and does not start.
     if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }
     // The SDK keeps its abort listener after the answer and then sends a
@@ -341,7 +352,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     if (closed) return
     audits.set(id, {
       tool,
-      decision: callDecision(config.policy, approved, tool),
+      decision: callDecision(config.policy, approved, tool, interactiveNow()),
       ms: performance.now() - began,
       ok: r.ok,
       ...(r.ok ? {} : { error: failure ?? 'failed' }),
@@ -469,7 +480,7 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
     if (audits.has(id)) continue
     audits.set(id, {
       tool,
-      decision: callDecision(config.policy, approved, tool),
+      decision: callDecision(config.policy, approved, tool, interactiveNow()),
       ms: 0,
       ok: false,
       error: 'unfinished',
@@ -482,7 +493,9 @@ const execute = async (ctx: RunContext, code: string, approved: ReadonlySet<stri
   const isCut = returned !== undefined && shownText(returned).length > MAX_RESULT_CHARS
   const wholeRef = isCut ? keep(kept, returned, Date.now()) : undefined
   const text = formatOutcome(outcome, calls.length, stderr, MAX_RESULT_CHARS, { calls, recalls, recalled, wholeRef })
-  const note = approvalNote([...unapproved], ctx.canAsk())
+  const note = [approvalNote([...unapproved], ctx.canAsk()), interactiveNote([...needPerson], ctx.canAsk())]
+    .filter(n => n !== '')
+    .join('\n\n')
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
   const result = { text: note === '' ? text : `${text}\n\n${note}`, isError: outcome?.t !== 'done' }

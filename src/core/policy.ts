@@ -257,21 +257,34 @@ export const deniedReport = (denied: Extract<Plan, { kind: 'refused' }>['denied'
 /**
  * The check of one nested call while the program runs, against the same
  * policy and the tools the person approved for this run. A name that the
- * program builds at run time was never asked, so only an allow rule lets it run.
+ * program builds at run time was never asked, so only an allow rule lets it
+ * run, and never for a tool in `interactive`. `needs` says what a refused
+ * call lacks: an allow rule, or the person, whom only the prompt before a run
+ * can ask. A denied call lacks neither.
  */
 export type CallCheck =
   | { readonly ok: true }
-  | { readonly ok: false; readonly error: string; readonly needsRule: boolean }
+  | { readonly ok: false; readonly error: string; readonly needs?: 'rule' | 'person' }
 
-export const checkCall = (policy: Policy, approved: ReadonlySet<string>, tool: string): CallCheck => {
+export const checkCall = (
+  policy: Policy,
+  approved: ReadonlySet<string>,
+  tool: string,
+  interactive: ReadonlySet<string>,
+): CallCheck => {
   const { action, rule } = decide(policy, tool)
-  if (action === 'allow' || (action === 'ask' && approved.has(tool))) return { ok: true }
-  if (action === 'deny' && rule !== undefined)
-    return { ok: false, error: `denied by ${ruleText(rule)}`, needsRule: false }
+  if (action === 'deny' && rule !== undefined) return { ok: false, error: `denied by ${ruleText(rule)}` }
+  if (approved.has(tool) || (action === 'allow' && !interactive.has(tool))) return { ok: true }
+  if (interactive.has(tool))
+    return {
+      ok: false,
+      error: `not approved: ${tool} needs the person's approval at each run, and an allow rule does not replace it`,
+      needs: 'person',
+    }
   return {
     ok: false,
     error: `not approved: no policy rule allows ${tool}, and the person did not approve it for this run`,
-    needsRule: true,
+    needs: 'rule',
   }
 }
 

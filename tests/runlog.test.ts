@@ -89,11 +89,19 @@ describe('the decision of a call', () => {
   ]
   test('names what the policy and the approval said', () => {
     const approved = new Set(['mcp__f__slow'])
-    assert.equal(callDecision(policy, approved, 'mcp__f__echo'), 'allow')
-    assert.equal(callDecision(policy, approved, 'mcp__f__rm'), 'denied')
-    assert.equal(callDecision(policy, approved, 'mcp__f__slow'), 'ask-approved')
-    assert.equal(callDecision(policy, approved, 'mcp__f__other'), 'unapproved')
-    assert.equal(callDecision(policy, approved, 'Bash'), 'invalid')
+    const none = new Set<string>()
+    assert.equal(callDecision(policy, approved, 'mcp__f__echo', none), 'allow')
+    assert.equal(callDecision(policy, approved, 'mcp__f__rm', none), 'denied')
+    assert.equal(callDecision(policy, approved, 'mcp__f__slow', none), 'ask-approved')
+    assert.equal(callDecision(policy, approved, 'mcp__f__other', none), 'unapproved')
+    assert.equal(callDecision(policy, approved, 'Bash', none), 'invalid')
+  })
+
+  test('an allow rule does not count as approval of a tool whose server requires a person', () => {
+    const marked = new Set(['mcp__f__echo', 'mcp__f__rm'])
+    assert.equal(callDecision(policy, new Set(), 'mcp__f__echo', marked), 'unapproved')
+    assert.equal(callDecision(policy, new Set(['mcp__f__echo']), 'mcp__f__echo', marked), 'ask-approved')
+    assert.equal(callDecision(policy, new Set(), 'mcp__f__rm', marked), 'denied')
   })
 })
 

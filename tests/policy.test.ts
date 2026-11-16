@@ -250,16 +250,28 @@ describe('the check of each nested call', () => {
   const p = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__bench__list_*', 'allow'])
 
   test('allow runs, deny names its rule, and ask runs only when approved for this run', () => {
-    assert.deepEqual(checkCall(p, new Set(), 'mcp__bench__list_issues'), { ok: true })
-    assert.deepEqual(checkCall(p, new Set(['mcp__bench__create_ticket']), 'mcp__bench__create_ticket'), {
+    const none = new Set<string>()
+    assert.deepEqual(checkCall(p, new Set(), 'mcp__bench__list_issues', none), { ok: true })
+    assert.deepEqual(checkCall(p, new Set(['mcp__bench__create_ticket']), 'mcp__bench__create_ticket', none), {
       ok: false,
       error: 'denied by policy[0] {"match": "mcp__bench__create_ticket", "action": "deny"}',
-      needsRule: false,
     })
-    assert.deepEqual(checkCall(p, new Set(['mcp__bench__query_logs']), 'mcp__bench__query_logs'), { ok: true })
-    const dynamic = checkCall(p, new Set(['mcp__bench__query_logs']), 'mcp__bench__get_deploys')
+    assert.deepEqual(checkCall(p, new Set(['mcp__bench__query_logs']), 'mcp__bench__query_logs', none), { ok: true })
+    const dynamic = checkCall(p, new Set(['mcp__bench__query_logs']), 'mcp__bench__get_deploys', none)
     assert.equal(dynamic.ok, false)
-    assert.ok(!dynamic.ok && dynamic.needsRule)
+    assert.ok(!dynamic.ok && dynamic.needs === 'rule')
+  })
+
+  test('a tool whose server requires a person runs only when approved for this run, and a deny rule still denies it', () => {
+    const marked = new Set(['mcp__bench__list_issues', 'mcp__bench__create_ticket'])
+    const allowed = checkCall(p, new Set(), 'mcp__bench__list_issues', marked)
+    assert.ok(!allowed.ok && allowed.needs === 'person', JSON.stringify(allowed))
+    assert.ok(!allowed.ok && allowed.error.includes('an allow rule does not replace it'), JSON.stringify(allowed))
+    assert.deepEqual(checkCall(p, new Set(['mcp__bench__list_issues']), 'mcp__bench__list_issues', marked), {
+      ok: true,
+    })
+    const denied = checkCall(p, new Set(['mcp__bench__create_ticket']), 'mcp__bench__create_ticket', marked)
+    assert.ok(!denied.ok && denied.needs === undefined && denied.error.startsWith('denied by'), JSON.stringify(denied))
   })
 
   test('approvalNote names each allow rule to add, and nothing when none was refused', () => {
@@ -560,7 +572,7 @@ describe('a change of the policy in the config file', () => {
     const listed = policyChange(policy(['mcp__a__*', 'allow']), many)
     assert.ok(listed.includes('{"match": "mcp__a__t9", "action": "deny"} and 15 more; removed'), listed)
     assert.ok(!listed.includes('mcp__a__t10'), listed)
-    const denied = checkCall(policy(['mcp__x__a\n*', 'deny']), new Set(), 'mcp__x__a\nb')
+    const denied = checkCall(policy(['mcp__x__a\n*', 'deny']), new Set(), 'mcp__x__a\nb', new Set())
     assert.ok(
       !denied.ok && denied.error.endsWith('{"match": "mcp__x__a\\n*", "action": "deny"}'),
       JSON.stringify(denied),

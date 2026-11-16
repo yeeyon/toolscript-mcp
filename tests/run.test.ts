@@ -688,6 +688,53 @@ describe('a tool whose server requires a person', () => {
     assert.deepEqual(called, ['slow', 'grant'])
   })
 
+  test('a name built at run time is refused at call time, and the program can catch it', async () => {
+    const { run, called, asked } = setup({ policy })
+    const r = await run(
+      'const name = "mcp__f__" + "gr" + "ant"\ntry { await call(name, {}) } catch (e) { return "caught: " + e.message }',
+    )
+    assert.deepEqual(asked, [], 'nothing to ask before the run')
+    assert.ok(r.text.includes("caught: not approved: mcp__f__grant needs the person's approval at each run"), r.text)
+    assert.ok(r.text.includes('## A person must approve'), r.text)
+    assert.ok(r.text.includes('Write the tool name as a string in call("…")'), r.text)
+    assert.ok(!r.text.includes('"action": "allow"'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a name built at run time, with a client that cannot ask, is refused with no way to call it', async () => {
+    const { run, called } = setup({ policy, canAsk: false })
+    const r = await run('try { await call("mcp__f__" + "grant", {}) } catch (e) { return e.message }')
+    assert.ok(r.text.includes('This MCP client cannot ask the person, so a program cannot call it.'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a server that lists the mark when it connects again during the run does not let the call through', async () => {
+    const fake = fakeDownstream()
+    const [f] = fake.downstream.states()
+    if (f?.status !== 'connected') throw new Error('the fake server is connected')
+    let states: ServerState[] = [{ ...f, tools: f.tools.map(({ _meta, ...t }) => t) }]
+    const downstream = {
+      ...fake.downstream,
+      states: () => states,
+      client: async (key: ServerKey) => ((states = [f]), fake.downstream.client(key)),
+    } as Downstream
+    const { run, asked } = setup({ policy, downstream })
+    const r = await run(`try { ${grant} } catch (e) { return e.message }`)
+    assert.deepEqual(asked, [], 'the tool had no mark before the run')
+    assert.ok(r.text.includes("not approved: mcp__f__grant needs the person's approval at each run"), r.text)
+    assert.deepEqual(fake.called, [])
+  })
+
+  test('the run log records an approved call of it as ask-approved, and a refused one as unapproved', async () => {
+    const { run, lines } = setup({ policy })
+    await run(grant)
+    await run('try { await call("mcp__f__" + "grant", {}) } catch {}')
+    assert.deepEqual(
+      lines().map(l => l.calls.map(({ decision, ok }) => ({ decision, ok }))),
+      [[{ decision: 'ask-approved', ok: true }], [{ decision: 'unapproved', ok: false }]],
+    )
+  })
+
   test('one approval covers each call of it in that run, and the next run asks again', async () => {
     const { run, called, asked } = setup({ policy })
     const loop = 'for (const n of [1, 2, 3]) await call("mcp__f__grant", { n })\nreturn "done"'

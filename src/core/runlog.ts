@@ -37,13 +37,21 @@ export type RunRecord = {
   readonly omitted?: number
 }
 
-/** The decision of the policy for one nested call, with the tools the person approved for this run. */
-export const callDecision = (policy: Policy, approved: ReadonlySet<string>, tool: string): CallDecision => {
+/**
+ * The decision of the policy for one nested call, with the tools the person
+ * approved for this run. A tool in `interactive` needs the person also under an allow rule.
+ */
+export const callDecision = (
+  policy: Policy,
+  approved: ReadonlySet<string>,
+  tool: string,
+  interactive: ReadonlySet<string>,
+): CallDecision => {
   if (!isCallable(tool, SERVER_NAME) || splitToolName(tool) === undefined) return 'invalid'
   const { action } = decide(policy, tool)
-  if (action === 'allow') return 'allow'
   if (action === 'deny') return 'denied'
-  return approved.has(tool) ? 'ask-approved' : 'unapproved'
+  if (approved.has(tool)) return 'ask-approved'
+  return action === 'allow' && !interactive.has(tool) ? 'allow' : 'unapproved'
 }
 
 export const MAX_CALLS = 200
