@@ -162,6 +162,7 @@ applies after the person approves it in a prompt, or after a restart of toolscri
 3. Never ask for a secret value. Write `${NAME}` in its place. toolscript-mcp reads `NAME` from its environment.
 4. Run `node -p "require('os').tmpdir()"`. With approval, write the entry to `<tmp>/toolscript-entry.json`:
    - stdio: `{ "command": "npx", "args": ["-y", "<package>"], "env": { "API_KEY": "${API_KEY}" } }`
+   - stdio that works in one project folder: also add `"cwd": "<folder>"`, with the full path of the folder.
    - HTTP: `{ "type": "http", "url": "https://mcp.example.com/mcp" }`
 5. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add <name> "<tmp>/toolscript-entry.json"`. It makes `<config>` if it does not exist.
    Then delete the entry file.
