@@ -144,6 +144,20 @@ npm run build
 
 Then start `node /path/to/toolscript-mcp/dist/host/main.js --config /path/to/config.json` in your client.
 
+### From GitHub (beta)
+
+The `beta` branch points at a commit of `main` that passed every test. Clone it once, and `npm ci` builds `dist/`:
+
+```sh
+git clone --branch beta https://github.com/yeeyon/toolscript-mcp.git ~/toolscript-mcp
+cd ~/toolscript-mcp && npm ci
+node dist/host/main.js init
+claude mcp add --scope user toolscript -- node ~/toolscript-mcp/dist/host/main.js --config /path/to/config.json
+```
+
+To update, run `git pull && npm ci` in that folder, then start a new session of your client. Do not start the server
+with `npx github:…` in a client. npx checks GitHub at each start, so each start takes about 12 seconds.
+
 ### init
 
 - `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code. It does not import the servers of a

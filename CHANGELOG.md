@@ -44,7 +44,7 @@ The first server (M3):
 - `approvalNote` moved to `src/core/policy.ts` and names the rule to add in the config. The check before a run no longer says that a deny rule hides a tool.
 - `normalizePath` keeps a Windows drive, so `appPath` works with a Windows home folder.
 - A return value cut at 20,000 characters now shows its shape first, then the first 3,000 characters as compact JSON, then the `recall(n)` note. Before, it showed 20,000 characters of indented JSON and the shape came after the cut. A 71k-character result now takes 3,414 characters, not 20,342.
-- Each kept call in the footer names its handle, as `#1 mcp__bench__get_deploys 71k {…} -> recall(1)`. The `run_code` description lists `recall(n)`. In the bench, 5 of 9 second programs called the same tool again instead of `recall(n)`.
+- Each kept call in the footer names its handle, as `#1 mcp__bench__get_deploys 71k {…} -> await recall(1)`. The handle carries `await`, because the model copies it as written: in real use, `recall(n)` without `await` gave a Promise and failed the next program. The `run_code` description lists `recall(n)`. In the bench, 5 of 9 second programs called the same tool again instead of `recall(n)`.
 - `tests/run.test.ts` runs `run_code` with the real sandbox and fake servers: the run_code, files, check, output projection and approval cases of the plugin that apply. `tests/policy.test.ts` covers the rules and the config. `tests/server.e2e.mjs` covers paging, deny, ask with and without elicitation, a name built at run time, a busy loop, a wrong name, a secret probe, a cut result with recall, and the cleanup of the exchange dir.
 
 The bench:
@@ -77,7 +77,7 @@ Setup and configuration:
 - The prompt shows every rule added and removed, uncut, added `allow` and removed `deny` rules first, and says when the other rules changed order. Below that it lists every rule of the new policy in order, with its whole `match`. Each `match` from the file shows as JSON on one line, with every character outside printable ASCII escaped, so a blank or look-alike character shows. The log line and the note of a run cut a `match` at 120 characters and a list at 10 rules. The prompt also says that a declined policy still applies at the next start.
 - A declined policy is remembered: while the config file holds it, runs keep the policy in force with a short note and no new prompt. A change of the file asks again. A prompt that fails, times out or gets no answer is asked again at the next run.
 - The init report says that a new `allow` rule applies after the person approves it in a prompt, or after a restart when the client cannot ask. Before, it said that a new rule needs no restart. With a client that cannot ask, the note that names the `allow` rule to add also says that the rule applies only after a restart.
-- `npm pack` and `npm publish` build `dist/` first (`prepack`).
+- `npm pack` and `npm publish` build `dist/` first (`prepack`). `npm ci` in a clone, and an install from GitHub, build it too (`prepare`). The `beta` workflow moves the `beta` branch to a commit of `main` after every test passes on it.
 
 Downstream servers:
 
