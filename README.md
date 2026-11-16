@@ -190,6 +190,7 @@ toolscript-mcp, ask Claude again.
 - If two clients have a server with the same name, init keeps the first one. The order is Claude Code, Claude
   Desktop, Cursor.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
+- init keeps the `cwd` of a stdio server. If that `cwd` is not an absolute path, only that server fails until you fix it.
 - On Linux and macOS, only your user account can read the config that init writes.
 - `--dry-run` shows the config and the steps, and writes nothing. These values show as `***`:
   - the values of `env` and `headers`
