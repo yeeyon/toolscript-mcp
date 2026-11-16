@@ -4,8 +4,10 @@
 //   node config.mjs path
 //   node config.mjs <config>
 //   node config.mjs <config> policy [<action> <match>]...
+//   node config.mjs <config> prepend <action> <match> [<action> <match>]...
 //   node config.mjs <config> add <name> <entry.json>
 // path prints the default config path, as toolscript-mcp finds it without --config.
+// prepend puts its rules first and drops the old rules with the same match, so a second run changes nothing.
 // add makes the config when it does not exist.
 // Exit 1 is a failure of the config or the entry. Exit 2 is a usage error.
 import fs from 'node:fs'
@@ -115,10 +117,26 @@ function usage() {
       '  node config.mjs path',
       '  node config.mjs <config>',
       '  node config.mjs <config> policy [<action> <match>]...',
+      '  node config.mjs <config> prepend <action> <match> [<action> <match>]...',
       '  node config.mjs <config> add <name> <entry.json>',
     ].join('\n'),
     2,
   )
+}
+
+function parseRules(args) {
+  if (args.length % 2 !== 0) usage()
+  const rules = []
+  for (let i = 0; i < args.length; i += 2) {
+    if (!ACTIONS.includes(args[i])) {
+      throw new Fail(`The action must be allow, deny or ask, not "${args[i]}".`, 2)
+    }
+    if (!MATCH.test(args[i + 1])) {
+      throw new Fail(`A match starts with mcp__ or *, such as mcp__github__*, not "${args[i + 1]}".`, 2)
+    }
+    rules.push({ match: args[i + 1], action: args[i] })
+  }
+  return rules
 }
 
 const COMMANDS = {
@@ -127,19 +145,19 @@ const COMMANDS = {
     return show(readConfig(file))
   },
   policy(file, args) {
-    if (args.length % 2 !== 0) usage()
-    const rules = []
-    for (let i = 0; i < args.length; i += 2) {
-      if (!ACTIONS.includes(args[i])) {
-        throw new Fail(`The action must be allow, deny or ask, not "${args[i]}".`, 2)
-      }
-      if (!MATCH.test(args[i + 1])) {
-        throw new Fail(`A match starts with mcp__ or *, such as mcp__github__*, not "${args[i + 1]}".`, 2)
-      }
-      rules.push({ match: args[i + 1], action: args[i] })
-    }
+    const rules = parseRules(args)
     const config = readConfig(file)
     config.policy = rules
+    writeConfig(file, config)
+    return show(config)
+  },
+  prepend(file, args) {
+    if (args.length === 0) usage()
+    const rules = parseRules(args)
+    const config = readConfig(file)
+    const matches = new Set(rules.map(rule => rule.match))
+    const old = Array.isArray(config.policy) ? config.policy : []
+    config.policy = [...rules, ...old.filter(rule => !matches.has(rule?.match))]
     writeConfig(file, config)
     return show(config)
   },

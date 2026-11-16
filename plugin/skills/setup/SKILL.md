@@ -1,7 +1,7 @@
 ---
 name: setup
-description: Install, update or uninstall toolscript-mcp from its GitHub beta branch and connect it to Claude Code. Use when the person asks to set up, install, update or remove toolscript-mcp. Also use it to add an MCP server to toolscript-mcp, log in to an OAuth server through it, or change its policy.
-argument-hint: "[install|update|add|login|policy|uninstall]"
+description: Install, update or uninstall toolscript-mcp from its GitHub beta branch and connect it to Claude Code. Use when the person asks to set up, install, update or remove toolscript-mcp. Also use it to add an MCP server to toolscript-mcp, let programs use the tools of Claude Code, log in to an OAuth server through it, or change its policy.
+argument-hint: "[install|update|add|login|policy|native|uninstall]"
 ---
 
 # toolscript-mcp setup
@@ -39,7 +39,7 @@ Run `claude mcp get toolscript`.
 - If it shows `npx` and no `<main>`, toolscript-mcp runs from npm. To move to a clone, do step 3, then step 5.
 - If it shows no server, toolscript-mcp is not in Claude Code.
 
-Go to the step for the request of the person. With no request, do steps 2 to 6.
+Go to the step for the request of the person. For `native`, do step 7. With no request, do steps 2 to 6, then offer step 7.
 
 ## 2. Check Node and git
 
@@ -87,7 +87,7 @@ node "<main>" init --config "<config>"
 ```
 
 init prints the servers that it imported and the servers that it left out, with no secret values. Show this list to
-the person. If init found no server, it writes nothing. Then add servers with step 7.
+the person. If init found no server, it writes nothing. Then add servers with step 8.
 
 init also prints the steps for each client. They start toolscript-mcp with `npx -y toolscript-mcp`, or
 `cmd /c npx -y toolscript-mcp` on Windows. A clone uses `node "<main>"` in place of each of these.
@@ -155,7 +155,46 @@ that tool to change its own policy.
 If toolscript-mcp runs, it reads the policy again at each run. A new `deny` rule applies at once. A looser policy
 applies after the person approves it in a prompt, or after a restart of toolscript-mcp.
 
-## 7. Add a server
+## 7. Use the tools of Claude Code in programs
+
+With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell tools of Claude Code. toolscript-mcp starts
+`claude mcp serve` as the server `claude-code`.
+
+1. Find the `claude` executable. Its path is `<claude>`.
+   - On Windows, run `where.exe claude`. Use the first line that ends in `claude.exe`. Never use `claude.ps1` or
+     `claude.cmd`. If no line ends in `claude.exe`, stop, and tell the person that this step needs `claude.exe`.
+   - On Linux and macOS, run `command -v claude`, and use the path that it prints.
+2. Ask for the project folder `<project>`. Propose the folder of the current project. Bash commands start there, and
+   Grep and Glob search there.
+3. Tell the person these risks, and ask whether to continue:
+   - The permission rules and hooks of Claude Code do not apply on this path. The toolscript-mcp policy is the only
+     check.
+   - The policy matches tool names only. If the person approves `Bash` for a run, each Bash command of that program
+     runs.
+   - Bash, PowerShell, Edit and Write run as the person. They reach files outside `<project>`, also `<config>`.
+   - The section "Claude Code as a downstream server" of `<folder>/README.md` gives the full risks.
+4. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>"`. If it lists `claude-code`, the server exists. Go to item 6.
+5. Run `node -p "require('os').tmpdir()"`. With approval, write this entry to `<tmp>/toolscript-entry.json`:
+
+   ```json
+   { "command": "<claude>", "args": ["mcp", "serve"], "cwd": "<project>" }
+   ```
+
+   Then run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add claude-code "<tmp>/toolscript-entry.json"`, and
+   delete the entry file.
+6. With approval, put these rules first in the policy. They allow Read, Grep and Glob, ask for the tools that change
+   something, and deny the other tools of Claude Code:
+
+   ```sh
+   node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" prepend allow "mcp__claude-code__Read" allow "mcp__claude-code__Grep" allow "mcp__claude-code__Glob" ask "mcp__claude-code__Bash" ask "mcp__claude-code__PowerShell" ask "mcp__claude-code__Edit" ask "mcp__claude-code__Write" deny "mcp__claude-code__*"
+   ```
+
+   `prepend` keeps the other rules of the person after these rules. It removes an old rule with the same match. Show
+   the policy that it prints. Never allow Bash, PowerShell, Edit or Write. They can change `<config>`, and so the
+   policy.
+7. Tell the person to start a new Claude Code session. toolscript-mcp starts its servers only at its own start.
+
+## 8. Add a server
 
 1. Ask for the server name. A name has letters, digits and hyphens, with single underscores between them.
 2. Ask for the command and arguments of a stdio server, or the URL of an HTTP server.
@@ -170,9 +209,9 @@ applies after the person approves it in a prompt, or after a restart of toolscri
    editor.
 7. Tell the person to start a new Claude Code session. toolscript-mcp reads the servers only at its start.
 
-An HTTP server without `headers` logs in with OAuth. Go to step 8 for it.
+An HTTP server without `headers` logs in with OAuth. Go to step 9 for it.
 
-## 8. Log in to an OAuth server
+## 9. Log in to an OAuth server
 
 init lists the HTTP servers without headers, and `config.mjs` marks them `oauth`. For each one, give the person
 this command:
@@ -187,7 +226,7 @@ Code, the person can type the command after the `!` prefix.
 If `search_tools` later says that a server needs a login, its command starts with `npx -y toolscript-mcp`. Give the
 person the command above in its place.
 
-## 9. Uninstall
+## 10. Uninstall
 
 Ask before each step:
 

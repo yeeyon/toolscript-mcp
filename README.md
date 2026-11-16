@@ -179,6 +179,7 @@ something:
 3. It adds toolscript-mcp to Claude Code with `claude mcp add`.
 4. It helps you choose a policy and add servers. It never reads the config, because the config holds your secrets.
 5. It gives you the `login` command for each server that needs OAuth. You run the command.
+6. It adds Claude Code as a server when you agree, with the policy of [Claude Code as a downstream server](#claude-code-as-a-downstream-server).
 
 The skill does not edit the config files of your clients. It shows the lines to change. To update or uninstall
 toolscript-mcp, ask Claude again.
