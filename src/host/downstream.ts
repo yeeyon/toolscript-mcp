@@ -288,6 +288,8 @@ export const connectAll = (
       if (auth) secrets = auth.provider.secrets
       const problem = await cwdProblem(server)
       if (problem !== undefined) throw new Error(problem)
+      // close() closes only the clients that it sees: a shutdown during the check must not start a process after it.
+      if (closing) throw new Error('toolscript-mcp is shutting down')
       const made = transportOf(server, sessionEnded, auth)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })

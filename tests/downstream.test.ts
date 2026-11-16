@@ -4,7 +4,7 @@
 // check that a server that restarted connects again after one failed call, and
 // that an error of the GET stream or of one request does not end the session.
 
-import { after, describe, test } from 'node:test'
+import { after, describe, mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
@@ -344,6 +344,25 @@ describe('cwd', () => {
     assert.equal(fs.existsSync(file), false, 'the server did not start')
     fs.mkdirSync(missing)
     assert.equal((await downstream.client(KEY)).ok, true)
+  })
+
+  test('a shutdown while the cwd check runs starts no server', async () => {
+    const project = path.join(DIR, 'slow disk')
+    fs.mkdirSync(project)
+    const stat = fs.promises.stat
+    let release = () => {}
+    const held = new Promise<void>(resolve => (release = resolve))
+    mock.method(fs.promises, 'stat', async (...args: Parameters<typeof stat>) => (await held, stat(...args)))
+    try {
+      const { downstream, file } = start(project)
+      await downstream.close()
+      release()
+      await downstream.settled
+      await new Promise(resolve => setTimeout(resolve, 500))
+      assert.equal(fs.existsSync(file), false, 'the server did not start after the shutdown')
+    } finally {
+      mock.restoreAll()
+    }
   })
 
   test('a cwd that is a file fails its server', async () => {
