@@ -9,6 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import {
   childEnv,
@@ -254,6 +255,23 @@ export const connectAll = (
       // rejects each open request with "Connection closed".
       setImmediate(() => void client.close().catch(() => {}))
     }
+    // The lists of this client, by the order they started: the one that started last wins, also when it answers first.
+    let started = 0
+    let shown = 0
+    let tools: readonly DownstreamTool[] = []
+    const list = async (): Promise<void> => {
+      const n = ++started
+      const listed = await listAll(client)
+      if (n < shown) return
+      shown = n
+      tools = listed
+      const link = links.get(key)
+      if (link?.status === 'connected' && link.client === client) links.set(key, { ...link, tools })
+    }
+    // A server whose tools change, also in their marks, says so: list again, so the checks of a call see the new list.
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () =>
+      list().catch(err => log(`${key}: could not list the tools again: ${hide(errorText(err))}`)),
+    )
     let lastError = () => ''
     try {
       // Inside the try: a transport that cannot be made fails this server only.
@@ -273,7 +291,7 @@ export const connectAll = (
       const made = transportOf(server, sessionEnded, auth)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
-      const tools = await listAll(client)
+      await list()
       links.set(key, { status: 'connected', client, tools, hide })
       log(`${key}: connected, ${tools.length} tools`)
       client.onclose = () => {

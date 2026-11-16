@@ -270,6 +270,8 @@ each call of that tool, also when an allow rule matches it. toolscript-mcp keeps
 - A `deny` rule still denies the tool. An `ask` rule asks as before.
 - If your client cannot ask, the program does not start.
 - A tool name that the program builds at run time is refused at call time, because toolscript-mcp cannot ask for it.
+- If a server sends `notifications/tools/list_changed`, toolscript-mcp lists its tools again. A new mark applies from
+  the next call.
 
 Only the JSON value `true` counts. toolscript-mcp ignores any other value.
 

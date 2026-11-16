@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
-import { searchResult, type ServerState } from '../src/core/catalog.ts'
+import { catalogOf, searchResult, type ServerState } from '../src/core/catalog.ts'
 import type { Config, ServerConfig, ServerKey } from '../src/core/config.ts'
 import { runLogFile } from '../src/core/paths.ts'
 import type { Rule } from '../src/core/policy.ts'
@@ -723,6 +723,28 @@ describe('a tool whose server requires a person', () => {
     assert.deepEqual(asked, [], 'the tool had no mark before the run')
     assert.ok(r.text.includes("not approved: mcp__f__grant needs the person's approval at each run"), r.text)
     assert.deepEqual(fake.called, [])
+  })
+
+  test('a server that marks it later and sends tools/list_changed: the next run asks the person', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, 'changed.json'), '--list-changed'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      const probe = 'return await call("mcp__p__probe", {})'
+      assert.equal((await run(probe)).isError, false)
+      assert.deepEqual(asked, [], 'the tool had no mark at the first run')
+      const marked = () => catalogOf(downstream.states()).some(t => t.requiresUserInteraction)
+      for (let i = 0; i < 250 && !marked(); i++) await new Promise(r => setTimeout(r, 20))
+      assert.equal((await run(probe)).isError, false)
+      assert.deepEqual(asked, [['mcp__p__probe']], 'the second run asks for the tool that the new list marks')
+    } finally {
+      await downstream.close()
+    }
   })
 
   test('the run log records an approved call of it as ask-approved, and a refused one as unapproved', async () => {

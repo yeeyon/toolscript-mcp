@@ -154,6 +154,58 @@ describe('reconnect', () => {
   })
 })
 
+/** Waits until `done` is true, at most 5 s. */
+const until = async (done: () => boolean, what: string): Promise<void> => {
+  for (let i = 0; i < 250 && !done(); i++) await new Promise(r => setTimeout(r, 20))
+  assert.ok(done(), what)
+}
+
+describe('tools/list_changed', () => {
+  /** One probe server that sends tools/list_changed after each call, and the description of its one tool. */
+  const setupChanged = async () => {
+    const file = path.join(DIR, `${randomUUID()}.json`)
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file, '--list-changed'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([[KEY, server]]), '0', () => {})
+    opened.push(downstream)
+    await downstream.settled
+    const link = await downstream.client(KEY)
+    if (!link.ok) throw new Error(link.reason)
+    const call = (listDelayMs = 0) => link.client.callTool({ name: 'probe', arguments: { listDelayMs } })
+    const description = () => {
+      const state = downstream.states()[0]
+      return state?.status === 'connected' ? state.tools[0]?.description : undefined
+    }
+    const lists = () =>
+      fs
+        .readFileSync(`${file}.log`, 'utf8')
+        .split('\n')
+        .filter(line => line.includes('"event":"list"')).length
+    return { call, description, lists }
+  }
+
+  test('a server that sends tools/list_changed is listed again, and the new list replaces the old', async () => {
+    const { call, description } = await setupChanged()
+    assert.equal(description(), 'Probe, 0 changes.')
+    await call()
+    await until(() => description() === 'Probe, 1 changes.', `listed again: ${description()}`)
+  })
+
+  test('the list that started last wins over a slower list that started first', async () => {
+    const { call, description, lists } = await setupChanged()
+    await call(500)
+    await until(() => lists() === 2, 'the slow list started')
+    await call()
+    await until(() => description() === 'Probe, 2 changes.', `the fast list: ${description()}`)
+    await new Promise(r => setTimeout(r, 700))
+    assert.equal(description(), 'Probe, 2 changes.', 'the slow list answered last and did not replace the newer one')
+  })
+})
+
 /**
  * A stateful HTTP MCP server built with the SDK, with the tools `ping` and
  * `slow` (pong after 300 ms). A request with a session id that it does not
