@@ -236,6 +236,7 @@ of your config.
 - If your client cannot ask, the program does not start. The result names the `allow` rule to add.
 - toolscript-mcp checks each call again while the program runs. A tool name that the program builds at run time runs
   only with an `allow` rule.
+- A `deny` rule refuses a call before any other check. toolscript-mcp then sends nothing to the server of that call.
 - A call of a name that its server does not list is refused, also when the server answers such a name. A rule
   matches the exact name: a `deny` rule for `mcp__fake__delete` does not match `mcp__fake__Delete`.
 - Before that refusal, toolscript-mcp lists the tools of the server again, at most one time in 10 seconds. So a tool
@@ -278,7 +279,9 @@ each call of that tool, also when an allow rule matches it. toolscript-mcp keeps
 - A tool name that the program builds at run time is refused at call time, because toolscript-mcp cannot ask for it.
 - `recall(n)` returns a result of an earlier call of the tool again. It makes no new call, so it does not ask you.
 - If a server sends `notifications/tools/list_changed`, toolscript-mcp lists its tools again. A run and each call wait
-  for that list. If the list fails, toolscript-mcp connects to the server again on next use.
+  up to 5 seconds for that list. If the list does not come in that time, toolscript-mcp refuses the call.
+- toolscript-mcp lists the tools of one server at most one time a second. If a list fails, or the tools change more than
+  10 times in 60 seconds, the server fails. toolscript-mcp connects to it again on next use.
 - A server that does not send this notification keeps its old marks until it connects again. An HTTP server that
   refuses the GET stream sends no notification between calls. To apply a new mark of such a server, restart
   toolscript-mcp.

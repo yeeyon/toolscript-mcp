@@ -13,6 +13,7 @@ import {
   learnShape,
   listedNames,
   notConnected,
+  type DownstreamTool,
   type ServerState,
 } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
@@ -122,12 +123,14 @@ const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallL
 const notMade = (policy: Policy, states: readonly ServerState[], tool: string): CallLog => {
   const server = splitToolName(tool)?.server
   const names = server === undefined ? undefined : listedNames(states, server)
-  const decision =
-    names !== undefined && !names.includes(tool)
-      ? 'invalid'
-      : callDecision(policy, new Set(), tool, interactiveTools(states))
+  const checked = callDecision(policy, new Set(), tool, interactiveTools(states))
+  const decision = checked !== 'denied' && names !== undefined && !names.includes(tool) ? 'invalid' : checked
   return { tool, decision, ms: 0, ok: false, ...(decision === 'allow' ? {} : { error: decision }) }
 }
+
+/** The servers of `calls`, each one time. */
+const serversOf = (calls: readonly { readonly tool: string }[]): ServerKey[] =>
+  [...new Set(calls.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[]
 
 /** One run_code call, and one line in the run log unless the config turns it off. */
 export const runCode = async (ctx: RunContext, code: string): Promise<RunResult> => {
@@ -159,15 +162,27 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   await ctx.downstream.settled
   const named = literalCalls(code)
   const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
+  const { policy } = ctx.config
+  const refuse = (text: string) => {
+    const states = ctx.downstream.states()
+    const known = new Set(catalogOf(states).map(t => t.name))
+    return refused(
+      text,
+      known,
+      named.map(c => notMade(policy, states, c.tool)),
+    )
+  }
+  // A denied name refuses the program before any traffic to its server.
+  const denied = planRun(policy, literal, new Set())
+  if (denied.kind === 'refused') return refuse(deniedReport(denied.denied))
   // A failed server that the program names connects again before the check.
-  await ctx.downstream.retry([...new Set(literal.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[])
+  await ctx.downstream.retry(serversOf(literal), ctx.signal)
   // A connected server can add a tool with no notification: a name that its list lacks lists it again.
-  const missed = literal.flatMap(c => {
-    const server = splitToolName(c.tool)?.server
-    const names = server === undefined ? undefined : listedNames(ctx.downstream.states(), server)
-    return names === undefined || names.includes(c.tool) ? [] : [server as ServerKey]
+  const missed = literal.filter(c => {
+    const names = listedNames(ctx.downstream.states(), splitToolName(c.tool)?.server ?? '')
+    return names !== undefined && !names.includes(c.tool)
   })
-  await Promise.all([...new Set(missed)].map(key => ctx.downstream.relist(key)))
+  await Promise.all(serversOf(missed).map(key => ctx.downstream.relist(key, ctx.signal)))
   const states = ctx.downstream.states()
   const specs = new Map(catalogOf(states).map(t => [t.name, argSpec(t.inputSchema)]))
   const known = new Set(specs.keys())
@@ -176,13 +191,10 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     const reason = notConnected(s)
     if (reason !== undefined) down.set(s.key, reason)
   }
-  const interactive = interactiveTools(states)
-  const notRun = named.map(c => notMade(ctx.config.policy, states, c.tool))
-  const refuse = (text: string) => refused(text, known, notRun)
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
 
-  const plan = planRun(ctx.config.policy, literal, interactive)
+  const plan = planRun(policy, literal, interactiveTools(states))
   if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
   if (plan.ask.length + plan.interactive.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan, code) : 'unsupported'
@@ -336,35 +348,40 @@ const execute = async (
         code: 'invalid',
       }
     }
-    const checkNow = (): (Reply & { code: CallError }) | undefined => {
-      const interactive = interactiveNow()
+    const check = (interactive: ReadonlySet<string>): (Reply & { code: CallError }) | undefined => {
       const decision = callDecision(config.policy, approved, tool, interactive)
       decided.set(id, decision)
-      const check = checkCall(config.policy, approved, tool, interactive)
-      if (check.ok) return undefined
-      if (check.needs === 'rule') unapproved.add(tool)
-      if (check.needs === 'person') needPerson.add(tool)
-      return { ok: false, error: check.error, code: decision }
+      const result = checkCall(config.policy, approved, tool, interactive)
+      if (result.ok) return undefined
+      if (result.needs === 'rule') unapproved.add(tool)
+      if (result.needs === 'person') needPerson.add(tool)
+      return { ok: false, error: result.error, code: decision }
     }
-    // A name that a connected server does not list can never run: say so before the policy offers a rule for it.
-    // The server can have added it with no notification, so a miss lists its tools again first.
-    const unlisted = async (
-      names: readonly string[] | undefined,
-    ): Promise<(Reply & { code: CallError }) | undefined> => {
-      if (names === undefined || names.includes(tool)) return undefined
-      await downstream.relist(target.server as ServerKey)
-      names = listedNames(downstream.states(), target.server) ?? []
-      if (names.includes(tool)) return undefined
+    // A denied name sends nothing to its server, not even a list for a miss.
+    const denied = callDecision(config.policy, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
+    if (denied !== undefined) return denied
+    const server = target.server as ServerKey
+    // The link comes with the list after the last change of the server, so the check sees each new mark.
+    const listed = (tools: readonly DownstreamTool[]) =>
+      listedNames([{ key: server, status: 'connected', tools }], server)!
+    let link = await downstream.client(server, cancel.signal)
+    // The server can have added the name with no notification, so a miss lists its tools again.
+    if (link.ok && !listed(link.tools).includes(tool)) {
+      await downstream.relist(server, cancel.signal)
+      link = await downstream.client(server, cancel.signal)
+    }
+    if (!link.ok) {
+      decided.set(id, callDecision(config.policy, approved, tool, interactiveNow()))
+      return { ok: false, error: link.reason, code: 'no-server' }
+    }
+    // A name that the server does not list can never run: say so before the policy offers a rule for it.
+    const names = listed(link.tools)
+    if (!names.includes(tool)) {
       decided.set(id, 'invalid')
-      return { ok: false, error: notListedText(tool, target.server, names), code: 'invalid' }
+      return { ok: false, error: notListedText(tool, server, names), code: 'invalid' }
     }
-    const refused = (await unlisted(listedNames(downstream.states(), target.server))) ?? checkNow()
+    const refused = check(interactiveTools([{ key: server, status: 'connected', tools: link.tools }]))
     if (refused !== undefined) return refused
-    const link = await downstream.client(target.server as ServerKey)
-    if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
-    // The link can be new, with a new list of tools: check again.
-    const again = (await unlisted(listedNames(downstream.states(), target.server) ?? [])) ?? checkNow()
-    if (again !== undefined) return again
     // A reconnect can outlast the sandbox: then the call has no reader and does not start.
     if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }
     // The SDK keeps its abort listener after the answer and then sends a
