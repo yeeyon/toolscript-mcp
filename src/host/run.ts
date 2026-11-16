@@ -339,17 +339,18 @@ const execute = async (
       if (check.needs === 'person') needPerson.add(tool)
       return { ok: false, error: check.error, code: decision }
     }
-    const refused = checkNow()
-    if (refused !== undefined) return refused
-    const link = await downstream.client(target.server as ServerKey)
-    if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
-    const names = listedNames(downstream.states(), target.server) ?? []
-    if (!names.includes(tool)) {
+    // A name that a connected server does not list can never run: say so before the policy offers a rule for it.
+    const unlisted = (names: readonly string[] | undefined): (Reply & { code: CallError }) | undefined => {
+      if (names === undefined || names.includes(tool)) return undefined
       decided.set(id, 'invalid')
       return { ok: false, error: notListedText(tool, target.server, names), code: 'invalid' }
     }
+    const refused = unlisted(listedNames(downstream.states(), target.server)) ?? checkNow()
+    if (refused !== undefined) return refused
+    const link = await downstream.client(target.server as ServerKey)
+    if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
     // The link can be new, with a new list of tools: check again.
-    const again = checkNow()
+    const again = unlisted(listedNames(downstream.states(), target.server) ?? []) ?? checkNow()
     if (again !== undefined) return again
     // A reconnect can outlast the sandbox: then the call has no reader and does not start.
     if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }

@@ -796,6 +796,29 @@ describe('a tool whose server requires a person', () => {
     }
   })
 
+  test('a built name that its connected server does not list gets that refusal before the policy, also under ask', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, 'unlisted-ask.json')],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['c' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked, lines } = setup({ policy: [], downstream })
+      const r = await run('try { return await call("mcp__c__" + "Probe", {}) } catch (e) { return e.message }')
+      assert.ok(r.text.includes('no tool \\"mcp__c__Probe\\" on the connected server \\"c\\" (did you mean'), r.text)
+      assert.ok(!r.text.includes('not approved'), r.text)
+      assert.deepEqual(asked, [])
+      assert.deepEqual(
+        lines().map(l => l.calls.map(c => c.decision)),
+        [['invalid']],
+      )
+    } finally {
+      await downstream.close()
+    }
+  })
+
   test('a name that its server does not list is refused at call time, also when the server answers it', async () => {
     const file = path.join(ROOT, 'unlisted.json')
     const server: ServerConfig = {

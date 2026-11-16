@@ -665,7 +665,7 @@ test('run (o) a program that writes a policy whose new allow is shadowed for eve
     assert.equal(fs.readFileSync(configFile, 'utf8'), JSON.stringify(shadow))
 
     const refused = await run(hidden, askingClient)
-    assert.ok(refused.text.includes('not approved: no policy rule allows mcp__x__hidden'), refused.text)
+    assert.ok(refused.text.includes('no tool \\"mcp__x__hidden\\" on the connected server'), refused.text)
     assert.ok(refused.text.includes('The person did not approve it'), refused.text)
     assert.equal(hiddenCalls(), 0, 'the hidden tool never ran')
     assert.equal(asking.prompts.length, prompts + 1)
@@ -678,7 +678,7 @@ test('run (o) a program that writes a policy whose new allow is shadowed for eve
     assert.ok(asked.includes('policy[1] {"match": "mcp__x__*", "action": "allow"}'), asked.join('\n'))
 
     const again = await run(hidden, askingClient)
-    assert.ok(again.text.includes('not approved: no policy rule allows mcp__x__hidden'), again.text)
+    assert.ok(again.text.includes('no tool \\"mcp__x__hidden\\" on the connected server'), again.text)
     assert.ok(again.text.includes(`The person declined the policy in ${configFile}`), again.text)
     assert.equal(asking.prompts.length, prompts + 1, 'a declined policy is not asked again')
     assert.equal(hiddenCalls(), 0)
