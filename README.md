@@ -161,6 +161,28 @@ with `npx github:…` in a client. npx checks GitHub at each start, so each star
 With a clone, write `node ~/toolscript-mcp/dist/host/main.js` in place of `npx -y toolscript-mcp` in the commands below,
 for example `node ~/toolscript-mcp/dist/host/main.js login <server>`.
 
+#### With the Claude Code plugin
+
+This repo is also a Claude Code plugin marketplace. Its plugin `toolscript` installs the beta with you. In
+Claude Code, run:
+
+```text
+/plugin marketplace add yeeyon/toolscript-mcp
+/plugin install toolscript@toolscript-mcp
+```
+
+Then run `/toolscript:setup`, or ask Claude to set up toolscript-mcp. The skill asks you before each step that changes
+something:
+
+1. It checks Node and git, then clones the `beta` branch, or updates a clone that exists.
+2. It runs `init` when you agree, and shows the servers that init imported.
+3. It adds toolscript-mcp to Claude Code with `claude mcp add`.
+4. It helps you choose a policy and add servers. It never reads the config, because the config holds your secrets.
+5. It gives you the `login` command for each server that needs OAuth. You run the command.
+
+The skill does not edit the config files of your clients. It shows the lines to change. To update or uninstall
+toolscript-mcp, ask Claude again.
+
 ### init
 
 - `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code. It does not import the servers of a

@@ -27,6 +27,9 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   - `launch.ts`: starts the runner with the sandbox layers of each OS, the host kill timer and the exchange dir.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
 - `hints/` holds the bundled hints and `hints/sha256.json`.
+- `.claude-plugin/marketplace.json` makes the repo a Claude Code plugin marketplace with one plugin, `plugin/`. Its
+  skill `setup` installs toolscript-mcp from the `beta` branch, and `config.mjs` beside it changes the
+  config without printing secrets. The npm package does not hold them.
 - `bench/` holds the token and cost bench. `run.mjs` and `interactive.mjs` start Claude Code and spend money.
   - `run.mjs`: direct MCP tools against toolscript-mcp in headless Claude Code. Results in `RESULTS.md`.
   - `interactive.mjs`: direct tools, Claude Code Code Mode and toolscript-mcp in the interactive TUI. Results in
@@ -48,3 +51,5 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
 - Read `CODING_STANDARDS.md` before a change to code, tests or model-facing text.
 - Never weaken a sandbox layer to make a test pass.
 - stdout carries only MCP JSON-RPC. Log to stderr.
+- After a change in `plugin/`, raise `version` in `plugin/.claude-plugin/plugin.json`. Users get a new copy of the
+  plugin only when the version changes.
