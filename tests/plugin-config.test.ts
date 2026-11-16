@@ -1,0 +1,209 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { after, before, describe, it } from 'node:test'
+
+const SCRIPT = fileURLToPath(new URL('../plugin/skills/toolscript-setup/config.mjs', import.meta.url))
+const SECRETS = [
+  'fake-secret-123',
+  'fake-header-456',
+  'fake-arg-789',
+  'fake-q',
+  '/fake-path',
+  'fake-user',
+  'fake-pass',
+  'fake-oauth-id',
+]
+
+const FIXTURE = {
+  mcpServers: {
+    local: {
+      command: '/usr/bin/fake-server',
+      args: ['--key', 'fake-arg-789'],
+      env: { TOKEN: 'fake-secret-123' },
+    },
+    remote: {
+      type: 'http',
+      url: 'https://fake-user:fake-pass@mcp.example.com/fake-path?token=fake-q',
+      headers: { Authorization: 'Bearer fake-header-456' },
+    },
+    login: {
+      type: 'http',
+      url: 'https://login.example.com/mcp',
+      oauth: { clientId: 'fake-oauth-id' },
+    },
+    open: { type: 'http', url: 'https://open.example.com/mcp' },
+  },
+  policy: [{ match: 'mcp__fake__*', action: 'allow' }],
+  sandbox: { callTimeoutSeconds: 7 },
+}
+
+let dir: string
+let n = 0
+
+before(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-config-'))
+})
+after(() => {
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+function run(...args: string[]) {
+  return runWith({}, ...args)
+}
+
+function runWith(env: Record<string, string>, ...args: string[]) {
+  const result = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, ...env } })
+  return { code: result.status, out: result.stdout, err: result.stderr }
+}
+
+function makeConfig(content: string = JSON.stringify(FIXTURE, null, 2)): string {
+  const file = path.join(dir, `config-${n++}.json`)
+  fs.writeFileSync(file, content)
+  return file
+}
+
+function makeEntry(value: unknown): string {
+  const file = path.join(dir, `entry-${n++}.json`)
+  fs.writeFileSync(file, JSON.stringify(value))
+  return file
+}
+
+const read = (file: string) => fs.readFileSync(file, 'utf8')
+
+describe('plugin config helper', () => {
+  it('shows the servers and the policy without a secret', () => {
+    const { code, out } = run(makeConfig())
+    assert.equal(code, 0)
+    const lines = out.split('\n')
+    assert.ok(lines.includes('local  stdio  fake-server'))
+    assert.ok(lines.includes('remote  http  https://mcp.example.com'))
+    assert.ok(lines.includes('login  http  https://login.example.com  oauth'))
+    assert.ok(lines.includes('open  http  https://open.example.com  oauth'))
+    assert.ok(lines.includes('policy:'))
+    assert.ok(lines.includes('{"match":"mcp__fake__*","action":"allow"}'))
+    for (const secret of SECRETS) assert.ok(!out.includes(secret), secret)
+  })
+
+  it('says when the policy is empty', () => {
+    const file = makeConfig(JSON.stringify({ mcpServers: {} }))
+    assert.match(run(file).out, /policy: empty, so each tool is ask/)
+  })
+
+  it('writes the policy in order and keeps the other keys', () => {
+    const file = makeConfig()
+    const { code, out } = run(file, 'policy', 'deny', 'mcp__fake__delete*', 'allow', 'mcp__fake__*')
+    assert.equal(code, 0)
+    assert.ok(out.includes('{"match":"mcp__fake__delete*","action":"deny"}\n{"match":"mcp__fake__*","action":"allow"}'))
+    const saved = JSON.parse(read(file))
+    assert.deepEqual(saved.policy, [
+      { match: 'mcp__fake__delete*', action: 'deny' },
+      { match: 'mcp__fake__*', action: 'allow' },
+    ])
+    assert.deepEqual(saved.mcpServers, FIXTURE.mcpServers)
+    assert.deepEqual(saved.sandbox, FIXTURE.sandbox)
+    assert.ok(read(file).endsWith('}\n'))
+  })
+
+  it('empties the policy with no pairs', () => {
+    const file = makeConfig()
+    assert.equal(run(file, 'policy').code, 0)
+    assert.deepEqual(JSON.parse(read(file)).policy, [])
+  })
+
+  it('refuses a bad action and leaves the file as it was', () => {
+    const file = makeConfig()
+    const before = read(file)
+    const { code, err } = run(file, 'policy', 'allow', 'mcp__fake__*', 'permit', 'mcp__fake__x')
+    assert.equal(code, 2)
+    assert.match(err, /allow, deny or ask/)
+    assert.equal(read(file), before)
+  })
+
+  it('adds a server and shows it', () => {
+    const file = makeConfig()
+    const entry = makeEntry({ command: 'node', args: ['fake.js'], env: { K: 'fake-secret-123' } })
+    const { code, out } = run(file, 'add', 'extra_one', entry)
+    assert.equal(code, 0)
+    assert.ok(out.includes('extra_one  stdio  node'))
+    assert.ok(!out.includes('fake-secret-123'))
+    const saved = JSON.parse(read(file))
+    assert.equal(saved.mcpServers.extra_one.env.K, 'fake-secret-123')
+    assert.deepEqual(saved.policy, FIXTURE.policy)
+    assert.equal(Object.keys(saved.mcpServers).length, 5)
+  })
+
+  it('refuses a duplicate name, a bad name and a bad entry', () => {
+    const file = makeConfig()
+    const before = read(file)
+    const good = makeEntry({ command: 'node' })
+    assert.equal(run(file, 'add', 'local', good).code, 1)
+    assert.equal(run(file, 'add', 'bad name', good).code, 1)
+    assert.equal(run(file, 'add', 'bad__name', good).code, 1)
+    assert.equal(run(file, 'add', 'fresh', makeEntry({ type: 'http' })).code, 1)
+    assert.equal(run(file, 'add', 'fresh', makeEntry(['node'])).code, 1)
+    assert.equal(run(file, 'add', 'fresh', makeEntry({ command: 5 })).code, 1)
+    assert.equal(read(file), before)
+  })
+
+  it('refuses a config that is not valid JSON and leaves it as it was', () => {
+    const file = makeConfig('{ not json')
+    for (const args of [[], ['policy', 'allow', 'mcp__fake__*'], ['add', 'fresh', makeEntry({ command: 'node' })]]) {
+      const { code } = run(file, ...args)
+      assert.equal(code, 1)
+      assert.equal(read(file), '{ not json')
+    }
+  })
+
+  it('hides a command with arguments in it and a URL from a variable', () => {
+    const file = makeConfig(
+      JSON.stringify({
+        mcpServers: {
+          inline: { command: 'npx -y fake-server --api-key fake-secret-123' },
+          fromvar: { type: 'http', url: '${FAKE_URL}' },
+        },
+      }),
+    )
+    const { code, out } = run(file)
+    assert.equal(code, 0)
+    assert.ok(out.split('\n').includes('inline  stdio'))
+    assert.ok(out.includes('fromvar  http  url-from-a-variable  oauth'))
+    assert.ok(!out.includes('fake-secret-123'))
+  })
+
+  it('refuses a match that the server rejects and leaves the file as it was', () => {
+    const file = makeConfig()
+    const before = read(file)
+    for (const match of ['fake__*', '']) {
+      const { code, err } = run(file, 'policy', 'allow', match)
+      assert.equal(code, 2)
+      assert.match(err, /starts with mcp__ or \*/)
+    }
+    assert.equal(read(file), before)
+  })
+
+  it('makes the config and its folder when add finds no config', () => {
+    const file = path.join(dir, `new-${n++}`, 'config.json')
+    const { code, out } = run(file, 'add', 'fake', makeEntry({ command: 'node' }))
+    assert.equal(code, 0)
+    assert.ok(out.includes('fake  stdio  node'))
+    assert.deepEqual(JSON.parse(read(file)), { mcpServers: { fake: { command: 'node' } }, policy: [] })
+  })
+
+  it('prints the default config path', () => {
+    assert.equal(runWith({ TOOLSCRIPT_CONFIG: 'C:/fake/config.json' }, 'path').out.trim(), 'C:/fake/config.json')
+    const base = process.platform === 'win32' ? { APPDATA: dir } : { XDG_CONFIG_HOME: dir }
+    const { code, out } = runWith({ TOOLSCRIPT_CONFIG: '', ...base }, 'path')
+    assert.equal(code, 0)
+    assert.equal(out.trim(), path.join(dir, 'toolscript-mcp', 'config.json').replaceAll('\\', '/'))
+  })
+
+  it('exits 1 for a missing config and 2 for a usage error', () => {
+    assert.equal(run(path.join(dir, 'missing.json')).code, 1)
+    assert.equal(run(makeConfig(), 'policy', 'allow').code, 2)
+    assert.equal(run(makeConfig(), 'unknown').code, 2)
+  })
+})
