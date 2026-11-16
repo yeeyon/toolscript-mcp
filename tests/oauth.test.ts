@@ -802,6 +802,48 @@ describe('the running server', () => {
     )
   })
 
+  /** One refresh at expiry whose tokens the store never takes, so this process keeps them in memory. */
+  const refreshUnsaved = async (fake: Fake, s: ReturnType<typeof setup>, downstream: Downstream) => {
+    mock.method(fs.promises, 'rename', async () => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' })
+    })
+    mock.method(console, 'error', () => {})
+    try {
+      fake.expire()
+      assert.equal(await s.ping(downstream), PONG)
+    } finally {
+      mock.restoreAll()
+    }
+  }
+
+  test('a login after a revoke replaces refreshed tokens that the store never took', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    await refreshUnsaved(fake, s, downstream)
+    fake.revoke()
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    assert.equal(await s.ping(downstream), PONG)
+    assert.equal(await s.ping(s.connect()), PONG, 'a new link uses the tokens of the login')
+  })
+
+  test('refreshed tokens that the store never took do not replace the grant of a later login', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    await refreshUnsaved(fake, s, downstream)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const login = JSON.parse(s.storeText()).tokens.refresh_token
+    fake.expire()
+    assert.equal(await s.ping(downstream), PONG)
+    const refreshes = fake.seen.tokens.filter(form => form.get('grant_type') === 'refresh_token')
+    assert.equal(refreshes.at(-1)?.get('refresh_token'), login, 'the refresh sent the refresh token of the login')
+  })
+
   test('a late invalid_grant of one of two calls at expiry needs no login', async () => {
     const fake = await startFake()
     const s = setup(fake)

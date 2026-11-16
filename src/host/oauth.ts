@@ -144,10 +144,10 @@ const ROTATE_POLL_MS = 100
 const refreshes = new Map<string, Promise<OAuthTokens>>()
 
 /**
- * The tokens of the last refresh of each store file that the store did not take. This process uses them: the store
- * still holds the refresh token that the refresh used up.
+ * The tokens of the last refresh of each store file that the store did not take, and the refresh token that the store
+ * held then, which the refresh used up. This process uses them until the store holds another one, as after a login.
  */
-const unsaved = new Map<string, OAuthTokens>()
+const unsaved = new Map<string, { readonly tokens: OAuthTokens; readonly storeHad: string }>()
 
 /** The provider of `login`: it opens the browser, and keeps the verifier and the state in memory. */
 export type LoginMode = {
@@ -238,26 +238,37 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     if (response.ok) {
       const answer = OAuthTokensSchema.safeParse(await response.json().catch(() => undefined)).data
       if (answer === undefined && signal.aborted) throw silent()
-      if (answer === undefined) return needLogin()
+      if (answer === undefined) {
+        unsaved.delete(file)
+        return needLogin()
+      }
       // The SDK keeps the refresh token when the answer has none, and stamps the authorization server.
       const tokens = { refresh_token: sent, ...answer, ...(now?.issuer !== undefined && { issuer: now.issuer }) }
       try {
         await updateStore(file, stored => ({ ...stored, tokens }))
         unsaved.delete(file)
       } catch (err) {
-        unsaved.set(file, tokens)
+        unsaved.set(file, { tokens, storeHad: unsaved.get(file)?.storeHad ?? sent })
         const cause = (err as NodeJS.ErrnoException).code ?? errorText(err)
         console.error(
-          `toolscript-mcp: could not save the refreshed OAuth tokens in ${file} (${cause}). They work until toolscript-mcp stops.`,
+          `toolscript-mcp: could not save the refreshed OAuth tokens in ${file} (${cause}). They work until toolscript-mcp stops or the store gets other tokens, as from a login.`,
         )
       }
       return tokens
     }
     if (!isRefusal(response.status)) throw new RefreshFailed(refreshReason(`HTTP ${response.status}`))
+    // The tokens in memory are refused too, so the store decides from now on.
+    unsaved.delete(file)
     // Another process can have refreshed `sent` first: then the SDK gets the tokens it saved.
     return (await rotated(file, sent)) ?? needLogin()
   }
-  const current = async () => unsaved.get(file) ?? (await readStore(file)).tokens
+  const current = async (): Promise<OAuthTokens | undefined> => {
+    const { tokens } = await readStore(file)
+    const kept = unsaved.get(file)
+    if (kept !== undefined && tokens?.refresh_token === kept.storeHad) return kept.tokens
+    unsaved.delete(file)
+    return tokens
+  }
   const refresh = async (
     send: (signal: AbortSignal) => Promise<Response>,
     sent: string,
