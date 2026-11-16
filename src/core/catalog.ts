@@ -10,6 +10,7 @@ export type DownstreamTool = {
   readonly description?: string
   readonly inputSchema?: unknown
   readonly outputSchema?: unknown
+  readonly _meta?: unknown
 }
 
 /**
@@ -28,6 +29,8 @@ export type CatalogEntry = ToolEntry & {
   readonly inputSchema: unknown
   /** What call() returns: the structuredContent of the result. */
   readonly outputSchema: unknown
+  /** Its server marks it to need a person's approval on every call, so an allow rule does not let it run. */
+  readonly requiresUserInteraction: boolean
 }
 
 /** The full name of a downstream tool, as splitToolName reads it. */
@@ -38,6 +41,9 @@ const CONTROLS = new RegExp(CONTROL.source, 'g')
 
 /** Downstream text on one line, so it cannot start a block of its own, and at most `max` characters. */
 const oneLine = (text: string, max: number): string => text.replace(CONTROLS, ' ').slice(0, max)
+
+/** The mark that Claude Code documents: only the JSON true counts. */
+const REQUIRES_USER_INTERACTION = 'anthropic/requiresUserInteraction'
 
 /** Every tool of every connected server. A tool whose name is empty or holds a control character is left out: no call can name it. */
 export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
@@ -52,9 +58,27 @@ export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
             tool: t.name,
             inputSchema: t.inputSchema,
             outputSchema: t.outputSchema,
+            requiresUserInteraction: isObject(t._meta) && t._meta[REQUIRES_USER_INTERACTION] === true,
           }))
       : [],
   )
+
+/** The tools whose server requires a person's approval on every call. */
+export const interactiveTools = (states: readonly ServerState[]): Set<string> =>
+  new Set(
+    catalogOf(states)
+      .filter(t => t.requiresUserInteraction)
+      .map(t => t.name),
+  )
+
+/**
+ * The tool names that the connected server `server` lists, or undefined when it is not connected. Rules and marks
+ * match a listed name, and a server can answer a name that it does not list, so a call of another name is refused.
+ */
+export const listedNames = (states: readonly ServerState[], server: string): string[] | undefined => {
+  const state = states.find(s => s.key === server)
+  return state?.status === 'connected' ? catalogOf([state]).map(t => t.name) : undefined
+}
 
 /** Why a call cannot reach a server now, or undefined when it is connected. */
 export const notConnected = (s: ServerState): string | undefined =>
@@ -319,20 +343,37 @@ const declaration = (t: CatalogEntry, maxLevel: number, notes: boolean): string 
 // A tool in full. A declaration too large to show loses its nested objects
 // first, then its notes and its result type, and last its argument types
 // past MAX_ARGS characters.
-const detailBlock = (t: CatalogEntry, shapes: ReadonlyMap<string, string>): string => {
+const detailBlock = (t: CatalogEntry, shapes: ReadonlyMap<string, string>, canAsk: boolean): string => {
   const call =
     declaration(t, MAX_LEVEL, true) ??
     declaration(t, 1, true) ??
     declaration(t, 1, false) ??
     `call(${JSON.stringify(t.name)}, ${argsText(t.inputSchema)})`
   const shape = t.outputSchema === undefined ? shapes.get(t.name) : undefined
-  const lines = [`### ${t.name}`, prose(t.description, MAX_DESCRIPTION), call]
+  const lines = [`### ${t.name}`, prose(t.description, MAX_DESCRIPTION), ...personNote(t, canAsk), call]
   if (shape !== undefined) lines.push(`returned earlier: ${shape}`)
   return lines.filter(line => line !== '').join('\n')
 }
 
-const summaryBlock = (t: CatalogEntry): string =>
-  `### ${t.name}\n${oneLine(t.description.split('\n')[0] ?? '', 300)}\nargs: ${argsText(t.inputSchema)}`
+const summaryBlock = (t: CatalogEntry, canAsk: boolean): string =>
+  [
+    `### ${t.name}`,
+    oneLine(t.description.split('\n')[0] ?? '', 300),
+    ...personNote(t, canAsk),
+    `args: ${argsText(t.inputSchema)}`,
+  ].join('\n')
+
+// An allow rule does not let such a tool run, and only a name written as a string is asked before the run.
+const personNote = (t: CatalogEntry, canAsk: boolean): string[] =>
+  t.requiresUserInteraction
+    ? [
+        `A person approves each run that calls it. ${
+          canAsk
+            ? 'Write its name as a string in call("…").'
+            : 'This MCP client cannot ask the person, so a program cannot call it.'
+        }`,
+      ]
+    : []
 
 /**
  * Keeps the shape of a tool's result for search_tools, for the session. A
@@ -349,18 +390,23 @@ export const learnShape = (shapes: Map<string, string>, tool: string, value: unk
 /**
  * The text of a search_tools result: the best matches, then the servers that
  * are not connected. Up to DETAIL_HITS matches show in full, with the shape of
- * a result seen earlier in the session (`shapes`, by tool name).
+ * a result seen earlier in the session (`shapes`, by tool name). `canAsk`: the
+ * client can show an approval prompt.
  */
 export const searchResult = (
   states: readonly ServerState[],
   query: string,
   limit: number,
   shapes: ReadonlyMap<string, string> = new Map(),
+  canAsk = true,
 ): string => {
   const all = catalogOf(states)
   const found = rankTools(all, query, limit)
   const tail = notConnectedText(states)
   if (found.length === 0) return `No MCP tool matches "${query}". ${all.length} MCP tools are connected.${tail}`
-  const blocks = found.length <= DETAIL_HITS ? found.map(t => detailBlock(t, shapes)) : found.map(summaryBlock)
+  const blocks =
+    found.length <= DETAIL_HITS
+      ? found.map(t => detailBlock(t, shapes, canAsk))
+      : found.map(t => summaryBlock(t, canAsk))
   return `${found.length} of ${all.length} MCP tools.\n\n${blocks.join('\n\n')}${tail}`
 }

@@ -11,7 +11,7 @@ import { SERVER_NAME } from './tools.ts'
 /** How a run ended. `refused`: it never started. `failed`: the sandbox gave no answer. */
 export type RunEnding = 'done' | 'error' | 'timeout' | 'refused' | 'cancelled' | 'failed'
 
-/** What the policy and the approval said of one nested call. `invalid`: not an MCP tool name. */
+/** What the policy and the approval said of one nested call. `invalid`: not an MCP tool name, or one its connected server does not list. */
 export type CallDecision = 'allow' | 'ask-approved' | 'denied' | 'unapproved' | 'invalid'
 
 /** Why a nested call did not work, as a short code. */
@@ -37,13 +37,21 @@ export type RunRecord = {
   readonly omitted?: number
 }
 
-/** The decision of the policy for one nested call, with the tools the person approved for this run. */
-export const callDecision = (policy: Policy, approved: ReadonlySet<string>, tool: string): CallDecision => {
+/**
+ * The decision of the policy for one nested call, with the tools the person
+ * approved for this run. A tool in `interactive` needs the person also under an allow rule.
+ */
+export const callDecision = (
+  policy: Policy,
+  approved: ReadonlySet<string>,
+  tool: string,
+  interactive: ReadonlySet<string>,
+): CallDecision => {
   if (!isCallable(tool, SERVER_NAME) || splitToolName(tool) === undefined) return 'invalid'
   const { action } = decide(policy, tool)
-  if (action === 'allow') return 'allow'
   if (action === 'deny') return 'denied'
-  return approved.has(tool) ? 'ask-approved' : 'unapproved'
+  if (approved.has(tool)) return 'ask-approved'
+  return action === 'allow' && !interactive.has(tool) ? 'allow' : 'unapproved'
 }
 
 export const MAX_CALLS = 200

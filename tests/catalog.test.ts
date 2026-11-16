@@ -15,6 +15,50 @@ const server = (tools: DownstreamTool[]): ServerState[] => [{ key: serverKey('x'
 const one = (tool: DownstreamTool, shapes?: Map<string, string>): string =>
   searchResult(server([tool]), '', 15, shapes).replace(/^1 of 1 MCP tools\.\n\n/, '')
 
+describe('search_tools and a tool whose server requires a person', () => {
+  const MARK = { 'anthropic/requiresUserInteraction': true }
+  const NOTE = 'A person approves each run that calls it. Write its name as a string in call("…").'
+
+  test('a hit in full says so, and an unmarked one does not', () => {
+    assert.equal(
+      one({ name: 'grant', description: 'Grant access.', _meta: MARK }),
+      ['### mcp__x__grant', 'Grant access.', NOTE, 'call("mcp__x__grant", {})'].join('\n'),
+    )
+    assert.ok(!one({ name: 'grant', description: 'Grant access.' }).includes(NOTE))
+  })
+
+  test('with a client that cannot ask, the note says that a program cannot call it', () => {
+    const text = searchResult(
+      server([{ name: 'grant', description: 'Grant access.', _meta: MARK }]),
+      '',
+      15,
+      new Map(),
+      false,
+    )
+    assert.ok(
+      text.includes(
+        'A person approves each run that calls it. This MCP client cannot ask the person, so a program cannot call it.',
+      ),
+      text,
+    )
+    assert.ok(!text.includes('Write its name as a string'), text)
+  })
+
+  test('a hit on one line among many says so too', () => {
+    const tools = ['a', 'b', 'c', 'd'].map(name => ({
+      name: `grant_${name}`,
+      description: 'Grant access.',
+      ...(name === 'b' ? { _meta: MARK } : {}),
+    }))
+    const blocks = searchResult(server(tools), 'grant', 15).split('\n### ').slice(1)
+    assert.deepEqual(
+      blocks.map(b => b.includes(NOTE)),
+      [false, true, false, false],
+      blocks.join('\n### '),
+    )
+  })
+})
+
 describe('search_tools with 3 or fewer hits', () => {
   test('shows the full description and a call() declaration with nested types, enums and argument notes', () => {
     const text = one({

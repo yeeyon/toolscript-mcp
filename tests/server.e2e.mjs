@@ -35,6 +35,7 @@ const flakyFile = path.join(dir, 'flaky.json')
 const slowFile = path.join(dir, 'slow.json')
 const hangFile = path.join(dir, 'hang.pid')
 const writerFile = path.join(dir, 'writer.json')
+const consentFile = path.join(dir, 'consent.json')
 const configFile = path.join(dir, 'config.json')
 // Every call that reaches the fake server, one JSON line each.
 const BENCH_LOG = path.join(dir, 'bench.jsonl')
@@ -70,6 +71,7 @@ fs.writeFileSync(
       { match: 'mcp__flaky__probe', action: 'allow' },
       { match: 'mcp__slow__probe', action: 'allow' },
       { match: 'mcp__x__probe', action: 'allow' },
+      { match: 'mcp__consent__probe', action: 'allow' },
     ],
     mcpServers: {
       // `node` from PATH, not process.execPath: the SDK's short environment must still find it.
@@ -96,6 +98,8 @@ fs.writeFileSync(
       },
       // Its allowed tool writes a file, such as the config. It also answers a tool name that it does not list.
       x: { command: process.execPath, args: [PROBE, writerFile, '--write-on-call'] },
+      // Its tool requires a person on every call, and the policy allows it.
+      consent: { command: process.execPath, args: [PROBE, consentFile, '--requires-person'] },
       // A variable that is not set: this entry fails alone, and the server still starts.
       broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
       // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
@@ -415,6 +419,50 @@ test('run (e) a tool name built at run time is refused at call time, and the pro
   assert.equal(benchCalls('query_logs'), 0)
 })
 
+// The calls that reached a consent probe of either server.
+const consentCalls = () =>
+  (fs.existsSync(`${consentFile}.log`) ? fs.readFileSync(`${consentFile}.log`, 'utf8') : '')
+    .split('\n')
+    .filter(Boolean)
+    .filter(line => JSON.parse(line).event === 'call').length
+
+test('run (q) an allow rule does not let a tool that requires a person run: a client that cannot ask is refused, and the person is asked', async () => {
+  const code = 'return await call("mcp__consent__probe", {})'
+  const refused = await run(code)
+  assert.equal(refused.isError, true)
+  assert.ok(refused.text.includes('this MCP client cannot ask the person'), refused.text)
+  assert.ok(refused.text.includes("mcp__consent__probe needs the person's approval at each run"), refused.text)
+  assert.equal(consentCalls(), 0)
+
+  const prompts = asking.prompts.length
+  asking.answer = 'accept'
+  const accepted = await run(code, askingClient)
+  assert.equal(accepted.isError, false, accepted.text)
+  assert.equal(asking.prompts.length, prompts + 1)
+  assert.ok(
+    asking.prompts
+      .at(-1)
+      .includes(
+        'Its server requires your approval each time, so a policy rule cannot allow it:\n- mcp__consent__probe\n',
+      ),
+    asking.prompts.at(-1),
+  )
+  assert.equal(consentCalls(), 1)
+})
+
+test('run (r) a tool that requires a person, with a name built at run time, is refused at call time with no prompt', async () => {
+  const prompts = asking.prompts.length
+  const calls = consentCalls()
+  const r = await run(
+    'try {\n  return await call("mcp__consent__" + "probe", {})\n} catch (e) {\n  return "caught: " + e.message\n}',
+    askingClient,
+  )
+  assert.equal(r.isError, false, r.text)
+  assert.ok(r.text.startsWith('"caught: not approved: mcp__consent__probe needs the person\'s approval'), r.text)
+  assert.equal(asking.prompts.length, prompts, 'a name built at run time is never asked')
+  assert.equal(consentCalls(), calls)
+})
+
 test('run (f) a busy loop ends at the limit, and the server stays usable', async () => {
   const started = performance.now()
   const r = await run('while (true) {}')
@@ -617,7 +665,7 @@ test('run (o) a program that writes a policy whose new allow is shadowed for eve
     assert.equal(fs.readFileSync(configFile, 'utf8'), JSON.stringify(shadow))
 
     const refused = await run(hidden, askingClient)
-    assert.ok(refused.text.includes('not approved: no policy rule allows mcp__x__hidden'), refused.text)
+    assert.ok(refused.text.includes('no tool \\"mcp__x__hidden\\" on the connected server'), refused.text)
     assert.ok(refused.text.includes('The person did not approve it'), refused.text)
     assert.equal(hiddenCalls(), 0, 'the hidden tool never ran')
     assert.equal(asking.prompts.length, prompts + 1)
@@ -630,7 +678,7 @@ test('run (o) a program that writes a policy whose new allow is shadowed for eve
     assert.ok(asked.includes('policy[1] {"match": "mcp__x__*", "action": "allow"}'), asked.join('\n'))
 
     const again = await run(hidden, askingClient)
-    assert.ok(again.text.includes('not approved: no policy rule allows mcp__x__hidden'), again.text)
+    assert.ok(again.text.includes('no tool \\"mcp__x__hidden\\" on the connected server'), again.text)
     assert.ok(again.text.includes(`The person declined the policy in ${configFile}`), again.text)
     assert.equal(asking.prompts.length, prompts + 1, 'a declined policy is not asked again')
     assert.equal(hiddenCalls(), 0)

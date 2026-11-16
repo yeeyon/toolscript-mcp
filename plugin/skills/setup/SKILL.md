@@ -135,7 +135,8 @@ Explain these choices, and ask the person to choose one:
 1. Ask for each tool. This is the empty policy that init writes. toolscript-mcp asks the person before a program
    calls a tool. If the client cannot ask, the run does not start, and the result names the `allow` rule to add.
 2. Allow all tools, with `deny` rules first. Use it when the client checks each `run_code` call itself, such as
-   Claude Code in auto mode. Add a `deny` rule for each tool that must never run.
+   Claude Code in auto mode. Add a `deny` rule for each tool that must never run. Tell the person that the permission
+   rules and hooks of Claude Code do not apply to the nested calls. The policy matches tool names only, not arguments.
 3. Allow specific tools. Allow the tools that programs use often, such as read tools. Other tools stay `ask`.
 
 The `policy` command replaces the whole policy with the rules in order. Each rule is an action and a match that

@@ -11,14 +11,14 @@ import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
-import { searchResult, type ServerState } from '../src/core/catalog.ts'
+import { catalogOf, searchResult, type ServerState } from '../src/core/catalog.ts'
 import type { Config, ServerConfig, ServerKey } from '../src/core/config.ts'
 import { runLogFile } from '../src/core/paths.ts'
 import type { Rule } from '../src/core/policy.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
 import { newKept, type Kept } from '../src/core/protocol.ts'
 import { TOOL } from '../src/core/tools.ts'
-import { connectAll, type Downstream } from '../src/host/downstream.ts'
+import { connectAll, type ConnectOptions, type Downstream } from '../src/host/downstream.ts'
 import { runCode, type Approval, type RunContext } from '../src/host/run.ts'
 
 const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
@@ -44,11 +44,14 @@ const TOOLS: Record<string, Tool> = {
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
   big: () => json(Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `item ${i}` }))),
   none: () => json({ results: [], next_cursor: null }),
+  // Its server marks it to need a person's approval on every call.
+  grant: args => json({ granted: args }),
   // A server's own error with the code of a timeout, as mcp-remote sends for a failed login.
   authfail: () => {
     throw new McpError(ErrorCode.RequestTimeout, 'mcp-remote: Incompatible auth server')
   },
 }
+const MARKED = { 'anthropic/requiresUserInteraction': true }
 const SCHEMAS: Record<string, unknown> = {
   echo: { type: 'object', properties: { n: {}, a: {}, b: {}, x: {} } },
   search: { type: 'object', properties: { query: {}, maxResults: {} }, required: ['query'] },
@@ -83,6 +86,7 @@ const fakeDownstream = (others: readonly ServerState[] = []) => {
       tools: [...new Set([...Object.keys(TOOLS), ...Object.keys(SCHEMAS)])].map(name => ({
         name,
         inputSchema: SCHEMAS[name] ?? { type: 'object' },
+        ...(name === 'grant' ? { _meta: MARKED } : {}),
       })),
     },
     ...others,
@@ -91,9 +95,15 @@ const fakeDownstream = (others: readonly ServerState[] = []) => {
     settled: Promise.resolve(),
     states: () => states,
     retry: async () => {},
+    relist: async () => {},
     client: async (key: ServerKey) =>
       key === 'f'
-        ? { ok: true, client, hide: (text: string) => text }
+        ? {
+            ok: true,
+            client,
+            hide: (text: string) => text,
+            tools: states[0]!.status === 'connected' ? states[0]!.tools : [],
+          }
         : { ok: false, reason: `no MCP server "${key}" is connected` },
     close: async () => {},
   } as unknown as Downstream
@@ -120,6 +130,8 @@ const filesDir = path.join(ROOT, 'files', 'session')
 const setup = (o: Options = {}) => {
   const fake = fakeDownstream(o.others)
   const asked: string[][] = []
+  // The tools of each prompt whose server requires a person.
+  const marked: string[][] = []
   const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
     servers: new Map(),
@@ -137,7 +149,11 @@ const setup = (o: Options = {}) => {
     kept: o.kept ?? newKept(),
     shapes: new Map(),
     filesDir,
-    ask: async tools => (asked.push([...tools]), o.answer ?? 'accept'),
+    ask: async needed => (
+      asked.push([...needed.ask, ...needed.interactive]),
+      marked.push([...needed.interactive]),
+      o.answer ?? 'accept'
+    ),
     canAsk: () => o.canAsk ?? true,
     signal: o.signal ?? new AbortController().signal,
     log: () => {},
@@ -154,7 +170,7 @@ const setup = (o: Options = {}) => {
           .map(l => JSON.parse(l) as RunRecord)
       : []
   }
-  return { ...fake, asked, run, ctx, lines }
+  return { ...fake, asked, marked, run, ctx, lines }
 }
 
 describe('run_code', () => {
@@ -628,6 +644,396 @@ describe('approval', () => {
   })
 })
 
+describe('a tool whose server requires a person', () => {
+  const policy = rules(['mcp__f__fail', 'deny'], ['mcp__f__*', 'allow'])
+  const grant = 'return await call("mcp__f__grant", { n: 1 })'
+
+  test('an allow rule does not let it run: the person is asked before the run, and the prompt names it', async () => {
+    const { run, called, asked, marked } = setup({ policy })
+    const r = await run(`await call("mcp__f__echo", { n: 1 })\n${grant}`)
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [['mcp__f__grant']])
+    assert.deepEqual(marked, [['mcp__f__grant']])
+    assert.deepEqual(called, ['echo', 'grant'])
+  })
+
+  test('a decline refuses the run, and the result offers no allow rule', async () => {
+    const { run, called } = setup({ policy, answer: 'decline' })
+    const r = await run(grant)
+    assert.equal(r.isError, true)
+    assert.ok(r.text.includes('the person did not approve'), r.text)
+    assert.ok(r.text.includes("mcp__f__grant needs the person's approval at each run"), r.text)
+    assert.ok(!r.text.includes('"action": "allow"'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a client that cannot ask is refused: an allow rule cannot replace the person', async () => {
+    const { run, called } = setup({ policy, canAsk: false })
+    const r = await run(grant)
+    assert.equal(r.isError, true)
+    assert.ok(r.text.includes('this MCP client cannot ask the person'), r.text)
+    assert.ok(r.text.includes('An allow rule does not replace that approval.'), r.text)
+    assert.ok(!r.text.includes('"action": "allow"'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a deny rule still denies it, with no prompt', async () => {
+    const { run, called, asked } = setup({ policy: rules(['mcp__f__grant', 'deny'], ['mcp__*', 'allow']) })
+    const r = await run(grant)
+    assert.ok(r.text.includes('- line 1: mcp__f__grant is denied by policy[0]'), r.text)
+    assert.deepEqual(asked, [])
+    assert.deepEqual(called, [])
+  })
+
+  test('an ask rule asks as before, and the prompt names it as a tool that requires a person', async () => {
+    const { run, called, asked, marked } = setup({ policy: rules(['mcp__f__grant', 'ask'], ['mcp__f__slow', 'ask']) })
+    const r = await run(`await call("mcp__f__slow", {})\n${grant}`)
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [['mcp__f__slow', 'mcp__f__grant']])
+    assert.deepEqual(marked, [['mcp__f__grant']])
+    assert.deepEqual(called, ['slow', 'grant'])
+  })
+
+  test('a name built at run time is refused at call time, and the program can catch it', async () => {
+    const { run, called, asked } = setup({ policy })
+    const r = await run(
+      'const name = "mcp__f__" + "gr" + "ant"\ntry { await call(name, {}) } catch (e) { return "caught: " + e.message }',
+    )
+    assert.deepEqual(asked, [], 'nothing to ask before the run')
+    assert.ok(r.text.includes("caught: not approved: mcp__f__grant needs the person's approval at each run"), r.text)
+    assert.ok(r.text.includes('## A person must approve'), r.text)
+    assert.ok(r.text.includes('Write the tool name as a string in call("…")'), r.text)
+    assert.ok(!r.text.includes('"action": "allow"'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a name built at run time, with a client that cannot ask, is refused with no way to call it', async () => {
+    const { run, called } = setup({ policy, canAsk: false })
+    const r = await run('try { await call("mcp__f__" + "grant", {}) } catch (e) { return e.message }')
+    assert.ok(r.text.includes('This MCP client cannot ask the person, so a program cannot call it.'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a server that lists the mark when it connects again during the run does not let the call through', async () => {
+    const fake = fakeDownstream()
+    const [f] = fake.downstream.states()
+    if (f?.status !== 'connected') throw new Error('the fake server is connected')
+    let states: ServerState[] = [{ ...f, tools: f.tools.map(({ _meta, ...t }) => t) }]
+    const downstream = {
+      ...fake.downstream,
+      states: () => states,
+      client: async (key: ServerKey) => ((states = [f]), fake.downstream.client(key)),
+    } as Downstream
+    const { run, asked } = setup({ policy, downstream })
+    const r = await run(`try { ${grant} } catch (e) { return e.message }`)
+    assert.deepEqual(asked, [], 'the tool had no mark before the run')
+    assert.ok(r.text.includes("not approved: mcp__f__grant needs the person's approval at each run"), r.text)
+    assert.ok(
+      r.text.includes('The mark of mcp__f__grant came during the run. Run the program again, so the person is asked'),
+      r.text,
+    )
+    assert.ok(!r.text.includes('Write the tool name as a string'), 'the program wrote it as a string already')
+    assert.deepEqual(fake.called, [])
+  })
+
+  test('a server that marks it later and sends tools/list_changed: the next run asks the person', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, 'changed.json'), '--list-changed'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      const probe = 'return await call("mcp__p__probe", {})'
+      assert.equal((await run(probe)).isError, false)
+      assert.deepEqual(asked, [], 'the tool had no mark at the first run')
+      const marked = () => catalogOf(downstream.states()).some(t => t.requiresUserInteraction)
+      for (let i = 0; i < 250 && !marked(); i++) await new Promise(r => setTimeout(r, 20))
+      assert.equal((await run(probe)).isError, false)
+      assert.deepEqual(asked, [['mcp__p__probe']], 'the second run asks for the tool that the new list marks')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a server whose new list fails after it marks a tool: the next run asks the person', async () => {
+    const file = path.join(ROOT, 'list-fails.json')
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file, '--list-changed'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      assert.equal((await run('return await call("mcp__p__probe", { failList: true })')).isError, false)
+      const lists = () =>
+        fs
+          .readFileSync(`${file}.log`, 'utf8')
+          .split('\n')
+          .filter(l => l.includes('"event":"list"'))
+      for (let i = 0; i < 250 && lists().length < 2; i++) await new Promise(r => setTimeout(r, 20))
+      await new Promise(r => setTimeout(r, 100))
+      for (let i = 0; i < 3; i++) await run('return await call("mcp__p__probe", {})')
+      assert.deepEqual(asked, Array(3).fill(['mcp__p__probe']), 'each run after the failed list asks')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a server that lists a tool slowly after it marks it: a run waits for the list and asks the person', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, 'slow-list.json'), '--list-changed'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      assert.equal((await run('return await call("mcp__p__probe", { listDelayMs: 1500 })')).isError, false)
+      assert.equal((await run('return await call("mcp__p__probe", {})')).isError, false)
+      assert.deepEqual(asked, [['mcp__p__probe']], 'the second run waited for the list in flight')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a built name that its connected server does not list gets that refusal before the policy, also under ask', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, 'unlisted-ask.json')],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['c' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked, lines } = setup({ policy: [], downstream })
+      const r = await run('try { return await call("mcp__c__" + "Probe", {}) } catch (e) { return e.message }')
+      assert.ok(r.text.includes('no tool \\"mcp__c__Probe\\" on the connected server \\"c\\" (did you mean'), r.text)
+      assert.ok(!r.text.includes('not approved'), r.text)
+      assert.deepEqual(asked, [])
+      assert.deepEqual(
+        lines().map(l => l.calls.map(c => c.decision)),
+        [['invalid']],
+      )
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a name that its server added with no notification: a miss lists it again, at most once in 10 s', async () => {
+    const file = path.join(ROOT, 'add-later.json')
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file, '--add-later'],
+      env: {},
+    }
+    const clock = { now: 0 }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {}, { now: () => clock.now })
+    const lists = () =>
+      fs
+        .readFileSync(`${file}.log`, 'utf8')
+        .split('\n')
+        .filter(l => l.includes('"event":"list"')).length
+    try {
+      const { run } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      assert.equal((await run('return await call("mcp__p__probe", {})')).isError, false)
+      const built = await run('return await call("mcp__p__" + "added1", {})')
+      assert.equal(built.isError, false, built.text)
+      assert.equal(lists(), 2, 'the miss at call time listed the tools again')
+      const soon = await run('return await call("mcp__p__added2", {})')
+      assert.ok(soon.text.includes('mcp__p__added2'), soon.text)
+      assert.equal(soon.isError, true, 'no list again within 10 s')
+      assert.equal(lists(), 2)
+      clock.now = 10_000
+      const later = await run('return await call("mcp__p__added2", {})')
+      assert.equal(later.isError, false, later.text)
+      assert.equal(lists(), 3, 'the miss before the run listed the tools again')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a name that its server does not list is refused at call time, also when the server answers it', async () => {
+    const file = path.join(ROOT, 'unlisted.json')
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file, '--requires-person'],
+      env: {},
+    }
+    const downstream = connectAll(new Map([['c' as ServerKey, server]]), '0', () => {})
+    try {
+      const { run, asked, lines } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      const r = await run(
+        'const out = []\nfor (const n of ["Probe", "PROBE", "probe "]) {\n  try { out.push(await call("mcp__c__" + n, {})) } catch (e) { out.push(e.message) }\n}\nreturn out',
+      )
+      assert.deepEqual(asked, [])
+      const refusal = JSON.stringify(
+        'no tool "mcp__c__Probe" on the connected server "c" (did you mean "mcp__c__probe"?)',
+      )
+      assert.ok(r.text.includes(refusal.slice(1, -1)), r.text)
+      assert.equal(r.text.match(/no tool \\"mcp__c__/g)?.length, 3, r.text)
+      const calls = fs
+        .readFileSync(`${file}.log`, 'utf8')
+        .split('\n')
+        .filter(l => l.includes('"event":"call"'))
+      assert.deepEqual(calls, [], 'no call reached the server')
+      assert.deepEqual(
+        lines().map(l => l.calls.map(({ decision, ok, error }) => [decision, ok, error])),
+        [Array(3).fill(['invalid', false, 'invalid'])],
+      )
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('the run log keeps the decision of the check: a call that ran before its server marked it is allow', async () => {
+    const fake = fakeDownstream()
+    const [f] = fake.downstream.states()
+    if (f?.status !== 'connected') throw new Error('the fake server is connected')
+    let states: ServerState[] = [{ ...f, tools: f.tools.map(({ _meta, ...t }) => t) }]
+    const downstream = {
+      ...fake.downstream,
+      states: () => states,
+      client: async (key: ServerKey) => {
+        const link = await fake.downstream.client(key)
+        if (!link.ok) return link
+        const callTool = async (...args: Parameters<typeof link.client.callTool>) => {
+          const r = await link.client.callTool(...args)
+          states = [f]
+          return r
+        }
+        const [listed] = states
+        return { ...link, tools: listed?.status === 'connected' ? listed.tools : [], client: { callTool } }
+      },
+    } as Downstream
+    const { run, lines } = setup({ policy, downstream })
+    assert.equal((await run(grant)).isError, false)
+    assert.deepEqual(
+      lines().map(l => l.calls.map(({ decision, ok }) => ({ decision, ok }))),
+      [[{ decision: 'allow', ok: true }]],
+    )
+  })
+
+  test('the run log records an approved call of it as ask-approved, and a refused one as unapproved', async () => {
+    const { run, lines } = setup({ policy })
+    await run(grant)
+    await run('try { await call("mcp__f__" + "grant", {}) } catch {}')
+    assert.deepEqual(
+      lines().map(l => l.calls.map(({ decision, ok }) => ({ decision, ok }))),
+      [[{ decision: 'ask-approved', ok: true }], [{ decision: 'unapproved', ok: false }]],
+    )
+  })
+
+  test('one approval covers each call of it in that run, and the next run asks again', async () => {
+    const { run, called, asked } = setup({ policy })
+    const loop = 'for (const n of [1, 2, 3]) await call("mcp__f__grant", { n })\nreturn "done"'
+    assert.equal((await run(loop)).isError, false)
+    assert.deepEqual(asked, [['mcp__f__grant']])
+    assert.deepEqual(called, ['grant', 'grant', 'grant'])
+    assert.equal((await run(grant)).isError, false)
+    assert.deepEqual(asked, [['mcp__f__grant'], ['mcp__f__grant']])
+  })
+})
+
+describe('a server whose tools change', () => {
+  /** connectAll with one probe server `p` in `mode`, and the number of lists that the server answered. */
+  const probe = (mode: string, options: ConnectOptions = {}) => {
+    const file = path.join(ROOT, `${mode.slice(2)}-${Math.random()}.json`)
+    const server: ServerConfig = { kind: 'stdio', command: process.execPath, args: [PROBE, file, mode], env: {} }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {}, options)
+    const log = (event: string) =>
+      fs
+        .readFileSync(`${file}.log`, 'utf8')
+        .split('\n')
+        .filter(l => l.includes(`"event":"${event}"`)).length
+    return { downstream, lists: () => log('list'), calls: () => log('call') }
+  }
+
+  test(
+    'a server that sends tools/list_changed before each list reply: a run with a miss answers',
+    { timeout: 30_000 },
+    async () => {
+      const { downstream } = probe('--changes-before')
+      try {
+        const { run } = setup({ downstream, timeoutSeconds: 6 })
+        const startedAt = performance.now()
+        const r = await run('return await call("mcp__p__nope", {})')
+        assert.ok(performance.now() - startedAt < 6000, `the run answered in ${performance.now() - startedAt} ms`)
+        assert.ok(r.text.includes('no tool "mcp__p__nope" on the connected server "p"'), r.text)
+      } finally {
+        await downstream.close()
+      }
+    },
+  )
+
+  test('an abort ends the wait for a slow list before the run', { timeout: 30_000 }, async () => {
+    const { downstream, lists } = probe('--list-changed')
+    try {
+      assert.equal(
+        (await setup({ downstream }).run('return await call("mcp__p__probe", { listDelayMs: 60000 })')).isError,
+        false,
+      )
+      for (let i = 0; i < 250 && lists() < 2; i++) await new Promise(r => setTimeout(r, 20))
+      const { run } = setup({ downstream, signal: AbortSignal.timeout(300) })
+      const startedAt = performance.now()
+      const r = await run('return await call("mcp__p__nope", {})')
+      assert.ok(performance.now() - startedAt < 2000, `the run answered in ${performance.now() - startedAt} ms`)
+      assert.equal(r.isError, true)
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test(
+    'a tool that its server marks while its new list is slow does not run unasked',
+    { timeout: 30_000 },
+    async () => {
+      const { downstream, calls } = probe('--list-changed')
+      try {
+        const { run, asked } = setup({ downstream })
+        assert.equal((await run('return await call("mcp__p__probe", { listDelayMs: 60000 })')).isError, false)
+        const r = await run('try { return await call("mcp__p__" + "probe", {}) } catch (e) { return e.message }')
+        assert.ok(
+          r.text.includes('the MCP server \\"p\\" changed its tools, and its new tool list did not come in time'),
+          r.text,
+        )
+        assert.deepEqual(asked, [])
+        assert.equal(calls(), 1, 'only the first run reached the server')
+      } finally {
+        await downstream.close()
+      }
+    },
+  )
+
+  test('a deny rule refuses a name before the check of the list, with no traffic to its server', async () => {
+    const { downstream, lists } = probe('--requires-person')
+    try {
+      await downstream.settled
+      const { run, lines } = setup({ policy: rules(['mcp__p__*', 'deny'], ['mcp__*', 'allow']), downstream })
+      const built = await run('try { return await call("mcp__p__" + "Probe", {}) } catch (e) { return e.message }')
+      assert.ok(built.text.includes('denied by policy[0]'), built.text)
+      assert.ok(!built.text.includes('no tool'), built.text)
+      const literal = await run('return await call("mcp__p__Probe", {})')
+      assert.ok(literal.text.includes('mcp__p__Probe is denied by policy[0]'), literal.text)
+      assert.ok(!literal.text.includes('no tool'), literal.text)
+      assert.equal(lists(), 1, 'only the list at connect')
+      assert.deepEqual(
+        lines().map(l => l.calls.map(c => c.decision)),
+        [['denied'], ['denied']],
+      )
+    } finally {
+      await downstream.close()
+    }
+  })
+})
+
 describe('the run log', () => {
   const SECRET = 'sk-fake-secret-1234567890'
 
@@ -698,7 +1104,7 @@ describe('the run log', () => {
     ]
     assert.deepEqual(entries(denied.lines()), [['refused', ...named, 'mcp__f__fail denied false 0 denied']])
     assert.deepEqual(entries(declined.lines()), [['refused', ...named]])
-    assert.deepEqual(entries(wrong.lines()), [['refused', named[0], 'unknown unapproved false 0 unapproved']])
+    assert.deepEqual(entries(wrong.lines()), [['refused', named[0], 'unknown invalid false 0 invalid']])
   })
 
   test('a run past the time limit ends as timeout, and an abort as cancelled', async () => {

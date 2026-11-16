@@ -2,7 +2,8 @@
 // parallel. A server that fails, whose connection closes, or whose HTTP
 // session ends, is logged to stderr and kept as failed, and the others still
 // work. A failed server connects again on next use (a search or a call), at
-// most MAX_ATTEMPTS times in ATTEMPT_WINDOW_MS, and never after close.
+// most MAX_ATTEMPTS times in ATTEMPT_WINDOW_MS, and never after close. Every wait
+// for a connect or a list ends at RETRY_WAIT_MS or at the abort of the caller's signal.
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -10,6 +11,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import {
   childEnv,
@@ -25,7 +27,7 @@ import {
 import { errorText } from '../core/protocol.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 
-/** The time that one server gets for its connect and for each page of its tool list. */
+/** The time that one server gets for its connect, and for its whole tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
 
 /** A tool list longer than this many pages is cut, so a server cannot page forever. */
@@ -42,25 +44,150 @@ export const FIRST_WAIT_MS = 10_000
 const MAX_ATTEMPTS = 3
 const ATTEMPT_WINDOW_MS = 60_000
 
-/** The longest time a search or a run waits for reconnects in `retry`. */
+/** A name that the list of a connected server lacks lists its tools again at most once in this time. */
+const MISS_WAIT_MS = 10_000
+
+/** The longest time that a search, a run or a call waits for a connect or a list. */
 const RETRY_WAIT_MS = 5_000
+
+/**
+ * The least time from the start of one list of a server to the start of its next. So a server that says that its
+ * tools change costs one list a second at most, and a call waits about one second for the list after a change.
+ */
+const LIST_FLOOR_MS = 1_000
+
+/**
+ * A server whose tools change more than MAX_CHANGES times in CHANGE_WINDOW_MS fails, and the cap of MAX_ATTEMPTS
+ * takes over. Tools change at a deploy, a login or a config change, not ten times a minute.
+ */
+const MAX_CHANGES = 10
+const CHANGE_WINDOW_MS = 60_000
 
 /** Hides the secrets of one server, its OAuth tokens too, in the text of one of its errors. */
 type Hide = (text: string) => string
 
+/** The end of a wait: RETRY_WAIT_MS after its start, or the abort of the caller's signal, whichever comes first. */
+type Deadline = { readonly at: number; readonly signal: AbortSignal | undefined }
+
+const deadline = (signal?: AbortSignal): Deadline => ({ at: performance.now() + RETRY_WAIT_MS, signal })
+
+const isPast = ({ at, signal }: Deadline): boolean => signal?.aborted === true || performance.now() >= at
+
+/** Waits for `wait` until `end`. Never rejects. It removes its timer and its abort listener at the end. */
+const within = async (wait: Promise<unknown>, end: Deadline): Promise<void> => {
+  if (isPast(end)) return
+  let stop = () => {}
+  let timer: NodeJS.Timeout | undefined
+  const out = new Promise<void>(resolve => {
+    stop = resolve
+    timer = setTimeout(resolve, end.at - performance.now())
+  })
+  end.signal?.addEventListener('abort', stop, { once: true })
+  try {
+    await Promise.race([wait.catch(() => {}), out])
+  } finally {
+    clearTimeout(timer)
+    end.signal?.removeEventListener('abort', stop)
+  }
+}
+
+/** The tool lists of one connected client. */
+type Lists = {
+  /** The newest list that ended. */
+  readonly tools: () => readonly DownstreamTool[]
+  /** The server says that its tools changed: list again, and each call waits for that list. */
+  readonly changed: () => void
+  /** A call names a tool that the list lacks: list again, and return the number of that list for `until`. */
+  readonly miss: () => number
+  /**
+   * Waits until a list that covers ask `n` ends, the lists stop, or `end` comes. Without `n`, it waits for the
+   * list after the last change. True when that list ended.
+   */
+  readonly until: (end: Deadline, n?: number) => Promise<boolean>
+}
+
+/**
+ * The lists after the list at connect, which gave `first`. Each ask (a change or a miss) takes the next number, and
+ * a list covers each ask before its start. One list runs at a time, `floorMs` after the start of the one before. So a
+ * storm or an endless stream of changes costs one list per `floorMs`. A list that fails, or more than MAX_CHANGES
+ * lists for a change in CHANGE_WINDOW_MS, stops the lists and gives `stop` the reason.
+ */
+export const startLists = (
+  first: readonly DownstreamTool[],
+  list: () => Promise<DownstreamTool[]>,
+  stop: (reason: string) => void,
+  floorMs: number,
+): Lists => {
+  let tools = first
+  let asked = 0
+  let covered = 0
+  let lastChange = 0
+  let lastStart = performance.now()
+  const changeStarts: number[] = []
+  let running = false
+  let stopped = false
+  // Settles at the end of each list and when the lists stop, so each `until` looks again.
+  let wake = () => {}
+  let ended = new Promise<void>(resolve => (wake = resolve))
+  const endList = () => {
+    wake()
+    ended = new Promise<void>(resolve => (wake = resolve))
+  }
+  const halt = (reason: string) => {
+    stopped = true
+    stop(reason)
+  }
+  const run = async () => {
+    running = true
+    try {
+      while (covered < asked && !stopped) {
+        await new Promise(resolve => setTimeout(resolve, lastStart + floorMs - performance.now()))
+        const ask = asked
+        lastStart = performance.now()
+        if (lastChange > covered) {
+          while (changeStarts.length > 0 && lastStart - changeStarts[0]! >= CHANGE_WINDOW_MS) changeStarts.shift()
+          if (changeStarts.length === MAX_CHANGES)
+            return halt(`its tools changed more than ${MAX_CHANGES} times in ${CHANGE_WINDOW_MS / 1000} s`)
+          changeStarts.push(lastStart)
+        }
+        tools = await list()
+        covered = ask
+        endList()
+      }
+    } catch (err) {
+      halt(`could not list the tools again: ${errorText(err)}`)
+    } finally {
+      running = false
+      endList()
+    }
+  }
+  const ask = (): number => {
+    asked++
+    if (!running && !stopped) void run()
+    return asked
+  }
+  return {
+    tools: () => tools,
+    changed: () => void (lastChange = ask()),
+    miss: ask,
+    // The target is read at each look: a change that comes during the wait must be covered too.
+    until: async (end, n) => {
+      const target = () => n ?? lastChange
+      while (covered < target() && !stopped && !isPast(end)) await within(ended, end)
+      return covered >= target()
+    },
+  }
+}
+
 /** One server: an attempt in progress, the client to call, or why it failed. */
 type Link =
   | { readonly status: 'connecting'; readonly done: Promise<void> }
-  | {
-      readonly status: 'connected'
-      readonly client: Client
-      readonly tools: readonly DownstreamTool[]
-      readonly hide: Hide
-    }
+  | { readonly status: 'connected'; readonly client: Client; readonly hide: Hide; readonly lists: Lists }
   | { readonly status: 'failed'; readonly reason: string }
 
+/** `tools`: the list after the last change of the server. */
 export type Linked =
-  | { readonly ok: true; readonly client: Client; readonly hide: Hide }
+  | { readonly ok: true; readonly client: Client; readonly hide: Hide; readonly tools: readonly DownstreamTool[] }
   | { readonly ok: false; readonly reason: string }
 
 export type Downstream = {
@@ -73,17 +200,24 @@ export type Downstream = {
   states(): readonly ServerState[]
   /**
    * Connects again each failed server of `keys` (all when undefined) that the
-   * cap allows, and waits up to RETRY_WAIT_MS. With `keys` (a run), it also waits
-   * for an attempt that another caller started, so the run can use the server.
-   * Without `keys` (a search), it waits only for the attempts that it started,
+   * cap allows, and waits up to RETRY_WAIT_MS or until `signal` aborts. With `keys` (a run), it also waits
+   * for an attempt that another caller started, and for the list after the last change, so the run can use the
+   * server. Without `keys` (a search), it waits only for the attempts that it started,
    * so a server that hangs in its connect does not slow each search. Never rejects.
    */
-  retry(keys?: readonly ServerKey[]): Promise<void>
+  retry(keys?: readonly ServerKey[], signal?: AbortSignal): Promise<void>
   /**
    * The client of a server, for a nested call. A failed server connects again
-   * first when the cap allows, and every caller waits for the same attempt.
+   * first when the cap allows, and every caller waits for the same attempt. Then the call waits for the list after
+   * the last change of the server. A list that does not come up to RETRY_WAIT_MS, or before `signal` aborts, fails
+   * the call: an older list can lack a new mark.
    */
-  client(key: ServerKey): Promise<Linked>
+  client(key: ServerKey, signal?: AbortSignal): Promise<Linked>
+  /**
+   * Lists the tools of a connected server again, for a name that its list lacks: at most once in MISS_WAIT_MS per
+   * server. Waits for that list up to RETRY_WAIT_MS, or until `signal` aborts. Never rejects.
+   */
+  relist(key: ServerKey, signal?: AbortSignal): Promise<void>
   /** Closes every client, connected or still connecting, and so ends every stdio child. */
   close(): Promise<void>
 }
@@ -160,7 +294,10 @@ export const serverFetch = (server: HttpServer): FetchLike => {
     const headers = new Headers(init?.headers)
     if (new URL(url).origin === origin)
       for (const [name, value] of Object.entries(server.headers)) headers.set(name, value)
-    return fetch(url, { ...init, headers })
+    // The SDK gives one signal to every request of a transport, and fetch keeps a listener on it until the request is
+    // garbage collected. A signal that follows it takes that listener, so many requests add no listener to it.
+    const signal = init?.signal ? AbortSignal.any([init.signal]) : init?.signal
+    return fetch(url, { ...init, headers, signal })
   }
 }
 
@@ -204,15 +341,19 @@ const cwdProblem = async (server: ServerConfig): Promise<string | undefined> => 
   }
 }
 
-export const listAll = async (client: Client): Promise<DownstreamTool[]> => {
+/** `cut` runs when the list has more than MAX_PAGES pages. The whole list has CONNECT_TIMEOUT_MS. */
+export const listAll = async (client: Client, cut = () => {}): Promise<DownstreamTool[]> => {
   const tools: DownstreamTool[] = []
+  const end = performance.now() + CONNECT_TIMEOUT_MS
   let cursor: string | undefined
   for (let page = 0; page < MAX_PAGES; page++) {
-    const result = await client.listTools(cursor === undefined ? {} : { cursor }, { timeout: CONNECT_TIMEOUT_MS })
+    const timeout = Math.max(0, end - performance.now())
+    const result = await client.listTools(cursor === undefined ? {} : { cursor }, { timeout })
     tools.push(...result.tools)
     cursor = result.nextCursor
     if (!cursor) break
   }
+  if (cursor) cut()
   return tools
 }
 
@@ -225,6 +366,8 @@ export type ConnectOptions = {
   readonly now?: () => number
   /** The longest wait in ms for the answer to an OAuth refresh: a test sets it. */
   readonly refreshTimeoutMs?: number
+  /** The least time in ms from the start of one list of a server to the start of its next: a test sets it. */
+  readonly listFloorMs?: number
 }
 
 export const connectAll = (
@@ -236,6 +379,7 @@ export const connectAll = (
     login = key => loginCommand(key),
     now = Date.now,
     refreshTimeoutMs = REFRESH_TIMEOUT_MS,
+    listFloorMs = LIST_FLOOR_MS,
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -243,6 +387,8 @@ export const connectAll = (
   // The start times of the attempts of each server in the last window.
   const attempts = new Map<ServerKey, number[]>()
   const opened = new Set<Client>()
+  // The time of the last list of each server for a name that its list lacked.
+  const missed = new Map<ServerKey, number>()
 
   const connect = async (key: ServerKey, server: ServerConfig): Promise<void> => {
     const client = new Client({ name: 'toolscript-mcp', version })
@@ -270,6 +416,17 @@ export const connectAll = (
       // rejects each open request with "Connection closed".
       setImmediate(() => void client.close().catch(() => {}))
     }
+    const list = () =>
+      listAll(client, () =>
+        log(`${key}: the tool list has more than ${MAX_PAGES} pages, so toolscript-mcp uses the first ${MAX_PAGES}`),
+      )
+    // A server whose tools change, also in their marks, says so: list again, so the checks of a call see the new list.
+    // A change before the lists start, in the connect or in its list, lists once more after it.
+    let lists: Lists | undefined
+    let early = false
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () =>
+      lists === undefined ? void (early = true) : lists.changed(),
+    )
     let lastError = () => ''
     try {
       // Inside the try: a transport that cannot be made fails this server only.
@@ -293,9 +450,12 @@ export const connectAll = (
       const made = transportOf(server, sessionEnded, auth)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
-      const tools = await listAll(client)
-      links.set(key, { status: 'connected', client, tools, hide })
-      log(`${key}: connected, ${tools.length} tools`)
+      const first = await list()
+      // The old list can lack a new mark, so lists that stop fail the link, and the next use connects and lists anew.
+      lists = startLists(first, list, reason => lost(reason) && void client.close().catch(() => {}), listFloorMs)
+      if (early) lists.changed()
+      links.set(key, { status: 'connected', client, hide, lists })
+      log(`${key}: connected, ${first.length} tools`)
       client.onclose = () => {
         opened.delete(client)
         const stderr = lastError()
@@ -338,15 +498,30 @@ export const connectAll = (
     return attempt(key, server)
   }
 
-  /** The attempt that a caller of `key` waits for: a new one, or the one in progress, whoever started it. */
-  const pending = (key: ServerKey): Promise<void> | undefined => {
-    const link = links.get(key)
-    return reconnect(key) ?? (link?.status === 'connecting' ? link.done : undefined)
+  /**
+   * Waits until `key` is ready for a call, or until `end`: for one connect attempt at most (a new one when the cap
+   * allows it, or the one in progress, whoever started it), and for the list after the last change. A list that
+   * fails fails the link, and then the attempt lists anew.
+   */
+  const settle = async (key: ServerKey, end: Deadline): Promise<void> => {
+    let attempted = false
+    while (!isPast(end)) {
+      const link = links.get(key)
+      if (link?.status === 'connected') {
+        await link.lists.until(end)
+        if (links.get(key) === link) return
+        continue
+      }
+      const wait = attempted ? undefined : link?.status === 'connecting' ? link.done : reconnect(key)
+      if (wait === undefined) return
+      attempted = true
+      await within(wait, end)
+    }
   }
 
   const stateOf = (key: ServerKey, link: Link): ServerState => {
     if (link.status === 'connecting') return { key, status: 'connecting' }
-    if (link.status === 'connected') return { key, status: 'connected', tools: link.tools }
+    if (link.status === 'connected') return { key, status: 'connected', tools: link.lists.tools() }
     const wait = closing ? 0 : capWait(key)
     const note = wait > 0 ? `. toolscript-mcp tries again on next use after ${Math.ceil(wait / 1000)} s` : ''
     return { key, status: 'failed', reason: `${link.reason}${note}` }
@@ -364,24 +539,33 @@ export const connectAll = (
   return {
     settled: Promise.race([ready, new Promise(r => setTimeout(r, FIRST_WAIT_MS).unref())]).then(() => {}),
     states: () => [...links].map(([key, link]) => stateOf(key, link)),
-    retry: async keys => {
+    retry: async (keys, signal) => {
+      const end = deadline(signal)
       const waits =
         keys === undefined
           ? [...servers.keys()].flatMap(key => reconnect(key) ?? [])
-          : keys.flatMap(key => pending(key) ?? [])
-      if (waits.length === 0) return
-      let timer: NodeJS.Timeout | undefined
-      await Promise.race([Promise.all(waits), new Promise(r => (timer = setTimeout(r, RETRY_WAIT_MS)))])
-      clearTimeout(timer)
+          : keys.map(key => settle(key, end))
+      await within(Promise.all(waits), end)
     },
-    client: async key => {
+    client: async (key, signal) => {
       if (closing) return { ok: false, reason: 'toolscript-mcp is shutting down' }
+      if (!links.has(key)) return { ok: false, reason: `no MCP server "${key}" is connected` }
+      const end = deadline(signal)
+      await settle(key, end)
+      const link = links.get(key)!
+      if (link.status !== 'connected') return { ok: false, reason: notConnected(stateOf(key, link))! }
+      if (!(await link.lists.until(end)))
+        return {
+          ok: false,
+          reason: `the MCP server "${key}" changed its tools, and its new tool list did not come in time. Run the program again`,
+        }
+      return { ok: true, client: link.client, hide: link.hide, tools: link.lists.tools() }
+    },
+    relist: async (key, signal) => {
       const link = links.get(key)
-      if (link === undefined) return { ok: false, reason: `no MCP server "${key}" is connected` }
-      await pending(key)
-      const after = links.get(key) ?? link
-      if (after.status === 'connected') return { ok: true, client: after.client, hide: after.hide }
-      return { ok: false, reason: notConnected(stateOf(key, after))! }
+      if (link?.status !== 'connected' || now() - (missed.get(key) ?? -Infinity) < MISS_WAIT_MS) return
+      missed.set(key, now())
+      await link.lists.until(deadline(signal), link.lists.miss())
     },
     close: () => (closing ??= Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})),
   }

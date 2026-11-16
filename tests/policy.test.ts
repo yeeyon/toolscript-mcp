@@ -155,7 +155,7 @@ describe('the decision before a run', () => {
   const p = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__bench__*', 'allow'], ['mcp__ops__*', 'ask'])
 
   test('a deny rule on a literal name refuses the run and names the rule', () => {
-    const plan = planRun(p, [call('mcp__bench__list_issues'), call('mcp__bench__create_ticket', 3)])
+    const plan = planRun(p, [call('mcp__bench__list_issues'), call('mcp__bench__create_ticket', 3)], new Set())
     assert.equal(plan.kind, 'refused')
     if (plan.kind !== 'refused') return
     assert.equal(
@@ -167,28 +167,80 @@ describe('the decision before a run', () => {
 
   test('the names to ask are those of ask rules and of no rule, each once', () => {
     assert.deepEqual(
-      planRun(p, [call('mcp__ops__restart'), call('mcp__bench__list_issues'), call('mcp__x__y'), call('mcp__x__y')]),
-      { kind: 'run', ask: ['mcp__ops__restart', 'mcp__x__y'] },
+      planRun(
+        p,
+        [call('mcp__ops__restart'), call('mcp__bench__list_issues'), call('mcp__x__y'), call('mcp__x__y')],
+        new Set(),
+      ),
+      { kind: 'run', ask: ['mcp__ops__restart', 'mcp__x__y'], interactive: [] },
     )
-    assert.deepEqual(planRun(p, [call('mcp__bench__list_issues')]), { kind: 'run', ask: [] })
+    assert.deepEqual(planRun(p, [call('mcp__bench__list_issues')], new Set()), {
+      kind: 'run',
+      ask: [],
+      interactive: [],
+    })
+  })
+
+  test('a tool whose server requires a person is asked under an allow or ask rule, and a deny rule still denies it', () => {
+    const marked = new Set(['mcp__bench__list_issues', 'mcp__ops__restart', 'mcp__bench__create_ticket'])
+    assert.deepEqual(
+      planRun(p, [call('mcp__bench__list_issues'), call('mcp__ops__restart'), call('mcp__bench__list_issues')], marked),
+      { kind: 'run', ask: [], interactive: ['mcp__bench__list_issues', 'mcp__ops__restart'] },
+    )
+    assert.equal(planRun(p, [call('mcp__bench__create_ticket')], marked).kind, 'refused')
   })
 
   test('the prompt lists the tools and shows the program', () => {
-    const text = askText(['mcp__x__y', 'mcp__x__z'], 'return 1')
+    const text = askText({ ask: ['mcp__x__y', 'mcp__x__z'], interactive: [] }, 'return 1')
     assert.ok(text.includes('these tools, which no policy rule allows:\n- mcp__x__y\n- mcp__x__z\n'), text)
+    assert.ok(text.includes('Approve for this run only? The approval covers each call of these tools in the program.'))
+    assert.ok(!text.includes('each time'), text)
     assert.ok(text.endsWith('The program:\nreturn 1'), text)
-    assert.ok(askText(['mcp__x__y'], 'x'.repeat(5000)).endsWith('… [1000 more characters]'))
+    assert.ok(askText({ ask: ['mcp__x__y'], interactive: [] }, 'x'.repeat(5000)).endsWith('… [1000 more characters]'))
+  })
+
+  test('the prompt names apart the tools whose server requires a person each time', () => {
+    const both = askText({ ask: ['mcp__x__y'], interactive: ['mcp__x__grant'] }, 'return 1')
+    assert.ok(
+      both.startsWith('A toolscript program wants to call this tool, which no policy rule allows:\n- mcp__x__y\n'),
+    )
+    assert.ok(
+      both.includes(
+        'It also wants to call this tool. Its server requires your approval each time, so a policy rule cannot allow it:\n- mcp__x__grant\n',
+      ),
+      both,
+    )
+    const alone = askText({ ask: [], interactive: ['mcp__x__a', 'mcp__x__b'] }, 'return 1')
+    assert.ok(
+      alone.startsWith(
+        'A toolscript program wants to call these tools. Their servers require your approval each time, so a policy rule cannot allow them:\n- mcp__x__a\n- mcp__x__b\n',
+      ),
+      alone,
+    )
+  })
+
+  test('a refusal for a tool whose server requires a person offers no allow rule', () => {
+    const unsupported = refusedReport({ ask: [], interactive: ['mcp__x__grant'] }, 'unsupported')
+    assert.ok(unsupported.includes('this MCP client cannot ask the person'), unsupported)
+    assert.ok(unsupported.includes("mcp__x__grant needs the person's approval at each run"), unsupported)
+    assert.ok(unsupported.includes('so a program cannot call it.'), unsupported)
+    assert.ok(!unsupported.includes('"action": "allow"'), unsupported)
+    const declined = refusedReport({ ask: ['mcp__x__y'], interactive: ['mcp__x__grant'] }, 'decline')
+    assert.ok(declined.includes('{"match": "mcp__x__y", "action": "allow"}'), declined)
+    assert.ok(!declined.includes('{"match": "mcp__x__grant"'), declined)
+    assert.ok(!declined.includes('Write the tool name as a string'), 'the name was a string, and the person said no')
+    assert.ok(!declined.includes('Run the program again'), declined)
   })
 
   test('a client that cannot ask, and a decline, refuse the run with the allow rule to add', () => {
-    const unsupported = refusedReport(['mcp__x__y'], 'unsupported')
+    const unsupported = refusedReport({ ask: ['mcp__x__y'], interactive: [] }, 'unsupported')
     assert.match(
       unsupported,
       /^Error: the program did not run, because some tools need approval and this MCP client cannot ask the person\. No call was made\./,
     )
     assert.ok(unsupported.includes('add {"match": "mcp__x__y", "action": "allow"} to "policy"'), unsupported)
     assert.ok(unsupported.includes('the new rule applies only after they restart toolscript-mcp'), unsupported)
-    const declined = refusedReport(['mcp__x__y'], 'decline')
+    const declined = refusedReport({ ask: ['mcp__x__y'], interactive: [] }, 'decline')
     assert.match(declined, /^Error: the program did not run, because the person did not approve/)
     assert.ok(declined.includes('{"match": "mcp__x__y", "action": "allow"}'), declined)
     assert.ok(!declined.includes('restart'), declined)
@@ -199,16 +251,28 @@ describe('the check of each nested call', () => {
   const p = policy(['mcp__bench__create_ticket', 'deny'], ['mcp__bench__list_*', 'allow'])
 
   test('allow runs, deny names its rule, and ask runs only when approved for this run', () => {
-    assert.deepEqual(checkCall(p, new Set(), 'mcp__bench__list_issues'), { ok: true })
-    assert.deepEqual(checkCall(p, new Set(['mcp__bench__create_ticket']), 'mcp__bench__create_ticket'), {
+    const none = new Set<string>()
+    assert.deepEqual(checkCall(p, new Set(), 'mcp__bench__list_issues', none), { ok: true })
+    assert.deepEqual(checkCall(p, new Set(['mcp__bench__create_ticket']), 'mcp__bench__create_ticket', none), {
       ok: false,
       error: 'denied by policy[0] {"match": "mcp__bench__create_ticket", "action": "deny"}',
-      needsRule: false,
     })
-    assert.deepEqual(checkCall(p, new Set(['mcp__bench__query_logs']), 'mcp__bench__query_logs'), { ok: true })
-    const dynamic = checkCall(p, new Set(['mcp__bench__query_logs']), 'mcp__bench__get_deploys')
+    assert.deepEqual(checkCall(p, new Set(['mcp__bench__query_logs']), 'mcp__bench__query_logs', none), { ok: true })
+    const dynamic = checkCall(p, new Set(['mcp__bench__query_logs']), 'mcp__bench__get_deploys', none)
     assert.equal(dynamic.ok, false)
-    assert.ok(!dynamic.ok && dynamic.needsRule)
+    assert.ok(!dynamic.ok && dynamic.needs === 'rule')
+  })
+
+  test('a tool whose server requires a person runs only when approved for this run, and a deny rule still denies it', () => {
+    const marked = new Set(['mcp__bench__list_issues', 'mcp__bench__create_ticket'])
+    const allowed = checkCall(p, new Set(), 'mcp__bench__list_issues', marked)
+    assert.ok(!allowed.ok && allowed.needs === 'person', JSON.stringify(allowed))
+    assert.ok(!allowed.ok && allowed.error.includes('an allow rule does not replace it'), JSON.stringify(allowed))
+    assert.deepEqual(checkCall(p, new Set(['mcp__bench__list_issues']), 'mcp__bench__list_issues', marked), {
+      ok: true,
+    })
+    const denied = checkCall(p, new Set(['mcp__bench__create_ticket']), 'mcp__bench__create_ticket', marked)
+    assert.ok(!denied.ok && denied.needs === undefined && denied.error.startsWith('denied by'), JSON.stringify(denied))
   })
 
   test('approvalNote names each allow rule to add, and nothing when none was refused', () => {
@@ -509,7 +573,7 @@ describe('a change of the policy in the config file', () => {
     const listed = policyChange(policy(['mcp__a__*', 'allow']), many)
     assert.ok(listed.includes('{"match": "mcp__a__t9", "action": "deny"} and 15 more; removed'), listed)
     assert.ok(!listed.includes('mcp__a__t10'), listed)
-    const denied = checkCall(policy(['mcp__x__a\n*', 'deny']), new Set(), 'mcp__x__a\nb')
+    const denied = checkCall(policy(['mcp__x__a\n*', 'deny']), new Set(), 'mcp__x__a\nb', new Set())
     assert.ok(
       !denied.ok && denied.error.endsWith('{"match": "mcp__x__a\\n*", "action": "deny"}'),
       JSON.stringify(denied),

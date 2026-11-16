@@ -12,10 +12,13 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { getEventListeners } from 'node:events'
 import type { ServerConfig, ServerKey } from '../src/core/config.ts'
-import { connectAll, type Downstream } from '../src/host/downstream.ts'
+import { connectAll, serverFetch, startLists, type Downstream } from '../src/host/downstream.ts'
 
 const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-downstream-test-'))
@@ -152,6 +155,137 @@ describe('reconnect', () => {
     const state = downstream.states()[0]
     assert.match(state?.status === 'failed' ? state.reason : '', /Invalid URL/)
   })
+})
+
+/** Waits until `done` is true, at most 5 s. */
+const until = async (done: () => boolean, what: string): Promise<void> => {
+  for (let i = 0; i < 250 && !done(); i++) await new Promise(r => setTimeout(r, 20))
+  assert.ok(done(), what)
+}
+
+describe('tools/list_changed', () => {
+  /** One probe server that sends tools/list_changed after each call, and the description of its one tool. */
+  const setupChanged = async () => {
+    const file = path.join(DIR, `${randomUUID()}.json`)
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file, '--list-changed'],
+      env: {},
+    }
+    const lines: string[] = []
+    const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line))
+    opened.push(downstream)
+    await downstream.settled
+    const link = await downstream.client(KEY)
+    if (!link.ok) throw new Error(link.reason)
+    const call = (args: { listDelayMs?: number; notifications?: number; failList?: boolean } = {}) =>
+      link.client.callTool({ name: 'probe', arguments: args })
+    const description = () => {
+      const state = downstream.states()[0]
+      return state?.status === 'connected' ? state.tools[0]?.description : undefined
+    }
+    return { downstream, call, description, lists: () => listsOf(file), lines }
+  }
+
+  test('a server that sends tools/list_changed is listed again, and the new list replaces the old', async () => {
+    const { call, description } = await setupChanged()
+    assert.equal(description(), 'Probe, 0 changes.')
+    await call()
+    await until(() => description() === 'Probe, 1 changes.', `listed again: ${description()}`)
+  })
+
+  test('a change during a slow list lists once more at its end, and that newer list stays', async () => {
+    const { call, description, lists } = await setupChanged()
+    await call({ listDelayMs: 500 })
+    await until(() => lists() === 2, 'the slow list started')
+    await call()
+    await until(() => description() === 'Probe, 2 changes.', `the fast list: ${description()}`)
+    await new Promise(r => setTimeout(r, 700))
+    assert.equal(description(), 'Probe, 2 changes.', 'the slow list answered last and did not replace the newer one')
+  })
+
+  test('a call waits for the list in flight, so it sees the new list', async () => {
+    const { downstream, call, description, lists } = await setupChanged()
+    await call({ listDelayMs: 1000 })
+    await until(() => lists() === 2, 'the slow list started')
+    assert.equal((await downstream.client(KEY)).ok, true)
+    assert.equal(description(), 'Probe, 1 changes.', 'the client came after the list in flight')
+  })
+
+  test('a list that fails fails the link, and the next use connects again and lists anew', async () => {
+    const { downstream, call, description, lines } = await setupChanged()
+    await call({ failList: true, notifications: 50 })
+    await until(() => downstream.states()[0]?.status === 'failed', 'the link failed')
+    assert.equal((await downstream.client(KEY)).ok, true)
+    assert.equal(description(), 'Probe, 1 changes.')
+    assert.deepEqual(lines.slice(1), [
+      'p: failed: could not list the tools again: MCP error -32603: the tool list failed',
+      'p: connecting again',
+      'p: connected, 1 tools',
+    ])
+  })
+
+  test('a storm of tools/list_changed costs one list', async () => {
+    const { call, description, lists, lines } = await setupChanged()
+    await call({ listDelayMs: 100, notifications: 300 })
+    await until(() => description() === 'Probe, 1 changes.', `listed again: ${description()}`)
+    await new Promise(r => setTimeout(r, 300))
+    assert.equal(lists(), 2, 'the list at connect and one list for the storm')
+    assert.deepEqual(lines, ['p: connected, 1 tools'])
+  })
+
+  test(
+    'a wait for a list ends when the signal of the caller aborts, and the call fails closed',
+    { timeout: 20_000 },
+    async () => {
+      const { downstream, call, lists } = await setupChanged()
+      await call({ listDelayMs: 60_000 })
+      await until(() => lists() === 2, 'the slow list started')
+      const startedAt = performance.now()
+      const link = await downstream.client(KEY, AbortSignal.timeout(300))
+      assert.ok(performance.now() - startedAt < 2000, `the wait ended after ${performance.now() - startedAt} ms`)
+      assert.match(link.ok ? '' : link.reason, /changed its tools, and its new tool list did not come in time/)
+    },
+  )
+
+  for (const mode of ['--changes-before', '--changes-after'])
+    test(`an endless stream of tools/list_changed (${mode}) lists once per floor, then fails the link`, async () => {
+      const file = path.join(DIR, `${randomUUID()}.json`)
+      const server: ServerConfig = { kind: 'stdio', command: process.execPath, args: [PROBE, file, mode], env: {} }
+      const lines: string[] = []
+      const startedAt = performance.now()
+      const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line), { listFloorMs: 50 })
+      opened.push(downstream)
+      await until(() => downstream.states()[0]?.status === 'failed', 'the link failed')
+      assert.ok(performance.now() - startedAt >= 10 * 50, 'the floor spaced the lists')
+      assert.equal(listsOf(file), 11, 'the list at connect and 10 lists for a change')
+      assert.deepEqual(lines, ['p: connected, 1 tools', 'p: failed: its tools changed more than 10 times in 60 s'])
+    })
+})
+
+/** The number of lists that the probe server of `file` answered. */
+const listsOf = (file: string): number =>
+  fs
+    .readFileSync(`${file}.log`, 'utf8')
+    .split('\n')
+    .filter(line => line.includes('"event":"list"')).length
+
+test('a tool list cut at 100 pages says so in the log', async () => {
+  const server: ServerConfig = {
+    kind: 'stdio',
+    command: process.execPath,
+    args: [PROBE, path.join(DIR, `${randomUUID()}.json`), '--endless-list'],
+    env: {},
+  }
+  const lines: string[] = []
+  const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line))
+  opened.push(downstream)
+  await downstream.settled
+  assert.deepEqual(lines, [
+    'p: the tool list has more than 100 pages, so toolscript-mcp uses the first 100',
+    'p: connected, 100 tools',
+  ])
 })
 
 /**
@@ -300,6 +434,115 @@ describe('http', () => {
         await fake.close()
       }
     })
+})
+
+/** An HTTP MCP server that sends tools/list_changed on the GET stream every 5 ms, and the number of its lists. */
+const startStorm = async () => {
+  let lists = 0
+  const sessions = new Map<string, StreamableHTTPServerTransport>()
+  const timers: NodeJS.Timeout[] = []
+  const fresh = async () => {
+    const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: randomUUID,
+      onsessioninitialized: id => void sessions.set(id, transport),
+    })
+    const mcp = new Server({ name: 'storm', version: '1.0.0' }, { capabilities: { tools: { listChanged: true } } })
+    mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+      lists++
+      return { tools: [{ name: 'ping', inputSchema: { type: 'object' as const } }] }
+    })
+    await mcp.connect(transport)
+    timers.push(setInterval(() => void mcp.sendToolListChanged().catch(() => {}), 5))
+    return transport
+  }
+  const server = http.createServer(async (req, res) => {
+    const id = req.headers['mcp-session-id']
+    const known = typeof id === 'string' ? sessions.get(id) : undefined
+    await (known ?? (await fresh())).handleRequest(req, res)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    lists: () => lists,
+    close: () =>
+      new Promise<void>(resolve => {
+        for (const timer of timers) clearInterval(timer)
+        server.close(() => resolve())
+        server.closeAllConnections()
+      }),
+  }
+}
+
+describe('lists', () => {
+  test('a wait for the lists covers each change that comes while it waits', async () => {
+    const answers: ((tools: []) => void)[] = []
+    const lists = startLists(
+      [],
+      () => new Promise(resolve => answers.push(resolve)),
+      () => {},
+      0,
+    )
+    const tick = () => new Promise(resolve => setTimeout(resolve, 20))
+    lists.changed()
+    await tick()
+    let settled = false
+    const done = lists.until(performance.now() + 3000).then(covered => ((settled = true), covered))
+    lists.changed()
+    answers[0]!([])
+    await tick()
+    lists.changed()
+    answers[1]!([])
+    await tick()
+    assert.equal(settled, false, 'the third change has no list yet')
+    answers[2]!([])
+    assert.equal(await done, true)
+  })
+})
+
+describe('http lists', () => {
+  test('an endless stream of tools/list_changed on the GET stream fails the link at the cap, with no listener warning', async () => {
+    const storm = await startStorm()
+    const warnings: string[] = []
+    const onWarning = (w: Error) => void warnings.push(w.name)
+    process.on('warning', onWarning)
+    const lines: string[] = []
+    const downstream = connectAll(
+      new Map([[KEY, { kind: 'http', url: storm.url, headers: {} } as const]]),
+      '0',
+      line => lines.push(line),
+      { listFloorMs: 50 },
+    )
+    opened.push(downstream)
+    try {
+      await until(() => downstream.states()[0]?.status === 'failed', 'the link failed')
+      assert.equal(storm.lists(), 11, 'the list at connect and 10 lists for a change')
+      assert.deepEqual(lines, ['p: connected, 1 tools', 'p: failed: its tools changed more than 10 times in 60 s'])
+      assert.deepEqual(warnings, [])
+    } finally {
+      process.off('warning', onWarning)
+      await downstream.close()
+      await storm.close()
+    }
+  })
+
+  test('a request adds no listener to the signal that the SDK shares, and that signal still aborts a request', async () => {
+    const server = http.createServer((req, res) => void (req.url === '/hang' ? req.resume() : res.end('ok')))
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    try {
+      const shared = new AbortController()
+      const fetch = serverFetch({ kind: 'http', url: `${base}/mcp`, headers: {} })
+      for (let i = 0; i < 100; i++)
+        await (await fetch(`${base}/mcp`, { method: 'POST', body: '{}', signal: shared.signal })).text()
+      assert.equal(getEventListeners(shared.signal, 'abort').length, 0)
+      const hanging = fetch(`${base}/hang`, { signal: shared.signal })
+      shared.abort()
+      await assert.rejects(hanging, { name: 'AbortError' })
+    } finally {
+      server.closeAllConnections()
+      await new Promise(resolve => server.close(resolve))
+    }
+  })
 })
 
 describe('cwd', () => {

@@ -844,6 +844,23 @@ describe('the catalog', () => {
     )
   })
 
+  test('keeps the mark anthropic/requiresUserInteraction only when its value is the JSON true', () => {
+    const marked = (meta: unknown) =>
+      catalogOf([{ key: key('x'), status: 'connected', tools: [{ name: 't', _meta: meta }] }])[0]!
+        .requiresUserInteraction
+    assert.equal(marked({ 'anthropic/requiresUserInteraction': true }), true)
+    for (const other of [
+      undefined,
+      null,
+      [true],
+      {},
+      { 'anthropic/requiresUserInteraction': 'true' },
+      { 'anthropic/requiresUserInteraction': 1 },
+      { requiresUserInteraction: true },
+    ])
+      assert.equal(marked(other), false, JSON.stringify(other))
+  })
+
   test('argsText shows argument names and types, with ? for optional ones', () => {
     assert.equal(
       argsText({

@@ -60,6 +60,20 @@ enforces; the others rely on discipline.
   `[test: runner.integration.mjs fails when the runner sends a kind that is not in RUNNER_FIELDS]`
 - Every nested call of a program goes through `checkCall` (`src/core/policy.ts`) at call time, also when the check
   before the run passed: a tool name built at run time is never asked. `[test: run.test.ts and server.e2e.mjs, case (e)]`
+- A deny rule refuses a nested call first, and the call sends nothing to its server, not even a list for a miss. A
+  nested call of a name that its connected server does not list is refused (`listedNames` in
+  `src/core/catalog.ts`), before the other policy checks, so the refusal offers no rule for a name that cannot run. A miss
+  first lists the server again, at most one time in 10 s (`downstream.relist`). Rules and marks match listed names,
+  and a server can answer a name in another case.
+  `[test: run.test.ts]`
+- A tool whose server sets `_meta["anthropic/requiresUserInteraction"]` to `true` needs the person's approval before
+  each run, also under an allow rule: `planRun` asks for it and `checkCall` refuses it unless approved. `checkCall` runs
+  on the list that `downstream.client` returns: the list after the last `tools/list_changed` of the server. The
+  lists of a server are in `startLists` (`src/host/downstream.ts`): one at a time, `LIST_FLOOR_MS` apart, and more
+  than `MAX_CHANGES` lists for a change in `CHANGE_WINDOW_MS` fail the link. Every wait for a connect or a list ends
+  at `RETRY_WAIT_MS` or at the abort of the caller's signal. A call with no list after the last change is refused,
+  and a list that fails fails the link. So no call uses a list that can lack a new mark.
+  `[test: run.test.ts and server.e2e.mjs, cases run (q) and run (r)]`
 - A program can write the config file through a tool. So a policy read at a run applies at once only when
   `onlyTightens` (`src/core/policy.ts`) says it comes from the policy in force by inserted deny rules, removed allow
   rules and actions lowered in place. Decide it from the rules alone: a check that tries tool names misses a name
