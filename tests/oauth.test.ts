@@ -645,16 +645,42 @@ describe('the running server', () => {
     }
   })
 
-  test('two processes that refresh one rotating refresh token at once both go on with no login', async () => {
+  test('a refresh token that another process used first gives its saved tokens, with no login', async () => {
     const fake = await startFake()
     const s = setup(fake)
     assert.equal(await s.login(), 0, s.lines.join('\n'))
-    const [one, two] = [s.connect(), s.connect()]
-    assert.deepEqual(await Promise.all([s.ping(one), s.ping(two)]), [PONG, PONG])
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
     fake.expire()
     fake.change.holdRefreshes = 2
-    assert.deepEqual(await Promise.all([s.ping(one), s.ping(two)]), [PONG, PONG])
+    // The other process sends the stored refresh token first, so it wins, and saves the next tokens.
+    const [file] = s.store()
+    const stored = JSON.parse(fs.readFileSync(file!, 'utf8'))
+    const other = (async () => {
+      const form = { grant_type: 'refresh_token', refresh_token: stored.tokens.refresh_token }
+      const answer = await fetch(new URL('/token', fake.url), {
+        method: 'POST',
+        body: new URLSearchParams({ ...form, client_id: stored.client.info.client_id }),
+      })
+      fs.writeFileSync(file!, JSON.stringify({ ...stored, tokens: await answer.json() }))
+    })()
+    while (fake.refreshRequests() === 0) await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(await s.ping(downstream), PONG)
+    await other
+    assert.equal(fake.refreshRequests(), 2)
     assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
+  })
+
+  test('eight calls of two links at expiry all go on, and the token endpoint gets one refresh', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const links = [s.connect(), s.connect()]
+    assert.deepEqual(await Promise.all(links.map(s.ping)), [PONG, PONG])
+    fake.expire()
+    const calls = links.flatMap(link => Array.from({ length: 4 }, () => s.ping(link)))
+    assert.deepEqual(await Promise.all(calls), Array(8).fill(PONG))
+    assert.equal(fake.refreshRequests(), 1)
   })
 
   test('a late invalid_grant of one of two calls at expiry needs no login', async () => {

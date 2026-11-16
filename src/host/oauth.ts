@@ -119,6 +119,12 @@ const rotated = async (file: string, old: string): Promise<OAuthTokens | undefin
 const ROTATE_WAIT_MS = 1000
 const ROTATE_POLL_MS = 100
 
+/**
+ * The refresh of each store file that is in flight in this process. All calls and links of a server wait for one
+ * refresh: a rotating refresh token works once, so a second refresh with it is refused.
+ */
+const refreshes = new Map<string, Promise<OAuthTokens>>()
+
 /** The provider of `login`: it opens the browser, and keeps the verifier and the state in memory. */
 export type LoginMode = {
   readonly kind: 'login'
@@ -175,9 +181,12 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     if (login) return client?.redirectUrl === redirectUrl ? client.info : undefined
     return client?.info ?? needLogin()
   }
-  // A refresh of the running server with the refresh token `sent`. The SDK reads a refusal without an OAuth error code
-  // as a server error and starts a login after it, so this decides on each answer.
-  const refresh = async (send: () => Promise<Response>, sent: string): Promise<Response> => {
+  // A refresh of the running server with the refresh token `sent`, which saves the new tokens. The SDK reads a refusal
+  // without an OAuth error code as a server error and starts a login after it, so this decides on each answer.
+  const renew = async (send: () => Promise<Response>, sent: string): Promise<OAuthTokens> => {
+    // A call that read the tokens before the last refresh saved them sends a refresh token that is used up.
+    const { tokens: now } = await readStore(file)
+    if (now?.refresh_token !== undefined && now.refresh_token !== sent) return now
     let response: Response
     try {
       response = await send()
@@ -187,11 +196,25 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
         refreshReason(errorText(err instanceof Error && err.cause !== undefined ? err.cause : err)),
       )
     }
-    if (response.ok) return response
+    if (response.ok) {
+      const answer = OAuthTokensSchema.safeParse(await response.json().catch(() => undefined)).data
+      if (answer === undefined) return needLogin()
+      // The SDK keeps the refresh token when the answer has none, and stamps the authorization server.
+      const tokens = { refresh_token: sent, ...answer, ...(now?.issuer !== undefined && { issuer: now.issuer }) }
+      await updateStore(file, stored => ({ ...stored, tokens }))
+      return tokens
+    }
     if (!isRefusal(response.status)) throw new RefreshFailed(refreshReason(`HTTP ${response.status}`))
-    // Another call or process can have refreshed `sent` first: then the SDK gets the tokens it saved.
-    const tokens = await rotated(file, sent)
-    return tokens ? Response.json(tokens) : needLogin()
+    // Another process can have refreshed `sent` first: then the SDK gets the tokens it saved.
+    return (await rotated(file, sent)) ?? needLogin()
+  }
+  const refresh = async (send: () => Promise<Response>, sent: string): Promise<Response> => {
+    let flight = refreshes.get(file)
+    if (flight === undefined) {
+      flight = renew(send, sent).finally(() => refreshes.delete(file))
+      refreshes.set(file, flight)
+    }
+    return Response.json(keepTokens(await flight))
   }
   return {
     secrets: () => [...known],
@@ -224,6 +247,8 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       return keepTokens(login ? fresh : (await readStore(file)).tokens)
     },
     saveTokens: async tokens => {
+      // The refresh of the running server saved them.
+      if (!login) return
       fresh = keepTokens(tokens)
       const client = own?.info && { info: own.info, redirectUrl }
       await updateStore(file, stored => ({ ...stored, ...(client && { client }), tokens }))
