@@ -161,6 +161,13 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
   // A failed server that the program names connects again before the check.
   await ctx.downstream.retry([...new Set(literal.flatMap(c => splitToolName(c.tool)?.server ?? []))] as ServerKey[])
+  // A connected server can add a tool with no notification: a name that its list lacks lists it again.
+  const missed = literal.flatMap(c => {
+    const server = splitToolName(c.tool)?.server
+    const names = server === undefined ? undefined : listedNames(ctx.downstream.states(), server)
+    return names === undefined || names.includes(c.tool) ? [] : [server as ServerKey]
+  })
+  await Promise.all([...new Set(missed)].map(key => ctx.downstream.relist(key)))
   const states = ctx.downstream.states()
   const specs = new Map(catalogOf(states).map(t => [t.name, argSpec(t.inputSchema)]))
   const known = new Set(specs.keys())
@@ -340,17 +347,23 @@ const execute = async (
       return { ok: false, error: check.error, code: decision }
     }
     // A name that a connected server does not list can never run: say so before the policy offers a rule for it.
-    const unlisted = (names: readonly string[] | undefined): (Reply & { code: CallError }) | undefined => {
+    // The server can have added it with no notification, so a miss lists its tools again first.
+    const unlisted = async (
+      names: readonly string[] | undefined,
+    ): Promise<(Reply & { code: CallError }) | undefined> => {
       if (names === undefined || names.includes(tool)) return undefined
+      await downstream.relist(target.server as ServerKey)
+      names = listedNames(downstream.states(), target.server) ?? []
+      if (names.includes(tool)) return undefined
       decided.set(id, 'invalid')
       return { ok: false, error: notListedText(tool, target.server, names), code: 'invalid' }
     }
-    const refused = unlisted(listedNames(downstream.states(), target.server)) ?? checkNow()
+    const refused = (await unlisted(listedNames(downstream.states(), target.server))) ?? checkNow()
     if (refused !== undefined) return refused
     const link = await downstream.client(target.server as ServerKey)
     if (!link.ok) return { ok: false, error: link.reason, code: 'no-server' }
     // The link can be new, with a new list of tools: check again.
-    const again = unlisted(listedNames(downstream.states(), target.server) ?? []) ?? checkNow()
+    const again = (await unlisted(listedNames(downstream.states(), target.server) ?? [])) ?? checkNow()
     if (again !== undefined) return again
     // A reconnect can outlast the sandbox: then the call has no reader and does not start.
     if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }

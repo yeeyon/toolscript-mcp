@@ -61,8 +61,9 @@ enforces; the others rely on discipline.
 - Every nested call of a program goes through `checkCall` (`src/core/policy.ts`) at call time, also when the check
   before the run passed: a tool name built at run time is never asked. `[test: run.test.ts and server.e2e.mjs, case (e)]`
 - A nested call of a name that its connected server does not list is refused (`listedNames` in
-  `src/core/catalog.ts`), before the policy check, so the refusal offers no rule for a name that cannot run. Rules
-  and marks match listed names, and a server can answer a name in another case.
+  `src/core/catalog.ts`), before the policy check, so the refusal offers no rule for a name that cannot run. A miss
+  first lists the server again, at most one time in 10 s (`downstream.relist`). Rules and marks match listed names,
+  and a server can answer a name in another case.
   `[test: run.test.ts]`
 - A tool whose server sets `_meta["anthropic/requiresUserInteraction"]` to `true` needs the person's approval before
   each run, also under an allow rule: `planRun` asks for it and `checkCall` refuses it unless approved. `checkCall` runs

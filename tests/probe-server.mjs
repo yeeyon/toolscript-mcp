@@ -10,6 +10,8 @@
 //   --exit-on-call     exits when a call comes, with no answer
 //   --write-on-call    a call of `probe` writes its `text` argument to its `path` argument
 //   --requires-person  lists `probe` with _meta["anthropic/requiresUserInteraction"] = true
+//   --add-later        after n calls, its lists also have the tools `added1` to `added<n>`, with no notification
+//   --endless-list     each page of its tool list names a next page
 //   --list-changed     declares tools.listChanged. After each call it sends notifications/tools/list_changed, as
 //                      many times as the `notifications` argument of the call (1 when absent). Its next lists mark
 //                      `probe` and name the number of changes in its description. The number is kept in the file
@@ -32,6 +34,7 @@ const changesFile = `${file}.changes`
 const changes = () => (fs.existsSync(changesFile) ? Number(fs.readFileSync(changesFile, 'utf8')) : 0)
 let listDelayMs = 0
 let failList = false
+let calls = 0
 
 const send = msg => process.stdout.write(`${JSON.stringify(msg)}\n`)
 
@@ -56,12 +59,15 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     const meta = marked ? { _meta: { 'anthropic/requiresUserInteraction': true } } : {}
     const description = mode === '--list-changed' ? `Probe, ${changes()} changes.` : 'Probe.'
     const tools = [{ name: 'probe', description, inputSchema: { type: 'object' }, ...meta }]
-    setTimeout(() => reply({ tools }), listDelayMs)
+    if (mode === '--add-later')
+      for (let n = 1; n <= calls; n++) tools.push({ name: `added${n}`, inputSchema: { type: 'object' } })
+    setTimeout(() => reply(mode === '--endless-list' ? { tools, nextCursor: 'more' } : { tools }), listDelayMs)
     if (mode === '--exit-after-list') setTimeout(() => process.exit(3), 200)
     return
   }
   if (msg.method === 'tools/call') {
     event({ event: 'call', name: msg.params.name })
+    calls++
     if (mode === '--write-on-call' && msg.params.name === 'probe')
       fs.writeFileSync(msg.params.arguments.path, msg.params.arguments.text)
     if (mode === '--hang-calls') return

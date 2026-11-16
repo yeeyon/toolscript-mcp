@@ -42,6 +42,9 @@ export const FIRST_WAIT_MS = 10_000
 const MAX_ATTEMPTS = 3
 const ATTEMPT_WINDOW_MS = 60_000
 
+/** A name that the list of a connected server lacks lists its tools again at most once in this time. */
+const MISS_WAIT_MS = 10_000
+
 /** The longest time a search or a run waits for reconnects in `retry`. */
 const RETRY_WAIT_MS = 5_000
 
@@ -58,6 +61,8 @@ type Link =
       readonly hide: Hide
       /** Settles when the list in flight ends, or undefined when none is. Never rejects. */
       readonly listed: () => Promise<void> | undefined
+      /** Lists the tools again, or once more after the list in flight. */
+      readonly changed: () => void
     }
   | { readonly status: 'failed'; readonly reason: string }
 
@@ -86,6 +91,11 @@ export type Downstream = {
    * first when the cap allows, and every caller waits for the same attempt.
    */
   client(key: ServerKey): Promise<Linked>
+  /**
+   * Lists the tools of a connected server again, for a name that its list lacks: at most once in MISS_WAIT_MS per
+   * server. Waits for the list in flight. Never rejects.
+   */
+  relist(key: ServerKey): Promise<void>
   /** Closes every client, connected or still connecting, and so ends every stdio child. */
   close(): Promise<void>
 }
@@ -191,7 +201,8 @@ const transportOf = (
   return { transport, lastError }
 }
 
-export const listAll = async (client: Client): Promise<DownstreamTool[]> => {
+/** `cut` runs when the list has more than MAX_PAGES pages. */
+export const listAll = async (client: Client, cut = () => {}): Promise<DownstreamTool[]> => {
   const tools: DownstreamTool[] = []
   let cursor: string | undefined
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -200,6 +211,7 @@ export const listAll = async (client: Client): Promise<DownstreamTool[]> => {
     cursor = result.nextCursor
     if (!cursor) break
   }
+  if (cursor) cut()
   return tools
 }
 
@@ -230,6 +242,8 @@ export const connectAll = (
   // The start times of the attempts of each server in the last window.
   const attempts = new Map<ServerKey, number[]>()
   const opened = new Set<Client>()
+  // The time of the last list of each server for a name that its list lacked.
+  const missed = new Map<ServerKey, number>()
 
   const connect = async (key: ServerKey, server: ServerConfig): Promise<void> => {
     const client = new Client({ name: 'toolscript-mcp', version })
@@ -269,7 +283,11 @@ export const connectAll = (
         try {
           while (dirty) {
             dirty = false
-            tools = await listAll(client)
+            tools = await listAll(client, () =>
+              log(
+                `${key}: the tool list has more than ${MAX_PAGES} pages, so toolscript-mcp uses the first ${MAX_PAGES}`,
+              ),
+            )
             const link = links.get(key)
             if (link?.status === 'connected' && link.client === client) links.set(key, { ...link, tools })
           }
@@ -281,12 +299,13 @@ export const connectAll = (
     }
     // A server whose tools change, also in their marks, says so: list again, so the checks of a call see the new list.
     // The old list can lack a new mark, so a list that fails fails the link, and the next use connects and lists anew.
-    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+    const changed = () => {
       if (listing !== undefined) return void (dirty = true)
       list().catch(err => {
         if (lost(`could not list the tools again: ${errorText(err)}`)) void client.close().catch(() => {})
       })
-    })
+    }
+    client.setNotificationHandler(ToolListChangedNotificationSchema, changed)
     const listed = () => listing?.catch(() => {})
     let lastError = () => ''
     try {
@@ -308,7 +327,7 @@ export const connectAll = (
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       await list()
-      links.set(key, { status: 'connected', client, tools, hide, listed })
+      links.set(key, { status: 'connected', client, tools, hide, listed, changed })
       log(`${key}: connected, ${tools.length} tools`)
       client.onclose = () => {
         opened.delete(client)
@@ -405,6 +424,15 @@ export const connectAll = (
       const after = links.get(key) ?? link
       if (after.status === 'connected') return { ok: true, client: after.client, hide: after.hide }
       return { ok: false, reason: notConnected(stateOf(key, after))! }
+    },
+    relist: async key => {
+      const link = links.get(key)
+      if (link?.status !== 'connected') return
+      if (now() - (missed.get(key) ?? -Infinity) >= MISS_WAIT_MS) {
+        missed.set(key, now())
+        link.changed()
+      }
+      await settle(key)
     },
     close: () => (closing ??= Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})),
   }

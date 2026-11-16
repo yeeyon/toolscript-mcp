@@ -95,6 +95,7 @@ const fakeDownstream = (others: readonly ServerState[] = []) => {
     settled: Promise.resolve(),
     states: () => states,
     retry: async () => {},
+    relist: async () => {},
     client: async (key: ServerKey) =>
       key === 'f'
         ? { ok: true, client, hide: (text: string) => text }
@@ -814,6 +815,40 @@ describe('a tool whose server requires a person', () => {
         lines().map(l => l.calls.map(c => c.decision)),
         [['invalid']],
       )
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a name that its server added with no notification: a miss lists it again, at most once in 10 s', async () => {
+    const file = path.join(ROOT, 'add-later.json')
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, file, '--add-later'],
+      env: {},
+    }
+    const clock = { now: 0 }
+    const downstream = connectAll(new Map([['p' as ServerKey, server]]), '0', () => {}, { now: () => clock.now })
+    const lists = () =>
+      fs
+        .readFileSync(`${file}.log`, 'utf8')
+        .split('\n')
+        .filter(l => l.includes('"event":"list"')).length
+    try {
+      const { run } = setup({ policy: rules(['mcp__*', 'allow']), downstream })
+      assert.equal((await run('return await call("mcp__p__probe", {})')).isError, false)
+      const built = await run('return await call("mcp__p__" + "added1", {})')
+      assert.equal(built.isError, false, built.text)
+      assert.equal(lists(), 2, 'the miss at call time listed the tools again')
+      const soon = await run('return await call("mcp__p__added2", {})')
+      assert.ok(soon.text.includes('mcp__p__added2'), soon.text)
+      assert.equal(soon.isError, true, 'no list again within 10 s')
+      assert.equal(lists(), 2)
+      clock.now = 10_000
+      const later = await run('return await call("mcp__p__added2", {})')
+      assert.equal(later.isError, false, later.text)
+      assert.equal(lists(), 3, 'the miss before the run listed the tools again')
     } finally {
       await downstream.close()
     }

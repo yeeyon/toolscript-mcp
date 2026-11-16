@@ -238,6 +238,8 @@ of your config.
   only with an `allow` rule.
 - A call of a name that its server does not list is refused, also when the server answers such a name. A rule
   matches the exact name: a `deny` rule for `mcp__fake__delete` does not match `mcp__fake__Delete`.
+- Before that refusal, toolscript-mcp lists the tools of the server again, at most one time in 10 seconds. So a tool
+  that the server added later can run.
 
 A refused call throws an error in the program. The program can catch it.
 

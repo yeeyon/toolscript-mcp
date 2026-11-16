@@ -238,6 +238,23 @@ describe('tools/list_changed', () => {
   })
 })
 
+test('a tool list cut at 100 pages says so in the log', async () => {
+  const server: ServerConfig = {
+    kind: 'stdio',
+    command: process.execPath,
+    args: [PROBE, path.join(DIR, `${randomUUID()}.json`), '--endless-list'],
+    env: {},
+  }
+  const lines: string[] = []
+  const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line))
+  opened.push(downstream)
+  await downstream.settled
+  assert.deepEqual(lines, [
+    'p: the tool list has more than 100 pages, so toolscript-mcp uses the first 100',
+    'p: connected, 100 tools',
+  ])
+})
+
 /**
  * A stateful HTTP MCP server built with the SDK, with the tools `ping` and
  * `slow` (pong after 300 ms). A request with a session id that it does not
