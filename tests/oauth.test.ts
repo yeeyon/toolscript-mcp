@@ -604,10 +604,29 @@ describe('the running server', () => {
     await s.ping(downstream)
     const state = downstream.states()[0]
     const reason = state?.status === 'failed' ? state.reason : ''
-    assert.match(reason, /^could not refresh the OAuth token: .+\. It tries again on next use/, reason)
+    assert.match(reason, /^could not refresh the OAuth token: .+\. No login is needed/, reason)
     fake.change.tokenDown = false
     assert.equal(await s.ping(downstream), PONG)
     assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
+  })
+
+  test('a refresh that fails at each attempt says once that toolscript-mcp tries again', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    fake.expire()
+    fake.change.tokenDown = true
+    for (let attempt = 0; attempt < 3; attempt++) await s.ping(downstream)
+    const state = downstream.states()[0]
+    const reason = state?.status === 'failed' ? state.reason : ''
+    assert.match(
+      reason,
+      /^could not refresh the OAuth token: .+ toolscript-mcp tries again on next use after \d+ s$/,
+      reason,
+    )
+    assert.equal(reason.match(/tries again/g)?.length, 1, reason)
   })
 
   test('a refresh that the token endpoint refuses ends the link with the login command', async () => {
