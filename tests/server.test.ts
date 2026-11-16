@@ -348,6 +348,17 @@ describe('redact', () => {
     assert.equal(redact('invalid_client: fake-client-secret-2', http), 'invalid_client: ***')
   })
 
+  test('hides a client secret that an error echoes in lowercase percent-encoding or inside a JSON string', () => {
+    const http = {
+      kind: 'http',
+      url: 'https://x',
+      headers: {},
+      oauth: { client: { id: 'fake-id', secret: '/fake"se\\cret+==' }, scopes: [] },
+    } as const
+    assert.equal(redact('bad client_secret=%2ffake%22se%5ccret%2b%3d%3d', http), 'bad client_secret=***')
+    assert.equal(redact('{"client_secret":"/fake\\"se\\\\cret+=="}', http), '{"client_secret":"***"}')
+  })
+
   test('hides the password of a URL also when it shows without the user', () => {
     const http = { kind: 'http', url: 'https://fake-user:fake-password-2@example.com/mcp', headers: {} } as const
     assert.equal(redact('authentication failed: fake-password-2', http), 'authentication failed: ***')

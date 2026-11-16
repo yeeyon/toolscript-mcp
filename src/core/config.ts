@@ -650,11 +650,15 @@ export const basicCredentials = (id: string, secret: string): string | undefined
   }
 }
 
-/** `value` as encodeURIComponent and as an HTML form write it: an error can echo a URL or a form it sent. */
+/**
+ * `value` as encodeURIComponent and as an HTML form write it, also with lowercase hex digits, and inside a JSON
+ * string: an error can echo a URL, a form or a JSON body that it got.
+ */
 const encodings = (value: string): string[] => {
   const uri = encodeURIComponent(value)
   const form = uri.replace(/[!'()~]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%20/g, '+')
-  return [uri, form]
+  const lower = (encoded: string) => encoded.replace(/%[0-9A-F]{2}/g, hex => hex.toLowerCase())
+  return [uri, form, lower(uri), lower(form), JSON.stringify(value).slice(1, -1)]
 }
 
 /**
