@@ -267,6 +267,7 @@ A server can set `_meta["anthropic/requiresUserInteraction"]` to `true` on a too
 each call of that tool, also when an allow rule matches it. toolscript-mcp keeps this mark:
 
 - An `allow` rule does not let the tool run. toolscript-mcp asks you before each run that calls the tool.
+- `search_tools` shows the tool with a line that says that a person approves each run that calls it.
 - The prompt names the tool and tells you that a policy rule cannot allow it.
 - Your approval covers each call of the tool in that run. The next run asks again.
 - A `deny` rule still denies the tool. An `ask` rule asks as before.

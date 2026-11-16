@@ -350,13 +350,24 @@ const detailBlock = (t: CatalogEntry, shapes: ReadonlyMap<string, string>): stri
     declaration(t, 1, false) ??
     `call(${JSON.stringify(t.name)}, ${argsText(t.inputSchema)})`
   const shape = t.outputSchema === undefined ? shapes.get(t.name) : undefined
-  const lines = [`### ${t.name}`, prose(t.description, MAX_DESCRIPTION), call]
+  const lines = [`### ${t.name}`, prose(t.description, MAX_DESCRIPTION), ...personNote(t), call]
   if (shape !== undefined) lines.push(`returned earlier: ${shape}`)
   return lines.filter(line => line !== '').join('\n')
 }
 
 const summaryBlock = (t: CatalogEntry): string =>
-  `### ${t.name}\n${oneLine(t.description.split('\n')[0] ?? '', 300)}\nargs: ${argsText(t.inputSchema)}`
+  [
+    `### ${t.name}`,
+    oneLine(t.description.split('\n')[0] ?? '', 300),
+    ...personNote(t),
+    `args: ${argsText(t.inputSchema)}`,
+  ].join('\n')
+
+// An allow rule does not let such a tool run, and only a name written as a string is asked before the run.
+const personNote = (t: CatalogEntry): string[] =>
+  t.requiresUserInteraction
+    ? ['A person approves each run that calls it. Write its name as a string in call("…").']
+    : []
 
 /**
  * Keeps the shape of a tool's result for search_tools, for the session. A
