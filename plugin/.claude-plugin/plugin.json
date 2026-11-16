@@ -1,0 +1,13 @@
+{
+  "name": "toolscript-setup",
+  "version": "0.1.0",
+  "description": "Install, update and set up toolscript-mcp from its GitHub beta branch: config, Claude Code registration, policy and OAuth login.",
+  "author": {
+    "name": "yeeyon",
+    "url": "https://github.com/yeeyon"
+  },
+  "homepage": "https://github.com/yeeyon/toolscript-mcp#readme",
+  "repository": "https://github.com/yeeyon/toolscript-mcp",
+  "license": "MIT",
+  "keywords": ["mcp", "code-mode", "setup"]
+}

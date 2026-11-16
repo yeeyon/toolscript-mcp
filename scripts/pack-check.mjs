@@ -23,7 +23,8 @@ const REQUIRED = [
   'dist/third-party-licenses.txt',
   'runtime/runner.mjs',
 ]
-const FORBIDDEN = /^(src|tests|bench|scripts|\.github|\.audit|\.claude|\.githooks|node_modules)\//
+const FORBIDDEN =
+  /^(src|tests|bench|scripts|plugin|\.github|\.audit|\.claude|\.claude-plugin|\.githooks|node_modules)\//
 const WIN = process.platform === 'win32'
 
 // npm and the command npm makes are .cmd files on Windows, which Node starts

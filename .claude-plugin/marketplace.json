@@ -1,0 +1,15 @@
+{
+  "name": "toolscript-mcp",
+  "owner": {
+    "name": "yeeyon",
+    "url": "https://github.com/yeeyon"
+  },
+  "description": "Setup for toolscript-mcp, a standalone MCP server for code mode.",
+  "plugins": [
+    {
+      "name": "toolscript-setup",
+      "source": "./plugin",
+      "description": "Install, update and set up toolscript-mcp from its GitHub beta branch: config, Claude Code registration, policy and OAuth login."
+    }
+  ]
+}
