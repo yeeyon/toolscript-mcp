@@ -63,6 +63,14 @@ export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
       : [],
   )
 
+/** The tools whose server requires a person's approval on every call. */
+export const interactiveTools = (states: readonly ServerState[]): Set<string> =>
+  new Set(
+    catalogOf(states)
+      .filter(t => t.requiresUserInteraction)
+      .map(t => t.name),
+  )
+
 /** Why a call cannot reach a server now, or undefined when it is connected. */
 export const notConnected = (s: ServerState): string | undefined =>
   s.status === 'connected'

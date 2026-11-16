@@ -217,22 +217,34 @@ export const declinedNote = (file: string): string =>
   `## Policy not reloaded\n\nThe person declined the policy in ${file}, so this run used the policy in force. Do not change the config yourself.`
 
 /**
+ * The tools to ask the person about before a run. `ask`: no rule allows them.
+ * `interactive`: their server requires a person each time, so no rule can
+ * allow them. A tool is in one list at most.
+ */
+export type Asks = { readonly ask: readonly string[]; readonly interactive: readonly string[] }
+
+/**
  * The decision before a run, from the tool names that the program writes as
  * string literals: refused when a deny rule matches one of them, else the
  * names that need the person's approval (none: the run starts at once).
+ * `interactive` holds the tools whose server requires a person on every call.
  */
 export type Plan =
   | { readonly kind: 'refused'; readonly denied: readonly { readonly call: LiteralCall; readonly rule: Rule }[] }
-  | { readonly kind: 'run'; readonly ask: readonly string[] }
+  | ({ readonly kind: 'run' } & Asks)
 
-export const planRun = (policy: Policy, calls: readonly LiteralCall[]): Plan => {
+export const planRun = (policy: Policy, calls: readonly LiteralCall[], interactive: ReadonlySet<string>): Plan => {
   const denied = calls.flatMap(call => {
     const { action, rule } = decide(policy, call.tool)
     return action === 'deny' && rule !== undefined ? [{ call, rule }] : []
   })
   if (denied.length > 0) return { kind: 'refused', denied }
-  const ask = [...new Set(calls.map(c => c.tool).filter(tool => decide(policy, tool).action === 'ask'))]
-  return { kind: 'run', ask }
+  const tools = [...new Set(calls.map(c => c.tool))]
+  return {
+    kind: 'run',
+    ask: tools.filter(tool => !interactive.has(tool) && decide(policy, tool).action === 'ask'),
+    interactive: tools.filter(tool => interactive.has(tool)),
+  }
 }
 
 /** The result of a program that did not run because a deny rule matches a tool it calls. */
@@ -266,14 +278,28 @@ export const checkCall = (policy: Policy, approved: ReadonlySet<string>, tool: s
 /** Why the tools that need approval did not get it. */
 export type Refusal = 'decline' | 'unsupported'
 
+const these = (tools: readonly unknown[]): string => (tools.length === 1 ? 'this tool' : 'these tools')
+
 /** The message of the approval prompt: the tools, and the program they run in. */
-export const askText = (tools: readonly string[], code: string): string => {
+export const askText = ({ ask, interactive }: Asks, code: string): string => {
   const program = code.length <= 4000 ? code : `${code.slice(0, 4000)}\n… [${code.length - 4000} more characters]`
+  const one = interactive.length === 1
   return [
-    `A toolscript program wants to call ${tools.length === 1 ? 'this tool' : 'these tools'}, which no policy rule allows:`,
-    ...tools.map(t => `- ${t}`),
-    '',
-    'Approve for this run only?',
+    ...(ask.length > 0
+      ? [
+          `A toolscript program wants to call ${these(ask)}, which no policy rule allows:`,
+          ...ask.map(t => `- ${t}`),
+          '',
+        ]
+      : []),
+    ...(interactive.length > 0
+      ? [
+          `${ask.length > 0 ? 'It also wants to call' : 'A toolscript program wants to call'} ${these(interactive)}. ${one ? 'Its server requires' : 'Their servers require'} your approval each time, so a policy rule cannot allow ${one ? 'it' : 'them'}:`,
+          ...interactive.map(t => `- ${t}`),
+          '',
+        ]
+      : []),
+    `Approve for this run only? The approval covers each call of ${these([...ask, ...interactive])} in the program.`,
     '',
     'The program:',
     program,
@@ -292,12 +318,27 @@ export const stalePolicyNote = (errors: readonly string[]): string =>
   ].join('\n')
 
 /** The result of a program that did not run because the person was not asked or said no. */
-export const refusedReport = (tools: readonly string[], why: Refusal): string => {
+export const refusedReport = ({ ask, interactive }: Asks, why: Refusal): string => {
   const head =
     why === 'decline'
       ? 'Error: the program did not run, because the person did not approve the tools that need approval. No call was made.'
       : 'Error: the program did not run, because some tools need approval and this MCP client cannot ask the person. No call was made.'
-  return `${head}\n\n${approvalNote(tools, why === 'decline')}`
+  const canAsk = why === 'decline'
+  return [head, approvalNote(ask, canAsk), interactiveNote(interactive, canAsk)].filter(t => t !== '').join('\n\n')
+}
+
+/**
+ * The note after calls of tools whose server requires a person on every call.
+ * No rule can allow them: only the prompt before a run can, and only for a
+ * name that the program writes as a string.
+ */
+export const interactiveNote = (tools: readonly string[], canAsk: boolean): string => {
+  if (tools.length === 0) return ''
+  const one = tools.length === 1
+  const how = canAsk
+    ? ' Write the tool name as a string in call("…"), so the person is asked before the run.'
+    : ` This MCP client cannot ask the person, so a program cannot call ${one ? 'it' : 'them'}.`
+  return `## A person must approve\n\n${tools.join(', ')} ${one ? 'needs' : 'need'} the person's approval at each run, because ${one ? 'its server marks it' : 'their servers mark them'} so. An allow rule does not replace that approval.${how}`
 }
 
 /**

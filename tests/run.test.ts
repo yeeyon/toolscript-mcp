@@ -44,11 +44,14 @@ const TOOLS: Record<string, Tool> = {
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
   big: () => json(Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `item ${i}` }))),
   none: () => json({ results: [], next_cursor: null }),
+  // Its server marks it to need a person's approval on every call.
+  grant: args => json({ granted: args }),
   // A server's own error with the code of a timeout, as mcp-remote sends for a failed login.
   authfail: () => {
     throw new McpError(ErrorCode.RequestTimeout, 'mcp-remote: Incompatible auth server')
   },
 }
+const MARKED = { 'anthropic/requiresUserInteraction': true }
 const SCHEMAS: Record<string, unknown> = {
   echo: { type: 'object', properties: { n: {}, a: {}, b: {}, x: {} } },
   search: { type: 'object', properties: { query: {}, maxResults: {} }, required: ['query'] },
@@ -83,6 +86,7 @@ const fakeDownstream = (others: readonly ServerState[] = []) => {
       tools: [...new Set([...Object.keys(TOOLS), ...Object.keys(SCHEMAS)])].map(name => ({
         name,
         inputSchema: SCHEMAS[name] ?? { type: 'object' },
+        ...(name === 'grant' ? { _meta: MARKED } : {}),
       })),
     },
     ...others,
@@ -120,6 +124,8 @@ const filesDir = path.join(ROOT, 'files', 'session')
 const setup = (o: Options = {}) => {
   const fake = fakeDownstream(o.others)
   const asked: string[][] = []
+  // The tools of each prompt whose server requires a person.
+  const marked: string[][] = []
   const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
     servers: new Map(),
@@ -137,7 +143,11 @@ const setup = (o: Options = {}) => {
     kept: o.kept ?? newKept(),
     shapes: new Map(),
     filesDir,
-    ask: async tools => (asked.push([...tools]), o.answer ?? 'accept'),
+    ask: async needed => (
+      asked.push([...needed.ask, ...needed.interactive]),
+      marked.push([...needed.interactive]),
+      o.answer ?? 'accept'
+    ),
     canAsk: () => o.canAsk ?? true,
     signal: o.signal ?? new AbortController().signal,
     log: () => {},
@@ -154,7 +164,7 @@ const setup = (o: Options = {}) => {
           .map(l => JSON.parse(l) as RunRecord)
       : []
   }
-  return { ...fake, asked, run, ctx, lines }
+  return { ...fake, asked, marked, run, ctx, lines }
 }
 
 describe('run_code', () => {
@@ -625,6 +635,67 @@ describe('approval', () => {
     const r = await run('try { await call("mcp__f__fail", {}) } catch (e) { return e.message }')
     assert.ok(r.text.includes('"server error"'), r.text)
     assert.ok(!r.text.includes('## No allow rule'), r.text)
+  })
+})
+
+describe('a tool whose server requires a person', () => {
+  const policy = rules(['mcp__f__fail', 'deny'], ['mcp__f__*', 'allow'])
+  const grant = 'return await call("mcp__f__grant", { n: 1 })'
+
+  test('an allow rule does not let it run: the person is asked before the run, and the prompt names it', async () => {
+    const { run, called, asked, marked } = setup({ policy })
+    const r = await run(`await call("mcp__f__echo", { n: 1 })\n${grant}`)
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [['mcp__f__grant']])
+    assert.deepEqual(marked, [['mcp__f__grant']])
+    assert.deepEqual(called, ['echo', 'grant'])
+  })
+
+  test('a decline refuses the run, and the result offers no allow rule', async () => {
+    const { run, called } = setup({ policy, answer: 'decline' })
+    const r = await run(grant)
+    assert.equal(r.isError, true)
+    assert.ok(r.text.includes('the person did not approve'), r.text)
+    assert.ok(r.text.includes("mcp__f__grant needs the person's approval at each run"), r.text)
+    assert.ok(!r.text.includes('"action": "allow"'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a client that cannot ask is refused: an allow rule cannot replace the person', async () => {
+    const { run, called } = setup({ policy, canAsk: false })
+    const r = await run(grant)
+    assert.equal(r.isError, true)
+    assert.ok(r.text.includes('this MCP client cannot ask the person'), r.text)
+    assert.ok(r.text.includes('An allow rule does not replace that approval.'), r.text)
+    assert.ok(!r.text.includes('"action": "allow"'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a deny rule still denies it, with no prompt', async () => {
+    const { run, called, asked } = setup({ policy: rules(['mcp__f__grant', 'deny'], ['mcp__*', 'allow']) })
+    const r = await run(grant)
+    assert.ok(r.text.includes('- line 1: mcp__f__grant is denied by policy[0]'), r.text)
+    assert.deepEqual(asked, [])
+    assert.deepEqual(called, [])
+  })
+
+  test('an ask rule asks as before, and the prompt names it as a tool that requires a person', async () => {
+    const { run, called, asked, marked } = setup({ policy: rules(['mcp__f__grant', 'ask'], ['mcp__f__slow', 'ask']) })
+    const r = await run(`await call("mcp__f__slow", {})\n${grant}`)
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [['mcp__f__slow', 'mcp__f__grant']])
+    assert.deepEqual(marked, [['mcp__f__grant']])
+    assert.deepEqual(called, ['slow', 'grant'])
+  })
+
+  test('one approval covers each call of it in that run, and the next run asks again', async () => {
+    const { run, called, asked } = setup({ policy })
+    const loop = 'for (const n of [1, 2, 3]) await call("mcp__f__grant", { n })\nreturn "done"'
+    assert.equal((await run(loop)).isError, false)
+    assert.deepEqual(asked, [['mcp__f__grant']])
+    assert.deepEqual(called, ['grant', 'grant', 'grant'])
+    assert.equal((await run(grant)).isError, false)
+    assert.deepEqual(asked, [['mcp__f__grant'], ['mcp__f__grant']])
   })
 })
 

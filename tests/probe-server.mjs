@@ -9,6 +9,7 @@
 //   --hang-calls       never answers a call
 //   --exit-on-call     exits when a call comes, with no answer
 //   --write-on-call    a call of `probe` writes its `text` argument to its `path` argument
+//   --requires-person  lists `probe` with _meta["anthropic/requiresUserInteraction"] = true
 //
 //   node tests/probe-server.mjs /tmp/probe.json [mode]
 
@@ -35,7 +36,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       serverInfo: { name: 'probe', version: '1.0.0' },
     })
   if (msg.method === 'tools/list') {
-    reply({ tools: [{ name: 'probe', description: 'Probe.', inputSchema: { type: 'object' } }] })
+    const meta = mode === '--requires-person' ? { _meta: { 'anthropic/requiresUserInteraction': true } } : {}
+    reply({ tools: [{ name: 'probe', description: 'Probe.', inputSchema: { type: 'object' }, ...meta }] })
     if (mode === '--exit-after-list') setTimeout(() => process.exit(3), 200)
     return
   }

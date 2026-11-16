@@ -6,9 +6,17 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { argSpec, catalogOf, learnShape, notConnected } from '../core/catalog.ts'
+import { argSpec, catalogOf, interactiveTools, learnShape, notConnected } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
-import { approvalNote, askText, checkCall, deniedReport, planRun, refusedReport, type Policy } from '../core/policy.ts'
+import {
+  approvalNote,
+  checkCall,
+  deniedReport,
+  planRun,
+  refusedReport,
+  type Asks,
+  type Policy,
+} from '../core/policy.ts'
 import {
   MAX_SEEN,
   callKey,
@@ -67,7 +75,7 @@ export type RunContext = {
   /** The folder of saveFile in this session, as an absolute path. */
   readonly filesDir: string
   /** Asks the person to approve the tools for one run. */
-  readonly ask: (tools: readonly string[], code: string) => Promise<Approval>
+  readonly ask: (needed: Asks, code: string) => Promise<Approval>
   /** True when the client can show an approval prompt. */
   readonly canAsk: () => boolean
   /** Aborts when the server shuts down or the client cancels the call: the sandbox is killed. */
@@ -143,14 +151,14 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
 
-  const plan = planRun(ctx.config.policy, literal)
+  const plan = planRun(ctx.config.policy, literal, interactiveTools(states))
   if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
-  if (plan.ask.length > 0) {
-    const answer = ctx.canAsk() ? await ctx.ask(plan.ask, code) : 'unsupported'
-    if (answer !== 'accept') return refuse(refusedReport(plan.ask, answer))
+  if (plan.ask.length + plan.interactive.length > 0) {
+    const answer = ctx.canAsk() ? await ctx.ask(plan, code) : 'unsupported'
+    if (answer !== 'accept') return refuse(refusedReport(plan, answer))
   }
   if (ctx.signal.aborted) return refuse('Error: the server is shutting down. The program did not run.')
-  return { ...(await execute(ctx, code, new Set(plan.ask))), known }
+  return { ...(await execute(ctx, code, new Set([...plan.ask, ...plan.interactive]))), known }
 }
 
 /** True when `file` is inside `dir`. Both are real paths. */
