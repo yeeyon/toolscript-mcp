@@ -1056,10 +1056,15 @@ const trimStop = (token: string): string => {
  * A short name counts only when it is the whole query or holds `_`, `-` or `.`: a plain word such as "search" in a
  * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2 as a
  * word of the server key, else 1 in the description. Equal scores rank by name. Only the first
- * `RANK_QUERY_MAX` characters of the query count.
+ * `RANK_QUERY_MAX` characters of the query count, and a token that the cut splits is dropped.
  */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
-  const q = query.slice(0, RANK_QUERY_MAX)
+  let q = query.slice(0, RANK_QUERY_MAX)
+  if (query.length > RANK_QUERY_MAX && !/[^a-z0-9_.-]/i.test(query[RANK_QUERY_MAX]!)) {
+    let end = q.length
+    while (end > 0 && !/[^a-z0-9_.-]/i.test(q[end - 1]!)) end--
+    q = q.slice(0, end)
+  }
   const wanted = words(q)
   const idents = q
     .toLowerCase()

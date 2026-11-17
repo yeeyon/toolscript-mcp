@@ -44,7 +44,7 @@ const score = (tools: readonly ToolEntry[], queries: Queries) => {
 }
 
 describe('rankTools on three sets of searches', () => {
-  // The floors sit 2 top-1 points and 0.01 MRR under the measured values. A later rule that is no worse out of
+  // The floors sit 2 top-1 points and about 0.01 MRR under the measured values. A later rule that is no worse out of
   // sample must pass. The first set tuned the rule: the other two did not. Measured, before #49 -> now:
   // tuning set 65 -> 69 (MRR 0.855 -> 0.894), set A 107 -> 111 (0.920 -> 0.939), set B 101 -> 101 (0.910 -> 0.909).
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
@@ -97,6 +97,7 @@ describe('rankTools on three sets of searches', () => {
   })
 
   test('a hostile query of 50,000 characters ranks in well under 100 ms', () => {
+    rankTools(catalog, 'warm up the regex and the JIT', 10)
     for (const unit of ['-', '.', 'a-', '_.-']) {
       const query = `${unit.repeat(Math.ceil(50_000 / unit.length)).slice(0, 49_999)}a`
       const start = performance.now()
@@ -104,6 +105,18 @@ describe('rankTools on three sets of searches', () => {
       const ms = performance.now() - start
       assert.ok(ms < 100, `${JSON.stringify(unit)} took ${ms.toFixed(0)} ms`)
     }
+  })
+
+  test('a cut that splits a tool name drops the partial name', () => {
+    const name = 'mcp__github__get_issue_comments'
+    const prose = 'a '.repeat(489)
+    const query = `${prose}${'b'.repeat(978 - prose.length)}${name}`
+    assert.equal(query.slice(0, 1000), `${query.slice(0, 978)}mcp__github__get_issue`)
+    assert.deepEqual(
+      rankTools(catalog, query, 3).map(t => t.name),
+      rankTools(catalog, query.slice(0, 978), 3).map(t => t.name),
+    )
+    assert.notEqual(rankTools(catalog, query, 1)[0]?.name, 'mcp__github__get_issue')
   })
 
   test('only the first 1,000 characters of a query count', () => {

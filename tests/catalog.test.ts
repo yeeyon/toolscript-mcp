@@ -15,6 +15,22 @@ const server = (tools: DownstreamTool[]): ServerState[] => [{ key: serverKey('x'
 const one = (tool: DownstreamTool, shapes?: Map<string, string>): string =>
   searchResult(server([tool]), '', 15, shapes).replace(/^1 of 1 MCP tools\.\n\n/, '')
 
+describe('search_tools with no match', () => {
+  const tools = [{ name: 'grant', description: 'Grant access.' }]
+
+  test('a short query is echoed whole', () => {
+    assert.equal(searchResult(server(tools), 'zzzqq', 15), 'No MCP tool matches "zzzqq". 1 MCP tools are connected.')
+  })
+
+  test('a long query is cut to 200 characters and its length is named', () => {
+    const query = 'zzz '.repeat(1250)
+    assert.equal(
+      searchResult(server(tools), query, 15),
+      `No MCP tool matches "${query.slice(0, 200)}... (5000 characters)". 1 MCP tools are connected.`,
+    )
+  })
+})
+
 describe('search_tools and a tool whose server requires a person', () => {
   const MARK = { 'anthropic/requiresUserInteraction': true }
   const NOTE = 'A person approves each run that calls it. Write its name as a string in call("…").'
