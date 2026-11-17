@@ -304,7 +304,12 @@ test('(k) an http entry whose URL does not parse fails alone, and the error name
 
 test('(p) an http server that answers 401 without tokens asks for a login, with this config file', async () => {
   const text = await search('')
-  const command = `npx -y toolscript-mcp login locked --config "${path.resolve(configFile)}"`
+  // The server runs as `node <main>`, so the command is not npx.
+  const word = w =>
+    /^[\w./:\\@+~-]+$/.test(w) ? w : `'${w.replace(/'/g, process.platform === 'win32' ? "''" : `'\\''`)}'`
+  const command = ['node', path.resolve(MAIN), 'login', 'locked', '--config', path.resolve(configFile)]
+    .map(word)
+    .join(' ')
   assert.ok(text.includes(`- locked: it needs an OAuth login. Ask the person to run \`${command}\``), text)
   const login = spawnSync(process.execPath, [MAIN, 'login', 'bench', '--config', configFile], {
     env: SERVER_ENV,
@@ -313,6 +318,16 @@ test('(p) an http server that answers 401 without tokens asks for a login, with 
   assert.equal(login.status, 1, login.stderr)
   assert.match(login.stderr, /bench is a stdio server\. Only an HTTP server logs in with OAuth\./)
   assert.equal(login.stdout, '')
+})
+
+test('(p2) --help and -h print the usage to stderr and exit 0, for the server, init and login', () => {
+  for (const args of [['--help'], ['-h'], ['init', '--help'], ['init', '-h'], ['login', '--help'], ['login', '-h']]) {
+    const run = spawnSync(process.execPath, [MAIN, ...args], { env: SERVER_ENV, input: '', encoding: 'utf8' })
+    assert.equal(run.status, 0, `${args.join(' ')}: ${run.stderr}`)
+    assert.equal(run.stdout, '', `${args.join(' ')} wrote to stdout`)
+    assert.match(run.stderr, /usage: toolscript-mcp/, args.join(' '))
+    assert.ok(!/Unknown option/.test(run.stderr), run.stderr)
+  }
 })
 
 test('(e) a nested toolscript-mcp refuses to start', async () => {

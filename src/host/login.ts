@@ -30,7 +30,7 @@ import { errorText } from '../core/protocol.ts'
 import { CONNECT_TIMEOUT_MS, listAll, serverFetch } from './downstream.ts'
 import { isLoopbackHttp, oauthProvider, readStore, storeFile, type Stored } from './oauth.ts'
 
-export const LOGIN_USAGE = 'usage: toolscript-mcp login <server> [--config <path>]'
+export const LOGIN_USAGE = 'usage: toolscript-mcp login <server> [--config <path>] [--help]'
 
 /** The reason of a failed login. The SDK gives an OAuth error without an error_description an empty message. */
 const failure = (err: unknown): string =>
@@ -156,10 +156,18 @@ const serverOf = (name: string, file: string, io: LoginIo): Found | string => {
 export const runLogin = async (args: readonly string[], io: LoginIo): Promise<number> => {
   let parsed
   try {
-    parsed = parseArgs({ args: [...args], options: { config: { type: 'string' } }, allowPositionals: true })
+    parsed = parseArgs({
+      args: [...args],
+      options: { config: { type: 'string' }, help: { type: 'boolean', short: 'h' } },
+      allowPositionals: true,
+    })
   } catch (err) {
     io.print(`${errorText(err)}\n${LOGIN_USAGE}`)
     return 2
+  }
+  if (parsed.values.help) {
+    io.print(LOGIN_USAGE)
+    return 0
   }
   const [name, ...rest] = parsed.positionals
   if (name === undefined || rest.length > 0) {

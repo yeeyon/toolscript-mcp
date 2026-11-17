@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { configPath, SECRET_NAMES, SECRET_PARTS, SECRET_WORD_LENGTH, type Env } from '../core/config.ts'
+import { configPath, SECRET_NAMES, SECRET_PARTS, SECRET_WORD_LENGTH, type Env, type Launch } from '../core/config.ts'
 import {
   clientFiles,
   configText,
@@ -19,7 +19,7 @@ import {
 } from '../core/init.ts'
 import { errorText } from '../core/protocol.ts'
 
-export const INIT_USAGE = 'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run]'
+export const INIT_USAGE = 'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run] [--help]'
 
 const list = (words: readonly string[]) => `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`
 
@@ -81,20 +81,30 @@ export const runInit = async (
   platform: string,
   home: string,
   print: (text: string) => void,
+  launch: Launch,
 ): Promise<number> => {
-  let options: { config?: string; force?: boolean; 'dry-run'?: boolean }
+  let options: { config?: string; force?: boolean; 'dry-run'?: boolean; help?: boolean }
   try {
     options = parseArgs({
       args: [...args],
-      options: { config: { type: 'string' }, force: { type: 'boolean' }, 'dry-run': { type: 'boolean' } },
+      options: {
+        config: { type: 'string' },
+        force: { type: 'boolean' },
+        'dry-run': { type: 'boolean' },
+        help: { type: 'boolean', short: 'h' },
+      },
     }).values
   } catch (err) {
     print(`${errorText(err)}\n${INIT_USAGE}`)
     return 2
   }
+  if (options.help) {
+    print(INIT_USAGE)
+    return 0
+  }
   const file = path.resolve(configPath(options.config, env, platform, home))
   const imported = importServers(await Promise.all(clientFiles(env, platform, home).map(readClient)))
-  const report = initReport(imported, file, platform)
+  const report = initReport(imported, file, platform, launch)
   if (imported.servers.size === 0) {
     print(report)
     return 1

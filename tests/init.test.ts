@@ -4,9 +4,10 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { parseConfig } from '../src/core/config.ts'
-import { clientFiles, importServers, initReport, shellWord } from '../src/core/init.ts'
+import { loginCommand, NPX_LAUNCH, parseConfig, shellWord, type Launch } from '../src/core/config.ts'
+import { clientFiles, importServers, initReport } from '../src/core/init.ts'
 import { runInit } from '../src/host/init.ts'
+import { detectLaunch } from '../src/host/start.ts'
 
 const SECRETS = ['fake-secret-env', 'fake-secret-header', 'fake-secret-pass', 'fake-secret-query']
 
@@ -64,10 +65,10 @@ const homeWith = (files: Record<string, unknown>): string => {
   return dir
 }
 
-const init = async (home: string, args: string[] = [], platform = 'linux') => {
+const init = async (home: string, args: string[] = [], platform = 'linux', launch: Launch = NPX_LAUNCH) => {
   let out = ''
   const env = { XDG_CONFIG_HOME: path.join(home, '.config'), APPDATA: path.join(home, '.config') }
-  const code = await runInit(args, env, platform, home, text => (out += `${text}\n`))
+  const code = await runInit(args, env, platform, home, text => (out += `${text}\n`), launch)
   return { code, out, file: path.join(home, '.config', 'toolscript-mcp', 'config.json') }
 }
 
@@ -440,6 +441,97 @@ describe('toolscript-mcp init', () => {
       out,
     )
   })
+
+  describe('from a clone', () => {
+    const clone: Launch = { command: 'node', args: ['/home/u/my tools/toolscript-mcp/dist/host/main.js'] }
+
+    test('every client starts node with the path of main.js, and Windows has no cmd /c', async () => {
+      const home = homeWith(CLIENTS)
+      const { out, file } = await init(home, [], 'linux', clone)
+      assert.ok(!out.includes('npx'), out)
+      assert.ok(
+        out.includes(
+          `claude mcp add --scope user toolscript -- node '/home/u/my tools/toolscript-mcp/dist/host/main.js' --config ${shellWord(file, 'linux')}`,
+        ),
+        out,
+      )
+      assert.ok(
+        out.includes(
+          `"toolscript": {"command":"node","args":["/home/u/my tools/toolscript-mcp/dist/host/main.js","--config",${JSON.stringify(file)}]}`,
+        ),
+        out,
+      )
+      const win = await init(homeWith({ '.claude.json': CLAUDE_CODE }), [], 'win32', {
+        command: 'node',
+        args: ['C:\\Users\\u\\my tools\\toolscript-mcp\\dist\\host\\main.js'],
+      })
+      assert.ok(!win.out.includes('cmd /c'), win.out)
+      assert.ok(
+        win.out.includes(
+          `claude mcp add --scope user toolscript '--' node 'C:\\Users\\u\\my tools\\toolscript-mcp\\dist\\host\\main.js' --config`,
+        ),
+        win.out,
+      )
+    })
+
+    test('the OAuth login line names the same start', () => {
+      const out = initReport(
+        importServers([
+          {
+            client: 'claude-code',
+            path: '/c/.claude.json',
+            kind: 'text',
+            text: JSON.stringify({ mcpServers: { jira: { type: 'http', url: 'https://mcp.example.com/mcp' } } }),
+          },
+        ]),
+        '/c/config.json',
+        'linux',
+        { command: 'node', args: ['/opt/tool/main.js'] },
+      )
+      assert.ok(out.includes('run node /opt/tool/main.js login <server> for it.'), out)
+    })
+  })
+
+  test('--help and -h print the usage and exit 0, and write nothing', async () => {
+    for (const flag of ['--help', '-h']) {
+      const home = homeWith(CLIENTS)
+      const { code, out, file } = await init(home, [flag])
+      assert.equal(code, 0, out)
+      assert.match(out, /^usage: toolscript-mcp init /)
+      assert.ok(!fs.existsSync(file))
+    }
+  })
+})
+
+describe('the login command', () => {
+  test('is npx for the package and node with the path for a clone, quoted for the shell', () => {
+    assert.equal(loginCommand(NPX_LAUNCH, 'linux', 'jira' as never), 'npx -y toolscript-mcp login jira')
+    const clone = { command: 'node', args: ['/home/u/my tools/main.js'] }
+    assert.equal(
+      loginCommand(clone, 'linux', 'jira' as never, "/home/u/it's.json"),
+      `node '/home/u/my tools/main.js' login jira --config '/home/u/it'\\''s.json'`,
+    )
+    assert.equal(
+      loginCommand({ command: 'node', args: ['C:\\my tools\\main.js'] }, 'win32', 'jira' as never, 'C:\\c.json'),
+      `node 'C:\\my tools\\main.js' login jira --config C:\\c.json`,
+    )
+  })
+})
+
+describe('detectLaunch', () => {
+  test('a clone gives node and the absolute path, and an npm install gives npx', () => {
+    assert.deepEqual(detectLaunch('main.js'), { command: 'node', args: [path.resolve('main.js')] })
+    assert.deepEqual(detectLaunch(path.join(os.tmpdir(), 'toolscript-mcp', 'dist', 'host', 'main.js')), {
+      command: 'node',
+      args: [path.join(os.tmpdir(), 'toolscript-mcp', 'dist', 'host', 'main.js')],
+    })
+    for (const script of [
+      '/home/u/.npm/_npx/ab12/node_modules/toolscript-mcp/dist/host/main.js',
+      '/home/u/.npm/_npx/ab12/node_modules/.bin/toolscript-mcp',
+      'C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\ab\\node_modules\\toolscript-mcp\\dist\\host\\main.js',
+    ])
+      assert.deepEqual(detectLaunch(script), NPX_LAUNCH, script)
+  })
 })
 
 describe('the printed Claude Code commands', () => {
@@ -457,6 +549,7 @@ describe('the printed Claude Code commands', () => {
       ]),
       configFile,
       platform,
+      NPX_LAUNCH,
     )
 
   /** The arguments that `claude` gets when a shell runs the printed command lines, one list per line. */
@@ -526,6 +619,7 @@ describe('the OAuth login in the report', () => {
       ]),
       '/c/config.json',
       'linux',
+      NPX_LAUNCH,
     )
 
   test('names the HTTP servers without headers, which log in with toolscript-mcp login', () => {
