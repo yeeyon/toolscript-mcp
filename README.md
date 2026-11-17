@@ -448,6 +448,10 @@ toolscript-mcp logs in to a remote HTTP server with OAuth. You do not need a pro
 
 login waits 5 minutes for the browser. Then it connects to the server and prints the number of tools.
 
+Some servers, such as the Google Workspace MCP servers, list their tools without a token and ask for one only on a
+call. If such a server publishes protected-resource metadata, login starts the browser login all the same. A server
+that answers without a token and has no such metadata needs no login.
+
 - An HTTP server without `headers` logs in with OAuth. To log in to a server with other headers, add `"oauth": true`.
 - `"oauth": false` turns the login off. An entry with an `Authorization` header and `oauth` is an error.
 - login registers toolscript-mcp with the server, with dynamic client registration. Atlassian supports it, for
@@ -470,6 +474,8 @@ ID in `oauth`:
 ```
 
 - `clientSecret` takes `${VAR}`, as other values do. Use a variable, so the secret stays out of the config.
+- The token requests send the secret as `client_secret_basic` if the authorization server lists it, else as
+  `client_secret_post`. Box, for example, lists both.
 - `scopes` sets the scopes to ask for when the server names none.
 - `callbackPort` sets the port of the login callback on `127.0.0.1`. Register `http://127.0.0.1:<port>/callback` as
   the redirect URI of your client.

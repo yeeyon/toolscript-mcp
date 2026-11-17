@@ -11,7 +11,11 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
+import {
+  auth,
+  discoverOAuthProtectedResourceMetadata,
+  UnauthorizedError,
+} from '@modelcontextprotocol/sdk/client/auth.js'
 import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -130,6 +134,13 @@ const portOf = (url: string | undefined): number | undefined => {
   return port === '' ? undefined : Number(port)
 }
 
+/** True when the server publishes protected-resource metadata, so it takes OAuth even if it answered without a token. */
+const takesOAuth = (server: HttpServer): Promise<boolean> =>
+  discoverOAuthProtectedResourceMetadata(server.url, undefined, serverFetch(server)).then(
+    () => true,
+    () => false,
+  )
+
 type Found = { readonly key: ServerKey; readonly server: HttpServer; readonly oauth: OAuth }
 
 /** The HTTP server `name` of the config and its OAuth entry, or why it cannot log in. */
@@ -230,8 +241,16 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     const first = await connect()
     client = first.client
     if (client !== undefined) {
-      io.print(`${key} needs no login: it answered without a token. It has ${plural((await listAll(client)).length)}.`)
-      return 0
+      if (!(await takesOAuth(server))) {
+        io.print(
+          `${key} needs no login: it answered without a token. It has ${plural((await listAll(client)).length)}.`,
+        )
+        return 0
+      }
+      // The server asks for a token only on a tool call, as Google Workspace does, so no 401 started the login.
+      await client.close()
+      client = undefined
+      await auth(provider, { serverUrl: server.url, fetchFn: serverFetch(server) })
     }
     const timeout = new Promise<Callback>(resolve => {
       timer = setTimeout(() => resolve({ ok: false, why: 'no login in the browser in 5 minutes' }), LOGIN_TIMEOUT_MS)
