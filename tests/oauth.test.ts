@@ -72,7 +72,8 @@ const startFake = async () => {
    * `rejectAll`, the MCP endpoint answers 401 to every token. The token endpoint waits for `holdRefreshes` refresh
    * requests before it answers the first, so two clients use one refresh token. With `stallRefreshes`, it never answers
    * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
-   * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`.
+   * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`. A registration answer
+   * gives the client `registeredSecret`, if set, and the first of `authMethods`, with the id `registeredId`, if set.
    */
   const change = {
     authorizationEndpoint: '',
@@ -86,6 +87,8 @@ const startFake = async () => {
     refreshAnswer: undefined as { status: number; type: string; body: string } | undefined,
     grantErrorMs: 0,
     refuseClient: '',
+    registeredSecret: '',
+    registeredId: '',
   }
   const held: (() => void)[] = []
   const issue = (clientId: string) => {
@@ -185,9 +188,19 @@ const startFake = async () => {
       })
     if (url.pathname === '/register') {
       const metadata = JSON.parse(await body(req)) as { redirect_uris: string[] }
-      const clientId = `fake-client-${++seen.registrations}`
+      const number = ++seen.registrations
+      const clientId = change.registeredId === '' ? `fake-client-${number}` : change.registeredId
       clients.set(clientId, { redirectUris: metadata.redirect_uris })
-      return json(res, 201, { ...metadata, client_id: clientId })
+      const secret = change.registeredSecret
+      if (secret === '') return json(res, 201, { ...metadata, client_id: clientId })
+      secrets.add(secret).add(Buffer.from(`${clientId}:${secret}`).toString('base64'))
+      const method = change.authMethods[0]
+      return json(res, 201, {
+        ...metadata,
+        client_id: clientId,
+        client_secret: secret,
+        token_endpoint_auth_method: method,
+      })
     }
     if (url.pathname === '/authorize') {
       seen.authorizations.push(url)
@@ -997,6 +1010,65 @@ describe('secrets that a server echoes', () => {
       const printed = s.lines.join('\n')
       assert.match(printed, /login to fake failed: .*bad request: .*\*\*\*/, printed)
       assert.deepEqual(s.leaks(), [], method)
+    }
+  })
+
+  test('login hides a registered client secret of any length where it stands as the secret', async () => {
+    for (const [method, secret] of [
+      ['client_secret_post', 'ab'],
+      ['client_secret_post', 'k3y'],
+      ['client_secret_post', 'fk5ec7'],
+      ['client_secret_post', '123456'],
+      ['client_secret_post', '12345678'],
+      ['client_secret_post', 'login'],
+      ['client_secret_basic', 'ab'],
+      ['client_secret_basic', 'login'],
+    ] as const) {
+      const fake = await startFake()
+      fake.change.echo = 'exchange'
+      fake.change.authMethods = [method]
+      fake.change.registeredSecret = secret
+      const s = setup(fake)
+      assert.equal(await s.login(), 1, method)
+      const printed = s.lines.join('\n')
+      const what = `${method} ${secret}: ${printed}`
+      assert.match(printed, /login to fake failed: .*bad request: /, what)
+      assert.ok(!printed.includes(`client_secret=${secret}`), what)
+      assert.ok(!printed.includes(Buffer.from(`fake-client-1:${secret}`).toString('base64')), what)
+      if (method === 'client_secret_post') assert.ok(printed.includes('client_secret=***'), what)
+      const others = [...fake.secrets].filter(v => v !== secret && printed.includes(v))
+      assert.deepEqual(others, [], what)
+    }
+  })
+
+  test('a registered client whose id and short secret a reason holds blanks no words of the login output', async () => {
+    const fake = await startFake()
+    fake.change.echo = 'exchange'
+    fake.change.authMethods = ['client_secret_post']
+    fake.change.registeredId = 'response'
+    fake.change.registeredSecret = ' Synta'
+    const s = setup(fake)
+    assert.equal(await s.login(), 1)
+    const printed = s.lines.join('\n')
+    assert.match(printed, /Invalid OAuth error response: SyntaxError/, printed)
+    assert.ok(!printed.includes('client_secret=+Synta'), printed)
+  })
+
+  test('a registered client secret that is a common word never blanks the words of a reason', async () => {
+    for (const secret of ['login', 'fake', 'OAuth']) {
+      const fake = await startFake()
+      fake.change.authMethods = ['client_secret_post']
+      fake.change.registeredSecret = secret
+      const s = setup(fake)
+      assert.equal(await s.login(), 0, s.lines.join('\n'))
+      const downstream = s.connect()
+      assert.equal(await s.ping(downstream), PONG, secret)
+      fake.revoke()
+      assert.match(await s.run(downstream, CALL), LOGIN_REASON, secret)
+      const later = s.connect()
+      await later.settled
+      const state = later.states()[0]
+      assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON, secret)
     }
   })
 })
