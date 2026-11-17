@@ -1093,7 +1093,7 @@ const dedent = (block: string): string => {
   return [lines[0], ...lines.slice(1).map(l => l.slice(Math.min(cut, l.length - l.trimStart().length)))].join('\n')
 }
 
-export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, and get back only what it returns. Use it instead of direct MCP tool calls, for one call or many: intermediate data stays out of the context.
+export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, and get back only what it returns. Use it in place of direct MCP tool calls: intermediate data stays out of the context.
 
 The program is the body of an async function. Available:
 - await call("mcp__<server>__<tool>", args) -> the tool result (parsed JSON when the tool returns JSON, else text)
@@ -1110,16 +1110,23 @@ Write each tool name as a string in call("…"): a name built at run time is ref
 
 Find tools and their argument types with search_tools first.
 
-Example:
-const issues = await call("mcp__linear__list_issues", { assignee: "me" })
-const open = issues.filter(i => i.state !== "Done")
-return open.map(i => ({ id: i.id, title: i.title }))`
+Examples:
+// several reads, slimmed
+const issues = await Promise.all(["A-1", "A-2"].map(key => call("mcp__tracker__get_issue", { key })))
+return issues.map(i => ({ key: i.key, status: i.status }))
+// a write and its check
+await call("mcp__tracker__add_comment", { key: "A-1", body: "Fixed" })
+return (await call("mcp__tracker__list_comments", { key: "A-1" })).some(c => c.body === "Fixed")
+// a part of a large result
+const log = await call("mcp__ci__get_log", { run: 42 })
+return log.split("\\n").filter(l => /error/i.test(l))`
 
-export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools.`
+export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools, also after a reconnect.`
 
 // Claude Code cuts the instructions of a server at this length.
 const INSTRUCTIONS_MAX = 4096
-const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back.`
+// A session that also had the servers as direct tools never called run_code (#47), so the text names when to prefer it.
+const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.`
 
 /**
  * The server's instructions, read by the model at the start of a session. They

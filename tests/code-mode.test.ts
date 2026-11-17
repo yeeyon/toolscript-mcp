@@ -707,9 +707,38 @@ describe('the tool table', () => {
   // every session. Raise the limit only for text that changes what the model does.
   // M4: run_code 1542, search_tools 550 (it names run_code). v0.1: + alwaysLoad 41 on each.
   // + 68 for the recall(n) line, which the bench showed second programs needed.
+  // + 365 (#47): the three examples of when to prefer run_code, and the empty search after a reconnect.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 2236, `size ${size} is over 2236`)
+    assert.ok(size <= 2601, `size ${size} is over 2601`)
+  })
+
+  test('each example of the run_code description runs and returns only the small result', async () => {
+    const description = registration('run_code').description
+    const examples = description
+      .slice(description.indexOf('\nExamples:\n'))
+      .split(/\n\/\/ [^\n]*\n/)
+      .slice(1)
+    assert.equal(examples.length, 3, description)
+    const results: Record<string, (args: { key?: string }) => unknown> = {
+      mcp__tracker__get_issue: ({ key }) => ({ key, status: 'Open', avatarUrls: { '48x48': 'https://example.com/a' } }),
+      mcp__tracker__add_comment: () => ({ id: 'c1' }),
+      mcp__tracker__list_comments: () => [{ body: 'Before' }, { body: 'Fixed' }],
+      mcp__ci__get_log: () => 'step 1 ok\nerror: test failed\nstep 3 ok',
+    }
+    const call = async (tool: string, args: { key?: string }) => results[tool]!(args)
+    const AsyncFunction = (async () => {}).constructor as new (
+      ...args: string[]
+    ) => (c: typeof call) => Promise<unknown>
+    const returned = await Promise.all(examples.map(body => new AsyncFunction('call', body)(call)))
+    assert.deepEqual(returned, [
+      [
+        { key: 'A-1', status: 'Open' },
+        { key: 'A-2', status: 'Open' },
+      ],
+      true,
+      ['error: test failed'],
+    ])
   })
 
   // The bench: 5 of 9 second programs called a tool again for a result they could recall.
@@ -727,6 +756,12 @@ describe('the tool table', () => {
     assert.match(text, /\bjira, grafana\b/)
     assert.match(text, /search_tools.*run_code/)
     assert.doesNotMatch(serverInstructions([]), /:\s*\./)
+  })
+
+  // #47: with the same servers also listed as direct tools, a session never called run_code.
+  test('the instructions say when to prefer run_code to direct tools', () => {
+    for (const text of [serverInstructions(['jira']), serverInstructions([])])
+      assert.match(text, /Prefer run_code to their direct tools for several calls, a write and its check, or a part of/)
   })
 
   // Claude Code cuts server instructions at 4,096 characters.
