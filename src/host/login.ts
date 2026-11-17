@@ -48,12 +48,12 @@ const failure = (err: unknown): string =>
 const NO_REGISTRATION = 'Incompatible auth server: does not support dynamic client registration'
 const OTHER_RESOURCE = /^Protected resource (\S+) does not match expected/
 
-/** A step of the login that did not end in time. Its message is the whole reason. */
-class Late extends Error {}
+/** A failed step of the login whose message is the whole reason: it did not end in time, or got broken metadata. */
+class Reason extends Error {}
 
 /** Why the login of a server that answered without a token did not start, as the end of a sentence. */
 const notStarted = (err: unknown, url: string): string => {
-  if (err instanceof Late) return err.message
+  if (err instanceof Reason) return err.message
   const text = failure(err)
   if (text === NO_REGISTRATION)
     return 'its authorization server has no dynamic client registration. Calls that need a token need "clientId" in "oauth": see "OAuth login" in the README'
@@ -63,7 +63,7 @@ const notStarted = (err: unknown, url: string): string => {
 }
 
 /**
- * `fetchFn` with every request and its body ending `ms` after this call, as a `Late` that says that `step` did not
+ * `fetchFn` with every request and its body ending `ms` after this call, as a `Reason` that says that `step` did not
  * end, and each other failure as a plain Error: the SDK reads a TypeError of fetch as a CORS refusal, so a server
  * that is down would look like one without metadata.
  */
@@ -79,7 +79,7 @@ const within = (fetchFn: FetchLike, ms: number, step: string): FetchLike => {
       await response.clone().arrayBuffer()
       return response
     } catch (err) {
-      if (deadline.aborted) throw new Late(`${step} within ${ms / 1000} s (waiting for ${new URL(url).origin})`)
+      if (deadline.aborted) throw new Reason(`${step} within ${ms / 1000} s (waiting for ${new URL(url).origin})`)
       throw new Error(errorText(err instanceof Error && err.cause !== undefined ? err.cause : err))
     }
   }
@@ -178,17 +178,31 @@ const portOf = (url: string | undefined): number | undefined => {
   return port === '' ? undefined : Number(port)
 }
 
+/** A JSON object, also a cut one, with a key of protected-resource metadata. */
+const METADATA_LIKE = /^\s*\{[\s\S]*"(?:resource|authorization_servers)"\s*:/
+
+/** The text of a failed parse of metadata on one line. The SDK throws a zod error, whose message is JSON. */
+const invalidText = (err: unknown): string => {
+  const issues = (err as { issues?: unknown } | undefined)?.issues
+  return Array.isArray(issues)
+    ? (issues as { path: unknown[]; message: string }[]).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+    : failure(err)
+}
+
 /**
  * True when the server publishes protected-resource metadata, so it takes OAuth even if it answered without a token.
- * False when its well-known URLs answer with none: a 3xx, a 4xx or a body that is not metadata. No answer, a 5xx, 408
- * or 429 tells nothing about the server, so it rejects.
+ * False when its well-known URLs answer with none: a 3xx, a 4xx or a body that is not metadata, as an HTML page. No
+ * answer, a 5xx, 408 or 429 tells nothing about the server, so it rejects. A JSON object with a key of the metadata
+ * that does not parse is broken metadata, so it rejects too.
  */
 const takesOAuth = async (url: string, fetchFn: FetchLike): Promise<boolean> => {
   let unsure = false
+  let sawMetadata = false
   const watched: FetchLike = (to, init) =>
     fetchFn(to, init).then(
-      response => {
+      async response => {
         if (response.status >= 500 || response.status === 408 || response.status === 429) unsure = true
+        if (response.ok && METADATA_LIKE.test(await response.clone().text())) sawMetadata = true
         return response
       },
       err => {
@@ -200,6 +214,7 @@ const takesOAuth = async (url: string, fetchFn: FetchLike): Promise<boolean> => 
     await discoverOAuthProtectedResourceMetadata(url, undefined, watched)
     return true
   } catch (err) {
+    if (sawMetadata) throw new Reason(`its protected-resource metadata is not valid: ${invalidText(err)}`)
     if (unsure) throw err
     return false
   }
@@ -281,7 +296,18 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     },
   })
   const limitMs = io.timeoutMs ?? CONNECT_TIMEOUT_MS
-  const connect = async (fetchFn: FetchLike = serverFetch(server)) => {
+  const serverUrl = new URL(server.url).href
+  const plain = serverFetch(server)
+  /** A transport that sends its MCP requests plainly and its authorization steps with `authFetch`. */
+  const connect = async (authFetch: FetchLike = plain) => {
+    // Login never reads the stream of server messages. A 401 to its GET would start a second authorization beside the
+    // one of a request or of login itself: a second registration and browser tab, of which only the last works.
+    const fetchFn: FetchLike = (url, init) =>
+      new URL(url).href !== serverUrl
+        ? authFetch(url, init)
+        : init?.method === 'GET'
+          ? Promise.resolve(new Response(null, { status: 405 }))
+          : plain(url, init)
     const transport = new StreamableHTTPClientTransport(new URL(server.url), { authProvider: provider, fetch: fetchFn })
     const client = new Client({ name: 'toolscript-mcp', version: io.version })
     try {
@@ -300,11 +326,13 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
   // A server can echo the request in an error: the state, the code, the verifier, the client secret or a token.
   const hide = (text: string) => redact(text, server, [...provider.secrets(), ...(code === undefined ? [] : [code])])
   try {
-    // The first transport also sends the token exchange after the browser, with a time limit from then.
-    let exchangeFetch = serverFetch(server)
-    const first = await connect((url, init) => exchangeFetch(url, init))
+    // The authorization steps of the first transport. The connect bounds the steps that start in it, and each later
+    // phase gets a time limit from its start: the steps before the browser, then the token exchange.
+    let authFetch = plain
+    const first = await connect((url, init) => authFetch(url, init))
     client = first.client
-    // A server can answer initialize without a token and 401 to tools/list: the transport then started the login.
+    // A server can answer initialize without a token and 401 to tools/list: the transport then starts the login.
+    authFetch = within(plain, limitMs, 'the login did not start')
     const listed =
       client === undefined
         ? undefined
@@ -317,7 +345,7 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     if (listed !== undefined) {
       const tools = plural(listed.length)
       // These steps run outside a connect, so they share one time limit: a stalled well-known URL ends the login.
-      const fetchFn = within(serverFetch(server), limitMs, 'the login did not start')
+      const fetchFn = within(plain, limitMs, 'the login did not start')
       try {
         if (!(await takesOAuth(server.url, fetchFn))) {
           io.print(`${key} needs no login: it answered without a token. It has ${tools}.`)
@@ -344,7 +372,7 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
       return 1
     }
     code = answer.code
-    exchangeFetch = within(serverFetch(server), limitMs, 'the token exchange did not end')
+    authFetch = within(plain, limitMs, 'the token exchange did not end')
     await first.transport.finishAuth(code)
     client = (await connect()).client
     if (client === undefined) throw new Error('the server still asks for a login after the token exchange')
