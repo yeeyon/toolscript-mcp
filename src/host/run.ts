@@ -689,7 +689,11 @@ const execute = async (
       error: 'unfinished',
     })
   }
-  const calls = [...records].sort((a, b) => a[0] - b[0]).map(([, r]) => r)
+  // A program can build a tool name from untrusted text, and the footer is outside the wrapper.
+  const listed = untrusted ? new Set(catalogOf(downstream.states()).map(t => t.name)) : undefined
+  const calls = [...records]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, r]) => (listed === undefined || listed.has(r.tool) ? r : { ...r, tool: '(a name that no server lists)' }))
 
   // A result too large to show is kept whole, so the next program can page it.
   const returned = outcome?.t === 'done' ? outcome.value : undefined
