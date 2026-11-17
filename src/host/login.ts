@@ -45,12 +45,15 @@ const failure = (err: unknown): string =>
     : 'no reason given')
 
 // The texts of the SDK errors that login explains. Its errors have no codes.
-const NO_METADATA = 'Resource server does not implement OAuth 2.0 Protected Resource Metadata.'
 const NO_REGISTRATION = 'Incompatible auth server: does not support dynamic client registration'
 const OTHER_RESOURCE = /^Protected resource (\S+) does not match expected/
 
+/** A step of the login that did not end in time. Its message is the whole reason. */
+class Late extends Error {}
+
 /** Why the login of a server that answered without a token did not start, as the end of a sentence. */
 const notStarted = (err: unknown, url: string): string => {
+  if (err instanceof Late) return err.message
   const text = failure(err)
   if (text === NO_REGISTRATION)
     return 'its authorization server has no dynamic client registration. Calls that need a token need "clientId" in "oauth": see "OAuth login" in the README'
@@ -60,20 +63,24 @@ const notStarted = (err: unknown, url: string): string => {
 }
 
 /**
- * `fetchFn` with every request ending `ms` after this call, and each failure as a plain Error: the SDK reads a
- * TypeError of fetch as a CORS refusal, so a server that is down would look like one without metadata.
+ * `fetchFn` with every request and its body ending `ms` after this call, as a `Late` that says that `step` did not
+ * end, and each other failure as a plain Error: the SDK reads a TypeError of fetch as a CORS refusal, so a server
+ * that is down would look like one without metadata.
  */
-const within = (fetchFn: FetchLike, ms: number): FetchLike => {
+const within = (fetchFn: FetchLike, ms: number, step: string): FetchLike => {
   const deadline = AbortSignal.timeout(ms)
   return async (url, init) => {
     try {
-      return await fetchFn(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline })
+      const response = await fetchFn(url, {
+        ...init,
+        signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline,
+      })
+      // The SDK reads the body later, so a body that stops would end with a bare abort.
+      await response.clone().arrayBuffer()
+      return response
     } catch (err) {
-      throw new Error(
-        deadline.aborted
-          ? `${new URL(url).origin} did not answer in ${ms / 1000} s`
-          : errorText(err instanceof Error && err.cause !== undefined ? err.cause : err),
-      )
+      if (deadline.aborted) throw new Late(`${step} within ${ms / 1000} s (waiting for ${new URL(url).origin})`)
+      throw new Error(errorText(err instanceof Error && err.cause !== undefined ? err.cause : err))
     }
   }
 }
@@ -172,17 +179,31 @@ const portOf = (url: string | undefined): number | undefined => {
 }
 
 /**
- * True when the server publishes protected-resource metadata, so it takes OAuth even if it answered without a token,
- * and false when it has none. Any other failure tells nothing about the server, so it rejects.
+ * True when the server publishes protected-resource metadata, so it takes OAuth even if it answered without a token.
+ * False when its well-known URLs answer with none: a 3xx, a 4xx or a body that is not metadata. No answer, a 5xx, 408
+ * or 429 tells nothing about the server, so it rejects.
  */
-const takesOAuth = (url: string, fetchFn: FetchLike): Promise<boolean> =>
-  discoverOAuthProtectedResourceMetadata(url, undefined, fetchFn).then(
-    () => true,
-    err => {
-      if (errorText(err) === NO_METADATA) return false
-      throw err
-    },
-  )
+const takesOAuth = async (url: string, fetchFn: FetchLike): Promise<boolean> => {
+  let unsure = false
+  const watched: FetchLike = (to, init) =>
+    fetchFn(to, init).then(
+      response => {
+        if (response.status >= 500 || response.status === 408 || response.status === 429) unsure = true
+        return response
+      },
+      err => {
+        unsure = true
+        throw err
+      },
+    )
+  try {
+    await discoverOAuthProtectedResourceMetadata(url, undefined, watched)
+    return true
+  } catch (err) {
+    if (unsure) throw err
+    return false
+  }
+}
 
 type Found = { readonly key: ServerKey; readonly server: HttpServer; readonly oauth: OAuth }
 
@@ -260,11 +281,8 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     },
   })
   const limitMs = io.timeoutMs ?? CONNECT_TIMEOUT_MS
-  const connect = async () => {
-    const transport = new StreamableHTTPClientTransport(new URL(server.url), {
-      authProvider: provider,
-      fetch: serverFetch(server),
-    })
+  const connect = async (fetchFn: FetchLike = serverFetch(server)) => {
+    const transport = new StreamableHTTPClientTransport(new URL(server.url), { authProvider: provider, fetch: fetchFn })
     const client = new Client({ name: 'toolscript-mcp', version: io.version })
     try {
       await client.connect(transport, { timeout: limitMs })
@@ -282,20 +300,30 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
   // A server can echo the request in an error: the state, the code, the verifier, the client secret or a token.
   const hide = (text: string) => redact(text, server, [...provider.secrets(), ...(code === undefined ? [] : [code])])
   try {
-    const first = await connect()
+    // The first transport also sends the token exchange after the browser, with a time limit from then.
+    let exchangeFetch = serverFetch(server)
+    const first = await connect((url, init) => exchangeFetch(url, init))
     client = first.client
-    if (client !== undefined) {
-      const tools = plural((await listAll(client)).length)
+    // A server can answer initialize without a token and 401 to tools/list: the transport then started the login.
+    const listed =
+      client === undefined
+        ? undefined
+        : await listAll(client).catch(err => {
+            if (err instanceof UnauthorizedError) return undefined
+            throw err
+          })
+    await client?.close()
+    client = undefined
+    if (listed !== undefined) {
+      const tools = plural(listed.length)
       // These steps run outside a connect, so they share one time limit: a stalled well-known URL ends the login.
-      const fetchFn = within(serverFetch(server), limitMs)
+      const fetchFn = within(serverFetch(server), limitMs, 'the login did not start')
       try {
         if (!(await takesOAuth(server.url, fetchFn))) {
           io.print(`${key} needs no login: it answered without a token. It has ${tools}.`)
           return 0
         }
         // The server asks for a token only on a tool call, as Google Workspace does, so no 401 started the login.
-        await client.close()
-        client = undefined
         await auth(provider, { serverUrl: server.url, fetchFn })
       } catch (err) {
         // Exit 1: the server takes OAuth tokens and login stored none, so its calls that need one still fail.
@@ -316,6 +344,7 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
       return 1
     }
     code = answer.code
+    exchangeFetch = within(serverFetch(server), limitMs, 'the token exchange did not end')
     await first.transport.finishAuth(code)
     client = (await connect()).client
     if (client === undefined) throw new Error('the server still asks for a login after the token exchange')

@@ -446,7 +446,8 @@ toolscript-mcp logs in to a remote HTTP server with OAuth. You do not need a pro
 2. Run `node /absolute/path/to/toolscript-mcp/dist/host/main.js login <server>`. If your config uses another path, add `--config <path>`.
 3. Log in and approve the access in the browser. If the browser does not open, open the URL that login prints.
 
-login waits 5 minutes for the browser. Then it connects to the server and prints the number of tools.
+login waits 5 minutes for the browser and 30 s for the token exchange. Then it connects to the server and prints the
+number of tools.
 
 Some servers, such as the Google Workspace MCP servers, list their tools without a token and ask for one only on a
 call. If such a server publishes protected-resource metadata, login starts the browser login all the same. A server
