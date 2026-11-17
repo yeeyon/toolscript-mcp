@@ -1133,7 +1133,7 @@ const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them fro
 /** The server key of the Claude Code bridge in the README and the setup skill. */
 const BRIDGE = 'claude-code'
 // Its direct tools are the client's own: a program that calls them skips the client's permission rules and hooks.
-const INSTRUCTIONS_BRIDGE = `Use your own built-in tools directly. Call ${BRIDGE} from a program only for data that stays in the program.`
+const INSTRUCTIONS_BRIDGE = `For Read, Bash, Edit and the other tools of ${BRIDGE}, use your own built-in tools directly. Call ${BRIDGE} from a program only for data that stays in the program.`
 
 /**
  * The server's instructions, read by the model at the start of a session. They

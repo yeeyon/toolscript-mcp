@@ -767,9 +767,15 @@ describe('the tool table', () => {
   })
 
   // #47: the direct tools of the Claude Code bridge are the client's own, which its permission rules and hooks guard.
+  // The bridge text costs 168 characters in each session with the bridge, and none without it.
   test('the instructions keep the built-in tools direct only when the bridge is a server', () => {
-    const bridge = /Use your own built-in tools directly\. Call claude-code from a program only for data that stays/
+    const bridge =
+      /For Read, Bash, Edit and the other tools of claude-code, use your own built-in tools directly\. Call claude-code from a program only for data that stays/
     assert.match(serverInstructions(['jira', 'claude-code']), bridge)
+    assert.equal(
+      serverInstructions(['jira', 'claude-code']).length - serverInstructions(['jira', 'claude-codf']).length,
+      168,
+    )
     const keys = Array.from({ length: 400 }, (_, i) => `server-number-${i}`)
     const cut = serverInstructions([...keys, 'claude-code'])
     assert.ok(cut.length <= 4096, `length ${cut.length}`)
