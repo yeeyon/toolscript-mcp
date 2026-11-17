@@ -201,8 +201,12 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     for (const value of values) if (value !== undefined && value.length >= 8) known.add(value)
   }
   const keepTokens = (tokens: OAuthTokens | undefined) => (add(tokens?.access_token, tokens?.refresh_token), tokens)
+  // Unlike a token, a registered client secret is hidden at any length, as redact hides the secret of the config.
   const keepClient = (info: OAuthClientInformationMixed | undefined) => {
-    if (info?.client_secret) add(info.client_secret, basicCredentials(info.client_id, info.client_secret))
+    if (info?.client_secret) {
+      known.add(info.client_secret)
+      add(basicCredentials(info.client_id, info.client_secret))
+    }
     return info
   }
   const client = async (): Promise<OAuthClientInformationMixed | undefined> => {
