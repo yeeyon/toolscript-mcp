@@ -112,6 +112,7 @@ Tool search:
 
 - `search_tools` shows each of 3 or fewer matches in full: the description and a TypeScript declaration of `call()` with nested object types, enums, unions, local `$ref`s and the note of each argument. A tool with an `outputSchema` gets a `Promise<…>` result type. Without one, the search shows the shape of a result from an earlier run in the session (`returned earlier:`). 4 or more matches keep the one-line list.
 - The check before a run gives the state and the reason of a server that failed or is still connecting. It no longer guesses a tool of another server.
+- A search that holds a full tool name (`mcp__server__tool`), `server__tool` or a short tool name ranks that tool first (#49). The words of a server key no longer lift every tool of that server over a real match, but a search for a server name still lists its tools.
 - The declaration has a work budget, so a recursive schema cannot stall the server. A literal is never cut.
 - A declaration too large with its notes shows again without its notes and its result type. Required arguments come first.
 - The one-line list keeps whole arguments up to 500 characters and ends with `… N more arguments`. A required argument shows whenever any argument shows.

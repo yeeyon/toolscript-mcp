@@ -1038,17 +1038,40 @@ const words = (text: string): string[] =>
     .split(/[^a-z0-9]+/)
     .filter(w => w.length > 1)
 
-/** Ranks tools by how many query words their name and description hold. */
+const splitName = (name: string): { server: string; short: string } => {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name)
+  return m === null ? { server: '', short: name } : { server: m[1]!, short: m[2]! }
+}
+
+/**
+ * Ranks tools. A query token that is a tool's full name, `server__tool` or short name ranks it first, in that order.
+ * Other words score on the short name (prefix 4, inside 3) and the description (1). A word of a tool's server key
+ * that the short name lacks scores nothing for that tool, except 1 when nothing else matched, so a server name still
+ * lists its tools.
+ */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const wanted = words(query)
+  const idents = query
+    .toLowerCase()
+    .split(/[^a-z0-9_-]+/)
+    .filter(t => t !== '')
   const scored = tools.map(tool => {
     const name = tool.name.toLowerCase()
+    const { server, short } = splitName(name)
     const description = tool.description.toLowerCase()
+    const serverWords = new Set(words(server))
     let score = 0
+    if (idents.includes(name)) score += 1000
+    else if (server !== '' && idents.includes(`${server}__${short}`)) score += 900
+    else if (idents.includes(short)) score += 800
+    let serverHit = false
     for (const w of wanted) {
-      if (name.includes(w)) score += 3
+      if (short.startsWith(w)) score += 4
+      else if (short.includes(w)) score += 3
+      else if (serverWords.has(w)) serverHit = true
       else if (description.includes(w)) score += 1
     }
+    if (score === 0 && serverHit) score = 1
     return { tool, score }
   })
   return scored
