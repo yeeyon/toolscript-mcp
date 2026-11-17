@@ -155,17 +155,24 @@ export const runFiles = (newPath: (extension: string) => string): FileFor => {
 }
 
 /**
- * The attachment files that the host wrote in one session, by path, with the
- * type of their block. Only these show as images: a reference in a value can
- * come from the text of a tool, so it can name any path and any type.
+ * An attachment file as the host wrote it: the type of its block, and the
+ * size and SHA-256 (hex) of its bytes. saveFile can write over the file, so
+ * it shows only while it still holds these bytes.
  */
-export type Written = Map<string, string>
+export type WrittenFile = { readonly mimeType: string; readonly bytes: number; readonly sha256: string }
+
+/**
+ * The attachment files that the host wrote in one session, by path. Only
+ * these show as images: a reference in a value can come from the text of a
+ * tool, so it can name any path and any type.
+ */
+export type Written = Map<string, WrittenFile>
 
 export const MAX_WRITTEN = 4096
 
 /** Records a file that the host wrote. The oldest goes past MAX_WRITTEN. */
-export const recordWritten = (written: Written, file: string, mimeType: string): void => {
-  written.set(file, mimeType)
+export const recordWritten = (written: Written, file: string, record: WrittenFile): void => {
+  written.set(file, record)
   for (const old of written.keys()) {
     if (written.size <= MAX_WRITTEN) break
     written.delete(old)
@@ -189,8 +196,10 @@ const EXTENSIONS: Readonly<Record<string, string>> = {
   'text/csv': '.csv',
 }
 
-const extensionOf = (mimeType: string | undefined): string =>
-  EXTENSIONS[(mimeType ?? '').split(';')[0]!.trim().toLowerCase()] ?? '.bin'
+/** The media type alone, in lower case: `Image/PNG; q=1` is `image/png`. */
+const mediaType = (mimeType: string): string => mimeType.split(';')[0]!.trim().toLowerCase()
+
+const extensionOf = (mimeType: string | undefined): string => EXTENSIONS[mediaType(mimeType ?? '')] ?? '.bin'
 
 const BASE64 = /^[A-Za-z0-9+/_-]*={0,2}$/
 
@@ -220,7 +229,7 @@ const attachmentOf = (block: McpBlock, fileFor: FileFor): { attachment: Attachme
     if ('error' in where) return { stored: { bytes, ...where } }
     return {
       stored: { bytes, file: where.file },
-      file: { file: where.file, data: data as string, mimeType: mimeType ?? 'application/octet-stream' },
+      file: { file: where.file, data: data as string, mimeType: mediaType(mimeType ?? 'application/octet-stream') },
     }
   }
   if (block.type === 'image' || block.type === 'audio') {
@@ -523,12 +532,13 @@ export const MAX_SHOWN_IMAGE_BYTES = 8_000_000
 const MAX_LISTED_HIDDEN = 8
 
 /** Why a returned image is not shown. */
-export type HiddenWhy = 'type' | 'not-written' | 'unreadable' | 'not-image' | 'size' | 'count' | 'total'
+export type HiddenWhy = 'type' | 'not-written' | 'unreadable' | 'changed' | 'not-image' | 'size' | 'count' | 'total'
 
 const HIDDEN_TEXT: Readonly<Record<HiddenWhy, string>> = {
   type: 'only PNG, JPEG, GIF and WebP images show',
   'not-written': 'it is not an image file that a call of this session wrote',
   unreadable: 'the file cannot be read',
+  changed: 'the file changed after the call wrote it',
   'not-image': 'the file does not hold an image of its type',
   size: `it is more than ${MAX_IMAGE_BYTES} bytes`,
   count: `at most ${MAX_SHOWN_IMAGES} images show per run`,

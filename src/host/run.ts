@@ -3,7 +3,7 @@
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -67,6 +67,7 @@ import {
   type RunnerError,
   type RunnerMessage,
   type Written,
+  type WrittenFile,
 } from '../core/protocol.ts'
 import {
   callDecision,
@@ -245,29 +246,37 @@ const saveFile = async (dir: string, name: string, data: unknown): Promise<Reply
   return { ok: true, value: file }
 }
 
+const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
+
 // The attachments of a tool result, as saveFile writes: only the person can
 // read them. The program gets all of them or an error, so a failed write
-// removes the files of the result that it wrote before.
+// removes the files of the result that it wrote before, and the file that it
+// was writing. EEXIST: that file was there before, so it stays.
 const writeAttachments = async (dir: string, files: readonly PendingFile[], written: Written): Promise<void> => {
   if (files.length === 0) return
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
-  const done: string[] = []
+  const done: { file: string; record: WrittenFile }[] = []
   try {
-    for (const { file, data } of files) {
-      await fs.promises.writeFile(file, Buffer.from(data, 'base64'), { mode: 0o600, flag: 'wx' })
-      done.push(file)
+    for (const { file, data, mimeType } of files) {
+      const bytes = Buffer.from(data, 'base64')
+      await fs.promises.writeFile(file, bytes, { mode: 0o600, flag: 'wx' }).catch(async (err: unknown) => {
+        if ((err as { code?: unknown }).code !== 'EEXIST') await fs.promises.rm(file, { force: true }).catch(() => {})
+        throw err
+      })
+      done.push({ file, record: { mimeType, bytes: bytes.length, sha256: sha256(bytes) } })
     }
   } catch (err) {
-    await Promise.all(done.map(file => fs.promises.rm(file, { force: true }).catch(() => {})))
+    await Promise.all(done.map(({ file }) => fs.promises.rm(file, { force: true }).catch(() => {})))
     throw err
   }
-  for (const { file, mimeType } of files) recordWritten(written, file, mimeType)
+  for (const { file, record } of done) recordWritten(written, file, record)
 }
 
 /**
  * The image attachments that a program returned, read from their files, up
  * to the caps. Only a file that a call of this session wrote shows, with the
- * type of its block. Any other path is never looked up on the disk.
+ * type of its block, while it holds the bytes that the call wrote. Any other
+ * path is never looked up on the disk.
  */
 const showImages = async (
   written: Written,
@@ -277,22 +286,22 @@ const showImages = async (
   const hidden: { file: string; why: HiddenWhy }[] = []
   let total = 0
   const load = async (file: string): Promise<HiddenWhy | ShownImage> => {
-    const mimeType = written.get(file)
-    if (mimeType === undefined) return 'not-written'
-    if (!SHOWN_IMAGE_TYPES.has(mimeType)) return 'type'
+    const record = written.get(file)
+    if (record === undefined) return 'not-written'
+    if (!SHOWN_IMAGE_TYPES.has(record.mimeType)) return 'type'
+    if (record.bytes > MAX_IMAGE_BYTES) return 'size'
+    if (images.length >= MAX_SHOWN_IMAGES) return 'count'
+    if (total + record.bytes > MAX_SHOWN_IMAGE_BYTES) return 'total'
     const stat = await fs.promises.lstat(file).catch(() => undefined)
     if (stat === undefined || !stat.isFile()) return 'unreadable'
-    if (stat.size > MAX_IMAGE_BYTES) return 'size'
-    if (images.length >= MAX_SHOWN_IMAGES) return 'count'
-    if (total + stat.size > MAX_SHOWN_IMAGE_BYTES) return 'total'
+    if (stat.size !== record.bytes) return 'changed'
     const bytes = await fs.promises.readFile(file).catch(() => undefined)
     if (bytes === undefined) return 'unreadable'
-    // The file can have grown since the stat: saveFile can write a file of the same name.
-    if (bytes.length > MAX_IMAGE_BYTES) return 'size'
-    if (total + bytes.length > MAX_SHOWN_IMAGE_BYTES) return 'total'
-    if (!holdsImage(mimeType, bytes)) return 'not-image'
+    // saveFile can write over the file, also between the stat and the read.
+    if (bytes.length !== record.bytes || sha256(bytes) !== record.sha256) return 'changed'
+    if (!holdsImage(record.mimeType, bytes)) return 'not-image'
     total += bytes.length
-    return { data: bytes.toString('base64'), mimeType }
+    return { data: bytes.toString('base64'), mimeType: record.mimeType }
   }
   for (const file of returned.files) {
     const loaded = await load(file)

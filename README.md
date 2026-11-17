@@ -437,6 +437,7 @@ return panel.attachments[0]
   images of that call. The search stops after 100,000 values of the return value.
 - Only image files that a call of the session wrote show, with the type of their block. A reference with another
   path does not show, also when a tool returns it as text. toolscript-mcp does not look up that path.
+- The file must still hold the bytes that the call wrote. A file that `saveFile` writes over does not show.
 - Only PNG, JPEG, GIF and WebP images show. The first bytes of the file must match the type.
 - One result shows at most 4 images, each at most 3,750,000 bytes, and at most 8,000,000 bytes in total.
 - The result text names each returned image that does not show, and the reason.

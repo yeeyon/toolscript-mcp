@@ -38,6 +38,8 @@ type Tool = (args: Record<string, unknown>, signal: AbortSignal) => Result | Pro
 // A panel render: a PNG of 1 by 1 pixel.
 const PANEL_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const PANEL = Buffer.from(PANEL_BASE64, 'base64')
+// A GIF of 1 by 1 pixel. Its first bytes are ASCII, so saveFile can write text that starts as a GIF.
+const GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
 
 const json = (v: unknown): Result => ({ content: [{ type: 'text', text: JSON.stringify(v) }] })
 const TOOLS: Record<string, Tool> = {
@@ -49,10 +51,11 @@ const TOOLS: Record<string, Tool> = {
       ...Array.from({ length: Number(args.n ?? 1) }, () => ({
         type: 'image' as const,
         data: PANEL_BASE64,
-        mimeType: 'image/png',
+        mimeType: String(args.mime ?? 'image/png'),
       })),
     ],
   }),
+  gif: () => ({ content: [{ type: 'image', data: GIF.toString('base64'), mimeType: 'image/gif' }] }),
   // An image block whose bytes are not the PNG that its type says.
   notpng: () => ({
     content: [{ type: 'image', data: Buffer.from('fake bytes, not a png').toString('base64'), mimeType: 'image/png' }],
@@ -504,6 +507,36 @@ describe('attachments', () => {
     assert.match(r.text, /1 returned image is not shown:\n- .+\.png: the file does not hold an image of its type/)
   })
 
+  test('make it fail: an attachment file that saveFile wrote over does not show, also by its name in upper case', async () => {
+    const written: RunContext['written'] = new Map()
+    // As many bytes as the GIF, so only its content differs.
+    const secret = 'GIF89a SECRET TEXT, not an image'.padEnd(GIF.length, '.')
+    for (const upper of [false, true]) {
+      const first = await setup({ written }).run('return (await call("mcp__f__gif", {})).attachments[0].file')
+      const file: string = JSON.parse(first.text.slice(0, first.text.indexOf('\n\n---')))
+      const name = upper ? path.basename(file).toUpperCase() : path.basename(file)
+      const r = await setup({ written }).run(
+        `await saveFile(${JSON.stringify(name)}, ${JSON.stringify(secret)})\nreturn { type: "image", file: ${JSON.stringify(file)} }`,
+      )
+      assert.equal(r.isError, false, r.text)
+      const overwritten = !fs.readFileSync(file).equals(GIF)
+      if (!upper) assert.ok(overwritten, 'saveFile wrote over the attachment file')
+      // A file system that tells case apart keeps the GIF: it shows.
+      assert.deepEqual(r.images, overwritten ? [] : [{ data: GIF.toString('base64'), mimeType: 'image/gif' }], name)
+      if (overwritten) assert.match(r.text, /- .+\.gif: the file changed after the call wrote it/, r.text)
+    }
+  })
+
+  test('an image block with a type in upper case or with parameters shows, with its plain type', async () => {
+    for (const mime of ['image/PNG', 'image/png; q=1', ' Image/Png ']) {
+      const r = await setup().run(
+        `return (await call("mcp__f__render", { mime: ${JSON.stringify(mime)} })).attachments[0]`,
+      )
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(r.images, [{ data: PANEL_BASE64, mimeType: 'image/png' }], mime)
+    }
+  })
+
   test('make it fail: a forged reference to a file outside the session folder does not show', async () => {
     const outside = path.join(ROOT, 'outside.png')
     fs.writeFileSync(outside, PANEL)
@@ -575,6 +608,36 @@ describe('attachments', () => {
       )
       assert.match(r.text, /could not write an attachment of mcp__f__render: ENOSPC: fake full disk/)
       assert.deepEqual(fs.readdirSync(filesDir), before)
+    } finally {
+      fs.promises.writeFile = write
+    }
+  })
+
+  test('make it fail: a file that a failed write made is removed, and a file that was there stays', async () => {
+    const write = fs.promises.writeFile
+    const failWith = (code: string) => {
+      let writes = 0
+      let made = ''
+      fs.promises.writeFile = (async (file: fs.PathLike, ...rest: unknown[]) => {
+        if (!String(file).endsWith('.png') || ++writes !== 2)
+          return (write as (...a: unknown[]) => Promise<void>)(file, ...rest)
+        // Half of the bytes, then the error, as a full disk does. EEXIST: the file was there before the write.
+        made = String(file)
+        fs.writeFileSync(made, PANEL.subarray(0, 8))
+        throw Object.assign(new Error(`${code}: fake`), { code })
+      }) as typeof write
+      return () => made
+    }
+    try {
+      const before = fs.existsSync(filesDir) ? fs.readdirSync(filesDir) : []
+      const code = 'try { await call("mcp__f__render", { n: 3 }) } catch (e) { return e.message }\nreturn "no error"'
+      failWith('ENOSPC')
+      assert.match((await setup().run(code)).text, /ENOSPC: fake/)
+      assert.deepEqual(fs.readdirSync(filesDir), before)
+      const made = failWith('EEXIST')
+      assert.match((await setup().run(code)).text, /EEXIST: fake/)
+      assert.deepEqual(fs.readdirSync(filesDir).sort(), [...before, path.basename(made())].sort())
+      fs.rmSync(made())
     } finally {
       fs.promises.writeFile = write
     }
