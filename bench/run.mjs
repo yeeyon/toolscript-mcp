@@ -2,11 +2,15 @@
 // compares them.
 //   direct      the fake server's tools, listed to the model as mcp__bench__*
 //   toolscript  only toolscript-mcp, whose config lists the fake server as bench
+//   both        the direct tools and toolscript-mcp, as in a client that keeps the server it moved behind
+//               toolscript-mcp (#47). Its report counts how often the model picks run_code.
 //
-//   node bench/run.mjs                              5 reps of every task, both arms
+//   node bench/run.mjs                              5 reps of every task, arms direct and toolscript
 //   node bench/run.mjs --reps 1 --tasks logs,ticket --arms toolscript
+//   node bench/run.mjs --arms both --reps 3
 //   node bench/run.mjs --model haiku --parallel 3 --max-spend 3
 //   node bench/run.mjs --report <out dir>           the tables again, with no new runs
+//   node bench/run.mjs --dry-run --arms both        what each arm lists and allows, with no run
 //
 // Run `npm run build` first. A run is `claude -p --restricted --strict-mcp-config`
 // with `--no-session-persistence`: no user, project or local settings (so no
@@ -32,9 +36,10 @@ const TOOLSCRIPT = path.join(REPO, 'dist', 'host', 'main.js')
 const NODE = process.execPath
 
 const USAGE = `usage: node bench/run.mjs [--reps N] [--parallel N] [--max-spend USD] [--model NAME]
-       [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,toolscript] [--out DIR]
+       [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,toolscript,both] [--out DIR] [--dry-run]
        node bench/run.mjs --report DIR
-Each run starts headless Claude Code and costs money. --max-spend stops the bench (default 3).`
+Each run starts headless Claude Code and costs money. --max-spend stops the bench (default 3).
+--dry-run lists the tools and instructions of each arm, writes definitions.json and starts no run.`
 
 // A flag this script does not know stops it before any run, so a typo or --help never spends money.
 let opts
@@ -51,6 +56,7 @@ try {
       arms: { type: 'string' },
       out: { type: 'string' },
       report: { type: 'string' },
+      'dry-run': { type: 'boolean' },
     },
   }).values
 } catch (err) {
@@ -81,25 +87,34 @@ if (!reportOnly && fs.existsSync(path.join(out, 'results.jsonl'))) {
 
 const benchServer = log => ({ command: NODE, args: [FAKE_SERVER], env: { BENCH_LOG: log } })
 
+const toolscriptServer = ({ dir, log }) => {
+  const config = path.join(dir, 'toolscript.json')
+  fs.writeFileSync(
+    config,
+    JSON.stringify({
+      mcpServers: { bench: benchServer(log) },
+      policy: [{ match: 'mcp__bench__*', action: 'allow' }],
+    }),
+  )
+  return { command: NODE, args: [TOOLSCRIPT, '--config', config] }
+}
+const directTools = benchTools => benchTools.map(t => `mcp__bench__${t}`)
+const toolscriptTools = ['mcp__toolscript__run_code', 'mcp__toolscript__search_tools']
+
 // What each arm puts in front of the model. `allowed` is the whole --allowedTools list.
 const ARMS = {
   direct: {
     servers: ({ log }) => ({ bench: benchServer(log) }),
-    allowed: benchTools => benchTools.map(t => `mcp__bench__${t}`),
+    allowed: directTools,
   },
   toolscript: {
-    servers: ({ dir, log }) => {
-      const config = path.join(dir, 'toolscript.json')
-      fs.writeFileSync(
-        config,
-        JSON.stringify({
-          mcpServers: { bench: benchServer(log) },
-          policy: [{ match: 'mcp__bench__*', action: 'allow' }],
-        }),
-      )
-      return { toolscript: { command: NODE, args: [TOOLSCRIPT, '--config', config] } }
-    },
-    allowed: () => ['mcp__toolscript__run_code', 'mcp__toolscript__search_tools'],
+    servers: run => ({ toolscript: toolscriptServer(run) }),
+    allowed: () => toolscriptTools,
+  },
+  // Both servers append to the same BENCH_LOG, so MCP calls count each call once, whichever path made it.
+  both: {
+    servers: run => ({ bench: benchServer(run.log), toolscript: toolscriptServer(run) }),
+    allowed: benchTools => [...directTools(benchTools), ...toolscriptTools],
   },
 }
 
@@ -329,6 +344,20 @@ const report = rows => {
       )
     }
   }
+  if (of('both').length > 0) {
+    console.log('\n### both: the path the model picked\n')
+    console.log('| task | runs with run_code | runs with direct calls | run_code calls | direct calls |')
+    console.log('|---|---:|---:|---:|---:|')
+    for (const task of [...tasks, undefined]) {
+      const rs = of('both', task)
+      if (rs.length === 0) continue
+      const runs = f => `${rs.filter(r => f(r) > 0).length}/${rs.length}`
+      const sum = f => rs.reduce((n, r) => n + f(r), 0)
+      console.log(
+        `| ${task ?? 'all'} | ${runs(r => r.runCode)} | ${runs(r => r.directBench)} | ${sum(r => r.runCode)} | ${sum(r => r.directBench)} |`,
+      )
+    }
+  }
   if (arms.length === 2) {
     const [a, b] = arms
     console.log(`\n### per task: median (min to max), ${b} against ${a}\n`)
@@ -406,6 +435,10 @@ if (reportOnly) {
     console.log(
       `${arm}: ${d.tools.join(', ')}: ${d.toolChars} chars of tool JSON, ${d.instructionChars} of instructions`,
     )
+  if (opts['dry-run']) {
+    for (const arm of armIds) console.log(`${arm} allows: ${ARMS[arm].allowed(benchTools).join(',')}`)
+    process.exit(0)
+  }
 
   // Arms alternate inside each rep, and their order flips every rep, so drift in model load hits both.
   const jobs = []

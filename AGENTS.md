@@ -31,7 +31,8 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   skill `setup` installs toolscript-mcp from the `beta` branch, and `config.mjs` beside it changes the
   config without printing secrets. The npm package does not hold them.
 - `bench/` holds the token and cost bench. `run.mjs` and `interactive.mjs` start Claude Code and spend money.
-  - `run.mjs`: direct MCP tools against toolscript-mcp in headless Claude Code. Results in `RESULTS.md`.
+  - `run.mjs`: direct MCP tools against toolscript-mcp in headless Claude Code, and the arm `both`, which lists both
+    and counts how often the model picks `run_code`. `--dry-run` starts no run. Results in `RESULTS.md`.
   - `interactive.mjs`: direct tools, Claude Code Code Mode and toolscript-mcp in the interactive TUI. Results in
     `RESULTS-codemode.md`. `spend.mjs` holds its spend cap.
   - `CODEX.md`: the test plan for the same arms in Codex. `check.mjs` judges an answer of another agent.

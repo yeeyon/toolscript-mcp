@@ -127,6 +127,15 @@ Run log:
 - The run log of a refused run lists each call that has a literal tool name, with its policy decision, `ok: false` and 0 ms.
 - A program that changes `Array.prototype.toJSON` or `JSON.stringify` now gets its result instead of "the sandbox exited without a result".
 
+When to use `run_code` (#47):
+
+- In a real session that also had the servers as direct tools, the model never called `run_code`. The server instructions now say to prefer `run_code` to direct tools for several calls, a write and its check, or a part of a large result. The `run_code` description shows one short example of each in place of the single filter example. With three servers, the text of both descriptions and the instructions grew from 1,883 to 2,334 characters, about 113 tokens more per turn (an estimate at 4 characters a token).
+- The `search_tools` description says that an empty query also serves after a reconnect. It lists the servers that are not connected and tries them again.
+- The README and the setup skill recommend one path to each server: remove a server from the client once toolscript-mcp has it. An MCP server cannot see the other servers of its client, so toolscript-mcp cannot detect the duplicate.
+- The README says that a wait longer than `sandbox.timeoutSeconds` belongs in a background task of the client, and that a program which calls Bash through the Claude Code bridge skips the `PreToolUse` hooks on Bash. The auto mode section says to keep the rules of the bridge before a `*` rule.
+- The setup skill puts the rules of `claude-code` back after its `policy` command, which replaces the whole policy. Before, a later `allow "*"` policy allowed Bash, Edit and Write of the bridge with no prompt (plugin 0.1.4).
+- `bench/run.mjs` has the arm `both`: the direct tools and toolscript-mcp in one session. Its report counts the runs that called `run_code` and the runs that called the direct tools. `--dry-run` lists the tools, instructions and allowed tools of each arm and starts no run.
+
 Runner fixes (inherited from claude-code-mode at eea4077):
 
 - A failed call that the program awaits later no longer crashes the sandbox.
