@@ -48,6 +48,8 @@ const failure = (err: unknown): string =>
 const NO_REGISTRATION = 'Incompatible auth server: does not support dynamic client registration'
 const OTHER_RESOURCE = /^Protected resource (\S+) does not match expected/
 
+const STILL_ASKS = 'the server still asks for a login after the token exchange'
+
 /** A failed step of the login whose message is the whole reason: it did not end in time, or got broken metadata. */
 class Reason extends Error {}
 
@@ -178,8 +180,25 @@ const portOf = (url: string | undefined): number | undefined => {
   return port === '' ? undefined : Number(port)
 }
 
-/** A JSON object, also a cut one, with a key of protected-resource metadata. */
-const METADATA_LIKE = /^\s*\{[\s\S]*"(?:resource|authorization_servers)"\s*:/
+const METADATA_KEYS = ['resource', 'authorization_servers']
+/** A cut JSON object with a key of protected-resource metadata. A cut text cannot tell its depth. */
+const CUT_METADATA = /^\s*\{[\s\S]*"(?:resource|authorization_servers)"\s*:/
+
+/** True when `text` is a JSON object with a top-level key of protected-resource metadata, or a cut one. */
+const metadataLike = (text: string): boolean => {
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return CUT_METADATA.test(text)
+  }
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    METADATA_KEYS.some(key => Object.hasOwn(value, key))
+  )
+}
 
 /** The text of a failed parse of metadata on one line. The SDK throws a zod error, whose message is JSON. */
 const invalidText = (err: unknown): string => {
@@ -202,7 +221,7 @@ const takesOAuth = async (url: string, fetchFn: FetchLike): Promise<boolean> => 
     fetchFn(to, init).then(
       async response => {
         if (response.status >= 500 || response.status === 408 || response.status === 429) unsure = true
-        if (response.ok && METADATA_LIKE.test(await response.clone().text())) sawMetadata = true
+        if (response.ok && metadataLike(await response.clone().text())) sawMetadata = true
         return response
       },
       err => {
@@ -281,11 +300,14 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
   }
 
   const open = io.open ?? openBrowser(io.platform)
+  /** Set after the token exchange: one login opens one authorization. */
+  let exchanged = false
   const provider = oauthProvider(store, oauth, {
     kind: 'login',
     redirectUrl: `http://127.0.0.1:${callback.port}/callback`,
     state,
     open: url => {
+      if (exchanged) throw new Error(STILL_ASKS)
       // The URL comes from the metadata of the server. The browser opener also runs files and custom schemes.
       if (url.protocol !== 'https:' && !isLoopbackHttp(url))
         throw new Error(
@@ -301,11 +323,12 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
   /** A transport that sends its MCP requests plainly and its authorization steps with `authFetch`. */
   const connect = async (authFetch: FetchLike = plain) => {
     // Login never reads the stream of server messages. A 401 to its GET would start a second authorization beside the
-    // one of a request or of login itself: a second registration and browser tab, of which only the last works.
+    // one of a request or of login itself: a second registration and browser tab, of which only the last works. A GET
+    // with Last-Event-ID resumes the stream of a request, which can carry the answer, so it goes to the server.
     const fetchFn: FetchLike = (url, init) =>
       new URL(url).href !== serverUrl
         ? authFetch(url, init)
-        : init?.method === 'GET'
+        : init?.method === 'GET' && !new Headers(init.headers).has('last-event-id')
           ? Promise.resolve(new Response(null, { status: 405 }))
           : plain(url, init)
     const transport = new StreamableHTTPClientTransport(new URL(server.url), { authProvider: provider, fetch: fetchFn })
@@ -374,8 +397,9 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
     code = answer.code
     authFetch = within(plain, limitMs, 'the token exchange did not end')
     await first.transport.finishAuth(code)
+    exchanged = true
     client = (await connect()).client
-    if (client === undefined) throw new Error('the server still asks for a login after the token exchange')
+    if (client === undefined) throw new Error(STILL_ASKS)
     const tools = await listAll(client)
     const mode = io.platform === 'win32' ? '' : ' (mode 0600)'
     io.print(`Logged in to ${key}. It has ${plural(tools.length)}. The tokens are in ${store}${mode}.`)
