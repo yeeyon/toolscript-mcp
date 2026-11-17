@@ -470,6 +470,8 @@ list follows it.
   held it.
 - After a run reads untrusted text, each later result of that run counts as untrusted too. The program can send the
   text to any tool, and the tool can send it back.
+- After a server returns one wrapped result, each later result of that server in the session counts as untrusted.
+  This includes its errors and its binary attachments, which the Azure DevOps server does not wrap.
 - A file can also hold untrusted text: the attachments of such a result, and each file that `saveFile` writes after
   its run read untrusted text. A run that reads such a file with `readFile` gets the wrapper too.
 

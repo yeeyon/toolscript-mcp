@@ -98,6 +98,20 @@ const TOOLS: Record<string, Tool> = {
       },
     ],
   }),
+  // A work item attachment that is not text, as the Azure DevOps server sends it: a resource blob with no wrapper.
+  attach: () => {
+    const blob = Buffer.from(JSON.stringify({ note: INJECTED })).toString('base64')
+    return {
+      content: [
+        {
+          type: 'resource',
+          resource: { uri: `data:application/json;base64,${blob}`, mimeType: 'application/json', blob },
+        },
+      ],
+    }
+  },
+  // An error that a tool callback throws: the SDK server sends its message as error text with no wrapper.
+  itemthrow: () => ({ content: [{ type: 'text', text: `work item 7: ${INJECTED}` }], isError: true }),
   itemshot: () => ({
     content: [
       { type: 'text', text: spotlight('{"id":7}') },
@@ -143,7 +157,7 @@ const SCHEMAS: Record<string, unknown> = {
   search: { type: 'object', properties: { query: {}, maxResults: {} }, required: ['query'] },
 }
 
-/** One fake server `f` with the tools above, and the servers in `others`. `called` lists each call that reached `f`. */
+/** One fake server `f` with the tools above, and the servers in `others`. `called` lists each call that reached a server. */
 const fakeDownstream = (others: readonly ServerState[] = []) => {
   const called: string[] = []
   let inFlight = 0
@@ -182,15 +196,13 @@ const fakeDownstream = (others: readonly ServerState[] = []) => {
     states: () => states,
     retry: async () => {},
     relist: async () => {},
-    client: async (key: ServerKey) =>
-      key === 'f'
-        ? {
-            ok: true,
-            client,
-            hide: (text: string) => text,
-            tools: states[0]!.status === 'connected' ? states[0]!.tools : [],
-          }
-        : { ok: false, reason: `no MCP server "${key}" is connected` },
+    // A connected server in `others` answers with the tools of `f`, under the names that it lists.
+    client: async (key: ServerKey) => {
+      const state = states.find(s => s.key === key && s.status === 'connected')
+      return state?.status === 'connected'
+        ? { ok: true, client, hide: (text: string) => text, tools: state.tools }
+        : { ok: false, reason: `no MCP server "${key}" is connected` }
+    },
     close: async () => {},
   } as unknown as Downstream
   return { downstream, called, most: () => most }
@@ -236,6 +248,7 @@ const setup = (o: Options = {}) => {
     kept: o.kept ?? newKept(),
     written: o.written ?? new Map(),
     untrustedFiles: new Set(),
+    untrustedServers: new Set(),
     shapes: new Map(),
     filesDir,
     ask: async needed => (
@@ -606,6 +619,25 @@ describe('untrusted content', () => {
     assert.ok(hostMark(r.text) !== undefined, r.text)
     assert.ok(!r.text.includes('IGNORE_ALL'), r.text)
     assert.equal(r.text.match(/\n- \(a name that no server lists\) failed/g)?.length, 3, r.text)
+  })
+
+  test('make it fail: after a wrapped result, each later result of its server is untrusted, also in a later run', async () => {
+    const g = ['attach', 'itemthrow'].map(name => ({ name, inputSchema: { type: 'object' } }))
+    const { run } = setup({ others: [{ key: 'g' as ServerKey, status: 'connected', tools: g }] })
+    const attached = 'return await readFile((await call("mcp__f__attach", {})).attachments[0].file)'
+    assert.equal(hostMark((await run(attached)).text), undefined, 'a server is trusted before its first wrapper')
+    await run('await call("mcp__f__item", {})\nreturn 1')
+    // A blob attachment and an error that a tool throws, which the Azure DevOps server sends with no wrapper.
+    const blob = await run('return (await call("mcp__f__attach", {})).attachments[0].file')
+    const file = JSON.parse(hostMark(blob.text)?.inside ?? 'null') as string
+    assert.ok(typeof file === 'string', blob.text)
+    assert.ok(hostMark((await run(`return await readFile(${JSON.stringify(file)})`)).text) !== undefined)
+    const thrown = await run('try { await call("mcp__f__itemthrow", {}) } catch (e) { return e.message }')
+    assert.ok(hostMark(thrown.text)?.inside.includes(INJECTED), thrown.text)
+    const other = await run(
+      `try { await call("mcp__g__itemthrow", {}) } catch {}\n${attached.replace('mcp__f__', 'mcp__g__')}`,
+    )
+    assert.equal(hostMark(other.text), undefined, other.text)
   })
 
   test('an attachment of an untrusted result marks the run that reads its file', async () => {

@@ -110,6 +110,12 @@ export type RunContext = {
    * that saveFile wrote after its run read untrusted content.
    */
   readonly untrustedFiles: Set<string>
+  /**
+   * The servers that returned untrusted content in this session. Each later
+   * result of such a server counts as untrusted: the Azure DevOps server does
+   * not wrap its binary attachments and the errors that its tools throw.
+   */
+  readonly untrustedServers: Set<ServerKey>
   /** The shape of each tool's result, by tool name, for search_tools. */
   readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
@@ -462,6 +468,7 @@ const execute = async (
     const denied = callDecision(config.policy, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
+    const fromUntrusted = (): { untrusted?: true } => (ctx.untrustedServers.has(server) ? { untrusted: true } : {})
     // The link comes with the list after the last change of the server, so the check sees each new mark.
     const listed = (tools: readonly DownstreamTool[]) =>
       listedNames([{ key: server, status: 'connected', tools }], server)!
@@ -504,15 +511,17 @@ const execute = async (
         },
         fileFor,
       )
-      if (!reply.ok) return { ...reply, code: 'tool-error', ...mark }
+      if (mark.untrusted === true) ctx.untrustedServers.add(server)
+      const fromServer = fromUntrusted()
+      if (!reply.ok) return { ...reply, code: 'tool-error', ...fromServer }
       // After untrusted content, the program can have sent it to this tool, and the tool can send it back.
-      if (mark.untrusted === true || untrusted)
+      if (fromServer.untrusted === true || untrusted)
         for (const { file } of files) ctx.untrustedFiles.add(path.basename(file).toLowerCase())
       const unwritten = await writeAttachments(ctx.filesDir, files, ctx.written).then(
         () => undefined,
         (err: unknown) => `could not write an attachment of ${tool}: ${errorText(err)}`,
       )
-      return unwritten === undefined ? { ...reply, ...mark } : { ok: false, error: unwritten, code: 'failed' }
+      return unwritten === undefined ? { ...reply, ...fromServer } : { ok: false, error: unwritten, code: 'failed' }
     } catch (err) {
       // An abort at the end of the run is also a RequestTimeout to the SDK. The SDK's own timer puts the limit in
       // `data`. A server can send the same code for its own error (mcp-remote does, for a failed login): its text stays.
@@ -528,7 +537,12 @@ const execute = async (
           code: 'timeout',
         }
       // A server can echo a token of its own in an error, as an HTTP error body.
-      return { ok: false, error: link.hide(errorText(err)), code: own.signal.aborted ? 'cancelled' : 'failed' }
+      return {
+        ok: false,
+        error: link.hide(errorText(err)),
+        code: own.signal.aborted ? 'cancelled' : 'failed',
+        ...fromUntrusted(),
+      }
     } finally {
       cancel.signal.removeEventListener('abort', stop)
     }
