@@ -306,7 +306,13 @@ test('(p) an http server that answers 401 without tokens asks for a login, with 
   const text = await search('')
   // The server runs as `node <main>`, so the command is not npx.
   const word = w =>
-    /^[\w./:\\@+~-]+$/.test(w) ? w : `'${w.replace(/'/g, process.platform === 'win32' ? "''" : `'\\''`)}'`
+    /^[\w./:\\@+~-]+$/.test(w)
+      ? w
+      : process.platform !== 'win32'
+        ? `'${w.replace(/'/g, `'\\''`)}'`
+        : /[$`"%!]|\\$/.test(w)
+          ? `'${w.replace(/'/g, "''")}'`
+          : `"${w}"`
   const command = ['node', path.resolve(MAIN), 'login', 'locked', '--config', path.resolve(configFile)]
     .map(word)
     .join(' ')

@@ -52,16 +52,22 @@ export const invalidReason = (errors: readonly string[]): string =>
   `invalid entry in the toolscript-mcp config: ${errors.join('; ')}`
 
 /**
- * One word of a printed command, as it is when the shell keeps it, else as a literal in single quotes, so no `$`,
- * backtick or `$(...)` expands: PowerShell on Windows, a POSIX shell elsewhere. A bare PowerShell word starts with a
- * letter or a path character, so it is not a number. Before a script, such as the npm shim of claude, PowerShell
- * drops a bare `--` and splits `-a:b`. It also reads the curly quotes U+2018 to U+201B as single quotes.
+ * One word of a printed command, as it is when the shell keeps it, else quoted as a literal. On Windows the word
+ * works in cmd.exe and in PowerShell: bare, else in double quotes. A word with `$`, a backtick, `"`, `%` or `!`, which
+ * expand or end the string in one of them (PowerShell also reads U+201C to U+201E as double quotes), or with a final backslash, which escapes the closing quote, goes in single
+ * quotes instead. Only PowerShell reads those, and there no `$`, backtick or `$(...)` expands. On other systems a
+ * POSIX shell reads the word, in single quotes. A bare PowerShell word starts with a letter or a path character, so
+ * it is not a number. Before a script, such as the npm shim of claude, PowerShell drops a bare `--` and splits
+ * `-a:b`. It also reads the curly quotes U+2018 to U+201B as single quotes, so a word with one is never bare, and
+ * the single-quote form doubles it.
  */
 export const shellWord = (word: string, platform: string): string =>
   platform === 'win32'
     ? /^(?:--?[A-Za-z][\w-]*|[A-Za-z./\\][\w./:\\~-]*)$/.test(word)
       ? word
-      : `'${word.replace(/['‘-‛]/g, '$&$&')}'`
+      : /[$`"%!“-„]|\\$/.test(word)
+        ? `'${word.replace(/['‘-‛]/g, '$&$&')}'`
+        : `"${word}"`
     : /^[\w./:@+-][\w./:@+~-]*$/.test(word)
       ? word
       : `'${word.replace(/'/g, `'\\''`)}'`

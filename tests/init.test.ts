@@ -436,7 +436,7 @@ describe('toolscript-mcp init', () => {
     const { out, file } = await init(home, [], 'win32')
     assert.ok(
       out.includes(
-        `claude mcp add --scope user toolscript '--' cmd /c npx -y toolscript-mcp --config ${shellWord(file, 'win32')}`,
+        `claude mcp add --scope user toolscript "--" cmd /c npx -y toolscript-mcp --config ${shellWord(file, 'win32')}`,
       ),
       out,
     )
@@ -468,7 +468,7 @@ describe('toolscript-mcp init', () => {
       assert.ok(!win.out.includes('cmd /c'), win.out)
       assert.ok(
         win.out.includes(
-          `claude mcp add --scope user toolscript '--' node 'C:\\Users\\u\\my tools\\toolscript-mcp\\dist\\host\\main.js' --config`,
+          `claude mcp add --scope user toolscript "--" node "C:\\Users\\u\\my tools\\toolscript-mcp\\dist\\host\\main.js" --config`,
         ),
         win.out,
       )
@@ -513,9 +513,56 @@ describe('the login command', () => {
     )
     assert.equal(
       loginCommand({ command: 'node', args: ['C:\\my tools\\main.js'] }, 'win32', 'jira' as never, 'C:\\c.json'),
-      `node 'C:\\my tools\\main.js' login jira --config C:\\c.json`,
+      `node "C:\\my tools\\main.js" login jira --config C:\\c.json`,
     )
   })
+})
+
+describe('shellWord', () => {
+  test('on Windows a bare word stays bare and a word with a space gets double quotes', () => {
+    assert.equal(shellWord('C:\\a\\b.json', 'win32'), 'C:\\a\\b.json')
+    assert.equal(shellWord('C:\\a b\\main.js', 'win32'), '"C:\\a b\\main.js"')
+    assert.equal(shellWord('--', 'win32'), '"--"')
+    assert.equal(shellWord('-a:b', 'win32'), '"-a:b"')
+  })
+
+  test('on Windows a word that expands in cmd or PowerShell gets single quotes, doubled inside', () => {
+    assert.equal(shellWord('C:\\a b\\$x\\c.json', 'win32'), `'C:\\a b\\$x\\c.json'`)
+    assert.equal(shellWord('C:\\a b\\%TEMP%\\c.json', 'win32'), `'C:\\a b\\%TEMP%\\c.json'`)
+    assert.equal(shellWord('C:\\a b\\it’s\\c', 'win32'), '"C:\\a b\\it’s\\c"')
+    assert.equal(shellWord('$it’s', 'win32'), `'$it’’s'`)
+    assert.equal(shellWord("$it's", 'win32'), `'$it''s'`)
+    assert.equal(shellWord('C:\\a b\\', 'win32'), `'C:\\a b\\'`)
+    assert.equal(shellWord('a b!', 'win32'), `'a b!'`)
+    assert.equal(shellWord('a “b', 'win32'), `'a “b'`)
+  })
+
+  test('on POSIX a word with a space gets single quotes', () => {
+    assert.equal(shellWord('/a b/c', 'linux'), `'/a b/c'`)
+    assert.equal(shellWord("/a/it's", 'darwin'), `'/a/it'\\''s'`)
+    assert.equal(shellWord('/a/b.json', 'linux'), '/a/b.json')
+  })
+
+  test(
+    'cmd /d /c passes a printed Windows word with a space as one argument',
+    { skip: process.platform !== 'win32' },
+    () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript cmd-'))
+      temps.push(dir)
+      const script = path.join(dir, 'argv.mjs')
+      fs.writeFileSync(script, `process.stdout.write(JSON.stringify(process.argv.slice(2)))\n`)
+      const printed = loginCommand({ command: 'node', args: [script] }, 'win32', 'x' as never)
+      assert.ok(printed.includes(`"${script}"`), printed)
+      const line = printed.replace(/^node/, `"${process.execPath}"`)
+      const run = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+        encoding: 'utf8',
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      })
+      assert.equal(run.status, 0, `${run.stdout}${run.stderr}`)
+      assert.deepEqual(JSON.parse(run.stdout), ['login', 'x'])
+    },
+  )
 })
 
 describe('detectLaunch', () => {
