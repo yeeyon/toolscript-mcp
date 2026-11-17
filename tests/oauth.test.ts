@@ -284,6 +284,7 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
   const run = async (downstream: Downstream, code: string): Promise<string> => {
     const config: Config = {
       servers: new Map(),
+      bridges: new Set(),
       sandbox: { node: process.execPath, timeoutSeconds: 30, callTimeoutSeconds: 30 },
       policy: [{ match: 'mcp__*', action: 'allow', index: 0 }],
       log: false,

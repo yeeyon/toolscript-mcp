@@ -38,7 +38,9 @@ import {
   toValue,
   serverInstructions,
 } from '../src/core/protocol.ts'
+import { parseConfig, type ServerKey } from '../src/core/config.ts'
 
+const NO_BRIDGES = new Set<ServerKey>()
 const has = (text: string | undefined, part: string) => typeof text === 'string' && text.includes(part)
 
 describe('protocol', () => {
@@ -754,40 +756,49 @@ describe('the tool table', () => {
   })
 
   test('the instructions name the servers behind toolscript', () => {
-    const text = serverInstructions(['jira', 'grafana'])
+    const text = serverInstructions(['jira', 'grafana'], NO_BRIDGES)
     assert.match(text, /\bjira, grafana\b/)
     assert.match(text, /search_tools.*run_code/)
-    assert.doesNotMatch(serverInstructions([]), /:\s*\./)
+    assert.doesNotMatch(serverInstructions([], NO_BRIDGES), /:\s*\./)
   })
 
   // #47: with the same servers also listed as direct tools, a session never called run_code.
   test('the instructions say when to prefer run_code to direct tools', () => {
-    for (const text of [serverInstructions(['jira']), serverInstructions([])])
+    for (const text of [serverInstructions(['jira'], NO_BRIDGES), serverInstructions([], NO_BRIDGES)])
       assert.match(text, /Prefer run_code to their direct tools for several calls, a write and its check, or a part of/)
   })
 
   // #47: the direct tools of the Claude Code bridge are the client's own, which its permission rules and hooks guard.
   // The bridge text costs 168 characters in each session with the bridge, and none without it.
-  test('the instructions keep the built-in tools direct only when the bridge is a server', () => {
+  test('the instructions keep the built-in tools direct only when a bridge is a server', () => {
+    const instructions = (servers: string[]) => {
+      const parsed = parseConfig(
+        JSON.stringify({ mcpServers: Object.fromEntries(servers.map(key => [key, { command: 'node' }])) }),
+        {},
+        process.execPath,
+        'linux',
+      )
+      assert.ok(parsed.ok)
+      return serverInstructions(servers, parsed.config.bridges)
+    }
     const bridge =
       /For Read, Bash, Edit and the other tools of claude-code, use your own built-in tools directly\. Call claude-code from a program only for data that stays/
-    assert.match(serverInstructions(['jira', 'claude-code']), bridge)
-    assert.equal(
-      serverInstructions(['jira', 'claude-code']).length - serverInstructions(['jira', 'claude-codf']).length,
-      168,
-    )
+    assert.match(instructions(['jira', 'claude-code']), bridge)
+    assert.equal(instructions(['jira', 'claude-code']).length - instructions(['jira', 'claude-codf']).length, 168)
     const keys = Array.from({ length: 400 }, (_, i) => `server-number-${i}`)
-    const cut = serverInstructions([...keys, 'claude-code'])
+    const cut = instructions([...keys, 'claude-code'])
     assert.ok(cut.length <= 4096, `length ${cut.length}`)
     assert.match(cut, bridge)
     for (const servers of [['jira'], [], ['claude-code-extra']])
-      assert.equal(serverInstructions(servers).includes('built-in'), false, servers.join(','))
+      assert.equal(instructions(servers).includes('built-in'), false, servers.join(','))
+    const other = serverInstructions(['jira', 'claude'], new Set(['claude' as ServerKey]))
+    assert.match(other, /the other tools of claude, use your own built-in tools directly\. Call claude from a program/)
   })
 
   // Claude Code cuts server instructions at 4,096 characters.
   test('the instructions stay under 4,096 characters with many servers', () => {
     const keys = Array.from({ length: 400 }, (_, i) => `server-number-${i}`)
-    const text = serverInstructions(keys)
+    const text = serverInstructions(keys, NO_BRIDGES)
     assert.ok(text.length <= 4096, `length ${text.length}`)
     assert.match(text, /search_tools.*run_code/)
     const listed = keys.filter(k => new RegExp(`\\b${k}\\b`).test(text)).length
@@ -797,7 +808,7 @@ describe('the tool table', () => {
 
   // A served tool must not send the model to a tool that this server does not list.
   test('the listed text names no Claude Code tool and no tool that is not listed', () => {
-    const instructions = serverInstructions(['bench'])
+    const instructions = serverInstructions(['bench'], NO_BRIDGES)
     const text = [...SERVED.map(n => JSON.stringify(registration(n))), instructions].join('\n')
     for (const name of SERVED) assert.ok(instructions.includes(name), `the instructions do not name ${name}`)
     for (const name of TOOL_NAMES.filter(n => !(SERVED as readonly string[]).includes(n)))

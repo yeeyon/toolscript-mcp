@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { parseConfig } from '../src/core/config.ts'
+import { parseConfig, type ServerKey } from '../src/core/config.ts'
 import { oldRunLogFile, runLogFile } from '../src/core/paths.ts'
 import {
   MAX_CALLS,
@@ -83,6 +83,7 @@ describe('the run record', () => {
 })
 
 describe('the decision of a call', () => {
+  const NO_BRIDGES = new Set<ServerKey>()
   const policy = [
     { match: 'mcp__f__echo', action: 'allow' as const, index: 0 },
     { match: 'mcp__f__rm', action: 'deny' as const, index: 1 },
@@ -90,18 +91,25 @@ describe('the decision of a call', () => {
   test('names what the policy and the approval said', () => {
     const approved = new Set(['mcp__f__slow'])
     const none = new Set<string>()
-    assert.equal(callDecision(policy, approved, 'mcp__f__echo', none), 'allow')
-    assert.equal(callDecision(policy, approved, 'mcp__f__rm', none), 'denied')
-    assert.equal(callDecision(policy, approved, 'mcp__f__slow', none), 'ask-approved')
-    assert.equal(callDecision(policy, approved, 'mcp__f__other', none), 'unapproved')
-    assert.equal(callDecision(policy, approved, 'Bash', none), 'invalid')
+    assert.equal(callDecision(policy, NO_BRIDGES, approved, 'mcp__f__echo', none), 'allow')
+    assert.equal(callDecision(policy, NO_BRIDGES, approved, 'mcp__f__rm', none), 'denied')
+    assert.equal(callDecision(policy, NO_BRIDGES, approved, 'mcp__f__slow', none), 'ask-approved')
+    assert.equal(callDecision(policy, NO_BRIDGES, approved, 'mcp__f__other', none), 'unapproved')
+    assert.equal(callDecision(policy, NO_BRIDGES, approved, 'Bash', none), 'invalid')
   })
 
   test('an allow rule does not count as approval of a tool whose server requires a person', () => {
     const marked = new Set(['mcp__f__echo', 'mcp__f__rm'])
-    assert.equal(callDecision(policy, new Set(), 'mcp__f__echo', marked), 'unapproved')
-    assert.equal(callDecision(policy, new Set(['mcp__f__echo']), 'mcp__f__echo', marked), 'ask-approved')
-    assert.equal(callDecision(policy, new Set(), 'mcp__f__rm', marked), 'denied')
+    assert.equal(callDecision(policy, NO_BRIDGES, new Set(), 'mcp__f__echo', marked), 'unapproved')
+    assert.equal(callDecision(policy, NO_BRIDGES, new Set(['mcp__f__echo']), 'mcp__f__echo', marked), 'ask-approved')
+    assert.equal(callDecision(policy, NO_BRIDGES, new Set(), 'mcp__f__rm', marked), 'denied')
+  })
+
+  test('the log names a call of a bridge tool under an allow rule for every server as unapproved', () => {
+    const all = [{ match: '*', action: 'allow' as const, index: 0 }]
+    const bridges = new Set(['f' as ServerKey])
+    assert.equal(callDecision(all, bridges, new Set(), 'mcp__f__echo', new Set()), 'unapproved')
+    assert.equal(callDecision(all, NO_BRIDGES, new Set(), 'mcp__f__echo', new Set()), 'allow')
   })
 })
 

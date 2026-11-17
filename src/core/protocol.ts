@@ -1130,18 +1130,19 @@ export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolsc
 const INSTRUCTIONS_MAX = 4096
 // A session that also had the servers as direct tools never called run_code (#47), so the text names when to prefer it.
 const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.`
-/** The server key of the Claude Code bridge in the README and the setup skill. */
-const BRIDGE = 'claude-code'
-// Its direct tools are the client's own: a program that calls them skips the client's permission rules and hooks.
-const INSTRUCTIONS_BRIDGE = `For Read, Bash, Edit and the other tools of ${BRIDGE}, use your own built-in tools directly. Call ${BRIDGE} from a program only for data that stays in the program.`
+// The tools of a bridge are the client's own: a program that calls them skips the client's permission rules and hooks.
+const instructionsBridge = (names: string) =>
+  `For Read, Bash, Edit and the other tools of ${names}, use your own built-in tools directly. Call ${names} from a program only for data that stays in the program.`
 
 /**
  * The server's instructions, read by the model at the start of a session. They
  * name the servers of the config, so a task that names only a product finds
  * toolscript. Names that do not fit in INSTRUCTIONS_MAX become "and N more".
+ * `bridges`: the servers that serve the client's own tools (config.ts).
  */
-export const serverInstructions = (servers: readonly string[]): string => {
-  const use = servers.includes(BRIDGE) ? `${INSTRUCTIONS_USE} ${INSTRUCTIONS_BRIDGE}` : INSTRUCTIONS_USE
+export const serverInstructions = (servers: readonly string[], bridges: ReadonlySet<string>): string => {
+  const bridged = servers.filter(key => bridges.has(key))
+  const use = bridged.length > 0 ? `${INSTRUCTIONS_USE} ${instructionsBridge(bridged.join(' and '))}` : INSTRUCTIONS_USE
   const text = (shown: number) => {
     const more = servers.length - shown
     if (shown === 0) return `toolscript connects to other MCP servers. ${use}`

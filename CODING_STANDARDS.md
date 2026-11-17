@@ -76,9 +76,14 @@ enforces; the others rely on discipline.
   `[test: run.test.ts and server.e2e.mjs, cases run (q) and run (r)]`
 - A program can write the config file through a tool. So a policy read at a run applies at once only when
   `onlyTightens` (`src/core/policy.ts`) says it comes from the policy in force by inserted deny rules, removed allow
-  rules and actions lowered in place. Decide it from the rules alone: a check that tries tool names misses a name
-  that a rule shadows or that no server lists. Any other change applies only after the person approves it, or at a
-  restart. `[test: policy.test.ts and server.e2e.mjs, cases run (m), run (n) and run (o)]`
+  rules and actions lowered in place. Decide it from the rules and the bridges alone: a check that tries tool names
+  misses a name that a rule shadows or that no server lists. Any other change applies only after the person approves
+  it, or at a restart. `[test: policy.test.ts and server.e2e.mjs, cases run (m), run (n) and run (o)]`
+- A bridge serves the client's own tools, such as Claude Code with `claude mcp serve`, and a program that calls them
+  skips the client's permission rules and hooks. `parseConfig` finds the bridges: the key `claude-code`, or a stdio
+  command that runs `claude mcp serve`. An allow rule allows a tool of a bridge only when its match starts with
+  `mcp__<key>__` (`counts` in `src/core/policy.ts`). Never keep a list of the tools of a bridge: a later version adds
+  tools. `[test: policy.test.ts and run.test.ts]`
 - Every run removes its exchange dir, also after a timeout, a kill or a shutdown.
   `[test: run.test.ts and server.e2e.mjs check the temp dir after the runs]`
 - Never weaken a sandbox layer, the policy check, the guard of hint and function files or the approval of proposals

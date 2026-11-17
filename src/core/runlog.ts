@@ -4,7 +4,7 @@
 // because any of them can hold data. The host writes the file; this file shapes
 // a line and decides when the file rotates.
 
-import { decide, type Policy } from './policy.ts'
+import { decide, type Bridges, type Policy } from './policy.ts'
 import { isCallable, splitToolName } from './protocol.ts'
 import { SERVER_NAME } from './tools.ts'
 
@@ -43,12 +43,13 @@ export type RunRecord = {
  */
 export const callDecision = (
   policy: Policy,
+  bridges: Bridges,
   approved: ReadonlySet<string>,
   tool: string,
   interactive: ReadonlySet<string>,
 ): CallDecision => {
   if (!isCallable(tool, SERVER_NAME) || splitToolName(tool) === undefined) return 'invalid'
-  const { action } = decide(policy, tool)
+  const { action } = decide(policy, bridges, tool)
   if (action === 'deny') return 'denied'
   if (approved.has(tool)) return 'ask-approved'
   return action === 'allow' && !interactive.has(tool) ? 'allow' : 'unapproved'

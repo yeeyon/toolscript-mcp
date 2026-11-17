@@ -115,6 +115,7 @@ const rules = (...list: [string, Rule['action']][]): Rule[] =>
 
 type Options = {
   policy?: Rule[]
+  bridges?: ServerKey[]
   timeoutSeconds?: number
   answer?: Approval
   canAsk?: boolean
@@ -135,6 +136,7 @@ const setup = (o: Options = {}) => {
   const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
     servers: new Map(),
+    bridges: new Set(o.bridges),
     sandbox: {
       node: process.execPath,
       timeoutSeconds: o.timeoutSeconds ?? 20,
@@ -641,6 +643,53 @@ describe('approval', () => {
     const r = await run('try { await call("mcp__f__fail", {}) } catch (e) { return e.message }')
     assert.ok(r.text.includes('"server error"'), r.text)
     assert.ok(!r.text.includes('## No allow rule'), r.text)
+  })
+})
+
+// The fake server f stands for Claude Code with `claude mcp serve`: its tools skip the client's own checks.
+describe('a tool of a bridge', () => {
+  const all = rules(['*', 'allow'])
+
+  test('an allow rule for every server asks the person, and a decline makes no call', async () => {
+    const declined = setup({ policy: all, bridges: ['f' as ServerKey], answer: 'decline' })
+    const d = await declined.run('return await call("mcp__f__echo", { n: 1 })')
+    assert.ok(d.text.includes('the person did not approve'), d.text)
+    assert.deepEqual(declined.asked, [['mcp__f__echo']])
+    assert.deepEqual(declined.called, [])
+    assert.equal(declined.lines().at(-1)?.calls[0]?.decision, 'unapproved')
+    const unasked = setup({ policy: all, bridges: ['f' as ServerKey], canAsk: false })
+    const u = await unasked.run('return await call("mcp__f__echo", { n: 1 })')
+    assert.ok(u.text.includes('add {"match": "mcp__f__echo", "action": "allow"} to "policy"'), u.text)
+    assert.deepEqual(unasked.called, [])
+  })
+
+  test('a name built at run time is refused under an allow rule for every server', async () => {
+    const { run, called, asked } = setup({ policy: all, bridges: ['f' as ServerKey] })
+    const r = await run('try { await call("mcp__f__" + "echo", {}) } catch (e) { return e.message }')
+    assert.deepEqual(asked, [])
+    assert.ok(r.text.includes('not approved: no policy rule allows mcp__f__echo'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('an allow rule that names the server runs the call with no prompt', async () => {
+    for (const match of ['mcp__f__*', 'mcp__f__echo']) {
+      const { run, called, asked } = setup({
+        policy: rules([match, 'allow'], ['*', 'deny']),
+        bridges: ['f' as ServerKey],
+      })
+      const r = await run('return await call("mcp__f__" + "echo", { n: 1 })')
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(asked, [], match)
+      assert.deepEqual(called, ['echo'], match)
+    }
+  })
+
+  test('the same allow rule for every server runs a call of a server that is not a bridge', async () => {
+    const { run, called, asked } = setup({ policy: all })
+    const r = await run('return await call("mcp__f__echo", { n: 1 })')
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [])
+    assert.deepEqual(called, ['echo'])
   })
 })
 

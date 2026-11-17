@@ -25,6 +25,7 @@ import {
   planRun,
   refusedReport,
   type Asks,
+  type Bridges,
   type Policy,
 } from '../core/policy.ts'
 import {
@@ -120,10 +121,10 @@ const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallL
 })
 
 /** A call that a refused program names. It never started; `error` says why the policy or its server stops it. */
-const notMade = (policy: Policy, states: readonly ServerState[], tool: string): CallLog => {
+const notMade = (policy: Policy, bridges: Bridges, states: readonly ServerState[], tool: string): CallLog => {
   const server = splitToolName(tool)?.server
   const names = server === undefined ? undefined : listedNames(states, server)
-  const checked = callDecision(policy, new Set(), tool, interactiveTools(states))
+  const checked = callDecision(policy, bridges, new Set(), tool, interactiveTools(states))
   const decision = checked !== 'denied' && names !== undefined && !names.includes(tool) ? 'invalid' : checked
   return { tool, decision, ms: 0, ok: false, ...(decision === 'allow' ? {} : { error: decision }) }
 }
@@ -162,18 +163,18 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   await ctx.downstream.settled
   const named = literalCalls(code)
   const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
-  const { policy } = ctx.config
+  const { policy, bridges } = ctx.config
   const refuse = (text: string) => {
     const states = ctx.downstream.states()
     const known = new Set(catalogOf(states).map(t => t.name))
     return refused(
       text,
       known,
-      named.map(c => notMade(policy, states, c.tool)),
+      named.map(c => notMade(policy, bridges, states, c.tool)),
     )
   }
   // A denied name refuses the program before any traffic to its server.
-  const denied = planRun(policy, literal, new Set())
+  const denied = planRun(policy, bridges, literal, new Set())
   if (denied.kind === 'refused') return refuse(deniedReport(denied.denied))
   // A failed server that the program names connects again before the check.
   await ctx.downstream.retry(serversOf(literal), ctx.signal)
@@ -194,7 +195,7 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
 
-  const plan = planRun(policy, literal, interactiveTools(states))
+  const plan = planRun(policy, bridges, literal, interactiveTools(states))
   if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
   if (plan.ask.length + plan.interactive.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan, code) : 'unsupported'
@@ -349,16 +350,17 @@ const execute = async (
       }
     }
     const check = (interactive: ReadonlySet<string>): (Reply & { code: CallError }) | undefined => {
-      const decision = callDecision(config.policy, approved, tool, interactive)
+      const decision = callDecision(config.policy, config.bridges, approved, tool, interactive)
       decided.set(id, decision)
-      const result = checkCall(config.policy, approved, tool, interactive)
+      const result = checkCall(config.policy, config.bridges, approved, tool, interactive)
       if (result.ok) return undefined
       if (result.needs === 'rule') unapproved.add(tool)
       if (result.needs === 'person') needPerson.add(tool)
       return { ok: false, error: result.error, code: decision }
     }
     // A denied name sends nothing to its server, not even a list for a miss.
-    const denied = callDecision(config.policy, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
+    const denied =
+      callDecision(config.policy, config.bridges, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
     // The link comes with the list after the last change of the server, so the check sees each new mark.
@@ -371,7 +373,7 @@ const execute = async (
       link = await downstream.client(server, cancel.signal)
     }
     if (!link.ok) {
-      decided.set(id, callDecision(config.policy, approved, tool, interactiveNow()))
+      decided.set(id, callDecision(config.policy, config.bridges, approved, tool, interactiveNow()))
       return { ok: false, error: link.reason, code: 'no-server' }
     }
     // A name that the server does not list can never run: say so before the policy offers a rule for it.
@@ -558,7 +560,7 @@ const execute = async (
     // A call still in the queue at the end was never checked.
     audits.set(id, {
       tool,
-      decision: decided.get(id) ?? callDecision(config.policy, approved, tool, interactiveNow()),
+      decision: decided.get(id) ?? callDecision(config.policy, config.bridges, approved, tool, interactiveNow()),
       ms: 0,
       ok: false,
       error: 'unfinished',

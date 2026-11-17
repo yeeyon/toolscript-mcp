@@ -313,6 +313,12 @@ of your config.
 
 A refused call throws an error in the program. The program can catch it.
 
+An `allow` rule for more than one server, such as `*` or `mcp__*__Read`, never allows a tool of the
+[Claude Code bridge](#claude-code-as-a-downstream-server). Only an `allow` rule whose `match` starts with
+`mcp__<key>__`, with the key of the bridge, allows such a tool. For a tool of the bridge, toolscript-mcp skips each
+other `allow` rule, and the next rule that matches decides. `deny` and `ask` rules apply to the bridge as to the other
+servers.
+
 The policy matches tool names only. It does not read the arguments of a call, such as a command or a file path. If a
 tool needs limits on its arguments, set those limits in its server.
 
@@ -372,10 +378,9 @@ it. To use that check in place of the toolscript-mcp prompts, allow every tool i
 Put a `deny` rule before the `*` rule for each tool that must never run. Keep the default `ask` in a client that has
 no check of its own, such as Claude Desktop.
 
-If your config has the [Claude Code bridge](#claude-code-as-a-downstream-server), keep its rules before the `*` rule.
-Without them, the `*` rule allows every tool of Claude Code with no prompt, for example `Bash`, `Write` and `Agent`.
-The `policy` command of the setup skill never loosens a tool of Claude Code, unless a new rule that starts with
-`mcp__claude-code__` decides that tool. For each other tool, the command adds a rule with the old decision.
+The `*` rule does not allow the tools of the [Claude Code bridge](#claude-code-as-a-downstream-server), such as `Bash`,
+`Write` and `Agent`. toolscript-mcp asks you for them. To allow a tool of the bridge, add a rule that names it, such as
+`mcp__claude-code__Read`.
 
 This setup does not give the checks of Code Mode. Code Mode checks each tool call of a program with your Claude Code
 rules and hooks. Claude Code sees only the `run_code` call of toolscript-mcp, not its nested calls:
@@ -592,9 +597,29 @@ Add the entry to `mcpServers`, and the rules to `policy`, in your config:
 - On Linux and macOS, `command` is `claude`.
 - `cwd` is the folder of the project. Bash commands start there, and Grep and Glob search there.
 - Without `cwd`, Claude Code works in the folder where your client started toolscript-mcp.
-- Put the rules before a broad rule, such as `{ "match": "*", "action": "allow" }`. The first rule that matches decides.
+- Put the rules before a broad `deny` or `ask` rule, such as `{ "match": "*", "action": "deny" }`. The first rule that
+  matches decides.
 - The last rule denies the other tools of Claude Code, for example `Agent`, `WebFetch` and `CronCreate`.
 - `ask` needs a client with MCP elicitation. If your client cannot ask, toolscript-mcp refuses each `ask` tool.
+
+toolscript-mcp treats a server as the bridge when its key is `claude-code`, or when its stdio command runs
+`claude mcp serve`. A tool of the bridge skips the permission rules and hooks of Claude Code. So an `allow` rule
+allows it only when the `match` starts with `mcp__<key>__`, with the key of the bridge. A broad `allow` rule, such as
+`*`, does not allow it. For example, with this policy:
+
+```json
+"policy": [
+  { "match": "mcp__claude-code__Read", "action": "allow" },
+  { "match": "*", "action": "allow" }
+]
+```
+
+- `mcp__claude-code__Read` runs with no prompt.
+- Each other tool of Claude Code is `ask`, also a tool that a later version of Claude Code adds.
+- The tools of the other servers run with no prompt.
+
+To allow every tool of the bridge, add `{ "match": "mcp__claude-code__*", "action": "allow" }`. Read
+[The risks](#the-risks) first.
 
 ### The risks
 
