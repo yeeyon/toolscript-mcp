@@ -792,9 +792,13 @@ test('run (t) the program gets the JSON in an untrusted wrapper, and the model g
   })
   const text = r.content[0].text
   assert.equal(r.isError, false, text)
+  // The notes of the run, the policy note of an earlier case included, come after the value in the wrapper.
   const mark =
-    /^<<([0-9a-f]{32})>> \[UNTRUSTED TOOL CONTENT: [^\]\n]*\] <<\1>>\n(\d+)\n<<\/\1>>\n\n--- 1 MCP call/.exec(text)
+    /^<<([0-9a-f]{32})>> \[UNTRUSTED TOOL CONTENT: [^\]\n]*\] <<\1>>\n(\d+)(\n\n[^]*)?\n<<\/\1>>\n\n--- 1 MCP call/.exec(
+      text,
+    )
   assert.ok(mark !== null, text)
+  assert.equal(text.slice(text.indexOf(`<</${mark[1]}>>`)).includes('\n## '), false, text)
   assert.deepEqual(
     probeEvents(waryFile, 'call').map(e => e.pid),
     [Number(mark[2])],
