@@ -292,6 +292,7 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
       downstream,
       config,
       kept: newKept(),
+      written: new Map(),
       shapes: new Map(),
       filesDir: path.join(home, 'files'),
       ask: async () => 'accept',

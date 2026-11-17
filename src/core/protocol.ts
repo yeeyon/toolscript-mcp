@@ -127,13 +127,50 @@ export type Attachment =
   | { type: string }
 
 /** A file that the host writes before the program gets the reply: `data` is base64. */
-export type PendingFile = { readonly file: string; readonly data: string }
+export type PendingFile = { readonly file: string; readonly data: string; readonly mimeType: string }
 
 /** The reply for a tool result, and the files of its attachments, which the host writes before it replies. */
 export type CallReply = { readonly reply: Reply; readonly files: readonly PendingFile[] }
 
-/** The path of a new file in the session's saveFile folder, with this extension. */
-export type FileFor = (extension: string) => string
+/** The path of a new file in the session's saveFile folder for an attachment of `bytes`, or why it gets none. */
+export type FileFor = (extension: string, bytes: number) => Stored
+
+// The attachments that one run writes, by count and by bytes.
+export const MAX_RUN_ATTACHMENTS = 64
+export const MAX_RUN_ATTACHMENT_BYTES = 64 * 1024 * 1024
+
+/** The FileFor of one run: `newPath` names each file, up to the caps of a run. */
+export const runFiles = (newPath: (extension: string) => string): FileFor => {
+  let count = 0
+  let total = 0
+  return (extension, bytes) => {
+    if (count >= MAX_RUN_ATTACHMENTS)
+      return { error: `one run writes at most ${MAX_RUN_ATTACHMENTS} attachments: not written` }
+    if (total + bytes > MAX_RUN_ATTACHMENT_BYTES)
+      return { error: `the attachments of one run hold at most ${MAX_RUN_ATTACHMENT_BYTES} bytes: not written` }
+    count++
+    total += bytes
+    return { file: newPath(extension) }
+  }
+}
+
+/**
+ * The attachment files that the host wrote in one session, by path, with the
+ * type of their block. Only these show as images: a reference in a value can
+ * come from the text of a tool, so it can name any path and any type.
+ */
+export type Written = Map<string, string>
+
+export const MAX_WRITTEN = 4096
+
+/** Records a file that the host wrote. The oldest goes past MAX_WRITTEN. */
+export const recordWritten = (written: Written, file: string, mimeType: string): void => {
+  written.set(file, mimeType)
+  for (const old of written.keys()) {
+    if (written.size <= MAX_WRITTEN) break
+    written.delete(old)
+  }
+}
 
 const EXTENSIONS: Readonly<Record<string, string>> = {
   'image/png': '.png',
@@ -175,11 +212,16 @@ const attachmentOf = (block: McpBlock, fileFor: FileFor): { attachment: Attachme
     mimeType: string | undefined,
   ): { stored: Stored & { bytes: number }; file?: PendingFile } => {
     const bytes = typeof data === 'string' ? base64Bytes(data) : undefined
-    if (bytes === undefined) return { stored: { bytes: 0, error: 'the block has no base64 data: not written' } }
+    if (bytes === undefined || bytes === 0)
+      return { stored: { bytes: 0, error: 'the block has no base64 data: not written' } }
     if (bytes > MAX_FILE_SIZE)
       return { stored: { bytes, error: `${bytes} bytes is more than the file limit of ${MAX_FILE_SIZE}: not written` } }
-    const file = fileFor(extensionOf(mimeType))
-    return { stored: { bytes, file }, file: { file, data: data as string } }
+    const where = fileFor(extensionOf(mimeType), bytes)
+    if ('error' in where) return { stored: { bytes, ...where } }
+    return {
+      stored: { bytes, file: where.file },
+      file: { file: where.file, data: data as string, mimeType: mimeType ?? 'application/octet-stream' },
+    }
   }
   if (block.type === 'image' || block.type === 'audio') {
     const mimeType = typeof block.mimeType === 'string' ? block.mimeType : 'application/octet-stream'
@@ -205,8 +247,7 @@ const attachmentOf = (block: McpBlock, fileFor: FileFor): { attachment: Attachme
   return { attachment: { type: block.type } }
 }
 
-const isText = (block: McpBlock): block is McpBlock & { text: string } =>
-  block.type === 'text' && typeof block.text === 'string'
+const textOf = (block: McpBlock): string => (typeof block.text === 'string' ? block.text : `[${block.type} block]`)
 
 /**
  * The reply for a tool result. With text and structured content only, the
@@ -218,11 +259,11 @@ const isText = (block: McpBlock): block is McpBlock & { text: string } =>
  */
 export const mcpReply = (r: McpResultLike, fileFor: FileFor): CallReply => {
   if (r.isError) {
-    const text = r.content.map(block => (isText(block) ? block.text : `[${block.type} block]`)).join('\n')
+    const text = r.content.map(block => (block.type === 'text' ? textOf(block) : `[${block.type} block]`)).join('\n')
     return { reply: { ok: false, error: text || 'the tool reported an error' }, files: [] }
   }
-  const texts = r.content.filter(isText).map(block => block.text)
-  const others = r.content.filter(block => !isText(block))
+  const texts = r.content.filter(block => block.type === 'text').map(textOf)
+  const others = r.content.filter(block => block.type !== 'text')
   const text = texts.join('\n')
   if (others.length === 0)
     return { reply: { ok: true, value: toValue({ structuredContent: r.structuredContent }, text) }, files: [] }
@@ -413,70 +454,103 @@ export const savedReply = (format: SavedResult['format'], fileText: string, file
   return mcpReply({ content: parsed, isError: false }, fileFor)
 }
 
-/** An image attachment that a program returned: the host shows its file as an MCP image block. */
-export type ReturnedImage = { readonly file: string; readonly mimeType: string }
+/** How many values of a return value the search for image references visits, at most. */
+export const MAX_SEARCHED_VALUES = 100_000
 
-const isImageAttachment = (v: unknown): v is ReturnedImage & { type: 'image' } =>
-  v !== null &&
-  typeof v === 'object' &&
-  (v as { type?: unknown }).type === 'image' &&
-  typeof (v as { file?: unknown }).file === 'string' &&
-  typeof (v as { mimeType?: unknown }).mimeType === 'string'
-
-const childrenOf = (v: unknown): unknown[] =>
-  Array.isArray(v) ? v : v !== null && typeof v === 'object' ? Object.values(v) : []
+// JSON.stringify writes no space in an object and escapes each quote in a
+// string, so this text is an image type key, or rarely a string that ends in
+// an escaped quote. A count that is too high only adds a note.
+const IMAGE_TYPE = /"type":"image"/g
 
 /**
- * The image attachments in a return value (JSON): the value itself, or one
- * within two levels of arrays and objects, so `return await call(…)` shows its
- * images too. Each file once, in order.
+ * The files of the image references in a return value (JSON), at any depth,
+ * in order, each once. A reference is an object with `type: "image"` and a
+ * `file`; its `mimeType` does not count. `unsearched`: the search stopped at
+ * MAX_SEARCHED_VALUES, and the value has an image type it did not reach.
  */
-export const returnedImages = (json: string): ReturnedImage[] => {
+export const returnedImages = (json: string): { files: string[]; unsearched: boolean } => {
+  const none = { files: [], unsearched: false }
+  const marked = json.match(IMAGE_TYPE)?.length ?? 0
+  if (marked === 0) return none
   let value: unknown
   try {
     value = JSON.parse(json)
   } catch {
-    return []
+    return none
   }
-  const found = new Map<string, ReturnedImage>()
-  const visit = (v: unknown, depth: number): void => {
-    if (isImageAttachment(v)) {
-      if (!found.has(v.file)) found.set(v.file, { file: v.file, mimeType: v.mimeType })
-      return
+  const files = new Set<string>()
+  let typed = 0
+  let searched = 0
+  const stack: unknown[] = [value]
+  while (stack.length > 0 && searched < MAX_SEARCHED_VALUES) {
+    const v = stack.pop()
+    searched++
+    if (v === null || typeof v !== 'object') continue
+    const { type, file } = v as { type?: unknown; file?: unknown }
+    if (type === 'image') {
+      typed++
+      if (typeof file === 'string') files.add(file)
+      continue
     }
-    if (depth < 2) for (const child of childrenOf(v)) visit(child, depth + 1)
+    const children = Array.isArray(v) ? v : Object.values(v)
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i])
   }
-  visit(value, 0)
-  return [...found.values()]
+  return { files: [...files], unsearched: stack.length > 0 && typed < marked }
 }
 
-// The images of one run_code result. MCP clients show these types. An image
-// of 3,750,000 bytes is 5 MB as base64, the size limit of an image in the Claude API.
-export const SHOWN_IMAGE_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+const startsWith = (bytes: Uint8Array, at: number, head: string): boolean =>
+  bytes.length >= at + head.length && [...head].every((c, i) => bytes[at + i] === c.charCodeAt(0))
+
+// The images of one run_code result, by type, with the first bytes of a file
+// of that type. MCP clients show these types.
+const IMAGE_HEADS: Readonly<Record<string, (bytes: Uint8Array) => boolean>> = {
+  'image/png': b => startsWith(b, 0, '\x89PNG\r\n\x1a\n'),
+  'image/jpeg': b => startsWith(b, 0, '\xff\xd8\xff'),
+  'image/gif': b => startsWith(b, 0, 'GIF87a') || startsWith(b, 0, 'GIF89a'),
+  'image/webp': b => startsWith(b, 0, 'RIFF') && startsWith(b, 8, 'WEBP'),
+}
+
+export const SHOWN_IMAGE_TYPES: ReadonlySet<string> = new Set(Object.keys(IMAGE_HEADS))
+
+/** True when `bytes` start as an image of `mimeType` does, and that type shows. */
+export const holdsImage = (mimeType: string, bytes: Uint8Array): boolean =>
+  Object.hasOwn(IMAGE_HEADS, mimeType) && IMAGE_HEADS[mimeType]!(bytes)
+
+// An image of 3,750,000 bytes is 5 MB as base64, the size limit of an image in the Claude API.
 export const MAX_SHOWN_IMAGES = 4
 export const MAX_IMAGE_BYTES = 3_750_000
 export const MAX_SHOWN_IMAGE_BYTES = 8_000_000
+const MAX_LISTED_HIDDEN = 8
 
 /** Why a returned image is not shown. */
-export type HiddenWhy = 'type' | 'outside' | 'unreadable' | 'size' | 'count' | 'total'
+export type HiddenWhy = 'type' | 'not-written' | 'unreadable' | 'not-image' | 'size' | 'count' | 'total'
 
 const HIDDEN_TEXT: Readonly<Record<HiddenWhy, string>> = {
   type: 'only PNG, JPEG, GIF and WebP images show',
-  outside: 'it is not a file from this session',
+  'not-written': 'it is not an image file that a call of this session wrote',
   unreadable: 'the file cannot be read',
+  'not-image': 'the file does not hold an image of its type',
   size: `it is more than ${MAX_IMAGE_BYTES} bytes`,
   count: `at most ${MAX_SHOWN_IMAGES} images show per run`,
   total: `the images of one run show at most ${MAX_SHOWN_IMAGE_BYTES} bytes`,
 }
 
 /** The note for returned images that are not shown, or '' when every one shows. */
-export const hiddenImagesNote = (hidden: readonly { file: string; why: HiddenWhy }[]): string =>
-  hidden.length === 0
-    ? ''
-    : [
-        `${hidden.length} returned image${hidden.length === 1 ? ' is' : 's are'} not shown:`,
-        ...hidden.map(h => `- ${h.file}: ${HIDDEN_TEXT[h.why]}`),
-      ].join('\n')
+export const hiddenImagesNote = (hidden: readonly { file: string; why: HiddenWhy }[], unsearched: boolean): string => {
+  const lines =
+    hidden.length === 0
+      ? []
+      : [
+          `${hidden.length} returned image${hidden.length === 1 ? ' is' : 's are'} not shown:`,
+          ...hidden.slice(0, MAX_LISTED_HIDDEN).map(h => `- ${h.file}: ${HIDDEN_TEXT[h.why]}`),
+          ...(hidden.length > MAX_LISTED_HIDDEN ? [`- ${hidden.length - MAX_LISTED_HIDDEN} more`] : []),
+        ]
+  if (unsearched)
+    lines.push(
+      `Image references after the first ${MAX_SEARCHED_VALUES} values of the return value are not shown: return fewer values.`,
+    )
+  return lines.join('\n')
+}
 
 const clip = (text: string, max: number, whole?: number): string => {
   if (text.length <= max) return text

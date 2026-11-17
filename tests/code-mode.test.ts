@@ -42,7 +42,7 @@ import {
 const has = (text: string | undefined, part: string) => typeof text === 'string' && text.includes(part)
 
 // A result with no attachment writes no file, so it never asks for a path.
-const noFile = (): string => assert.fail('no file expected')
+const noFile = (): never => assert.fail('no file expected')
 const replyOf = (r: Parameters<typeof mcpReply>[0]) => mcpReply(r, noFile).reply
 const savedOf = (format: Parameters<typeof savedReply>[0], text: string) => savedReply(format, text, noFile).reply
 

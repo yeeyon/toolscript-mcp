@@ -41,6 +41,7 @@ import {
   fileText,
   formatOutcome,
   hiddenImagesNote,
+  holdsImage,
   isCallable,
   isEmpty,
   keep,
@@ -50,7 +51,9 @@ import {
   notListedText,
   problemReport,
   recallReply,
+  recordWritten,
   returnedImages,
+  runFiles,
   shapeOf,
   shownText,
   splitToolName,
@@ -60,10 +63,10 @@ import {
   type Kept,
   type PendingFile,
   type Reply,
-  type ReturnedImage,
   type RunnerDone,
   type RunnerError,
   type RunnerMessage,
+  type Written,
 } from '../core/protocol.ts'
 import {
   callDecision,
@@ -98,6 +101,8 @@ export type RunContext = {
   readonly config: Config
   /** The results kept for recall(n), for the whole session. */
   readonly kept: Kept
+  /** The attachment files that the calls of this session wrote. */
+  readonly written: Written
   /** The shape of each tool's result, by tool name, for search_tools. */
   readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
@@ -240,56 +245,61 @@ const saveFile = async (dir: string, name: string, data: unknown): Promise<Reply
   return { ok: true, value: file }
 }
 
-/** A new file in the session's saveFile folder, for an attachment of a tool result. */
-const attachmentFile = (dir: string) => (extension: string) => path.join(dir, `${randomUUID()}${extension}`)
-
-// The attachments of a tool result, as saveFile writes: only the person can read them.
-const writeAttachments = async (dir: string, files: readonly PendingFile[]): Promise<void> => {
+// The attachments of a tool result, as saveFile writes: only the person can
+// read them. The program gets all of them or an error, so a failed write
+// removes the files of the result that it wrote before.
+const writeAttachments = async (dir: string, files: readonly PendingFile[], written: Written): Promise<void> => {
   if (files.length === 0) return
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
-  for (const { file, data } of files)
-    await fs.promises.writeFile(file, Buffer.from(data, 'base64'), { mode: 0o600, flag: 'wx' })
+  const done: string[] = []
+  try {
+    for (const { file, data } of files) {
+      await fs.promises.writeFile(file, Buffer.from(data, 'base64'), { mode: 0o600, flag: 'wx' })
+      done.push(file)
+    }
+  } catch (err) {
+    await Promise.all(done.map(file => fs.promises.rm(file, { force: true }).catch(() => {})))
+    throw err
+  }
+  for (const { file, mimeType } of files) recordWritten(written, file, mimeType)
 }
 
 /**
  * The image attachments that a program returned, read from their files, up
- * to the caps. Only a file in the session's folder shows, by its real path,
- * as readFile reads: a program can name any path in a reference.
+ * to the caps. Only a file that a call of this session wrote shows, with the
+ * type of its block. Any other path is never looked up on the disk.
  */
 const showImages = async (
-  dir: string,
-  returned: readonly ReturnedImage[],
+  written: Written,
+  returned: { files: readonly string[]; unsearched: boolean },
 ): Promise<{ images: ShownImage[]; note: string }> => {
   const images: ShownImage[] = []
   const hidden: { file: string; why: HiddenWhy }[] = []
   let total = 0
-  const realDir = returned.length === 0 ? undefined : await fs.promises.realpath(dir).catch(() => undefined)
-  const load = async ({ file, mimeType }: ReturnedImage): Promise<HiddenWhy | Buffer> => {
+  const load = async (file: string): Promise<HiddenWhy | ShownImage> => {
+    const mimeType = written.get(file)
+    if (mimeType === undefined) return 'not-written'
     if (!SHOWN_IMAGE_TYPES.has(mimeType)) return 'type'
-    const real = await fs.promises.realpath(path.resolve(dir, file)).catch(() => undefined)
-    if (real === undefined || realDir === undefined || !isInside(real, realDir)) return 'outside'
-    const stat = await fs.promises.stat(real).catch(() => undefined)
-    if (stat === undefined || !stat.isFile()) return 'outside'
+    const stat = await fs.promises.lstat(file).catch(() => undefined)
+    if (stat === undefined || !stat.isFile()) return 'unreadable'
     if (stat.size > MAX_IMAGE_BYTES) return 'size'
     if (images.length >= MAX_SHOWN_IMAGES) return 'count'
     if (total + stat.size > MAX_SHOWN_IMAGE_BYTES) return 'total'
-    const bytes = await fs.promises.readFile(real).catch(() => undefined)
+    const bytes = await fs.promises.readFile(file).catch(() => undefined)
     if (bytes === undefined) return 'unreadable'
-    // The file can have grown since the stat.
+    // The file can have grown since the stat: saveFile can write a file of the same name.
     if (bytes.length > MAX_IMAGE_BYTES) return 'size'
     if (total + bytes.length > MAX_SHOWN_IMAGE_BYTES) return 'total'
-    return bytes
+    if (!holdsImage(mimeType, bytes)) return 'not-image'
+    total += bytes.length
+    return { data: bytes.toString('base64'), mimeType }
   }
-  for (const image of returned) {
-    const loaded = await load(image)
-    if (typeof loaded === 'string') {
-      hidden.push({ file: image.file, why: loaded })
-      continue
-    }
-    total += loaded.length
-    images.push({ data: loaded.toString('base64'), mimeType: image.mimeType })
+  for (const file of returned.files) {
+    const loaded = await load(file)
+    if (typeof loaded === 'string') hidden.push({ file, why: loaded })
+    else images.push(loaded)
   }
-  return { images, note: hiddenImagesNote(hidden) }
+  return { images, note: hiddenImagesNote(hidden, returned.unsearched) }
 }
 
 // readFile reads only a file in the session's saveFile folder: a program can
@@ -367,6 +377,7 @@ const execute = async (
   let recalls = 0
   const answers: Promise<void>[] = []
   const limit = limiter(MAX_PARALLEL_CALLS)
+  const fileFor = runFiles(extension => path.join(ctx.filesDir, `${randomUUID()}${extension}`))
   // Cancels the nested calls still running after the settle wait.
   const cancel = new AbortController()
   // Set when the sandbox ends: a call still in the queue has no reader, so it does not start.
@@ -466,10 +477,10 @@ const execute = async (
           isError: r.isError === true,
           structuredContent: r.structuredContent,
         },
-        attachmentFile(ctx.filesDir),
+        fileFor,
       )
       if (!reply.ok) return { ...reply, code: 'tool-error' }
-      const unwritten = await writeAttachments(ctx.filesDir, files).then(
+      const unwritten = await writeAttachments(ctx.filesDir, files, ctx.written).then(
         () => undefined,
         (err: unknown) => `could not write an attachment of ${tool}: ${errorText(err)}`,
       )
@@ -645,7 +656,10 @@ const execute = async (
   const wholeRef = isCut ? keep(kept, returned, Date.now()) : undefined
   const text = formatOutcome(outcome, calls.length, stderr, MAX_RESULT_CHARS, { calls, recalls, recalled, wholeRef })
   // Image tokens are paid only for the images that the program returns.
-  const shown = await showImages(ctx.filesDir, returned === undefined ? [] : returnedImages(returned))
+  const shown = await showImages(
+    ctx.written,
+    returned === undefined ? { files: [], unsearched: false } : returnedImages(returned),
+  )
   const note = [
     shown.note,
     approvalNote([...unapproved], ctx.canAsk()),

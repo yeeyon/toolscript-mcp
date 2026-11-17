@@ -28,8 +28,8 @@ import fs from 'node:fs'
 import readline from 'node:readline'
 
 const [file, mode] = process.argv.slice(2)
-// tests/server.e2e.mjs checks these bytes.
-const IMAGE_BASE64 = Buffer.from('fake panel render').toString('base64')
+// A PNG of 1 by 1 pixel. tests/server.e2e.mjs checks these bytes.
+const IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const event = e =>
   fs.appendFileSync(`${file}.log`, `${JSON.stringify({ ...e, pid: process.pid, ppid: process.ppid })}\n`)
 fs.writeFileSync(file, JSON.stringify({ pid: process.pid, cwd: process.cwd(), env: process.env }))

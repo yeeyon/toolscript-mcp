@@ -37,8 +37,8 @@ const hangFile = path.join(dir, 'hang.pid')
 const writerFile = path.join(dir, 'writer.json')
 const consentFile = path.join(dir, 'consent.json')
 const picFile = path.join(dir, 'pic.json')
-// The image that a probe in --image mode answers.
-const PIC_BASE64 = Buffer.from('fake panel render').toString('base64')
+// The image that a probe in --image mode answers: a PNG of 1 by 1 pixel.
+const PIC_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const configFile = path.join(dir, 'config.json')
 // Every call that reaches the fake server, one JSON line each.
 const BENCH_LOG = path.join(dir, 'bench.jsonl')
@@ -769,14 +769,13 @@ test('run (l) a call with no answer in callTimeoutSeconds throws, the program go
 })
 
 test('run (s) an image of a call is a file reference, and a returned reference is an MCP image block', async () => {
-  const code =
-    'const r = await call("mcp__pic__probe", {})\nreturn [r.attachments[0], await readFile(r.attachments[0].file)]'
+  const code = 'return (await call("mcp__pic__probe", {})).attachments[0]'
   const r = await client.callTool({ name: 'run_code', arguments: { code } })
   assert.equal(r.isError, false, r.content[0].text)
-  const [ref, text] = JSON.parse(r.content[0].text.slice(0, r.content[0].text.indexOf('\n\n---')))
+  const ref = JSON.parse(r.content[0].text.slice(0, r.content[0].text.indexOf('\n\n---')))
   assert.equal(ref.type, 'image')
   assert.equal(ref.mimeType, 'image/png')
-  assert.equal(text, 'fake panel render', 'the file holds the decoded bytes')
+  assert.deepEqual(fs.readFileSync(ref.file), Buffer.from(PIC_BASE64, 'base64'), 'the file holds the decoded bytes')
   assert.equal(path.dirname(path.dirname(ref.file)), path.join(HOME, '.toolscript-mcp', 'files'))
   assert.deepEqual(r.content.slice(1), [{ type: 'image', data: PIC_BASE64, mimeType: 'image/png' }])
   assert.equal(r.content[0].text.includes(PIC_BASE64), false, 'no base64 in the text')
