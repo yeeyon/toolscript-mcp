@@ -473,6 +473,9 @@ text, the notes about approval and the policy come after the call list.
   text to any tool, and the tool can send it back.
 - After a server returns one wrapped result, each later result of that server in the session counts as untrusted.
   This includes its errors and its binary attachments, which the Azure DevOps server does not wrap.
+- If a server entry has `"untrusted": true`, each result of that server counts as untrusted from its first call.
+- Without `"untrusted": true`, the results of a server before its first wrapped result stay trusted. Set it for the
+  Azure DevOps MCP server, because its first call can return an error or a binary attachment.
 - A file can also hold untrusted text: the attachments of such a result, and each file that `saveFile` writes after
   its run read untrusted text. A run that reads such a file with `readFile` gets the wrapper too.
 
@@ -486,7 +489,7 @@ The call list after the wrapper holds no untrusted text:
 
 toolscript-mcp tracks untrusted text only inside one run, and across runs only through `recall(n)`, `readFile` and
 attachment files. A downstream tool can store untrusted text in one run and return it in a later run. That later
-result counts as untrusted only when its server returned a wrapped result before.
+result counts as untrusted only when its server has `"untrusted": true` or returned a wrapped result before.
 
 Images are not in the wrapper. An image of an untrusted result reaches the model as an image block, and an image can
 hold text with instructions. Return an image only from a source that you trust.
@@ -498,6 +501,8 @@ hold text with instructions. Return an image only from a source that you trust.
 - On other systems, it reads `$XDG_CONFIG_HOME/toolscript-mcp/config.json`, else `~/.config/toolscript-mcp/config.json`.
 - A stdio server has `command`, `args`, `env` and `cwd`. An HTTP server has `"type": "http"`, `url`, `headers` and
   `oauth`. See [OAuth login](#oauth-login).
+- `"untrusted": true` on a server of either type marks each of its results as untrusted. See
+  [Untrusted text](#untrusted-text).
 - `cwd` is the folder that a stdio server starts in. It must be an absolute path. Without `cwd`, the server starts in
   the folder of toolscript-mcp.
 - On Windows, `cwd` needs a drive letter or a share, for example `C:/work/app`.

@@ -112,6 +112,10 @@ const TOOLS: Record<string, Tool> = {
   },
   // An error that a tool callback throws: the SDK server sends its message as error text with no wrapper.
   itemthrow: () => ({ content: [{ type: 'text', text: `work item 7: ${INJECTED}` }], isError: true }),
+  // An MCP error that a server sends for a failed request.
+  itemmcp: () => {
+    throw new McpError(ErrorCode.InternalError, `work item 7: ${INJECTED}`)
+  },
   // Untrusted text that names the tools that the program calls next.
   next: () => ({
     content: [{ type: 'text', text: spotlight(JSON.stringify({ next: 'mcp__f__writeit', then: 'mcp__f__grant' })) }],
@@ -228,6 +232,7 @@ type Options = {
   others?: ServerState[]
   written?: RunContext['written']
   policyNote?: string
+  servers?: Config['servers']
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -239,7 +244,7 @@ const setup = (o: Options = {}) => {
   const marked: string[][] = []
   const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
-    servers: new Map(),
+    servers: o.servers ?? new Map(),
     sandbox: {
       node: process.execPath,
       timeoutSeconds: o.timeoutSeconds ?? 20,
@@ -645,6 +650,38 @@ describe('untrusted content', () => {
       `try { await call("mcp__g__itemthrow", {}) } catch {}\n${attached.replace('mcp__f__', 'mcp__g__')}`,
     )
     assert.equal(hostMark(other.text), undefined, other.text)
+  })
+
+  test('make it fail: each result of a server that the config marks untrusted is untrusted, from its first call', async () => {
+    const tools = ['attach', 'itemthrow', 'itemmcp', 'echo'].map(name => ({ name, inputSchema: { type: 'object' } }))
+    const marked = { kind: 'stdio', command: 'fake', args: [], env: {}, untrusted: true } as const
+    // f is marked. g has the same tools, and the config does not mark it.
+    const { run } = setup({
+      others: [{ key: 'g' as ServerKey, status: 'connected', tools }],
+      servers: new Map([['f' as ServerKey, marked]]),
+    })
+    const shown = async (server: string, code: string) => {
+      const r = await run(code.replaceAll('mcp__s__', `mcp__${server}__`))
+      return { mark: hostMark(r.text), text: r.text }
+    }
+    for (const [server, untrusted] of [
+      ['g', false],
+      ['f', true],
+    ] as const) {
+      const error = await shown(server, 'try { await call("mcp__s__itemthrow", {}) } catch (e) { return e.message }')
+      const thrown = await shown(server, 'try { await call("mcp__s__itemmcp", {}) } catch (e) { return e.message }')
+      const blob = await shown(server, 'return (await call("mcp__s__attach", {})).attachments[0].file')
+      const file = JSON.parse(blob.mark?.inside ?? blob.text.slice(0, blob.text.indexOf('\n\n---'))) as string
+      const read = await shown(server, `return await readFile(${JSON.stringify(file)})`)
+      const echo = await shown(server, `await call("mcp__s__echo", { x: ${JSON.stringify(INJECTED)} })\nreturn 1`)
+      const ref = /#(\d+) mcp__\w__echo /.exec(echo.text)?.[1]
+      assert.ok(ref !== undefined, echo.text)
+      const recalled = await shown(server, `return (await recall(${ref})).echoed.x`)
+      for (const r of [error, thrown, blob, read, echo, recalled]) {
+        assert.equal(r.mark !== undefined, untrusted, `${server}: ${r.text}`)
+        if (untrusted) assert.ok(!outside(r.text).includes(INJECTED), r.text)
+      }
+    }
   })
 
   test('make it fail: in an untrusted run, the notes that name a tool are in the wrapper', async () => {

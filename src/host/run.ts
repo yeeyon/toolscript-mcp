@@ -471,7 +471,10 @@ const execute = async (
     const denied = callDecision(config.policy, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
-    const fromUntrusted = (): { untrusted?: true } => (ctx.untrustedServers.has(server) ? { untrusted: true } : {})
+    const entry = config.servers.get(server)
+    const marked = entry?.kind !== 'invalid' && entry?.untrusted === true
+    const fromUntrusted = (): { untrusted?: true } =>
+      marked || ctx.untrustedServers.has(server) ? { untrusted: true } : {}
     // The link comes with the list after the last change of the server, so the check sees each new mark.
     const listed = (tools: readonly DownstreamTool[]) =>
       listedNames([{ key: server, status: 'connected', tools }], server)!

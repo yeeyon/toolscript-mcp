@@ -208,11 +208,28 @@ describe('the config', () => {
       good: { kind: 'stdio', command: 'fake', args: [], env: {} },
       b: invalid('mcpServers.b.type: must be "stdio" or "http", not "sse"'),
       c: invalid(
-        'mcpServers.c.header: unknown key (known: type, url, headers, oauth)',
+        'mcpServers.c.header: unknown key (known: type, url, headers, oauth, untrusted)',
         'mcpServers.c.url: must start with http:// or https://',
       ),
       d: invalid('mcpServers.d.args[0]: must be a string', 'mcpServers.d.env.N: must be a string'),
       e: invalid('mcpServers.e: must be an object'),
+    })
+  })
+
+  test('"untrusted": true marks a stdio or http server, false is the default, and another value fails the entry', () => {
+    const config = ok({
+      mcpServers: {
+        ado: { command: 'npx', args: ['-y', '@azure-devops/mcp', 'fake'], untrusted: true },
+        web: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { 'X-Team': 'a' }, untrusted: true },
+        plain: { command: 'fake', untrusted: false },
+        bad: { command: 'fake', untrusted: 'yes' },
+      },
+    })
+    assert.deepEqual(Object.fromEntries(config.servers), {
+      ado: { kind: 'stdio', command: 'npx', args: ['-y', '@azure-devops/mcp', 'fake'], env: {}, untrusted: true },
+      web: { kind: 'http', url: 'https://mcp.example.com/mcp', headers: { 'X-Team': 'a' }, untrusted: true },
+      plain: { kind: 'stdio', command: 'fake', args: [], env: {} },
+      bad: { kind: 'invalid', errors: ['mcpServers.bad.untrusted: must be true or false'] },
     })
   })
 
