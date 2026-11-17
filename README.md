@@ -450,7 +450,8 @@ login waits 5 minutes for the browser. Then it connects to the server and prints
 
 Some servers, such as the Google Workspace MCP servers, list their tools without a token and ask for one only on a
 call. If such a server publishes protected-resource metadata, login starts the browser login all the same. A server
-that answers without a token and has no such metadata needs no login.
+that answers without a token and has no such metadata needs no login. If its authorization server has no dynamic
+client registration, give a client ID in `oauth`, as the next section shows.
 
 - An HTTP server without `headers` logs in with OAuth. To log in to a server with other headers, add `"oauth": true`.
 - `"oauth": false` turns the login off. An entry with an `Authorization` header and `oauth` is an error.
