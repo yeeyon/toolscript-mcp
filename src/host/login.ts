@@ -17,6 +17,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import {
   configPath,
+  hideClientSecret,
   invalidReason,
   parseConfig,
   redact,
@@ -225,7 +226,11 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
   let client: Client | undefined
   let code: string | undefined
   // A server can echo the request in an error: the state, the code, the verifier, the client secret or a token.
-  const hide = (text: string) => redact(text, server, [...provider.secrets(), ...(code === undefined ? [] : [code])])
+  const hide = (text: string) =>
+    hideClientSecret(
+      redact(text, server, [...provider.secrets(), ...(code === undefined ? [] : [code])]),
+      provider.clientSecret(),
+    )
   try {
     const first = await connect()
     client = first.client

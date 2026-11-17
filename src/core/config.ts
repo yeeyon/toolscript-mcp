@@ -679,6 +679,26 @@ export const basicCredentials = (id: string, secret: string): string | undefined
   }
 }
 
+/** An OAuth client with a secret. */
+export type ClientSecret = { readonly id: string; readonly secret: string }
+
+/**
+ * `text` with each client secret replaced by `***` where it stands as one: the value of a `client_secret` form field
+ * or JSON key, and the secret of `client` in its Basic pair and Basic header value. redact hides a secret under 8
+ * characters nowhere else, so a server cannot blank a common word.
+ */
+export const hideClientSecret = (text: string, client: ClientSecret | undefined): string => {
+  const hidden = text
+    .replace(/(client_secret=)[^&\s"]*/g, '$1***')
+    .replace(/("client_secret"\s*:\s*")(?:[^"\\]|\\.)*/g, '$1***')
+  if (client === undefined) return hidden
+  const basic = basicCredentials(client.id, client.secret)
+  return (basic === undefined ? hidden : hidden.replaceAll(`Basic ${basic}`, 'Basic ***')).replaceAll(
+    `${client.id}:${client.secret}`,
+    `${client.id}:***`,
+  )
+}
+
 /**
  * `value` as encodeURIComponent and as an HTML form write it, also with lowercase hex digits, and inside a JSON
  * string: an error can echo a URL, a form or a JSON body that it got.
