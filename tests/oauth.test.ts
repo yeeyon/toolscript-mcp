@@ -76,7 +76,7 @@ const startFake = async () => {
    * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
    * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`. `anonymous` lets the MCP
    * requests without a token through: all of them, all but `tools/call`, or all but `tools/list` and `tools/call`.
-   * `resourceMetadata` makes the protected-resource metadata missing (404), never answer, stop in its body, or get
+   * With `streamNeedsToken`, a GET of the stream without a token still gets 401. `resourceMetadata` makes the protected-resource metadata missing (404), never answer, stop in its body, or get
    * another answer. Its resource is `resource`, if set. Without `registration`, the authorization server has no
    * registration endpoint. With `stallServerMetadata`, its metadata never answers. With `stallExchange`, the token
    * endpoint never answers the code exchange.
@@ -87,6 +87,7 @@ const startFake = async () => {
     echo: '' as '' | 'call' | 'mcp' | 'refresh' | 'exchange',
     authMethods: ['none', 'client_secret_post', 'client_secret_basic'],
     anonymous: '' as '' | 'list' | 'all' | 'initialize',
+    streamNeedsToken: false,
     resourceMetadata: 'found' as
       | 'found'
       | 'missing'
@@ -117,9 +118,10 @@ const startFake = async () => {
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1]
     const message = req.method === 'POST' ? (JSON.parse(await body(req)) as { method?: string }) : {}
     const anonymous =
-      change.anonymous === 'all' ||
-      (change.anonymous === 'list' && message.method !== 'tools/call') ||
-      (change.anonymous === 'initialize' && !message.method?.startsWith('tools/'))
+      !(change.streamNeedsToken && req.method === 'GET') &&
+      (change.anonymous === 'all' ||
+        (change.anonymous === 'list' && message.method !== 'tools/call') ||
+        (change.anonymous === 'initialize' && !message.method?.startsWith('tools/')))
     if ((bearer === undefined || !access.has(bearer) || change.rejectAll) && !anonymous)
       return void res
         .writeHead(401, {
@@ -463,6 +465,39 @@ describe('login', () => {
     assert.deepEqual(s.leaks(), [])
   })
 
+  test('a 401 to the GET stream starts no second registration or authorization', async () => {
+    for (const anonymous of ['initialize', 'list'] as const) {
+      const fake = await startFake()
+      fake.change.anonymous = anonymous
+      fake.change.streamNeedsToken = true
+      const s = setup(fake)
+      assert.equal(await s.login(), 0, `${anonymous}: ${s.lines.join('\n')}`)
+      assert.equal(fake.seen.registrations, 1, anonymous)
+      assert.equal(fake.seen.authorizations.length, 1, anonymous)
+      assert.equal(await s.ping(s.connect()), PONG, anonymous)
+    }
+  })
+
+  test('a stall after a 401 to tools/list ends the login at the time limit', { timeout: 120_000 }, async () => {
+    for (const stall of ['resource', 'resource body', 'server'] as const) {
+      const fake = await startFake()
+      fake.change.anonymous = 'initialize'
+      if (stall === 'resource') fake.change.resourceMetadata = 'stalled'
+      else if (stall === 'resource body') fake.change.resourceMetadata = 'stalled body'
+      else fake.change.stallServerMetadata = true
+      const s = setup(fake)
+      const start = performance.now()
+      assert.equal(await s.login(cancel(), 2000), 1, s.lines.join('\n'))
+      assert.ok(performance.now() - start < 10_000, stall)
+      assert.equal(
+        s.lines.join('\n'),
+        `login to fake failed: the login did not start within 2 s (waiting for http://127.0.0.1:${fake.port})`,
+        stall,
+      )
+      assert.equal(fake.seen.authorizations.length, 0)
+    }
+  })
+
   test('a server that answers without a token and has no protected-resource metadata needs no login', async () => {
     const answers: Fake['change']['resourceMetadata'][] = [
       'missing',
@@ -522,6 +557,36 @@ describe('login', () => {
       `login to fake failed: it answered without a token and has 1 tool, but its protected-resource metadata is for https://other.example.com/mcp, not ${fake.url}. No tokens were stored.`,
     )
     assert.equal(fake.seen.authorizations.length, 0)
+  })
+
+  test('protected-resource metadata that is broken is a failed login, not "needs no login"', async () => {
+    const json = { 'content-type': 'application/json' }
+    for (const [body, why] of [
+      [
+        (url: string) => JSON.stringify({ resource: url, authorization_servers: 'not-a-list' }),
+        'authorization_servers: Invalid input: expected array, received string',
+      ],
+      [() => JSON.stringify({ resource: 42 }), 'resource: Invalid input: expected string, received number'],
+      // The text of a JSON syntax error differs between Node versions.
+      [(url: string) => `{"resource":"${url}","authorization_servers":["http`, ''],
+    ] as const) {
+      const fake = await startFake()
+      fake.change.anonymous = 'all'
+      fake.change.resourceMetadata = { status: 200, headers: json, body: body(fake.url) }
+      const s = setup(fake)
+      const opened: string[] = []
+      assert.equal(await s.login(cancel(opened)), 1, s.lines.join('\n'))
+      assert.ok(
+        s.lines
+          .join('\n')
+          .startsWith(
+            `login to fake failed: it answered without a token and has 1 tool, but its protected-resource metadata is not valid: ${why}`,
+          ),
+        s.lines.join('\n'),
+      )
+      assert.equal(fake.seen.registrations, 0)
+      assert.deepEqual(opened, [])
+    }
   })
 
   test('protected-resource metadata that fails to load is a failed login with its cause, not "needs no login"', async () => {
