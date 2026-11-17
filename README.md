@@ -130,9 +130,11 @@ npm ci
 Then start a new session of your client. Do not start the server with `npx github:…` in a client.
 In a measured start, the GitHub check of npx added about 12 seconds.
 
-Some CLI messages still print `npx -y toolscript-mcp`. Replace that prefix with
-`node /absolute/path/to/toolscript-mcp/dist/host/main.js`. This text defect is tracked in
-[#42](https://github.com/yeeyon/toolscript-mcp/issues/42).
+The commands that toolscript-mcp prints, such as the login command and the steps of `init`, use the start of the
+running process. From a clone, they start with `node /absolute/path/to/toolscript-mcp/dist/host/main.js`. From npm,
+they start with `npx -y toolscript-mcp`. On Windows, each path in them has forward slashes. So the login command
+works in cmd.exe, PowerShell and Git Bash. The Claude Code step of an npm install is for PowerShell. Run
+`node dist/host/main.js --help` to see the usage.
 
 #### With the Claude Code plugin
 
