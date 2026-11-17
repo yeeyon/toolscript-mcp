@@ -65,6 +65,8 @@ const startFake = async () => {
     /** The client authentication of each token request that got as far as the client check. */
     methods: [] as string[],
     refreshes: 0,
+    /** The GETs that resumed a stream of `resumeList`. */
+    resumes: 0,
     requests: [] as { origin: string; path: string; header: string | string[] | undefined }[],
   }
   /**
@@ -79,7 +81,9 @@ const startFake = async () => {
    * With `streamNeedsToken`, a GET of the stream without a token still gets 401. `resourceMetadata` makes the protected-resource metadata missing (404), never answer, stop in its body, or get
    * another answer. Its resource is `resource`, if set. Without `registration`, the authorization server has no
    * registration endpoint. With `stallServerMetadata`, its metadata never answers. With `stallExchange`, the token
-   * endpoint never answers the code exchange.
+   * endpoint never answers the code exchange. With `resumeList`, a `tools/list` gets a stream with only a priming event
+   * that closes, and its answer comes on the GET that resumes the stream with `Last-Event-ID`. With `noRefresh`, the
+   * token endpoint issues no refresh token.
    */
   const change = {
     authorizationEndpoint: '',
@@ -105,18 +109,25 @@ const startFake = async () => {
     refreshAnswer: undefined as { status: number; type: string; body: string } | undefined,
     grantErrorMs: 0,
     refuseClient: '',
+    resumeList: false,
+    noRefresh: false,
   }
   const held: (() => void)[] = []
   const issue = (clientId: string) => {
-    const tokens = { access_token: `fake-access-${randomUUID()}`, refresh_token: `fake-refresh-${randomUUID()}` }
-    access.add(tokens.access_token)
-    refresh.set(tokens.refresh_token, clientId)
-    secrets.add(tokens.access_token).add(tokens.refresh_token)
-    return { ...tokens, token_type: 'Bearer', expires_in: 3600 }
+    const access_token = `fake-access-${randomUUID()}`
+    access.add(access_token)
+    secrets.add(access_token)
+    if (change.noRefresh) return { access_token, token_type: 'Bearer', expires_in: 3600 }
+    const refresh_token = `fake-refresh-${randomUUID()}`
+    refresh.set(refresh_token, clientId)
+    secrets.add(refresh_token)
+    return { access_token, refresh_token, token_type: 'Bearer', expires_in: 3600 }
   }
+  /** The answers that wait for the GET that resumes their stream, by event id. */
+  const resumable = new Map<string, unknown>()
   const mcp = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1]
-    const message = req.method === 'POST' ? (JSON.parse(await body(req)) as { method?: string }) : {}
+    const message = req.method === 'POST' ? (JSON.parse(await body(req)) as { id?: number; method?: string }) : {}
     const anonymous =
       !(change.streamNeedsToken && req.method === 'GET') &&
       (change.anonymous === 'all' ||
@@ -128,7 +139,19 @@ const startFake = async () => {
           'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
         })
         .end()
+    const sse = { 'content-type': 'text/event-stream' }
+    const resumed = req.method === 'GET' ? resumable.get(String(req.headers['last-event-id'])) : undefined
+    if (resumed !== undefined) {
+      seen.resumes++
+      return void res.writeHead(200, sse).end(`id: ${randomUUID()}\ndata: ${JSON.stringify(resumed)}\n\n`)
+    }
     if (req.method !== 'POST') return void res.writeHead(405).end()
+    if (change.resumeList && message.method === 'tools/list') {
+      const id = randomUUID()
+      const tools = [{ name: 'ping', description: 'Ping.', inputSchema: { type: 'object' } }]
+      resumable.set(id, { jsonrpc: '2.0', id: message.id, result: { tools } })
+      return void res.writeHead(200, sse).end(`id: ${id}\nretry: 10\ndata: \n\n`)
+    }
     if (change.echo === 'mcp' || (change.echo === 'call' && message.method === 'tools/call'))
       return void res.writeHead(500).end(`boom for Bearer ${bearer}`)
     const server = new McpServer({ name: 'fake-oauth', version: '1.0.0' })
@@ -478,6 +501,40 @@ describe('login', () => {
     }
   })
 
+  test('a server that answers tools/list on a stream it closes and resumes on a GET logs in', async () => {
+    for (const anonymous of ['', 'initialize'] as const) {
+      const fake = await startFake()
+      fake.change.anonymous = anonymous
+      fake.change.resumeList = true
+      const s = setup(fake)
+      assert.equal(await s.login(browser(), 5000), 0, `${anonymous}: ${s.lines.join('\n')}`)
+      assert.match(s.lines.at(-1) ?? '', /^Logged in to fake\. It has 1 tool\./, anonymous)
+      assert.ok(fake.seen.resumes > 0, `${anonymous}: the list came on a resumed stream`)
+      assert.equal(fake.seen.authorizations.length, 1, anonymous)
+      assert.equal(await s.ping(s.connect()), PONG, anonymous)
+    }
+  })
+
+  test('a server that still answers 401 after the token exchange fails the login and opens one tab', async () => {
+    for (const anonymous of ['', 'initialize'] as const) {
+      const fake = await startFake()
+      fake.change.anonymous = anonymous
+      fake.change.rejectAll = true
+      fake.change.noRefresh = true
+      const s = setup(fake)
+      const opened: string[] = []
+      const follow = browser()
+      assert.equal(await s.login(url => (opened.push(url), follow(url))), 1, `${anonymous}: ${s.lines.join('\n')}`)
+      assert.equal(opened.length, 1, anonymous)
+      assert.equal(
+        s.lines.at(-1),
+        'login to fake failed: the server still asks for a login after the token exchange',
+        anonymous,
+      )
+      assert.deepEqual(s.leaks(), [])
+    }
+  })
+
   test('a stall after a 401 to tools/list ends the login at the time limit', { timeout: 120_000 }, async () => {
     for (const stall of ['resource', 'resource body', 'server'] as const) {
       const fake = await startFake()
@@ -506,6 +563,8 @@ describe('login', () => {
       { status: 401 },
       { status: 200, headers: { 'content-type': 'text/html' }, body: '<html>app</html>' },
       { status: 200, headers: { 'content-type': 'application/json' }, body: '{"name":"app"}' },
+      // Keys of the metadata count only at the top level.
+      { status: 200, headers: { 'content-type': 'application/json' }, body: '{"links":{"resource":"x"},"ok":true}' },
       { status: 302, headers: { location: 'https://login.example.com/' } },
     ]
     for (const answer of answers) {
