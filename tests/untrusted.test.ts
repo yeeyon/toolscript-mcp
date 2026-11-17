@@ -27,6 +27,15 @@ describe('untrustedBody', () => {
     assert.equal(untrustedBody(wrap('{"id":7}').replaceAll('\n', '\r\n')), '{"id":7}')
   })
 
+  test('make it fail: a CR at the end of the text stays, and a CRLF end counts only after a CRLF head', () => {
+    assert.equal(untrustedBody(wrap('abc\r')), 'abc\r')
+    assert.equal(untrustedBody(wrap('a\r\nb\r\n')), 'a\r\nb\r\n')
+    const n = nonce()
+    const [head, end] = wrap('', n).split('\n\n')
+    assert.equal(untrustedBody(`${head}\r\n{"id":7}\r\n${end}`), '{"id":7}')
+    assert.equal(untrustedBody(`${head}\r\n{"id":7}\n${end}`), undefined)
+  })
+
   test('make it fail: another nonce at the end, a partial wrapper or text around it is not a wrapper', () => {
     const n = nonce()
     const whole = wrap('{"id":7}', n)
