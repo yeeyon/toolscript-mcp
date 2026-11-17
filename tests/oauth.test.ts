@@ -62,6 +62,8 @@ const startFake = async () => {
     registrations: 0,
     authorizations: [] as URL[],
     tokens: [] as URLSearchParams[],
+    /** The client authentication of each token request that got as far as the client check. */
+    methods: [] as string[],
     refreshes: 0,
     requests: [] as { origin: string; path: string; header: string | string[] | undefined }[],
   }
@@ -72,13 +74,18 @@ const startFake = async () => {
    * `rejectAll`, the MCP endpoint answers 401 to every token. The token endpoint waits for `holdRefreshes` refresh
    * requests before it answers the first, so two clients use one refresh token. With `stallRefreshes`, it never answers
    * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
-   * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`.
+   * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`. `anonymous` lets the MCP
+   * requests without a token through: all of them, or all but `tools/call`. Without `resourceMetadata`, the fake has
+   * no protected-resource metadata, and without `registration`, its authorization server has no registration endpoint.
    */
   const change = {
     authorizationEndpoint: '',
     authServer: '',
     echo: '' as '' | 'call' | 'mcp' | 'refresh' | 'exchange',
     authMethods: ['none', 'client_secret_post', 'client_secret_basic'],
+    anonymous: '' as '' | 'list' | 'all',
+    resourceMetadata: true,
+    registration: true,
     rejectAll: false,
     holdRefreshes: 0,
     stallRefreshes: false,
@@ -97,14 +104,15 @@ const startFake = async () => {
   }
   const mcp = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1]
-    if (bearer === undefined || !access.has(bearer) || change.rejectAll)
+    const message = req.method === 'POST' ? (JSON.parse(await body(req)) as { method?: string }) : {}
+    const anonymous = change.anonymous === 'all' || (change.anonymous === 'list' && message.method !== 'tools/call')
+    if ((bearer === undefined || !access.has(bearer) || change.rejectAll) && !anonymous)
       return void res
         .writeHead(401, {
           'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
         })
         .end()
     if (req.method !== 'POST') return void res.writeHead(405).end()
-    const message = JSON.parse(await body(req)) as { method?: string }
     if (change.echo === 'mcp' || (change.echo === 'call' && message.method === 'tools/call'))
       return void res.writeHead(500).end(`boom for Bearer ${bearer}`)
     const server = new McpServer({ name: 'fake-oauth', version: '1.0.0' })
@@ -136,7 +144,10 @@ const startFake = async () => {
     const basic = auth?.startsWith('Basic ') ? Buffer.from(auth.slice(6), 'base64').toString().split(':') : []
     const clientId = form.get('client_id') ?? decodeURIComponent(basic[0] ?? '')
     const secret = form.get('client_secret') ?? decodeURIComponent(basic[1] ?? '')
+    const method = basic.length > 0 ? 'client_secret_basic' : form.has('client_secret') ? 'client_secret_post' : 'none'
+    seen.methods.push(method)
     if (
+      !change.authMethods.includes(method) ||
       !clients.has(clientId) ||
       clientId === change.refuseClient ||
       (clientId === STATIC_ID && secret !== STATIC_SECRET)
@@ -170,14 +181,14 @@ const startFake = async () => {
       header: req.headers['x-fake-header'],
     })
     const auth = change.authServer || base
-    if (url.pathname.startsWith('/.well-known/oauth-protected-resource'))
+    if (url.pathname.startsWith('/.well-known/oauth-protected-resource') && change.resourceMetadata)
       return json(res, 200, { resource: `${base}/mcp`, authorization_servers: [auth] })
     if (url.pathname === '/.well-known/oauth-authorization-server')
       return json(res, 200, {
         issuer: auth,
         authorization_endpoint: change.authorizationEndpoint || `${auth}/authorize`,
         token_endpoint: `${auth}/token`,
-        registration_endpoint: `${auth}/register`,
+        ...(change.registration && { registration_endpoint: `${auth}/register` }),
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
@@ -399,6 +410,49 @@ describe('login', () => {
     const downstream = s.connect()
     assert.equal(await s.ping(downstream), PONG)
     assert.deepEqual(s.leaks(), [])
+  })
+
+  test('a server that asks for a token only on a call gets a login, and a second login after a revoke', async () => {
+    const entries = [{}, { oauth: { clientId: STATIC_ID, clientSecret: '${S}' } }]
+    for (const entry of entries) {
+      const fake = await startFake()
+      fake.change.anonymous = 'list'
+      const s = setup(fake, entry, { S: STATIC_SECRET })
+      assert.equal(await s.login(), 0, s.lines.join('\n'))
+      assert.match(s.lines.at(-1) ?? '', /^Logged in to fake\. It has 1 tool\./)
+      assert.equal(fake.seen.authorizations.length, 1)
+      assert.equal(await s.ping(s.connect()), PONG)
+      fake.revoke()
+      assert.equal(await s.login(), 0, s.lines.join('\n'))
+      assert.equal(fake.seen.authorizations.length, 2, 'the tokens in the store do not stop a new login')
+      assert.equal(await s.ping(s.connect()), PONG)
+      assert.deepEqual(s.leaks(), [])
+    }
+  })
+
+  test('a server that answers without a token and has no protected-resource metadata needs no login', async () => {
+    const fake = await startFake()
+    fake.change.anonymous = 'all'
+    fake.change.resourceMetadata = false
+    const s = setup(fake)
+    assert.equal(await s.login(cancel()), 0, s.lines.join('\n'))
+    assert.match(s.lines.join('\n'), /^fake needs no login: it answered without a token\. It has 1 tool\.$/)
+    assert.equal(fake.seen.registrations, 0)
+    assert.equal(fake.seen.authorizations.length, 0)
+  })
+
+  test('a static client logs in without a registration endpoint, with a client authentication the server lists', async () => {
+    for (const methods of [['client_secret_basic', 'client_secret_post'], ['client_secret_post']]) {
+      const fake = await startFake()
+      fake.change.registration = false
+      fake.change.authMethods = methods
+      const s = setup(fake, { oauth: { clientId: STATIC_ID, clientSecret: '${S}' } }, { S: STATIC_SECRET })
+      assert.equal(await s.login(), 0, s.lines.join('\n'))
+      fake.expire()
+      assert.equal(await s.ping(s.connect()), PONG, 'the refresh uses a listed client authentication too')
+      assert.deepEqual(fake.seen.methods, [methods[0], methods[0]])
+      assert.deepEqual(s.leaks(), [])
+    }
   })
 
   test('a callback with a wrong or no state is refused, and the right one still logs in', async () => {
