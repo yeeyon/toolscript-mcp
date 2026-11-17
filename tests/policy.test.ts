@@ -584,10 +584,10 @@ describe('a change of the policy in the config file', () => {
 describe('kept results', () => {
   test('recall gives a kept result back as it is, and says why one is missing', () => {
     const kept = newKept()
-    assert.equal(keep(kept, '{"n":7}', 0), 1)
+    assert.equal(keep(kept, '{"n":7}', 0, false), 1)
     assert.equal(recallReply(kept, 1), '{"ok":true,"value":{"n":7}}')
     assert.deepEqual(JSON.parse(recallReply(kept, 9)), { ok: false, error: 'no result #9 in this session' })
-    for (let i = 0; i < MAX_KEPT; i++) keep(kept, '1', i)
+    for (let i = 0; i < MAX_KEPT; i++) keep(kept, '1', i, false)
     assert.deepEqual(JSON.parse(recallReply(kept, 1)), {
       ok: false,
       error: 'result #1 is no longer kept: call the tool again',
@@ -596,7 +596,7 @@ describe('kept results', () => {
 
   test('a result larger than the limit is not kept', () => {
     const kept = newKept()
-    assert.equal(keep(kept, 'x'.repeat(8_000_001), 0), undefined)
+    assert.equal(keep(kept, 'x'.repeat(8_000_001), 0, false), undefined)
     assert.equal(kept.results.size, 0)
   })
 })

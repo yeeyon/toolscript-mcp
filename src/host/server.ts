@@ -78,6 +78,7 @@ export const createServer = (
   // One server process serves one client session: its kept results and its saveFile folder.
   const kept = newKept()
   const written: Written = new Map()
+  const untrustedFiles = new Set<string>()
   const shapes = new Map<string, string>()
   const filesDir = path.resolve(appPath(os.homedir(), 'files', randomUUID()))
   const stopping = new AbortController()
@@ -160,6 +161,7 @@ export const createServer = (
       config: { ...config, policy: fresh.policy },
       kept,
       written,
+      untrustedFiles,
       shapes,
       filesDir,
       ask: (needed, code) => elicit(extra, askText(needed, code)),

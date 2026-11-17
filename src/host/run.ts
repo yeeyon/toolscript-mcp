@@ -3,7 +3,7 @@
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -104,6 +104,12 @@ export type RunContext = {
   readonly kept: Kept
   /** The attachment files that the calls of this session wrote. */
   readonly written: Written
+  /**
+   * The names, in lower case, of the files in `filesDir` that can hold
+   * untrusted content: the attachments of an untrusted result, and each file
+   * that saveFile wrote after its run read untrusted content.
+   */
+  readonly untrustedFiles: Set<string>
   /** The shape of each tool's result, by tool name, for search_tools. */
   readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
@@ -313,8 +319,14 @@ const showImages = async (
 
 // readFile reads only a file in the session's saveFile folder: a program can
 // send what it reads to an MCP tool. The real paths stop a link out of the folder.
-const readFile = async (dir: string, asked: string): Promise<Reply> => {
-  const refusal: Reply = { ok: false, error: `readFile: ${asked} is not a file from saveFile in this session` }
+// `untrusted`: the file is one of `untrustedFiles`.
+const readFile = async (
+  dir: string,
+  asked: string,
+  untrustedFiles: ReadonlySet<string>,
+): Promise<{ reply: Reply; untrusted: boolean }> => {
+  const fail = (error: string) => ({ reply: { ok: false, error } as const, untrusted: false })
+  const refusal = fail(`readFile: ${asked} is not a file from saveFile in this session`)
   const [real, realDir] = await Promise.all([
     fs.promises.realpath(path.resolve(dir, asked)).catch(() => undefined),
     fs.promises.realpath(dir).catch(() => undefined),
@@ -322,9 +334,11 @@ const readFile = async (dir: string, asked: string): Promise<Reply> => {
   if (real === undefined || realDir === undefined || !isInside(real, realDir)) return refusal
   const stat = await fs.promises.stat(real)
   if (!stat.isFile()) return refusal
-  if (stat.size > MAX_READ_BYTES)
-    return { ok: false, error: `readFile: ${asked} is ${stat.size} bytes, more than readFile loads` }
-  return { ok: true, value: await fs.promises.readFile(real, 'utf8') }
+  if (stat.size > MAX_READ_BYTES) return fail(`readFile: ${asked} is ${stat.size} bytes, more than readFile loads`)
+  return {
+    reply: { ok: true, value: await fs.promises.readFile(real, 'utf8') },
+    untrusted: untrustedFiles.has(path.relative(realDir, real).toLowerCase()),
+  }
 }
 
 const NO_RESOURCES: Reply = { ok: false, error: 'resources() and readResource() are not available in toolscript-mcp' }
@@ -384,6 +398,8 @@ const execute = async (
   const interactiveNow = () => interactiveTools(downstream.states())
   const recalled: { ref: number; ageMs: number }[] = []
   let recalls = 0
+  // Set before the program gets untrusted content, so a saveFile after it marks its file.
+  let untrusted = false
   const answers: Promise<void>[] = []
   const limit = limiter(MAX_PARALLEL_CALLS)
   const fileFor = runFiles(extension => path.join(ctx.filesDir, `${randomUUID()}${extension}`))
@@ -423,7 +439,7 @@ const execute = async (
     id: number,
     tool: string,
     args: Record<string, unknown>,
-  ): Promise<Reply & { code?: CallError }> => {
+  ): Promise<Reply & { code?: CallError; untrusted?: true }> => {
     const target = isCallable(tool, SERVER_NAME) ? splitToolName(tool) : undefined
     if (target === undefined) {
       decided.set(id, 'invalid')
@@ -480,7 +496,7 @@ const execute = async (
         timeout: callSeconds * 1000,
         signal: own.signal,
       })
-      const { reply, files } = mcpReply(
+      const { reply, files, ...mark } = mcpReply(
         {
           content: Array.isArray(r.content) ? r.content : [],
           isError: r.isError === true,
@@ -488,12 +504,14 @@ const execute = async (
         },
         fileFor,
       )
-      if (!reply.ok) return { ...reply, code: 'tool-error' }
+      if (!reply.ok) return { ...reply, code: 'tool-error', ...mark }
+      if (mark.untrusted === true)
+        for (const { file } of files) ctx.untrustedFiles.add(path.basename(file).toLowerCase())
       const unwritten = await writeAttachments(ctx.filesDir, files, ctx.written).then(
         () => undefined,
         (err: unknown) => `could not write an attachment of ${tool}: ${errorText(err)}`,
       )
-      return unwritten === undefined ? reply : { ok: false, error: unwritten, code: 'failed' }
+      return unwritten === undefined ? { ...reply, ...mark } : { ok: false, error: unwritten, code: 'failed' }
     } catch (err) {
       // An abort at the end of the run is also a RequestTimeout to the SDK. The SDK's own timer puts the limit in
       // `data`. A server can send the same code for its own error (mcp-remote does, for a failed login): its text stays.
@@ -518,8 +536,9 @@ const execute = async (
   const answerCall = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
     if (ended) return
     const began = performance.now()
-    const { code: failure, ...r } = await callTool(id, tool, args)
+    const { code: failure, untrusted: fromTool, ...r } = await callTool(id, tool, args)
     if (closed) return
+    if (fromTool === true) untrusted = true
     audits.set(id, {
       tool,
       decision: decided.get(id)!,
@@ -533,7 +552,7 @@ const execute = async (
     const key = callKey(tool, args)
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
-    const ref = r.ok ? keep(kept, json, Date.now()) : undefined
+    const ref = r.ok ? keep(kept, json, Date.now(), fromTool === true) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
     if (r.ok) learnShape(ctx.shapes, tool, r.value)
     records.set(id, {
@@ -552,6 +571,7 @@ const execute = async (
   const answerRecall = async (id: number, ref: number): Promise<void> => {
     recalls++
     const found = kept.results.get(ref)
+    if (found?.untrusted === true) untrusted = true
     await reply(id, recallReply(kept, ref))
     if (found !== undefined) recalled.push({ ref, ageMs: Date.now() - found.at })
   }
@@ -573,13 +593,21 @@ const execute = async (
         break
       case 'save':
         answer(
-          answerLocal(m.id, () => saveFile(ctx.filesDir, m.name, m.data)),
+          answerLocal(m.id, async () => {
+            // Marked before the write: the program can read the file as soon as it is there.
+            if (untrusted) ctx.untrustedFiles.add(m.name.toLowerCase())
+            return saveFile(ctx.filesDir, m.name, m.data)
+          }),
           m.id,
         )
         break
       case 'read':
         answer(
-          answerLocal(m.id, () => readFile(ctx.filesDir, m.path)),
+          answerLocal(m.id, async () => {
+            const read = await readFile(ctx.filesDir, m.path, ctx.untrustedFiles)
+            if (read.untrusted) untrusted = true
+            return read.reply
+          }),
           m.id,
         )
         break
@@ -662,8 +690,15 @@ const execute = async (
   // A result too large to show is kept whole, so the next program can page it.
   const returned = outcome?.t === 'done' ? outcome.value : undefined
   const isCut = returned !== undefined && shownText(returned).length > MAX_RESULT_CHARS
-  const wholeRef = isCut ? keep(kept, returned, Date.now()) : undefined
-  const text = formatOutcome(outcome, calls.length, stderr, MAX_RESULT_CHARS, { calls, recalls, recalled, wholeRef })
+  const wholeRef = isCut ? keep(kept, returned, Date.now(), untrusted) : undefined
+  const text = formatOutcome(
+    outcome,
+    calls.length,
+    stderr,
+    MAX_RESULT_CHARS,
+    { calls, recalls, recalled, wholeRef },
+    untrusted ? randomBytes(16).toString('hex') : undefined,
+  )
   // Image tokens are paid only for the images that the program returns.
   const shown = await showImages(
     ctx.written,

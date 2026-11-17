@@ -37,6 +37,7 @@ const hangFile = path.join(dir, 'hang.pid')
 const writerFile = path.join(dir, 'writer.json')
 const consentFile = path.join(dir, 'consent.json')
 const picFile = path.join(dir, 'pic.json')
+const waryFile = path.join(dir, 'wary.json')
 // The image that a probe in --image mode answers: a PNG of 1 by 1 pixel.
 const PIC_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const configFile = path.join(dir, 'config.json')
@@ -76,6 +77,7 @@ fs.writeFileSync(
       { match: 'mcp__x__probe', action: 'allow' },
       { match: 'mcp__consent__probe', action: 'allow' },
       { match: 'mcp__pic__probe', action: 'allow' },
+      { match: 'mcp__wary__probe', action: 'allow' },
     ],
     mcpServers: {
       // `node` from PATH, not process.execPath: the SDK's short environment must still find it.
@@ -106,6 +108,8 @@ fs.writeFileSync(
       consent: { command: process.execPath, args: [PROBE, consentFile, '--requires-person'] },
       // Its tool answers a text block and an image block.
       pic: { command: process.execPath, args: [PROBE, picFile, '--image'] },
+      // Its tool answers JSON in an untrusted wrapper.
+      wary: { command: process.execPath, args: [PROBE, waryFile, '--untrusted'] },
       // A variable that is not set: this entry fails alone, and the server still starts.
       broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
       // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
@@ -779,6 +783,24 @@ test('run (s) an image of a call is a file reference, and a returned reference i
   assert.equal(path.dirname(path.dirname(ref.file)), path.join(HOME, '.toolscript-mcp', 'files'))
   assert.deepEqual(r.content.slice(1), [{ type: 'image', data: PIC_BASE64, mimeType: 'image/png' }])
   assert.equal(r.content[0].text.includes(PIC_BASE64), false, 'no base64 in the text')
+})
+
+test('run (t) the program gets the JSON in an untrusted wrapper, and the model gets it in a wrapper of the server', async () => {
+  const r = await client.callTool({
+    name: 'run_code',
+    arguments: { code: 'return (await call("mcp__wary__probe", {})).pid' },
+  })
+  const text = r.content[0].text
+  assert.equal(r.isError, false, text)
+  const mark =
+    /^<<([0-9a-f]{32})>> \[UNTRUSTED TOOL CONTENT: [^\]\n]*\] <<\1>>\n(\d+)\n<<\/\1>>\n\n--- 1 MCP call/.exec(text)
+  assert.ok(mark !== null, text)
+  assert.deepEqual(
+    probeEvents(waryFile, 'call').map(e => e.pid),
+    [Number(mark[2])],
+    'the value is the pid of the probe that answered the call',
+  )
+  assert.equal(text.includes('PROBE CONTENT'), false, 'the wrapper of the tool does not reach the model')
 })
 
 test('(f) stdout holds only JSON-RPC, and (h) the server and its children end when stdin closes', async () => {
