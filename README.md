@@ -418,7 +418,11 @@ A tool result can hold images, audio and resources. A program value never holds 
 
 - `file` is a new file in the `saveFile` folder of the session. It holds the decoded bytes. `bytes` is their number.
 - If a block has more than 16,777,216 bytes, toolscript-mcp does not write it. Its attachment has `error` with the
-  reason, and no `file`.
+  reason, and no `file`. A block with no data gets the same.
+- One run writes at most 64 attachments and at most 67,108,864 bytes. An attachment past these limits has `error`
+  and no `file`.
+- If one file of a result cannot be written, `call()` throws an error. toolscript-mcp removes the files of that result
+  that it wrote before.
 
 To show an image to the model, return its attachment:
 
@@ -429,9 +433,11 @@ return panel.attachments[0]
 
 - The `run_code` result then holds the image as an MCP image block. The model pays image tokens only for images
   that a program returns.
-- The attachment can be the return value, or an item at most two levels deep in it. So `return await call(…)` also
-  shows the images of that call.
-- Only files in the `saveFile` folder of the session show. Only PNG, JPEG, GIF and WebP images show.
+- The attachment can be the return value, or an item at any depth in it. So `return await call(…)` also shows the
+  images of that call. The search stops after 100,000 values of the return value.
+- Only image files that a call of the session wrote show, with the type of their block. A reference with another
+  path does not show, also when a tool returns it as text. toolscript-mcp does not look up that path.
+- Only PNG, JPEG, GIF and WebP images show. The first bytes of the file must match the type.
 - One result shows at most 4 images, each at most 3,750,000 bytes, and at most 8,000,000 bytes in total.
 - The result text names each returned image that does not show, and the reason.
 
