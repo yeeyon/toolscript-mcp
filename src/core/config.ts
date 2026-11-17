@@ -684,7 +684,12 @@ export const basicCredentials = (id: string, secret: string): string | undefined
  * one, and a server can send one in a token or a client.
  */
 const encodeUri = (value: string): string =>
-  encodeURIComponent(value.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '�'))
+  encodeURIComponent(
+    value.replace(
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g,
+      String.fromCharCode(0xfffd),
+    ),
+  )
 
 /** An OAuth client with a secret. */
 export type ClientSecret = { readonly id: string; readonly secret: string }
