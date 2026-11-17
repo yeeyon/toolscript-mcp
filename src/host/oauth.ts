@@ -213,7 +213,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   const keepClient = (info: OAuthClientInformationMixed | undefined) => {
     if (info?.client_secret) {
       add(info.client_secret, basicCredentials(info.client_id, info.client_secret))
-      secretClient = { id: info.client_id, secret: info.client_secret }
+      secretClient = { id: info.client_id, secret: info.client_secret, registered: !fixed }
     }
     return info
   }
