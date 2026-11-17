@@ -447,6 +447,42 @@ describe('redact', () => {
     assert.equal(hideClientSecret('client_secret=12 and 12', undefined), 'client_secret=*** and 12')
   })
 
+  test('a secret from a server hides none of its forms under 8 characters, so the server cannot blank a word', () => {
+    const http = { kind: 'http', url: 'https://x', headers: {} } as const
+    const text = 'the OAuth login to https://as.example.com failed: invalid login'
+    for (const secret of ['login', '%6c%6f%67%69%6e', '%20to%20', '%4fAuth%20']) {
+      assert.equal(redact(text, http, [secret]), text, secret)
+    }
+    assert.equal(redact('bad token fake-token-7 or %66ake-token-7', http, ['%66ake-token-7']), 'bad token *** or ***')
+  })
+
+  test('hideClientSecret prints a client id with a $ pattern as it is', () => {
+    for (const id of ['a$&b', "a$'b", 'a$`b']) {
+      const text = `bad credentials ${id}:pass1 here`
+      assert.equal(hideClientSecret(text, { id, secret: 'pass1' }), `bad credentials ${id}:*** here`, id)
+    }
+  })
+
+  test('hideClientSecret blanks no text with an id:secret pair that a common text can hold', () => {
+    const text = 'the OAuth login to https://as.example.com failed: error: invalid login'
+    for (const client of [
+      { id: 'https', secret: '//' },
+      { id: 'https', secret: '//////' },
+      { id: 'error', secret: ' ' },
+      { id: 'failed', secret: ' er' },
+      { id: '', secret: ' error' },
+    ]) {
+      assert.equal(hideClientSecret(text, client), text, JSON.stringify(client))
+    }
+  })
+
+  test('hideClientSecret hides a form secret with a space, and the form-encoded pair and its Basic value', () => {
+    const client = { id: 'fake id', secret: 'ab+c d' }
+    assert.equal(hideClientSecret('echo client_secret=ab+c d&x=1', client), 'echo client_secret=***&x=1')
+    const pair = `${encodeURIComponent(client.id)}:${encodeURIComponent(client.secret)}`
+    assert.equal(hideClientSecret(`echo ${pair} / Basic ${btoa(pair)}`, client), 'echo fake%20id:*** / Basic ***')
+  })
+
   test('hides the password of a URL also when it shows without the user', () => {
     const http = { kind: 'http', url: 'https://fake-user:fake-password-2@example.com/mcp', headers: {} } as const
     assert.equal(redact('authentication failed: fake-password-2', http), 'authentication failed: ***')
