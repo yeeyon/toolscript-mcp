@@ -362,9 +362,10 @@ const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
 const BRIDGE_KEY = 'claude-code'
 
 // Claude Code, in any case: `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path; the
-// package `@anthropic-ai/claude-code`, also with `@<version>`; or a path that ends in `claude-code/cli.js`.
+// package `@anthropic-ai/claude-code`, also with `@<version>` (a range such as `@>=2` splits at `>`); or a path that
+// ends in `claude-code/cli.js` or `claude-code/cli.mjs`.
 const CLAUDE =
-  /^(?:(?:.*[\\/])?claude(?:\.exe|\.cmd|\.ps1)?|@anthropic-ai\/claude-code(?:@[^\\/]+)?|.*[\\/]claude-code[\\/]cli\.js)$/i
+  /^(?:(?:.*[\\/])?claude(?:\.exe|\.cmd|\.ps1)?|@anthropic-ai\/claude-code(?:@[^\\/]*)?|.*[\\/]claude-code[\\/]cli\.m?js)$/i
 // What the stage of a bridge match waits for: the Claude Code word, then `mcp`, then `serve`.
 const BRIDGE_WORDS = [
   (word: string) => CLAUDE.test(word),
@@ -388,7 +389,7 @@ const isBridge = (key: ServerKey, server: ServerEntry): boolean => {
   if (server.kind !== 'stdio') return false
   let stage = 0
   for (const arg of [server.command, ...server.args])
-    for (const word of arg.replace(/["'^]/g, '').split(/[\s;&|()<>`$]+/))
+    for (const word of arg.replace(/["'^]/g, '').split(/[\s;&|()<>`$,]+/))
       if (word !== '' && BRIDGE_WORDS[stage]!(word) && ++stage === BRIDGE_WORDS.length) return true
   return false
 }

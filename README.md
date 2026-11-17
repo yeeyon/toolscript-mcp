@@ -614,10 +614,11 @@ The Claude Code word is one of these:
 
 - `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path.
 - The npm package `@anthropic-ai/claude-code`, also with a version, such as `@anthropic-ai/claude-code@latest`.
-- A path that ends in `claude-code/cli.js` or `claude-code\cli.js`.
+- A path that ends in `claude-code/cli.js` or `claude-code/cli.mjs`, with either slash.
 
 A launcher can come first, such as `cmd /c`, `bash -lc`, `pwsh -Command`, `npx -y`, `pnpm dlx` or `bunx`.
-toolscript-mcp splits each argument at its spaces and at the shell operators `; & | ( ) < > $` and the backtick, and
+toolscript-mcp splits each argument at its spaces, at the shell operators `; & | ( ) < > $` and the backtick, and at
+commas, which PowerShell uses in argument lists. It
 skips quotes and the `^` of cmd. So `"claude mcp serve"` in one argument, `cmd /c "cd /d C:\work&&claude mcp serve"`
 and `bash -c "(claude mcp serve)"` also count. A launch that is no bridge but has these words in this order counts as
 a bridge too: toolscript-mcp then asks for its tools. At start,

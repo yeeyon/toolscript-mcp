@@ -81,7 +81,8 @@ enforces; the others rely on discipline.
   it, or at a restart. `[test: policy.test.ts and server.e2e.mjs, cases run (m), run (n) and run (o)]`
 - A bridge serves the client's own tools, such as Claude Code with `claude mcp serve`, and a program that calls them
   skips the client's permission rules and hooks. `parseConfig` finds the bridges (`isBridge` in `src/core/config.ts`):
-  the key `claude-code`, or a stdio entry whose words, each argument split at its spaces and shell operators, hold the
+  the key `claude-code`, or a stdio entry whose words, each argument split at its spaces, shell operators and commas, with
+quotes and the `^` of cmd dropped, hold the
   Claude Code word (`CLAUDE`), then `mcp`, then `serve`, with any words between. One pass over the words: a config can
   hold a long hostile command line, so never rescan the words from each word. `main.ts` logs the bridges at start. Add a launch form
   there and to the README list, and keep the docs saying to use the key `claude-code` for any other. An allow rule allows a tool of a bridge only when its match starts with
