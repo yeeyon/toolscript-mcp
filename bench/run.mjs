@@ -130,7 +130,11 @@ const readLines = file =>
 // The tools and instructions an MCP server lists, from initialize and tools/list over stdio.
 const listServer = ({ command, args, env }) =>
   new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'ignore'] })
+    const child = spawn(command, args, {
+      env: { ...process.env, ...env },
+      stdio: ['pipe', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
     const replies = new Map()
     let buffer = ''
     child.stdout.on('data', d => {
@@ -251,7 +255,7 @@ const runOne = async ({ task, arm, rep, benchTools }) => {
   ]
   const started = Date.now()
   const stdout = await new Promise(resolve => {
-    const child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     let text = ''
     child.stdout.on('data', d => (text += d))
     child.stderr.on('data', d => fs.appendFileSync(path.join(dir, 'stderr.txt'), d))
