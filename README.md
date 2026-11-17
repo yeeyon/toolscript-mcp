@@ -448,7 +448,13 @@ toolscript-mcp logs in to a remote HTTP server with OAuth. You do not need a pro
 2. Run `node /absolute/path/to/toolscript-mcp/dist/host/main.js login <server>`. If your config uses another path, add `--config <path>`.
 3. Log in and approve the access in the browser. If the browser does not open, open the URL that login prints.
 
-login waits 5 minutes for the browser. Then it connects to the server and prints the number of tools.
+login waits 5 minutes for the browser and 30 s for the token exchange. Then it connects to the server and prints the
+number of tools.
+
+Some servers, such as the Google Workspace MCP servers, list their tools without a token and ask for one only on a
+call. If such a server publishes protected-resource metadata, login starts the browser login all the same. A server
+that answers without a token and has no such metadata needs no login. If its authorization server has no dynamic
+client registration, give a client ID in `oauth`, as the next section shows.
 
 - An HTTP server without `headers` logs in with OAuth. To log in to a server with other headers, add `"oauth": true`.
 - `"oauth": false` turns the login off. An entry with an `Authorization` header and `oauth` is an error.
@@ -472,6 +478,8 @@ ID in `oauth`:
 ```
 
 - `clientSecret` takes `${VAR}`, as other values do. Use a variable, so the secret stays out of the config.
+- The token requests send the secret as `client_secret_basic` if the authorization server lists it, else as
+  `client_secret_post`. Box, for example, lists both.
 - `scopes` sets the scopes to ask for when the server names none.
 - `callbackPort` sets the port of the login callback on `127.0.0.1`. Register `http://127.0.0.1:<port>/callback` as
   the redirect URI of your client.
