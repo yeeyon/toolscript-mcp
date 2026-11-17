@@ -116,7 +116,7 @@ describe('plugin config helper', () => {
         policy: [
           { match: 'mcp__fake__*', action: 'allow' },
           { match: 'mcp__cc__Bash', action: 'allow' },
-          { match: '*', action: 'deny' },
+          { match: '*', action: 'allow' },
         ],
       }),
     )
@@ -126,7 +126,7 @@ describe('plugin config helper', () => {
       { match: 'mcp__cc__Bash', action: 'ask' },
       { match: 'mcp__cc__*', action: 'deny' },
       { match: 'mcp__fake__*', action: 'allow' },
-      { match: '*', action: 'deny' },
+      { match: '*', action: 'allow' },
     ]
     for (let round = 0; round < 2; round++) {
       const { code, out } = run(file, 'prepend', ...rules)
@@ -256,6 +256,68 @@ describe('plugin config helper', () => {
     assert.equal(decides(file, 'Bash'), 'deny')
     assert.equal(decides(file, 'Read'), 'ask')
     assert.equal(decides(file, 'Write'), 'ask')
+  })
+
+  // The review of #47: prepend compared only rules with the same match, so it loosened a stricter glob of the person.
+  for (const [glob, tool] of [
+    ['mcp__claude-code__B*', 'Bash'],
+    ['mcp__*__Write', 'Write'],
+  ] as const) {
+    it(`keeps the deny of an old rule ${glob} in prepend, and prints it`, () => {
+      const file = makeConfig(
+        JSON.stringify({
+          ...FIXTURE,
+          policy: [
+            { match: glob, action: 'deny' },
+            { match: '*', action: 'allow' },
+          ],
+        }),
+      )
+      assert.equal(decides(file, tool), 'deny')
+      for (let round = 0; round < 2; round++) {
+        const { code, out } = run(file, 'prepend', ...BRIDGE_ARGS)
+        assert.equal(code, 0)
+        assert.equal(decides(file, tool), 'deny')
+        assert.equal(decides(file, 'Read'), 'allow')
+        assert.equal(decides(file, 'Edit'), 'ask')
+        assert.equal(decides(file, 'Agent'), 'deny')
+        if (round === 0) {
+          assert.ok(
+            out.startsWith(
+              `kept the stricter action of the old policy:\n{"match":"mcp__claude-code__${tool}","action":"deny"}\nlocal  `,
+            ),
+            out,
+          )
+        }
+      }
+    })
+  }
+
+  // The person who denied the whole bridge opens it with the policy command, which names each rule.
+  it('keeps an old deny of the whole bridge in prepend, and the policy command opens it', () => {
+    const file = makeConfig(
+      JSON.stringify({
+        ...FIXTURE,
+        policy: [
+          { match: 'mcp__claude-code__*', action: 'deny' },
+          { match: '*', action: 'allow' },
+        ],
+      }),
+    )
+    assert.equal(run(file, 'prepend', ...BRIDGE_ARGS).code, 0)
+    for (const tool of ['Read', 'Bash', 'Write', 'Agent']) assert.equal(decides(file, tool), 'deny', tool)
+    assert.equal(run(file, 'policy', ...BRIDGE_ARGS, 'allow', '*').code, 0)
+    assert.deepEqual(savedPolicy(file), [...bridgeRules(BRIDGE_ARGS), { match: '*', action: 'allow' }])
+    assert.equal(decides(file, 'Read'), 'allow')
+    assert.equal(decides(file, 'Bash'), 'ask')
+  })
+
+  it('keeps the asked action in prepend when no old rule matches the tool', () => {
+    const file = makeConfig(JSON.stringify({ ...FIXTURE, policy: [{ match: 'mcp__fake__*', action: 'deny' }] }))
+    const { code, out } = run(file, 'prepend', ...BRIDGE_ARGS)
+    assert.equal(code, 0)
+    assert.ok(!out.includes('kept'), out)
+    assert.deepEqual(savedPolicy(file), [...bridgeRules(BRIDGE_ARGS), { match: 'mcp__fake__*', action: 'deny' }])
   })
 
   it('refuses prepend with no pairs or a bad rule and leaves the file as it was', () => {

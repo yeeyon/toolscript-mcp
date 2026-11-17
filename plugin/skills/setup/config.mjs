@@ -10,7 +10,8 @@
 // policy puts the new rules of the Claude Code bridge first, then each old rule of the bridge whose match no new rule
 // gives, then the other new rules. So a new "*" rule never opens a tool that an old rule of the bridge holds.
 // prepend puts its rules first and drops the old rules with the same match, so a second run changes nothing.
-// For the same match it keeps the stricter action of the old rule.
+// It never loosens the old policy: a rule for one tool takes the stricter of its action and the action that the old
+// policy decides for that tool. A rule with a * takes the stricter of its action and that of old rules with its match.
 // add makes the config when it does not exist.
 // Exit 1 is a failure of the config or the entry. Exit 2 is a usage error.
 import fs from 'node:fs'
@@ -26,6 +27,23 @@ const BRIDGE = 'mcp__claude-code__'
 const NAME = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/
 // The match rule of parsePolicy in src/core/config.ts. A policy error stops the server at its start.
 const MATCH = /^(mcp__|\*)/
+
+// matches in src/core/policy.ts: true when the glob matches the whole name, and * matches any characters.
+function matches(glob, tool) {
+  const parts = glob.split('*')
+  if (parts.length === 1) return glob === tool
+  const first = parts[0]
+  const last = parts.at(-1)
+  if (tool.length < first.length + last.length || !tool.startsWith(first) || !tool.endsWith(last)) return false
+  const end = tool.length - last.length
+  let at = first.length
+  for (const part of parts.slice(1, -1)) {
+    const found = tool.indexOf(part, at)
+    if (found < 0 || found + part.length > end) return false
+    at = found + part.length
+  }
+  return true
+}
 
 class Fail extends Error {
   constructor(message, code = 1) {
@@ -133,6 +151,8 @@ function usage() {
 
 const oldRules = config => (Array.isArray(config.policy) ? config.policy : [])
 
+const told = (title, rules) => (rules.length > 0 ? [title, ...rules.map(rule => JSON.stringify(rule))] : [])
+
 function parseRules(args) {
   if (args.length % 2 !== 0) usage()
   const rules = []
@@ -161,25 +181,33 @@ const COMMANDS = {
     const kept = oldRules(config).filter(rule => isBridge(rule) && !named.has(rule.match))
     config.policy = [...rules.filter(isBridge), ...kept, ...rules.filter(rule => !isBridge(rule))]
     writeConfig(file, config)
-    const told =
-      kept.length > 0 ? ['kept these old rules of claude-code:', ...kept.map(rule => JSON.stringify(rule))] : []
-    return [...told, show(config)].join('\n')
+    return [...told('kept these old rules of claude-code:', kept), show(config)].join('\n')
   },
   prepend(file, args) {
     if (args.length === 0) usage()
     const asked = parseRules(args)
     const config = readConfig(file)
     const old = oldRules(config)
+    const valid = old.filter(was => typeof was?.match === 'string' && ACTIONS.includes(was.action))
+    const oldActions = match =>
+      match.includes('*')
+        ? valid.filter(was => was.match === match).map(was => was.action)
+        : valid
+            .filter(was => matches(was.match, match))
+            .slice(0, 1)
+            .map(was => was.action)
     const rules = asked.map(rule => ({
       ...rule,
-      action: old
-        .filter(was => was?.match === rule.match)
-        .reduce((action, was) => (LOOSENESS[was.action] < LOOSENESS[action] ? was.action : action), rule.action),
+      action: oldActions(rule.match).reduce(
+        (action, was) => (LOOSENESS[was] < LOOSENESS[action] ? was : action),
+        rule.action,
+      ),
     }))
-    const matches = new Set(rules.map(rule => rule.match))
-    config.policy = [...rules, ...old.filter(rule => !matches.has(rule?.match))]
+    const named = new Set(rules.map(rule => rule.match))
+    config.policy = [...rules, ...old.filter(rule => !named.has(rule?.match))]
     writeConfig(file, config)
-    return show(config)
+    const stricter = rules.filter((rule, i) => rule.action !== asked[i].action)
+    return [...told('kept the stricter action of the old policy:', stricter), show(config)].join('\n')
   },
   add(file, args) {
     if (args.length !== 2) usage()

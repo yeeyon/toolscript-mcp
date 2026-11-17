@@ -374,7 +374,8 @@ no check of its own, such as Claude Desktop.
 
 If your config has the [Claude Code bridge](#claude-code-as-a-downstream-server), keep its rules before the `*` rule.
 Without them, the `*` rule allows every tool of Claude Code with no prompt, for example `Bash`, `Write` and `Agent`.
-The `policy` command of the setup skill keeps these rules first.
+The `policy` command of the setup skill keeps each of these rules that no new rule names, and puts it before the `*`
+rule.
 
 This setup does not give the checks of Code Mode. Code Mode checks each tool call of a program with your Claude Code
 rules and hooks. Claude Code sees only the `run_code` call of toolscript-mcp, not its nested calls:

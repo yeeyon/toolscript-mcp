@@ -201,8 +201,10 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
    node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" prepend allow "mcp__claude-code__Read" allow "mcp__claude-code__Grep" allow "mcp__claude-code__Glob" ask "mcp__claude-code__Bash" ask "mcp__claude-code__PowerShell" ask "mcp__claude-code__Edit" ask "mcp__claude-code__Write" deny "mcp__claude-code__*"
    ```
 
-   `prepend` keeps the other rules of the person after these rules. It replaces an old rule with the same match, but
-   it keeps the stricter action of the two. Show the policy that it prints. Never allow Bash, PowerShell, Edit or
+   `prepend` keeps the other rules of the person after these rules. It replaces an old rule with the same match. It
+   never loosens the old policy: each rule keeps the stricter action if the old policy decides a stricter one. Show
+   the policy that it prints. If it prints rules under "kept the stricter action", tell the person. To open such a
+   tool, the person gives all the rules of `claude-code` in the `policy` command. Never allow Bash, PowerShell, Edit or
    Write. They can change `<config>`, and so the policy.
 7. Tell the person to start a new Claude Code session. toolscript-mcp starts its servers only at its own start.
 
