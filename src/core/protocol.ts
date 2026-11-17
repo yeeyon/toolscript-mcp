@@ -499,7 +499,6 @@ export const returnedImages = (json: string): { files: string[]; unsearched: boo
     if (type === 'image') {
       typed++
       if (typeof file === 'string') files.add(file)
-      continue
     }
     const children = Array.isArray(v) ? v : Object.values(v)
     for (let i = children.length - 1; i >= 0; i--) stack.push(children[i])
