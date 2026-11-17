@@ -230,8 +230,10 @@ Use the config from init, or write one by hand. The config uses the `mcpServers`
 6. Ask the model for a task that needs your tools. It finds them with `search_tools` and uses `run_code`.
 
 Keep one path to each server. If your client also lists a server directly, the model calls the direct tools, and each
-full result goes into the context. In one real session with both paths, the model never called `run_code`. An MCP
-server cannot see the other servers of its client. So toolscript-mcp cannot find or report the duplicate.
+full result goes into the context. In one real session with both paths, the model never called `run_code`. MCP gives
+a server no list of the servers of its client. So toolscript-mcp does not check for a duplicate while it runs. init
+imports only the user-scope servers of each client. In Claude Code, run `claude mcp list` to find a project or local
+copy.
 
 If your client cannot ask for approval, add explicit `allow` rules for the tools that programs need.
 Tools marked for user interaction still cannot run without approval. See [The policy](#the-policy).
@@ -371,7 +373,8 @@ Put a `deny` rule before the `*` rule for each tool that must never run. Keep th
 no check of its own, such as Claude Desktop.
 
 If your config has the [Claude Code bridge](#claude-code-as-a-downstream-server), keep its rules before the `*` rule.
-Without them, the `*` rule allows Bash, Edit and Write with no prompt.
+Without them, the `*` rule allows every tool of Claude Code with no prompt, for example `Bash`, `Write` and `Agent`.
+The `policy` command of the setup skill keeps these rules first.
 
 This setup does not give the checks of Code Mode. Code Mode checks each tool call of a program with your Claude Code
 rules and hooks. Claude Code sees only the `run_code` call of toolscript-mcp, not its nested calls:
@@ -445,8 +448,9 @@ toolscript-mcp refuses to start from its own config, so it cannot start copies o
 If a server fails or stops, toolscript-mcp connects to it again on the next search or call. It tries at most 3 times
 in 60 seconds for each server. Then `search_tools` shows the time until the next attempt.
 
-`search_tools` with an empty query is a cheap check of the servers. It tries each failed server again and lists the
-servers that are still not connected. Its description tells the model to use it after a reconnect.
+`search_tools` with an empty query and `limit` 1 is a short check of the servers. It tries each failed server again.
+Its "Not connected" section lists the servers that are still not connected. If all servers connect, the result has
+no such section. The description of `search_tools` tells the model to use this check after a reconnect.
 
 ### OAuth login
 

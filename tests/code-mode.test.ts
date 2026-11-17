@@ -708,9 +708,10 @@ describe('the tool table', () => {
   // M4: run_code 1542, search_tools 550 (it names run_code). v0.1: + alwaysLoad 41 on each.
   // + 68 for the recall(n) line, which the bench showed second programs needed.
   // + 365 (#47): the three examples of when to prefer run_code, and the empty search after a reconnect.
+  // + 76 (#47): limit 1 and the "Not connected" section, so the check after a reconnect lists one tool, not 15.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 2601, `size ${size} is over 2601`)
+    assert.ok(size <= 2677, `size ${size} is over 2677`)
   })
 
   test('each example of the run_code description runs and returns only the small result', async () => {
@@ -762,6 +763,18 @@ describe('the tool table', () => {
   test('the instructions say when to prefer run_code to direct tools', () => {
     for (const text of [serverInstructions(['jira']), serverInstructions([])])
       assert.match(text, /Prefer run_code to their direct tools for several calls, a write and its check, or a part of/)
+  })
+
+  // #47: the direct tools of the Claude Code bridge are the client's own, which its permission rules and hooks guard.
+  test('the instructions keep the built-in tools direct only when the bridge is a server', () => {
+    const bridge = /Use your own built-in tools directly\. Call claude-code from a program only for data that stays/
+    assert.match(serverInstructions(['jira', 'claude-code']), bridge)
+    const keys = Array.from({ length: 400 }, (_, i) => `server-number-${i}`)
+    const cut = serverInstructions([...keys, 'claude-code'])
+    assert.ok(cut.length <= 4096, `length ${cut.length}`)
+    assert.match(cut, bridge)
+    for (const servers of [['jira'], [], ['claude-code-extra']])
+      assert.equal(serverInstructions(servers).includes('built-in'), false, servers.join(','))
   })
 
   // Claude Code cuts server instructions at 4,096 characters.

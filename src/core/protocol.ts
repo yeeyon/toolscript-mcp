@@ -1121,12 +1121,16 @@ return (await call("mcp__tracker__list_comments", { key: "A-1" })).some(c => c.b
 const log = await call("mcp__ci__get_log", { run: 42 })
 return log.split("\\n").filter(l => /error/i.test(l))`
 
-export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools, also after a reconnect.`
+export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools. After a reconnect, use an empty query with limit 1: "Not connected" lists the servers still down.`
 
 // Claude Code cuts the instructions of a server at this length.
 const INSTRUCTIONS_MAX = 4096
 // A session that also had the servers as direct tools never called run_code (#47), so the text names when to prefer it.
 const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.`
+/** The server key of the Claude Code bridge in the README and the setup skill. */
+const BRIDGE = 'claude-code'
+// Its direct tools are the client's own: a program that calls them skips the client's permission rules and hooks.
+const INSTRUCTIONS_BRIDGE = `Use your own built-in tools directly. Call ${BRIDGE} from a program only for data that stays in the program.`
 
 /**
  * The server's instructions, read by the model at the start of a session. They
@@ -1134,11 +1138,12 @@ const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them fro
  * toolscript. Names that do not fit in INSTRUCTIONS_MAX become "and N more".
  */
 export const serverInstructions = (servers: readonly string[]): string => {
+  const use = servers.includes(BRIDGE) ? `${INSTRUCTIONS_USE} ${INSTRUCTIONS_BRIDGE}` : INSTRUCTIONS_USE
   const text = (shown: number) => {
     const more = servers.length - shown
-    if (shown === 0) return `toolscript connects to other MCP servers. ${INSTRUCTIONS_USE}`
+    if (shown === 0) return `toolscript connects to other MCP servers. ${use}`
     const names = `${servers.slice(0, shown).join(', ')}${more > 0 ? `, and ${more} more` : ''}`
-    return `toolscript connects to these MCP servers: ${names}. ${INSTRUCTIONS_USE}`
+    return `toolscript connects to these MCP servers: ${names}. ${use}`
   }
   let shown = servers.length
   while (shown > 0 && text(shown).length > INSTRUCTIONS_MAX) shown--
