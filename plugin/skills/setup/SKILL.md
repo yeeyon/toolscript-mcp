@@ -204,6 +204,8 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
    - stdio: `{ "command": "npx", "args": ["-y", "<package>"], "env": { "API_KEY": "${API_KEY}" } }`
    - stdio that works in one project folder: also add `"cwd": "<folder>"`, with the full path of the folder.
    - HTTP: `{ "type": "http", "url": "https://mcp.example.com/mcp" }`
+   - The Azure DevOps MCP server (`@azure-devops/mcp`, or a URL on `mcp.dev.azure.com`): also add
+     `"untrusted": true`. Then each of its results reaches the model as untrusted text.
 5. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add <name> "<tmp>/toolscript-entry.json"`. It makes `<config>` if it does not exist.
    Then delete the entry file.
 6. Tell the person to set each variable in the environment of the client, or to put the value in `<config>` in an

@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parseConfig } from '../src/core/config.ts'
-import { clientFiles, importServers, initReport, shellWord } from '../src/core/init.ts'
+import { clientFiles, configText, importServers, initReport, shellWord } from '../src/core/init.ts'
 import { runInit } from '../src/host/init.ts'
 
 const SECRETS = ['fake-secret-env', 'fake-secret-header', 'fake-secret-pass', 'fake-secret-query']
@@ -545,6 +545,38 @@ describe('the OAuth login in the report', () => {
 
   test('says nothing about a login without such a server', () => {
     assert.doesNotMatch(report({ files: { command: 'fake' } }), /login/)
+  })
+
+  test('make it fail: the Azure DevOps MCP server gets "untrusted": true, and no other server does', () => {
+    const ado = {
+      npx: { command: 'npx', args: ['-y', '@azure-devops/mcp', 'fake-org'] },
+      cmd: { command: 'cmd', args: ['/c', 'npx', '-y', '@azure-devops/mcp@latest', 'fake-org', '-d', 'core'] },
+      bin: { command: 'C:\\npm\\mcp-server-azuredevops.cmd', args: ['fake-org'] },
+      path: { command: 'node', args: ['C:\\npm\\node_modules\\@azure-devops\\mcp\\dist\\index.js', 'fake-org'] },
+      remote: { type: 'http', url: 'https://mcp.dev.azure.com/fake-org' },
+    }
+    const others = {
+      other: { command: 'npx', args: ['-y', '@azure-devops/mcp-fake', 'azure-devops'] },
+      lookalike: { type: 'http', url: 'https://mcp.dev.azure.com.example.com/mcp?next=mcp.dev.azure.com' },
+    }
+    const imp = importServers([
+      {
+        client: 'claude-code',
+        path: '/c/.claude.json',
+        kind: 'text',
+        text: JSON.stringify({ mcpServers: { ...ado, ...others } }),
+      },
+    ])
+    const parsed = parseConfig(configText(imp.servers, false), {}, '/usr/bin/node', 'linux')
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
+    const marked = [...parsed.config.servers].flatMap(([key, e]) => (e.kind !== 'invalid' && e.untrusted ? [key] : []))
+    assert.deepEqual(marked, Object.keys(ado))
+    assert.ok(
+      initReport(imp, '/c/config.json', 'linux').includes(
+        'The config sets "untrusted": true on the Azure DevOps MCP server: npx, cmd, bin, path, remote.',
+      ),
+    )
+    assert.doesNotMatch(report(others), /untrusted/)
   })
 })
 

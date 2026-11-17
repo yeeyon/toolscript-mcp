@@ -253,6 +253,9 @@ Then use [Client setup](#client-setup) with the path of this clone.
   Desktop, Cursor.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
 - init keeps the `cwd` of a stdio server. If that `cwd` is not an absolute path, only that server fails until you fix it.
+- init sets `"untrusted": true` on the Azure DevOps MCP server. It finds the server by the package
+  `@azure-devops/mcp`, the command `mcp-server-azuredevops` or a URL on `mcp.dev.azure.com`. See
+  [Untrusted text](#untrusted-text).
 - On Linux and macOS, only your user account can read the config that init writes.
 - `--dry-run` shows the config and the steps, and writes nothing. These values show as `***`:
   - the values of `env` and `headers`
@@ -476,6 +479,8 @@ text, the notes about approval and the policy come after the call list.
 - If a server entry has `"untrusted": true`, each result of that server counts as untrusted from its first call.
 - Without `"untrusted": true`, the results of a server before its first wrapped result stay trusted. Set it for the
   Azure DevOps MCP server, because its first call can return an error or a binary attachment.
+- init sets it when it finds the Azure DevOps MCP server. If the server starts in another way, for example through a
+  bridge, set it yourself.
 - A file can also hold untrusted text: the attachments of such a result, and each file that `saveFile` writes after
   its run read untrusted text. A run that reads such a file with `readFile` gets the wrapper too.
 
