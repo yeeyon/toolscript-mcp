@@ -7,7 +7,8 @@
 //   node config.mjs <config> prepend <action> <match> [<action> <match>]...
 //   node config.mjs <config> add <name> <entry.json>
 // path prints the default config path, as toolscript-mcp finds it without --config.
-// policy keeps the old rules of the Claude Code bridge first, unless a new rule names mcp__claude-code__.
+// policy puts the new rules of the Claude Code bridge first, then each old rule of the bridge whose match no new rule
+// gives, then the other new rules. So a new "*" rule never opens a tool that an old rule of the bridge holds.
 // prepend puts its rules first and drops the old rules with the same match, so a second run changes nothing.
 // For the same match it keeps the stricter action of the old rule.
 // add makes the config when it does not exist.
@@ -156,10 +157,13 @@ const COMMANDS = {
     const rules = parseRules(args)
     const config = readConfig(file)
     const isBridge = rule => typeof rule?.match === 'string' && rule.match.startsWith(BRIDGE)
-    const kept = rules.some(isBridge) ? [] : oldRules(config).filter(isBridge)
-    config.policy = [...kept, ...rules]
+    const named = new Set(rules.map(rule => rule.match))
+    const kept = oldRules(config).filter(rule => isBridge(rule) && !named.has(rule.match))
+    config.policy = [...rules.filter(isBridge), ...kept, ...rules.filter(rule => !isBridge(rule))]
     writeConfig(file, config)
-    return show(config)
+    const told =
+      kept.length > 0 ? ['kept these old rules of claude-code:', ...kept.map(rule => JSON.stringify(rule))] : []
+    return [...told, show(config)].join('\n')
   },
   prepend(file, args) {
     if (args.length === 0) usage()

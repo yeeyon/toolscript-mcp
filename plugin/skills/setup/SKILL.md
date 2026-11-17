@@ -144,8 +144,8 @@ Explain these choices, and ask the person to choose one:
    rules and hooks of Claude Code do not apply to the nested calls. The policy matches tool names only, not arguments.
 3. Allow specific tools. Allow the tools that programs use often, such as read tools. Other tools stay `ask`.
 
-The `policy` command replaces the whole policy with the rules in order. Each rule is an action and a match that
-starts with `mcp__` or `*`:
+The `policy` command replaces the policy with the rules in order. Only old rules of `claude-code` can stay, as told
+below. Each rule is an action and a match that starts with `mcp__` or `*`:
 
 ```sh
 node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" policy
@@ -155,9 +155,10 @@ node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" policy allow "mcp__<server>__ge
 
 Ask the person for the rules, and run the command with approval. Show the policy that it prints.
 
-The `policy` command keeps the old rules of `claude-code` first, because without them `allow "*"` allows every tool of
-Claude Code with no prompt. If a new rule names `mcp__claude-code__`, the command keeps no old rule of `claude-code`.
-Then give all the rules for `claude-code` in the command.
+The `policy` command keeps each old rule of `claude-code` whose match no new rule gives. Without them, `allow "*"`
+allows every tool of Claude Code with no prompt. The command puts the new rules of `claude-code` first, then the kept
+rules, then the other new rules. It prints the kept rules. Show them to the person. To open a tool of Claude Code,
+the person names it in a rule, such as `allow "mcp__claude-code__*"`.
 
 Never allow a tool that can write the config file, such as a file server with access to its folder. A program can call
 that tool to change its own policy.

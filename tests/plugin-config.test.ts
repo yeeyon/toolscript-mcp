@@ -176,16 +176,58 @@ describe('plugin config helper', () => {
 
   // The review of #47: after `policy deny "mcp__claude-code__*" allow "*"`, the skill had the model prepend the
   // bridge rules again, which allowed Read and turned the deny of Bash into ask.
-  it('takes new rules that name the bridge as they are, so a stricter choice of the person stays', () => {
+  it('puts new rules that name the bridge first, so a stricter choice of the person stays', () => {
     const file = makeConfig(JSON.stringify({ ...FIXTURE, policy: bridgeRules(BRIDGE_ARGS) }))
     const { code, out } = run(file, 'policy', 'deny', 'mcp__claude-code__*', 'allow', '*')
     assert.equal(code, 0)
-    assert.ok(out.includes('policy:\n{"match":"mcp__claude-code__*","action":"deny"}\n{"match":"*","action":"allow"}'))
+    assert.ok(
+      out.includes('policy:\n{"match":"mcp__claude-code__*","action":"deny"}\n{"match":"mcp__claude-code__Read"'),
+    )
+    const kept = bridgeRules(BRIDGE_ARGS).filter(rule => rule.match !== 'mcp__claude-code__*')
     assert.deepEqual(savedPolicy(file), [
       { match: 'mcp__claude-code__*', action: 'deny' },
+      ...kept,
       { match: '*', action: 'allow' },
     ])
     for (const tool of ['Read', 'Bash', 'Write', 'Agent']) assert.equal(decides(file, tool), 'deny', tool)
+  })
+
+  // The review of #47: a new rule for one tool of the bridge removed all the old ones, so `allow "*"` allowed Bash.
+  it('keeps each old rule of the bridge whose match no new rule names, and prints them', () => {
+    const file = makeConfig(JSON.stringify({ ...FIXTURE, policy: [] }))
+    assert.equal(run(file, 'prepend', ...BRIDGE_ARGS).code, 0)
+    const opened = run(file, 'policy', 'allow', 'mcp__claude-code__Read', 'allow', '*')
+    assert.equal(opened.code, 0)
+    const kept = bridgeRules(BRIDGE_ARGS).filter(rule => rule.match !== 'mcp__claude-code__Read')
+    assert.ok(
+      opened.out.startsWith(
+        `kept these old rules of claude-code:\n${kept.map(rule => JSON.stringify(rule)).join('\n')}\n`,
+      ),
+      opened.out,
+    )
+    assert.deepEqual(savedPolicy(file), [
+      { match: 'mcp__claude-code__Read', action: 'allow' },
+      ...kept,
+      { match: '*', action: 'allow' },
+    ])
+    assert.equal(decides(file, 'Read'), 'allow')
+    for (const tool of ['Bash', 'PowerShell', 'Edit', 'Write']) assert.equal(decides(file, tool), 'ask', tool)
+    assert.equal(decides(file, 'Agent'), 'deny')
+
+    assert.equal(run(file, 'policy', 'deny', 'mcp__claude-code__Bash', 'allow', '*').code, 0)
+    assert.equal(decides(file, 'Bash'), 'deny')
+    for (const tool of ['PowerShell', 'Edit', 'Write']) assert.equal(decides(file, tool), 'ask', tool)
+    assert.equal(decides(file, 'Agent'), 'deny')
+
+    assert.equal(run(file, 'policy', 'allow', 'mcp__claude-code__*', 'allow', '*').code, 0)
+    for (const tool of ['Bash', 'Write', 'Agent']) assert.equal(decides(file, tool), 'allow', tool)
+  })
+
+  it('prints no kept rules when the old policy has none of the bridge', () => {
+    const file = makeConfig()
+    const { code, out } = run(file, 'policy', 'allow', '*')
+    assert.equal(code, 0)
+    assert.ok(!out.includes('kept'), out)
   })
 
   it('never loosens the action of an old rule with the same match in prepend', () => {
