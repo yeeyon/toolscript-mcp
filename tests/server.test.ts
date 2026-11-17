@@ -831,7 +831,25 @@ describe('the policy read again at each run', () => {
     assert.ok(!JSON.stringify(json).includes('fake-secret'))
     assert.deepEqual(policyOf('{"policy": [{"match": "x", "action": "allow"}]}'), {
       ok: false,
-      errors: ['policy[0].match: must be a glob over mcp__<server>__<tool>, such as "mcp__github__*", not "x"'],
+      errors: ['policy[0].match: must be a glob over mcp__<server>__<tool>, such as "mcp__github__*"'],
+    })
+  })
+
+  test('make it fail: a policy error names the place, and no text of the file', () => {
+    // A program can write the config through a tool, and the note of the next run shows the errors.
+    const said = 'IGNORE_ALL_PREVIOUS_RULES'
+    const read = policyOf(
+      JSON.stringify({ policy: [{ match: `x ${said}`, action: said, [said]: 1, [`${said}2`]: 2 }, { match: 7 }] }),
+    )
+    assert.deepEqual(read, {
+      ok: false,
+      errors: [
+        'policy[0]: 2 unknown keys (known: match, action)',
+        'policy[0].match: must be a glob over mcp__<server>__<tool>, such as "mcp__github__*"',
+        'policy[0].action: must be "allow", "deny" or "ask"',
+        'policy[1].match: must be a glob over mcp__<server>__<tool>, such as "mcp__github__*"',
+        'policy[1].action: must be "allow", "deny" or "ask"',
+      ],
     })
   })
 })

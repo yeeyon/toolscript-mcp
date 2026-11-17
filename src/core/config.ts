@@ -359,6 +359,8 @@ const parseSandbox = (raw: unknown, execPath: string, platform: string, errors: 
 
 const MATCH = 'a glob over mcp__<server>__<tool>, such as "mcp__github__*"'
 
+// The errors name places and hold no text of the file: a program can write the config through a tool, and the note
+// of the next run shows them to the model.
 const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
   if (raw === undefined) return []
   if (!Array.isArray(raw)) {
@@ -371,12 +373,13 @@ const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
       errors.push(`${path}: must be an object with "match" and "action"`)
       return []
     }
-    unknownKeys(entry, ['match', 'action'], path, errors)
+    const unknown = Object.keys(entry).filter(key => key !== 'match' && key !== 'action').length
+    if (unknown > 0) errors.push(`${path}: ${unknown} unknown key${unknown === 1 ? '' : 's'} (known: match, action)`)
     const { match, action } = entry
     const okMatch = typeof match === 'string' && /^(mcp__|\*)/.test(match)
-    if (!okMatch) errors.push(`${path}.match: must be ${MATCH}, not ${JSON.stringify(match)}`)
+    if (!okMatch) errors.push(`${path}.match: must be ${MATCH}`)
     const okAction = typeof action === 'string' && (ACTIONS as readonly string[]).includes(action)
-    if (!okAction) errors.push(`${path}.action: must be "allow", "deny" or "ask", not ${JSON.stringify(action)}`)
+    if (!okAction) errors.push(`${path}.action: must be "allow", "deny" or "ask"`)
     return okMatch && okAction ? [{ match: match as string, action: action as Action, index }] : []
   })
 }

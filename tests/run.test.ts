@@ -684,8 +684,8 @@ describe('untrusted content', () => {
     }
   })
 
-  test('make it fail: in an untrusted run, the notes that name a tool are in the wrapper', async () => {
-    const policyNote = 'The policy changed: added mcp__f__next.'
+  test('make it fail: in an untrusted run, the notes that name a tool are in the wrapper, and the policy note follows it', async () => {
+    const policyNote = 'The policy changed: added policy[0] (allow).'
     const { run } = setup({ policy: rules(['mcp__f__next', 'allow']), policyNote })
     const r = await run(
       'const w = await call("mcp__f__next", {})\nfor (const t of [w.next, w.then]) {\n  try { await call(t, {}) } catch {}\n}\nreturn 1',
@@ -693,14 +693,23 @@ describe('untrusted content', () => {
     const mark = hostMark(r.text)
     assert.ok(mark !== undefined, r.text)
     const rule = '{"match": "mcp__f__writeit", "action": "allow"}'
-    for (const note of ['## No allow rule', rule, '## A person must approve', policyNote]) {
+    for (const note of ['## No allow rule', rule, '## A person must approve']) {
       assert.ok(mark.inside.includes(note), `${note} in the wrapper: ${r.text}`)
       assert.ok(!outside(r.text).includes(note), `${note} outside: ${r.text}`)
     }
+    // The policy note holds no text of the config file, and it tells the model what only the person can do.
+    assert.ok(!mark.inside.includes(policyNote), r.text)
+    assert.match(
+      r.text,
+      /\n<<\/[0-9a-f]{32}>>\n\n--- 3 MCP calls[^]*\n\nThe policy changed: added policy\[0\] \(allow\)\.$/,
+    )
     // In a trusted run, the notes follow the footer, and the policy note comes last.
     const plain = await run('try { await call(["mcp__f", "writeit"].join("__"), {}) } catch {}\nreturn 1')
     assert.equal(hostMark(plain.text), undefined, plain.text)
-    assert.match(plain.text, /\n---[^]*\n\n## No allow rule\n[^]*\n\nThe policy changed: added mcp__f__next\.$/)
+    assert.match(
+      plain.text,
+      /\n---[^]*\n\n## No allow rule\n[^]*\n\nThe policy changed: added policy\[0\] \(allow\)\.$/,
+    )
     assert.equal((await run(' ')).text, `Error: code is empty.\n\n${policyNote}`)
   })
 

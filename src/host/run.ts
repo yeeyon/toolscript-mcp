@@ -120,7 +120,11 @@ export type RunContext = {
   readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
   readonly filesDir: string
-  /** The note about the policy that the server read for this run, or ''. It comes after the other notes. */
+  /**
+   * The note about the policy that the server read for this run, or ''. It
+   * holds no text of the config, so it comes last, after the wrapper of an
+   * untrusted run: what it asks for, only the person can do.
+   */
   readonly policyNote: string
   /** Asks the person to approve the tools for one run. */
   readonly ask: (needed: Asks, code: string) => Promise<Approval>
@@ -236,7 +240,8 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   }
   if (ctx.signal.aborted) return refuse('Error: the server is shutting down. The program did not run.')
   const approved = new Set([...plan.ask, ...plan.interactive])
-  return { ...(await execute(ctx, code, approved, new Set(literal.map(c => c.tool)))), known }
+  const ran = await execute(ctx, code, approved, new Set(literal.map(c => c.tool)))
+  return { ...ran, result: { ...ran.result, text: withNote(ran.result.text) }, known }
 }
 
 /** True when `file` is inside `dir`. Both are real paths. */
@@ -727,7 +732,6 @@ const execute = async (
   const notes = [
     approvalNote([...unapproved], ctx.canAsk()),
     interactiveNote([...needPerson], ctx.canAsk() ? { written } : 'cannot-ask'),
-    ctx.policyNote,
   ]
     .filter(n => n !== '')
     .join('\n\n')

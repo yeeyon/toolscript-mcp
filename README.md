@@ -314,7 +314,8 @@ The policy matches tool names only. It does not read the arguments of a call, su
 tool needs limits on its arguments, set those limits in its server.
 
 toolscript-mcp reads `policy` again at the start of each run. If the config has errors at that time, the run uses the
-last valid policy, and the result tells you so.
+last valid policy, and the result tells you so. The result names the place of each error, such as `policy[2].action`,
+and not the text of the file.
 
 A changed policy applies at once only when the change has these steps alone:
 
@@ -464,9 +465,13 @@ the text
 - The text of a `resource` attachment gets the same treatment.
 
 The marker still reaches the model. If a run reads untrusted text, its `run_code` result starts with a new wrapper.
-The wrapper holds the return value, the console lines, an error and the notes of the run. The call list follows it.
-The notes are about images that do not show, tools that need approval and a policy change. In a run without untrusted
-text, the notes about approval and the policy come after the call list.
+The wrapper holds the return value, the console lines and an error. It also holds the notes about images that do not
+show and tools that need approval. The call list follows it. In a run without untrusted text, the notes about approval
+come after the call list.
+
+The note about the policy comes last in every run, also after the wrapper. It holds no text of the config file,
+because a program can write that file through a tool. It names a rule by its place and action, for example
+`policy[0] (deny)`.
 
 - toolscript-mcp makes a random nonce for each such result after the program ends. No tool and no program knows it,
   so a tool cannot close this wrapper.
