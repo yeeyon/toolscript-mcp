@@ -75,21 +75,28 @@ const startFake = async () => {
    * requests before it answers the first, so two clients use one refresh token. With `stallRefreshes`, it never answers
    * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
    * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`. `anonymous` lets the MCP
-   * requests without a token through: all of them, or all but `tools/call`. `resourceMetadata` makes the
-   * protected-resource metadata missing (404), fail (503) or never answer. Its resource is `resource`, if set. Without
-   * `registration`, the authorization server has no registration endpoint. With `stallServerMetadata`, its metadata
-   * never answers.
+   * requests without a token through: all of them, all but `tools/call`, or all but `tools/list` and `tools/call`.
+   * `resourceMetadata` makes the protected-resource metadata missing (404), never answer, stop in its body, or get
+   * another answer. Its resource is `resource`, if set. Without `registration`, the authorization server has no
+   * registration endpoint. With `stallServerMetadata`, its metadata never answers. With `stallExchange`, the token
+   * endpoint never answers the code exchange.
    */
   const change = {
     authorizationEndpoint: '',
     authServer: '',
     echo: '' as '' | 'call' | 'mcp' | 'refresh' | 'exchange',
     authMethods: ['none', 'client_secret_post', 'client_secret_basic'],
-    anonymous: '' as '' | 'list' | 'all',
-    resourceMetadata: 'found' as 'found' | 'missing' | 'failing' | 'stalled',
+    anonymous: '' as '' | 'list' | 'all' | 'initialize',
+    resourceMetadata: 'found' as
+      | 'found'
+      | 'missing'
+      | 'stalled'
+      | 'stalled body'
+      | { status: number; headers?: Record<string, string>; body?: string },
     resource: '',
     registration: true,
     stallServerMetadata: false,
+    stallExchange: false,
     rejectAll: false,
     holdRefreshes: 0,
     stallRefreshes: false,
@@ -109,7 +116,10 @@ const startFake = async () => {
   const mcp = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1]
     const message = req.method === 'POST' ? (JSON.parse(await body(req)) as { method?: string }) : {}
-    const anonymous = change.anonymous === 'all' || (change.anonymous === 'list' && message.method !== 'tools/call')
+    const anonymous =
+      change.anonymous === 'all' ||
+      (change.anonymous === 'list' && message.method !== 'tools/call') ||
+      (change.anonymous === 'initialize' && !message.method?.startsWith('tools/'))
     if ((bearer === undefined || !access.has(bearer) || change.rejectAll) && !anonymous)
       return void res
         .writeHead(401, {
@@ -129,6 +139,7 @@ const startFake = async () => {
     const form = new URLSearchParams(text)
     seen.tokens.push(form)
     if (form.get('grant_type') === 'refresh_token' && change.stallRefreshes) return
+    if (form.get('grant_type') === 'authorization_code' && change.stallExchange) return
     if (form.get('grant_type') === 'refresh_token' && change.holdRefreshes > 0)
       await new Promise<void>(resolve => {
         held.push(resolve)
@@ -186,8 +197,10 @@ const startFake = async () => {
     })
     const auth = change.authServer || base
     if (url.pathname.startsWith('/.well-known/oauth-protected-resource') && change.resourceMetadata !== 'missing') {
-      if (change.resourceMetadata === 'stalled') return
-      if (change.resourceMetadata === 'failing') return void res.writeHead(503).end()
+      const answer = change.resourceMetadata
+      if (answer === 'stalled') return
+      if (answer === 'stalled body') return void res.writeHead(200, { 'content-type': 'application/json' }).write('{')
+      if (typeof answer === 'object') return void res.writeHead(answer.status, answer.headers).end(answer.body)
       return json(res, 200, { resource: change.resource || `${base}/mcp`, authorization_servers: [auth] })
     }
     if (url.pathname === '/.well-known/oauth-authorization-server' && change.stallServerMetadata) return
@@ -439,15 +452,38 @@ describe('login', () => {
     }
   })
 
-  test('a server that answers without a token and has no protected-resource metadata needs no login', async () => {
+  test('a server that answers initialize without a token and 401 to tools/list gets a login', async () => {
     const fake = await startFake()
-    fake.change.anonymous = 'all'
-    fake.change.resourceMetadata = 'missing'
+    fake.change.anonymous = 'initialize'
     const s = setup(fake)
-    assert.equal(await s.login(cancel()), 0, s.lines.join('\n'))
-    assert.match(s.lines.join('\n'), /^fake needs no login: it answered without a token\. It has 1 tool\.$/)
-    assert.equal(fake.seen.registrations, 0)
-    assert.equal(fake.seen.authorizations.length, 0)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    assert.match(s.lines.at(-1) ?? '', /^Logged in to fake\. It has 1 tool\./)
+    assert.equal(fake.seen.authorizations.length, 1)
+    assert.equal(await s.ping(s.connect()), PONG)
+    assert.deepEqual(s.leaks(), [])
+  })
+
+  test('a server that answers without a token and has no protected-resource metadata needs no login', async () => {
+    const answers: Fake['change']['resourceMetadata'][] = [
+      'missing',
+      { status: 405 },
+      { status: 403 },
+      { status: 401 },
+      { status: 200, headers: { 'content-type': 'text/html' }, body: '<html>app</html>' },
+      { status: 200, headers: { 'content-type': 'application/json' }, body: '{"name":"app"}' },
+      { status: 302, headers: { location: 'https://login.example.com/' } },
+    ]
+    for (const answer of answers) {
+      const fake = await startFake()
+      fake.change.anonymous = 'all'
+      fake.change.resourceMetadata = answer
+      const s = setup(fake)
+      const opened: string[] = []
+      assert.equal(await s.login(cancel(opened)), 0, `${JSON.stringify(answer)}: ${s.lines.join('\n')}`)
+      assert.match(s.lines.join('\n'), /^fake needs no login: it answered without a token\. It has 1 tool\.$/)
+      assert.equal(fake.seen.registrations, 0)
+      assert.deepEqual(opened, [])
+    }
   })
 
   /** The tokens that the store holds, or none when login stored nothing. */
@@ -489,34 +525,53 @@ describe('login', () => {
   })
 
   test('protected-resource metadata that fails to load is a failed login with its cause, not "needs no login"', async () => {
-    const fake = await startFake()
-    fake.change.anonymous = 'all'
-    fake.change.resourceMetadata = 'failing'
-    const s = setup(fake)
-    assert.equal(await s.login(cancel()), 1, s.lines.join('\n'))
-    assert.match(
-      s.lines.join('\n'),
-      /^login to fake failed: it answered without a token and has 1 tool, but the login did not start: HTTP 503 .*No tokens were stored\.$/,
-    )
+    for (const status of [503, 429, 408]) {
+      const fake = await startFake()
+      fake.change.anonymous = 'all'
+      fake.change.resourceMetadata = { status }
+      const s = setup(fake)
+      assert.equal(await s.login(cancel()), 1, s.lines.join('\n'))
+      assert.match(
+        s.lines.join('\n'),
+        new RegExp(
+          `^login to fake failed: it answered without a token and has 1 tool, but the login did not start: HTTP ${status} .*No tokens were stored\\.$`,
+        ),
+      )
+    }
   })
 
   test('metadata that never answers ends the login at the time limit', async () => {
-    for (const stall of ['resource', 'server'] as const) {
+    for (const stall of ['resource', 'resource body', 'server'] as const) {
       const fake = await startFake()
       fake.change.anonymous = 'list'
       if (stall === 'resource') fake.change.resourceMetadata = 'stalled'
+      else if (stall === 'resource body') fake.change.resourceMetadata = 'stalled body'
       else fake.change.stallServerMetadata = true
       const s = setup(fake)
       const start = performance.now()
       assert.equal(await s.login(cancel(), 2000), 1, s.lines.join('\n'))
       assert.ok(performance.now() - start < 10_000, stall)
-      assert.match(
+      assert.equal(
         s.lines.join('\n'),
-        /^login to fake failed: it answered without a token and has 1 tool, but the login did not start: .* did not answer in 2 s\. No tokens were stored\.$/,
+        `login to fake failed: it answered without a token and has 1 tool, but the login did not start within 2 s (waiting for http://127.0.0.1:${fake.port}). No tokens were stored.`,
         stall,
       )
       assert.equal(fake.seen.authorizations.length, 0)
     }
+  })
+
+  test('a token exchange that never answers ends the login at the time limit', { timeout: 30_000 }, async () => {
+    const fake = await startFake()
+    fake.change.stallExchange = true
+    const s = setup(fake)
+    const start = performance.now()
+    assert.equal(await s.login(browser(), 2000), 1, s.lines.join('\n'))
+    assert.ok(performance.now() - start < 10_000)
+    assert.equal(
+      s.lines.at(-1),
+      `login to fake failed: the token exchange did not end within 2 s (waiting for http://127.0.0.1:${fake.port})`,
+    )
+    assert.equal(storedTokens(s), undefined)
   })
 
   test('a Google-like server: tools listed without a token, no registration, a static client', async () => {
