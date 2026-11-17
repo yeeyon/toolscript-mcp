@@ -679,6 +679,13 @@ export const basicCredentials = (id: string, secret: string): string | undefined
   }
 }
 
+/**
+ * encodeURIComponent with each lone surrogate as U+FFFD, as a form and fetch encode it: encodeURIComponent throws on
+ * one, and a server can send one in a token or a client.
+ */
+const encodeUri = (value: string): string =>
+  encodeURIComponent(value.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '�'))
+
 /** An OAuth client with a secret. */
 export type ClientSecret = { readonly id: string; readonly secret: string }
 
@@ -697,7 +704,7 @@ export const hideClientSecret = (text: string, client: ClientSecret | undefined)
     const pairs = id !== '' && secret.length >= 4 && /\w/.test(secret)
     for (const [i, s] of [
       [id, secret],
-      [encodeURIComponent(id), encodeURIComponent(secret)],
+      [encodeUri(id), encodeUri(secret)],
     ] as const) {
       const basic = basicCredentials(i, s)
       if (basic !== undefined) hidden = hidden.replaceAll(`Basic ${basic}`, () => 'Basic ***')
@@ -714,7 +721,7 @@ export const hideClientSecret = (text: string, client: ClientSecret | undefined)
  * string: an error can echo a URL, a form or a JSON body that it got.
  */
 const encodings = (value: string): string[] => {
-  const uri = encodeURIComponent(value)
+  const uri = encodeUri(value)
   const form = uri.replace(/[!'()~]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%20/g, '+')
   const lower = (encoded: string) => encoded.replace(/%[0-9A-F]{2}/g, hex => hex.toLowerCase())
   return [uri, form, lower(uri), lower(form), JSON.stringify(value).slice(1, -1)]
