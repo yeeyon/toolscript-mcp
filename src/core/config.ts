@@ -684,19 +684,29 @@ export type ClientSecret = { readonly id: string; readonly secret: string }
 
 /**
  * `text` with each client secret replaced by `***` where it stands as one: the value of a `client_secret` form field
- * or JSON key, and the secret of `client` in its Basic pair and Basic header value. redact hides a secret under 8
- * characters nowhere else, so a server cannot blank a common word.
+ * or JSON key, and the secret of `client` in its Basic pair and Basic header value, as the SDK sends them and
+ * form-encoded (RFC 6749 section 2.3.1). redact hides a secret under 8 characters nowhere else, so a server cannot
+ * blank a common word. For the same reason the pair hides only with an id and a secret of 4 or more characters with a
+ * word character: id `https` and secret `//` would blank each `https://`.
  */
 export const hideClientSecret = (text: string, client: ClientSecret | undefined): string => {
-  const hidden = text
+  let hidden = text
+  if (client !== undefined) {
+    const { id, secret } = client
+    hidden = hidden.replaceAll(`client_secret=${secret}`, () => 'client_secret=***')
+    const pairs = id !== '' && secret.length >= 4 && /\w/.test(secret)
+    for (const [i, s] of [
+      [id, secret],
+      [encodeURIComponent(id), encodeURIComponent(secret)],
+    ] as const) {
+      const basic = basicCredentials(i, s)
+      if (basic !== undefined) hidden = hidden.replaceAll(`Basic ${basic}`, () => 'Basic ***')
+      if (pairs) hidden = hidden.replaceAll(`${i}:${s}`, () => `${i}:***`)
+    }
+  }
+  return hidden
     .replace(/(client_secret=)[^&\s"]*/g, '$1***')
     .replace(/("client_secret"\s*:\s*")(?:[^"\\]|\\.)*/g, '$1***')
-  if (client === undefined) return hidden
-  const basic = basicCredentials(client.id, client.secret)
-  return (basic === undefined ? hidden : hidden.replaceAll(`Basic ${basic}`, 'Basic ***')).replaceAll(
-    `${client.id}:${client.secret}`,
-    `${client.id}:***`,
-  )
 }
 
 /**
