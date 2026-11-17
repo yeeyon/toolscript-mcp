@@ -120,6 +120,8 @@ export type RunContext = {
   readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
   readonly filesDir: string
+  /** The note about the policy that the server read for this run, or ''. It comes after the other notes. */
+  readonly policyNote: string
   /** Asks the person to approve the tools for one run. */
   readonly ask: (needed: Asks, code: string) => Promise<Approval>
   /** True when the client can show an approval prompt. */
@@ -189,7 +191,8 @@ export const runCode = async (ctx: RunContext, code: string): Promise<RunResult>
  * prompt comes before the run's timer starts.
  */
 const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
-  if (code.trim() === '') return refused('Error: code is empty.', new Set(), [])
+  const withNote = (text: string) => (ctx.policyNote === '' ? text : `${text}\n\n${ctx.policyNote}`)
+  if (code.trim() === '') return refused(withNote('Error: code is empty.'), new Set(), [])
   await ctx.downstream.settled
   const named = literalCalls(code)
   const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
@@ -198,7 +201,7 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     const states = ctx.downstream.states()
     const known = new Set(catalogOf(states).map(t => t.name))
     return refused(
-      text,
+      withNote(text),
       known,
       named.map(c => notMade(policy, states, c.tool)),
     )
@@ -718,6 +721,13 @@ const execute = async (
     ctx.written,
     returned === undefined ? { files: [], unsearched: false } : returnedImages(returned),
   )
+  const notes = [
+    approvalNote([...unapproved], ctx.canAsk()),
+    interactiveNote([...needPerson], ctx.canAsk() ? { written } : 'cannot-ask'),
+    ctx.policyNote,
+  ]
+    .filter(n => n !== '')
+    .join('\n\n')
   const text = formatOutcome(
     outcome,
     calls.length,
@@ -726,20 +736,11 @@ const execute = async (
     { calls, recalls, recalled, wholeRef },
     untrusted ? randomBytes(16).toString('hex') : undefined,
     shown.note,
+    notes,
   )
-  const note = [
-    approvalNote([...unapproved], ctx.canAsk()),
-    interactiveNote([...needPerson], ctx.canAsk() ? { written } : 'cannot-ask'),
-  ]
-    .filter(n => n !== '')
-    .join('\n\n')
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
-  const result = {
-    text: note === '' ? text : `${text}\n\n${note}`,
-    isError: outcome?.t !== 'done',
-    images: shown.images,
-  }
+  const result = { text, isError: outcome?.t !== 'done', images: shown.images }
   return {
     result,
     ending: endingOf(outcome, ctx.signal.aborted),

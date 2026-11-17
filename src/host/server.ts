@@ -166,6 +166,7 @@ export const createServer = (
       untrustedServers,
       shapes,
       filesDir,
+      policyNote: fresh.note,
       ask: (needed, code) => elicit(extra, askText(needed, code)),
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
@@ -176,7 +177,7 @@ export const createServer = (
     runs.add(running)
     try {
       const r = await running
-      const result = text(fresh.note === '' ? r.text : `${r.text}\n\n${fresh.note}`, r.isError)
+      const result = text(r.text, r.isError)
       return { ...result, content: [...result.content, ...r.images.map(i => ({ type: 'image' as const, ...i }))] }
     } finally {
       runs.delete(running)

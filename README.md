@@ -461,8 +461,9 @@ the text
 - The text of a `resource` attachment gets the same treatment.
 
 The marker still reaches the model. If a run reads untrusted text, its `run_code` result starts with a new wrapper.
-The wrapper holds the return value, the console lines, an error and the note about images that do not show. The call
-list follows it.
+The wrapper holds the return value, the console lines, an error and the notes of the run. The call list follows it.
+The notes are about images that do not show, tools that need approval and a policy change. In a run without untrusted
+text, the notes about approval and the policy come after the call list.
 
 - toolscript-mcp makes a random nonce for each such result after the program ends. No tool and no program knows it,
   so a tool cannot close this wrapper.

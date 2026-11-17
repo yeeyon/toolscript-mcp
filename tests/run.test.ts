@@ -112,6 +112,11 @@ const TOOLS: Record<string, Tool> = {
   },
   // An error that a tool callback throws: the SDK server sends its message as error text with no wrapper.
   itemthrow: () => ({ content: [{ type: 'text', text: `work item 7: ${INJECTED}` }], isError: true }),
+  // Untrusted text that names the tools that the program calls next.
+  next: () => ({
+    content: [{ type: 'text', text: spotlight(JSON.stringify({ next: 'mcp__f__writeit', then: 'mcp__f__grant' })) }],
+  }),
+  writeit: () => json({ written: true }),
   itemshot: () => ({
     content: [
       { type: 'text', text: spotlight('{"id":7}') },
@@ -222,6 +227,7 @@ type Options = {
   downstream?: Downstream
   others?: ServerState[]
   written?: RunContext['written']
+  policyNote?: string
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -251,6 +257,7 @@ const setup = (o: Options = {}) => {
     untrustedServers: new Set(),
     shapes: new Map(),
     filesDir,
+    policyNote: o.policyNote ?? '',
     ask: async needed => (
       asked.push([...needed.ask, ...needed.interactive]),
       marked.push([...needed.interactive]),
@@ -638,6 +645,26 @@ describe('untrusted content', () => {
       `try { await call("mcp__g__itemthrow", {}) } catch {}\n${attached.replace('mcp__f__', 'mcp__g__')}`,
     )
     assert.equal(hostMark(other.text), undefined, other.text)
+  })
+
+  test('make it fail: in an untrusted run, the notes that name a tool are in the wrapper', async () => {
+    const policyNote = 'The policy changed: added mcp__f__next.'
+    const { run } = setup({ policy: rules(['mcp__f__next', 'allow']), policyNote })
+    const r = await run(
+      'const w = await call("mcp__f__next", {})\nfor (const t of [w.next, w.then]) {\n  try { await call(t, {}) } catch {}\n}\nreturn 1',
+    )
+    const mark = hostMark(r.text)
+    assert.ok(mark !== undefined, r.text)
+    const rule = '{"match": "mcp__f__writeit", "action": "allow"}'
+    for (const note of ['## No allow rule', rule, '## A person must approve', policyNote]) {
+      assert.ok(mark.inside.includes(note), `${note} in the wrapper: ${r.text}`)
+      assert.ok(!outside(r.text).includes(note), `${note} outside: ${r.text}`)
+    }
+    // In a trusted run, the notes follow the footer, and the policy note comes last.
+    const plain = await run('try { await call(["mcp__f", "writeit"].join("__"), {}) } catch {}\nreturn 1')
+    assert.equal(hostMark(plain.text), undefined, plain.text)
+    assert.match(plain.text, /\n---[^]*\n\n## No allow rule\n[^]*\n\nThe policy changed: added mcp__f__next\.$/)
+    assert.equal((await run(' ')).text, `Error: code is empty.\n\n${policyNote}`)
   })
 
   test('an attachment of an untrusted result marks the run that reads its file', async () => {
