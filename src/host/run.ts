@@ -505,7 +505,8 @@ const execute = async (
         fileFor,
       )
       if (!reply.ok) return { ...reply, code: 'tool-error', ...mark }
-      if (mark.untrusted === true)
+      // After untrusted content, the program can have sent it to this tool, and the tool can send it back.
+      if (mark.untrusted === true || untrusted)
         for (const { file } of files) ctx.untrustedFiles.add(path.basename(file).toLowerCase())
       const unwritten = await writeAttachments(ctx.filesDir, files, ctx.written).then(
         () => undefined,
@@ -539,6 +540,8 @@ const execute = async (
     const { code: failure, untrusted: fromTool, ...r } = await callTool(id, tool, args)
     if (closed) return
     if (fromTool === true) untrusted = true
+    // A call that returns after untrusted content can hold it: the program can have sent it to the tool.
+    const tainted = untrusted
     audits.set(id, {
       tool,
       decision: decided.get(id)!,
@@ -552,17 +555,17 @@ const execute = async (
     const key = callKey(tool, args)
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
-    const ref = r.ok ? keep(kept, json, Date.now(), fromTool === true) : undefined
+    const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
     // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
-    if (r.ok && fromTool !== true) learnShape(ctx.shapes, tool, r.value)
+    if (r.ok && !tainted) learnShape(ctx.shapes, tool, r.value)
     records.set(id, {
       ref,
       tool,
       status: r.ok ? 'ok' : 'failed',
       chars: json.length,
       data: r.ok && !isEmpty(r.value),
-      shape: r.ok ? shapeOf(r.value, fromTool !== true) : undefined,
+      shape: r.ok ? shapeOf(r.value, !tainted) : undefined,
       repeatOf,
     })
   }

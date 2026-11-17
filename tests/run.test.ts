@@ -536,10 +536,10 @@ describe('untrusted content', () => {
     assert.equal(hostMark(r.text)?.inside, '"work item 7 not found"', r.text)
   })
 
-  test('recall of an untrusted result in a later run is marked, and of another result is not', async () => {
+  test('recall of an untrusted result in a later run is marked, and of a result from before it is not', async () => {
     const { run } = setup()
-    const first = await run('await call("mcp__f__item", {})\nawait call("mcp__f__echo", { n: 1 })\nreturn 1')
-    const [item, echo] = [...first.text.matchAll(/#(\d+) mcp__f__/g)].map(m => m[1])
+    const first = await run('await call("mcp__f__echo", { n: 1 })\nawait call("mcp__f__item", {})\nreturn 1')
+    const [echo, item] = [...first.text.matchAll(/#(\d+) mcp__f__/g)].map(m => m[1])
     assert.ok(hostMark((await run(`return (await recall(${item})).id`)).text) !== undefined)
     assert.equal(hostMark((await run(`return (await recall(${echo})).echoed`)).text), undefined)
   })
@@ -574,6 +574,26 @@ describe('untrusted content', () => {
     assert.ok(!r.text.includes('IGNORE_ALL'), r.text)
     assert.match(r.text, /\n#\d+ mcp__f__itemkeys \d+ \{3 keys\} -> await recall\(\d+\)$/)
     assert.ok(!searchResult(downstream.states(), 'itemkeys', 15, ctx.shapes).includes('IGNORE_ALL'))
+  })
+
+  test('make it fail: a result of a trusted tool after untrusted content is kept and shown as untrusted', async () => {
+    const { run } = setup()
+    const first = await run(
+      'const w = await call("mcp__f__itemkeys", {})\nconst args = {}\nargs[Object.keys(w)[0]] = 1\nawait call("mcp__f__echo", args)\nreturn 1',
+    )
+    assert.ok(!first.text.includes('IGNORE_ALL'), first.text)
+    const echo = /#(\d+) mcp__f__echo /.exec(first.text)?.[1]
+    assert.ok(echo !== undefined, first.text)
+    assert.ok(hostMark((await run(`return (await recall(${echo})).echoed`)).text) !== undefined)
+  })
+
+  test('make it fail: an attachment of a trusted tool after untrusted content marks the run that reads it', async () => {
+    const { run } = setup()
+    const first = await run(
+      'const w = await call("mcp__f__item", {})\nreturn (await call("mcp__f__store", { text: w.fields.title })).attachments[0].file',
+    )
+    const file = JSON.parse(hostMark(first.text)!.inside) as string
+    assert.ok(hostMark((await run(`return await readFile(${JSON.stringify(file)})`)).text) !== undefined)
   })
 
   test('an attachment of an untrusted result marks the run that reads its file', async () => {
