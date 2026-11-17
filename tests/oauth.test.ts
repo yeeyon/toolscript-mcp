@@ -73,7 +73,7 @@ const startFake = async () => {
    * requests before it answers the first, so two clients use one refresh token. With `stallRefreshes`, it never answers
    * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
    * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`. A registration answer
-   * gives the client `registeredSecret`, if set, and the first of `authMethods`.
+   * gives the client `registeredSecret`, if set, and the first of `authMethods`, with the id `registeredId`, if set.
    */
   const change = {
     authorizationEndpoint: '',
@@ -88,6 +88,7 @@ const startFake = async () => {
     grantErrorMs: 0,
     refuseClient: '',
     registeredSecret: '',
+    registeredId: '',
   }
   const held: (() => void)[] = []
   const issue = (clientId: string) => {
@@ -187,7 +188,8 @@ const startFake = async () => {
       })
     if (url.pathname === '/register') {
       const metadata = JSON.parse(await body(req)) as { redirect_uris: string[] }
-      const clientId = `fake-client-${++seen.registrations}`
+      const number = ++seen.registrations
+      const clientId = change.registeredId === '' ? `fake-client-${number}` : change.registeredId
       clients.set(clientId, { redirectUris: metadata.redirect_uris })
       const secret = change.registeredSecret
       if (secret === '') return json(res, 201, { ...metadata, client_id: clientId })
@@ -1036,6 +1038,19 @@ describe('secrets that a server echoes', () => {
       const others = [...fake.secrets].filter(v => v !== secret && printed.includes(v))
       assert.deepEqual(others, [], what)
     }
+  })
+
+  test('a registered client whose id and short secret a reason holds blanks no words of the login output', async () => {
+    const fake = await startFake()
+    fake.change.echo = 'exchange'
+    fake.change.authMethods = ['client_secret_post']
+    fake.change.registeredId = 'response'
+    fake.change.registeredSecret = ' Synta'
+    const s = setup(fake)
+    assert.equal(await s.login(), 1)
+    const printed = s.lines.join('\n')
+    assert.match(printed, /Invalid OAuth error response: SyntaxError/, printed)
+    assert.ok(!printed.includes('client_secret=+Synta'), printed)
   })
 
   test('a registered client secret that is a common word never blanks the words of a reason', async () => {

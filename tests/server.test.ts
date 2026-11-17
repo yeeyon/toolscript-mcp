@@ -437,13 +437,22 @@ describe('redact', () => {
   })
 
   test('hideClientSecret hides a short client secret only where it stands as the secret', () => {
-    const client = { id: 'fake-id', secret: 'login' }
-    const basic = btoa('fake-id:login')
-    assert.equal(
-      hideClientSecret(`login failed: client_secret=login&a=1, {"client_secret": "lo\\"gin"}, Basic ${basic}`, client),
-      'login failed: client_secret=***&a=1, {"client_secret": "***"}, Basic ***',
-    )
-    assert.equal(hideClientSecret('login failed for fake-id:login', client), 'login failed for fake-id:***')
+    for (const registered of [false, true]) {
+      const client = { id: 'fake-id', secret: 'login', registered }
+      const basic = btoa('fake-id:login')
+      assert.equal(
+        hideClientSecret(
+          `login failed: client_secret=login&a=1, {"client_secret": "lo\\"gin"}, Basic ${basic}`,
+          client,
+        ),
+        'login failed: client_secret=***&a=1, {"client_secret": "***"}, Basic ***',
+        `registered ${registered}`,
+      )
+    }
+    const config = { id: 'fake-id', secret: 'login', registered: false }
+    assert.equal(hideClientSecret('login failed for fake-id:login', config), 'login failed for fake-id:***')
+    const registered = { id: 'fake-id', secret: 'fake-sec', registered: true }
+    assert.equal(hideClientSecret('login failed for fake-id:fake-sec', registered), 'login failed for fake-id:***')
     assert.equal(hideClientSecret('client_secret=12 and 12', undefined), 'client_secret=*** and 12')
   })
 
@@ -456,39 +465,55 @@ describe('redact', () => {
     assert.equal(redact('bad token fake-token-7 or %66ake-token-7', http, ['%66ake-token-7']), 'bad token *** or ***')
   })
 
+  test('a secret from a server under 8 characters hides none of its longer encoded forms either', () => {
+    const http = { kind: 'http', url: 'https://x', headers: {} } as const
+    const text = 'invalid redirect_uri=http%3A%2F%2F127.0.0.1%3A5000%2Fcallback for a%20%20%20b'
+    for (const secret of ['://', '   ', '/:/']) {
+      assert.equal(redact(text, http, [secret]), text, JSON.stringify(secret))
+    }
+  })
+
   test('a secret or client with a lone surrogate hides like any other and throws nothing', () => {
     const http = { kind: 'http', url: 'https://x', headers: {} } as const
     assert.equal(redact('bad token \ud800fake-token', http, ['\ud800fake-token']), 'bad token ***')
     assert.equal(redact('the login failed', http, ['\ud800']), 'the login failed')
-    const client = { id: 'fake-id', secret: '\ud800abcd' }
+    const client = { id: 'fake-id', secret: '\ud800abcd', registered: false }
     assert.equal(hideClientSecret('bad pair fake-id:\ud800abcd', client), 'bad pair fake-id:***')
   })
 
   test('hideClientSecret prints a client id with a $ pattern as it is', () => {
     for (const id of ['a$&b', "a$'b", 'a$`b']) {
       const text = `bad credentials ${id}:pass1 here`
-      assert.equal(hideClientSecret(text, { id, secret: 'pass1' }), `bad credentials ${id}:*** here`, id)
+      const client = { id, secret: 'pass1', registered: false }
+      assert.equal(hideClientSecret(text, client), `bad credentials ${id}:*** here`, id)
     }
   })
 
   test('hideClientSecret blanks no text with an id:secret pair that a common text can hold', () => {
-    const text = 'the OAuth login to https://as.example.com failed: error: invalid login'
+    const text =
+      'the OAuth login to https://as.example.com failed: error: invalid login, redirect http://127.0.0.1:5000'
     for (const client of [
-      { id: 'https', secret: '//' },
-      { id: 'https', secret: '//////' },
-      { id: 'error', secret: ' ' },
-      { id: 'failed', secret: ' er' },
-      { id: '', secret: ' error' },
+      { id: 'https', secret: '//', registered: false },
+      { id: 'https', secret: '//////', registered: false },
+      { id: 'error', secret: ' ', registered: false },
+      { id: 'failed', secret: ' er', registered: false },
+      { id: '', secret: ' error', registered: false },
+      // A server that registers the client picks both the id and the secret.
+      { id: 'failed', secret: ' error', registered: true },
+      { id: 'https', secret: '//as.', registered: true },
+      { id: 'http', secret: '//127', registered: true },
     ]) {
       assert.equal(hideClientSecret(text, client), text, JSON.stringify(client))
     }
   })
 
-  test('hideClientSecret hides a form secret with a space, and the form-encoded pair and its Basic value', () => {
-    const client = { id: 'fake id', secret: 'ab+c d' }
+  test('hideClientSecret hides a form secret with a space, and the encoded pairs and their Basic values', () => {
+    const client = { id: 'fake id', secret: 'ab+c d', registered: false }
     assert.equal(hideClientSecret('echo client_secret=ab+c d&x=1', client), 'echo client_secret=***&x=1')
     const pair = `${encodeURIComponent(client.id)}:${encodeURIComponent(client.secret)}`
     assert.equal(hideClientSecret(`echo ${pair} / Basic ${btoa(pair)}`, client), 'echo fake%20id:*** / Basic ***')
+    const form = 'fake+id:ab%2Bc+d'
+    assert.equal(hideClientSecret(`echo ${form} / Basic ${btoa(form)}`, client), 'echo fake+id:*** / Basic ***')
   })
 
   test('hides the password of a URL also when it shows without the user', () => {
