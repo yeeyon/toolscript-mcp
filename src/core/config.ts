@@ -52,11 +52,51 @@ export const invalidReason = (errors: readonly string[]): string =>
   `invalid entry in the toolscript-mcp config: ${errors.join('; ')}`
 
 /**
- * The command that logs in to a server. `config` is the config file, when it is not the default one. It runs through
- * npx, as the README installs toolscript-mcp: a person seldom has the command on PATH.
+ * One word of a printed command, as it is when the shell keeps it, else quoted as a literal. On Windows the word
+ * works in cmd.exe, PowerShell and Git Bash: bare, else in double quotes. A word with `$`, a backtick, `"` (PowerShell
+ * also reads U+201C to U+201E as double quotes), which expand or end the string in one of them, or with a final
+ * backslash, which escapes the closing quote, goes in single quotes instead. PowerShell reads those, and bash when the
+ * word has no single quote, and there nothing expands. No form keeps the `%NAME%` of a set variable in cmd.exe, so
+ * `%` stays in double quotes, which keep it in the other shells. On other systems a POSIX shell reads the word, in
+ * single quotes. A bare PowerShell word starts with a letter or a path character, so it is not a number. Before a
+ * script, such as the npm shim of claude, PowerShell drops a bare `--` and splits `-a:b`. It also reads the curly
+ * quotes U+2018 to U+201B as single quotes, so a word with one is never bare, and the single-quote form doubles it.
  */
-export const loginCommand = (key: ServerKey, config?: string): string =>
-  `npx -y toolscript-mcp login ${key}${config === undefined ? '' : ` --config "${config}"`}`
+export const shellWord = (word: string, platform: string): string =>
+  platform === 'win32'
+    ? /^(?:--?[A-Za-z][\w-]*|[A-Za-z./\\][\w./:\\~-]*)$/.test(word)
+      ? word
+      : /[$`"“-„]|\\$/.test(word)
+        ? `'${word.replace(/['‘-‛]/g, '$&$&')}'`
+        : `"${word}"`
+    : /^[\w./:@+-][\w./:@+~-]*$/.test(word)
+      ? word
+      : `'${word.replace(/'/g, `'\\''`)}'`
+
+/**
+ * A file path as one word of a printed command. On Windows it gets forward slashes: Git Bash drops a backslash that
+ * is not in quotes, and Node reads both. A UNC path stays one, as `//host/share`.
+ */
+export const pathWord = (file: string, platform: string): string =>
+  shellWord(platform === 'win32' ? file.replaceAll('\\', '/') : file, platform)
+
+/** How this process started, so a printed command starts it the same way: npx from npm, node and main.js from a clone. */
+export type Launch = { readonly kind: 'npx' } | { readonly kind: 'node'; readonly main: string }
+
+/** The npm form. The host detects the form of the running process: this core holds no path. */
+export const NPX_LAUNCH: Launch = { kind: 'npx' }
+
+/** The command and arguments that start toolscript-mcp, as a client config holds them. */
+export const launchArgv = (launch: Launch): readonly string[] =>
+  launch.kind === 'npx' ? ['npx', '-y', 'toolscript-mcp'] : ['node', launch.main]
+
+/** The start of a command line that runs toolscript-mcp, quoted for the shell of `platform`. */
+export const launchText = (launch: Launch, platform: string): string =>
+  launch.kind === 'npx' ? launchArgv(launch).join(' ') : `node ${pathWord(launch.main, platform)}`
+
+/** The command that logs in to a server. `config` is the config file, when it is not the default one. */
+export const loginCommand = (launch: Launch, platform: string, key: ServerKey, config?: string): string =>
+  `${launchText(launch, platform)} login ${shellWord(key, platform)}${config === undefined ? '' : ` --config ${pathWord(config, platform)}`}`
 
 /** Why a server that needs an OAuth login, or whose refresh was refused, is not connected, as search_tools shows it. */
 export const loginReason = (command: string): string =>

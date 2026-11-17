@@ -127,6 +127,14 @@ Run log:
 - The run log of a refused run lists each call that has a literal tool name, with its policy decision, `ok: false` and 0 ms.
 - A program that changes `Array.prototype.toJSON` or `JSON.stringify` now gets its result instead of "the sandbox exited without a result".
 
+CLI usage and printed commands:
+
+- `--help` and `-h` print the usage to stderr and exit 0, for the server, `init` and `login`. Before, `--help` printed "Unknown option" and exited 1 (#38).
+- The login command in a `search_tools` or `run_code` reason, and the client steps and the login line that `init` prints, start toolscript-mcp as this process started: `node <absolute path of main.js>` from a clone, `npx -y toolscript-mcp` from npm. Before, they always said `npx -y toolscript-mcp` (#42).
+- A path with a space or a shell character in these commands is quoted for the shell of the system. PowerShell on Windows gets `node` directly in the Claude Code step of a clone, with no `cmd /c`.
+- On Windows, each path in these commands has forward slashes, and a quoted word has double quotes. So the login command and the Claude Code step of a clone work in cmd.exe, PowerShell 5.1, PowerShell 7 and Git Bash. The Claude Code step of an npm install keeps `cmd /c` for PowerShell, and Git Bash turns `/c` into a path. Only a word with `$`, a backtick or a double quote gets single quotes, which only PowerShell and bash read.
+- The login line that `init` prints names the config file with `--config`.
+
 Runner fixes (inherited from claude-code-mode at eea4077):
 
 - A failed call that the program awaits later no longer crashes the sandbox.

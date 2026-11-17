@@ -89,8 +89,9 @@ node "<main>" init --config "<config>"
 init prints the servers that it imported and the servers that it left out, with no secret values. Show this list to
 the person. If init found no server, it writes nothing. Then add servers with step 8.
 
-init also prints the steps for each client. They start toolscript-mcp with `npx -y toolscript-mcp`, or
-`cmd /c npx -y toolscript-mcp` on Windows. A clone uses `node "<main>"` in place of each of these.
+init also prints the steps for each client. They start toolscript-mcp with `node` and the path of `<main>`. An older
+clone prints `npx -y toolscript-mcp` or `cmd /c npx -y toolscript-mcp` there. If you see one of them, use
+`node "<main>"` in its place.
 
 Show the person the servers to remove from each client. For Claude Code, offer to run each
 `claude mcp remove <name> --scope user` line. Run a line only after the person agrees. The person edits the files of
@@ -101,7 +102,8 @@ file as `<config>.bak`, and it lists the servers that the new config leaves out.
 
 ## 5. Add toolscript-mcp to Claude Code
 
-If step 1 showed a server with the same `<main>` and `<config>`, skip this step. If it showed a different
+If step 1 showed a server with the same `<main>` and `<config>`, skip this step. On Windows, a path with `/` and the
+same path with `\` are the same path. If it showed a different
 command, ask to run `claude mcp remove toolscript --scope user` first.
 
 With approval, run:
@@ -224,8 +226,9 @@ node "<main>" login <server> --config "<config>"
 The person runs it. Do not run it yourself. A browser opens, and login waits 5 minutes for the approval. In Claude
 Code, the person can type the command after the `!` prefix.
 
-If `search_tools` later says that a server needs a login, its command starts with `npx -y toolscript-mcp`. Give the
-person the command above in its place.
+If `search_tools` later says that a server needs a login, it names the command to run. An older clone names
+`npx -y toolscript-mcp` there. If the command starts with `npx -y toolscript-mcp`, replace that part with
+`node "<main>"`. Give the person the command.
 
 ## 10. Uninstall
 

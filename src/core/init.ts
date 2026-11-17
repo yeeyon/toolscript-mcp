@@ -4,7 +4,19 @@
 // and writes the config. Nothing here prints a value of env or headers, or a
 // secret that hideArgSecrets finds in args or hideUrlSecrets in URLs.
 
-import { hideArgSecrets, hideUrlSecrets, parseJson, serverKey, type Env, type ServerKey } from './config.ts'
+import {
+  hideArgSecrets,
+  hideUrlSecrets,
+  launchArgv,
+  launchText,
+  parseJson,
+  pathWord,
+  serverKey,
+  shellWord,
+  type Env,
+  type Launch,
+  type ServerKey,
+} from './config.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor'
 
@@ -224,51 +236,36 @@ export const oldConfigReport = (oldText: string, servers: ReadonlyMap<ServerKey,
   ]
 }
 
-/**
- * One word of a printed command, as it is when the shell keeps it, else as a literal in single quotes, so no `$`,
- * backtick or `$(...)` expands: PowerShell on Windows, a POSIX shell elsewhere. A bare PowerShell word starts with a
- * letter or a path character, so it is not a number. Before a script, such as the npm shim of claude, PowerShell
- * drops a bare `--` and splits `-a:b`. It also reads the curly quotes U+2018 to U+201B as single quotes.
- */
-export const shellWord = (word: string, platform: string): string =>
-  platform === 'win32'
-    ? /^(?:--?[A-Za-z][\w-]*|[A-Za-z./\\][\w./:\\~-]*)$/.test(word)
-      ? word
-      : `'${word.replace(/['‘-‛]/g, '$&$&')}'`
-    : /^[\w./:@+-][\w./:@+~-]*$/.test(word)
-      ? word
-      : `'${word.replace(/'/g, `'\\''`)}'`
-
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /** The steps that move one client to toolscript: remove what the config now holds, then add toolscript. */
-const steps = (c: ClientResult, configFile: string, platform: string): string[] => {
+const steps = (c: ClientResult, configFile: string, platform: string, launch: Launch): string[] => {
   const remove = c.outcomes.flatMap(o =>
     o.kind === 'imported' || o.kind === 'same' || o.kind === 'self' ? [o.name] : [],
   )
-  const run = ['-y', 'toolscript-mcp', '--config', configFile]
   if (c.file.client === 'claude-code') {
-    // Claude Code on Windows starts npx only through cmd /c.
-    const npx = platform === 'win32' ? ['cmd', '/c', 'npx'] : ['npx']
+    // Claude Code on Windows starts npx only through cmd /c. It starts node directly.
+    const cmd = platform === 'win32' && launch.kind === 'npx' ? 'cmd /c ' : ''
     const word = (w: string) => shellWord(w, platform)
     return [
       platform === 'win32' ? 'Claude Code, in PowerShell:' : 'Claude Code:',
       ...remove.map(name => `  claude mcp remove ${word(name)} --scope user`),
-      `  claude mcp add --scope user toolscript ${['--', ...npx, ...run].map(word).join(' ')}`,
+      `  claude mcp add --scope user toolscript ${word('--')} ${cmd}${launchText(launch, platform)} --config ${pathWord(configFile, platform)}`,
       '  Then start a new Claude Code session.',
     ]
   }
   const client = CLIENT_NAME[c.file.client]
+  const [command, ...args] = launchArgv(launch)
   return [
     `${client}, in ${c.file.path}:`,
     ...(remove.length > 0 ? [`  Remove from "mcpServers": ${remove.map(n => JSON.stringify(n)).join(', ')}`] : []),
-    `  Add to "mcpServers": "toolscript": ${JSON.stringify({ command: 'npx', args: run })}`,
+    `  Add to "mcpServers": "toolscript": ${JSON.stringify({ command, args: [...args, '--config', configFile] })}`,
     `  Then restart ${client}.`,
   ]
 }
 
 /** What init read, imported and left out, the starter policy, and the steps for each client. No secret. */
-export const initReport = (imp: Import, configFile: string, platform: string): string => {
+export const initReport = (imp: Import, configFile: string, platform: string, launch: Launch): string => {
   const name = (c: ClientResult) => CLIENT_NAME[c.file.client]
   const out = ['Client files. init reads them and does not change them:']
   for (const c of imp.clients) {
@@ -297,7 +294,7 @@ export const initReport = (imp: Import, configFile: string, platform: string): s
   if (bare.length > 0)
     out.push(
       '',
-      `These HTTP servers have no headers: ${bare.join(', ')}. If one asks for an OAuth login, run npx -y toolscript-mcp login <server> for it.`,
+      `These HTTP servers have no headers: ${bare.join(', ')}. If one asks for an OAuth login, run ${launchText(launch, platform)} login <server> --config ${pathWord(configFile, platform)} for it.`,
     )
 
   const [first] = imp.servers.keys()
@@ -311,6 +308,6 @@ export const initReport = (imp: Import, configFile: string, platform: string): s
     '',
     'Next, in each client, remove the servers that toolscript-mcp now runs, and add toolscript:',
   )
-  for (const c of imp.clients) if (c.problem === undefined) out.push('', ...steps(c, configFile, platform))
+  for (const c of imp.clients) if (c.problem === undefined) out.push('', ...steps(c, configFile, platform, launch))
   return out.join('\n')
 }
