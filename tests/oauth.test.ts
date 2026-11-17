@@ -1010,11 +1010,16 @@ describe('secrets that a server echoes', () => {
     }
   })
 
-  test('login hides a registered client secret shorter than 8 characters that a token endpoint echoes', async () => {
+  test('login hides a registered client secret of any length where it stands as the secret', async () => {
     for (const [method, secret] of [
+      ['client_secret_post', 'ab'],
+      ['client_secret_post', 'k3y'],
       ['client_secret_post', 'fk5ec7'],
-      ['client_secret_post', 'k3y9'],
-      ['client_secret_basic', 'fk5ec7'],
+      ['client_secret_post', '123456'],
+      ['client_secret_post', '12345678'],
+      ['client_secret_post', 'login'],
+      ['client_secret_basic', 'ab'],
+      ['client_secret_basic', 'login'],
     ] as const) {
       const fake = await startFake()
       fake.change.echo = 'exchange'
@@ -1023,8 +1028,31 @@ describe('secrets that a server echoes', () => {
       const s = setup(fake)
       assert.equal(await s.login(), 1, method)
       const printed = s.lines.join('\n')
-      assert.match(printed, /login to fake failed: .*bad request: .*\*\*\*/, printed)
-      assert.deepEqual(s.leaks(), [], `${method} ${secret}`)
+      const what = `${method} ${secret}: ${printed}`
+      assert.match(printed, /login to fake failed: .*bad request: /, what)
+      assert.ok(!printed.includes(`client_secret=${secret}`), what)
+      assert.ok(!printed.includes(Buffer.from(`fake-client-1:${secret}`).toString('base64')), what)
+      if (method === 'client_secret_post') assert.ok(printed.includes('client_secret=***'), what)
+      const others = [...fake.secrets].filter(v => v !== secret && printed.includes(v))
+      assert.deepEqual(others, [], what)
+    }
+  })
+
+  test('a registered client secret that is a common word never blanks the words of a reason', async () => {
+    for (const secret of ['login', 'fake', 'OAuth']) {
+      const fake = await startFake()
+      fake.change.authMethods = ['client_secret_post']
+      fake.change.registeredSecret = secret
+      const s = setup(fake)
+      assert.equal(await s.login(), 0, s.lines.join('\n'))
+      const downstream = s.connect()
+      assert.equal(await s.ping(downstream), PONG, secret)
+      fake.revoke()
+      assert.match(await s.run(downstream, CALL), LOGIN_REASON, secret)
+      const later = s.connect()
+      await later.settled
+      const state = later.states()[0]
+      assert.match(state?.status === 'failed' ? state.reason : '', LOGIN_REASON, secret)
     }
   })
 })

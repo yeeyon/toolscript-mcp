@@ -5,6 +5,7 @@ import {
   childEnv,
   configPath,
   hideArgSecrets,
+  hideClientSecret,
   hideUrlSecrets,
   nestedStart,
   parseConfig,
@@ -433,6 +434,17 @@ describe('redact', () => {
     } as const
     assert.equal(redact('bad client_secret=%2ffake%22se%5ccret%2b%3d%3d', http), 'bad client_secret=***')
     assert.equal(redact('{"client_secret":"/fake\\"se\\\\cret+=="}', http), '{"client_secret":"***"}')
+  })
+
+  test('hideClientSecret hides a short client secret only where it stands as the secret', () => {
+    const client = { id: 'fake-id', secret: 'login' }
+    const basic = btoa('fake-id:login')
+    assert.equal(
+      hideClientSecret(`login failed: client_secret=login&a=1, {"client_secret": "lo\\"gin"}, Basic ${basic}`, client),
+      'login failed: client_secret=***&a=1, {"client_secret": "***"}, Basic ***',
+    )
+    assert.equal(hideClientSecret('login failed for fake-id:login', client), 'login failed for fake-id:***')
+    assert.equal(hideClientSecret('client_secret=12 and 12', undefined), 'client_secret=*** and 12')
   })
 
   test('hides the password of a URL also when it shows without the user', () => {
