@@ -73,7 +73,7 @@ Read [bench/RESULTS-codemode.md](bench/RESULTS-codemode.md) for the method, cold
 ## How it works
 
 1. Your MCP client connects to toolscript-mcp. toolscript-mcp connects to your other MCP servers.
-2. The model finds tools with `search_tools`. A search with 3 or fewer matches shows each tool in full, with a
+2. The model finds tools with `search_tools`. A keyword search with 3 or fewer matches shows each tool in full, with a
    TypeScript declaration of its `call()`: the nested types and the note of each argument.
 3. The model sends one program to `run_code`.
 4. The program runs in a separate Node process. Each nested tool call goes through your allow, deny and ask rules.
@@ -449,9 +449,12 @@ toolscript-mcp refuses to start from its own config, so it cannot start copies o
 If a server fails or stops, toolscript-mcp connects to it again on the next search or call. It tries at most 3 times
 in 60 seconds for each server. Then `search_tools` shows the time until the next attempt.
 
-`search_tools` with an empty query and `limit` 1 is a short check of the servers. It tries each failed server again.
-Its "Not connected" section lists the servers that are still not connected. If all servers connect, the result has
-no such section. The description of `search_tools` tells the model to use this check after a reconnect.
+`search_tools` with an empty query shows one summary of each tool, and never a tool in full. With `limit` 1, it is a
+short check of the servers. It tries each failed server again. Its "Not connected" section lists the servers that are
+still not connected. If all servers connect, the result has no such section.
+
+The description of `search_tools` tells the model to use this check after a reconnect. With four sets of fake
+servers, the check returned 86 to 820 characters. An empty query with the default limit returned 1,039 to 8,512.
 
 ### OAuth login
 

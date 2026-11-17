@@ -708,7 +708,8 @@ describe('the tool table', () => {
   // M4: run_code 1542, search_tools 550 (it names run_code). v0.1: + alwaysLoad 41 on each.
   // + 68 for the recall(n) line, which the bench showed second programs needed.
   // + 365 (#47): the three examples of when to prefer run_code, and the empty search after a reconnect.
-  // + 76 (#47): limit 1 and the "Not connected" section, so the check after a reconnect lists one tool, not 15.
+  // + 76 (#47): limit 1 and the "Not connected" section. The check after a reconnect shows one summary line: with
+  // fake servers, 86 to 820 characters, against 1,039 to 8,512 for an empty query with the default limit.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
     assert.ok(size <= 2677, `size ${size} is over 2677`)

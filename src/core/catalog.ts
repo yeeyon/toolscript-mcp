@@ -2,7 +2,7 @@
 // entry per tool, named mcp__<server>__<tool>, and the servers that failed.
 
 import type { ServerKey } from './config.ts'
-import { learnedShape, rankTools, type ArgSpec, type ToolEntry } from './protocol.ts'
+import { learnedShape, listsAll, rankTools, type ArgSpec, type ToolEntry } from './protocol.ts'
 
 /** A tool as a downstream server lists it. */
 export type DownstreamTool = {
@@ -389,9 +389,11 @@ export const learnShape = (shapes: Map<string, string>, tool: string, value: unk
 
 /**
  * The text of a search_tools result: the best matches, then the servers that
- * are not connected. Up to DETAIL_HITS matches show in full, with the shape of
- * a result seen earlier in the session (`shapes`, by tool name). `canAsk`: the
- * client can show an approval prompt.
+ * are not connected. Up to DETAIL_HITS matches of a query with words show in
+ * full, with the shape of a result seen earlier in the session (`shapes`, by
+ * tool name). A list of all tools shows summaries only, so the check of the
+ * servers with limit 1 stays short. `canAsk`: the client can show an approval
+ * prompt.
  */
 export const searchResult = (
   states: readonly ServerState[],
@@ -405,7 +407,7 @@ export const searchResult = (
   const tail = notConnectedText(states)
   if (found.length === 0) return `No MCP tool matches "${query}". ${all.length} MCP tools are connected.${tail}`
   const blocks =
-    found.length <= DETAIL_HITS
+    found.length <= DETAIL_HITS && !listsAll(query)
       ? found.map(t => detailBlock(t, shapes, canAsk))
       : found.map(t => summaryBlock(t, canAsk))
   return `${found.length} of ${all.length} MCP tools.\n\n${blocks.join('\n\n')}${tail}`

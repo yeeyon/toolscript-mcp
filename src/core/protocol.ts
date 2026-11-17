@@ -1038,6 +1038,9 @@ const words = (text: string): string[] =>
     .split(/[^a-z0-9]+/)
     .filter(w => w.length > 1)
 
+/** True when the query has no word to rank by, so rankTools lists every tool. */
+export const listsAll = (query: string): boolean => words(query).length === 0
+
 /** Ranks tools by how many query words their name and description hold. */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const wanted = words(query)
