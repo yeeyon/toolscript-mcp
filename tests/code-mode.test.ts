@@ -568,18 +568,16 @@ describe('protocol', () => {
       assert.equal(names('search', 1)[0], 'mcp__atlassian__search')
     })
 
-    test('an exact name ranks before a prefix, which ranks before an inside hit', () => {
-      const found = names('work')
-      assert.deepEqual(found.slice(0, 2), ['mcp__azure-devops__work', 'mcp__claude-code__work'])
-      assert.deepEqual(
-        found.slice(2, 5).sort(),
-        [
-          'mcp__azure-devops__work_capacity_write',
-          'mcp__azure-devops__work_items',
-          'mcp__azure-devops__work_iteration_write',
-        ].sort(),
-      )
-      assert.equal(names('work').at(-1), 'mcp__azure-devops__wit_work_item_write')
+    test('an exact name ranks first, then the names that the word covers most', () => {
+      assert.deepEqual(names('work'), [
+        'mcp__azure-devops__work',
+        'mcp__claude-code__work',
+        'mcp__azure-devops__work_items',
+        'mcp__azure-devops__wit_work_item',
+        'mcp__azure-devops__wit_work_item_write',
+        'mcp__azure-devops__work_capacity_write',
+        'mcp__azure-devops__work_iteration_write',
+      ])
     })
 
     test('the words of a server key do not lift every tool of the server', () => {
