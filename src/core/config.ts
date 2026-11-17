@@ -716,7 +716,7 @@ const encodings = (value: string): string[] => {
  * values with a secret name or a secret word or of 12 characters or more, the OAuth client secret and its Basic
  * header value, the secrets in `more` (the OAuth tokens, code and verifier of this server), the secrets inside every
  * such value, each word of 8 or more in one ("Bearer <token>"), and the URL-decoded, URL-encoded and form-encoded
- * form of each. A number shorter than 12 digits is never replaced, and a plain word only as a whole word, so
+ * form of each, of 4 characters or more, and of 8 or more for `more`. A number shorter than 12 digits is never replaced, and a plain word only as a whole word, so
  * `localhost:3000` stays readable. The user and password of any URL in `text` are hidden too.
  */
 export const redact = (text: string, server: ServerConfig, more: readonly string[] = []): string => {
@@ -728,17 +728,17 @@ export const redact = (text: string, server: ServerConfig, more: readonly string
       ...hideArgSecrets([value]).secrets,
     ]),
     ...(client?.secret === undefined ? [] : [client.secret, basicCredentials(client.id, client.secret) ?? '']),
-    ...more,
   ]
+  const forms = (vs: readonly string[]) =>
+    [...vs, ...vs.flatMap(v => v.split(/\s+/).filter(w => w.length >= 8))].flatMap(v => [
+      v,
+      decoded(v),
+      ...encodings(v),
+    ])
+  // A server picks the values in `more`: one that is or decodes to a common word would blank it in each reason.
   const secrets = [
-    ...new Set(
-      [...values, ...values.flatMap(v => v.split(/\s+/).filter(w => w.length >= 8))].flatMap(v => [
-        v,
-        decoded(v),
-        ...encodings(v),
-      ]),
-    ),
-  ].filter(v => v.length >= 4 && !(/^\d+$/.test(v) && v.length < LONG))
+    ...new Set([...forms(values).filter(v => v.length >= 4), ...forms(more).filter(v => v.length >= 8)]),
+  ].filter(v => !(/^\d+$/.test(v) && v.length < LONG))
   const hidden = secrets
     .sort((a, b) => b.length - a.length)
     .reduce(
