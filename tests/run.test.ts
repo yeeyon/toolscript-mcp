@@ -549,11 +549,14 @@ describe('untrusted content', () => {
     await run(
       'await saveFile("plain.txt", "ok")\nconst w = await call("mcp__f__item", {})\nawait saveFile("Item.json", w)\nreturn 1',
     )
-    assert.ok(hostMark((await run('return await readFile("item.json")')).text) !== undefined)
+    assert.ok(hostMark((await run('return await readFile("Item.json")')).text) !== undefined)
     assert.equal(hostMark((await run('return await readFile("plain.txt")')).text), undefined)
     // A trusted run that writes the file again does not clear the mark.
-    await run('await saveFile("item.json", "ok")\nreturn 1')
-    assert.ok(hostMark((await run('return await readFile("item.json")')).text) !== undefined)
+    await run('await saveFile("Item.json", "ok")\nreturn 1')
+    assert.ok(hostMark((await run('return await readFile("Item.json")')).text) !== undefined)
+    // Where the file system ignores case (Windows, macOS), another case of the name reads the same file.
+    if (fs.existsSync(path.join(filesDir, 'item.json')))
+      assert.ok(hostMark((await run('return await readFile("item.json")')).text) !== undefined)
   })
 
   test('make it fail: an image reference in untrusted text is not copied, and its note is in the wrapper', async () => {
