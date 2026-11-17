@@ -110,12 +110,6 @@ export type RunContext = {
    * that saveFile wrote after its run read untrusted content.
    */
   readonly untrustedFiles: Set<string>
-  /**
-   * The servers that returned untrusted content in this session. Each later
-   * result of such a server counts as untrusted: the Azure DevOps server does
-   * not wrap its binary attachments and the errors that its tools throw.
-   */
-  readonly untrustedServers: Set<ServerKey>
   /** The shape of each tool's result, by tool name, for search_tools. */
   readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
@@ -476,10 +470,7 @@ const execute = async (
     const denied = callDecision(config.policy, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
-    const entry = config.servers.get(server)
-    const marked = entry?.kind !== 'invalid' && entry?.untrusted === true
-    const fromUntrusted = (): { untrusted?: true } =>
-      marked || ctx.untrustedServers.has(server) ? { untrusted: true } : {}
+    const fromUntrusted = (): { untrusted?: true } => (downstream.untrusted(server) ? { untrusted: true } : {})
     // The link comes with the list after the last change of the server, so the check sees each new mark.
     const listed = (tools: readonly DownstreamTool[]) =>
       listedNames([{ key: server, status: 'connected', tools }], server)!
@@ -491,7 +482,7 @@ const execute = async (
     }
     if (!link.ok) {
       decided.set(id, callDecision(config.policy, approved, tool, interactiveNow()))
-      return { ok: false, error: link.reason, code: 'no-server' }
+      return { ok: false, error: link.reason, code: 'no-server', ...fromUntrusted() }
     }
     // A name that the server does not list can never run: say so before the policy offers a rule for it.
     const names = listed(link.tools)
@@ -522,7 +513,7 @@ const execute = async (
         },
         fileFor,
       )
-      if (mark.untrusted === true) ctx.untrustedServers.add(server)
+      if (mark.untrusted === true) downstream.distrust(server)
       const fromServer = fromUntrusted()
       if (!reply.ok) return { ...reply, code: 'tool-error', ...fromServer }
       // After untrusted content, the program can have sent it to this tool, and the tool can send it back.

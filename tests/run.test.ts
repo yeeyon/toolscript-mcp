@@ -166,9 +166,13 @@ const SCHEMAS: Record<string, unknown> = {
   search: { type: 'object', properties: { query: {}, maxResults: {} }, required: ['query'] },
 }
 
-/** One fake server `f` with the tools above, and the servers in `others`. `called` lists each call that reached a server. */
-const fakeDownstream = (others: readonly ServerState[] = []) => {
+/**
+ * One fake server `f` with the tools above, and the servers in `others`. `called` lists each call that reached a server.
+ * The entries in `servers` with `"untrusted": true` are untrusted from the start, as in connectAll.
+ */
+const fakeDownstream = (others: readonly ServerState[] = [], servers: Config['servers'] = new Map()) => {
   const called: string[] = []
+  const distrusted = new Set<ServerKey>()
   let inFlight = 0
   let most = 0
   const client = {
@@ -212,6 +216,11 @@ const fakeDownstream = (others: readonly ServerState[] = []) => {
         ? { ok: true, client, hide: (text: string) => text, tools: state.tools }
         : { ok: false, reason: `no MCP server "${key}" is connected` }
     },
+    untrusted: (key: ServerKey) => {
+      const entry = servers.get(key)
+      return distrusted.has(key) || (entry?.kind !== 'invalid' && entry?.untrusted === true)
+    },
+    distrust: (key: ServerKey) => void distrusted.add(key),
     close: async () => {},
   } as unknown as Downstream
   return { downstream, called, most: () => most }
@@ -238,7 +247,7 @@ type Options = {
 const filesDir = path.join(ROOT, 'files', 'session')
 
 const setup = (o: Options = {}) => {
-  const fake = fakeDownstream(o.others)
+  const fake = fakeDownstream(o.others, o.servers)
   const asked: string[][] = []
   // The tools of each prompt whose server requires a person.
   const marked: string[][] = []
@@ -259,7 +268,6 @@ const setup = (o: Options = {}) => {
     kept: o.kept ?? newKept(),
     written: o.written ?? new Map(),
     untrustedFiles: new Set(),
-    untrustedServers: new Set(),
     shapes: new Map(),
     filesDir,
     policyNote: o.policyNote ?? '',
@@ -681,6 +689,41 @@ describe('untrusted content', () => {
         assert.equal(r.mark !== undefined, untrusted, `${server}: ${r.text}`)
         if (untrusted) assert.ok(!outside(r.text).includes(INJECTED), r.text)
       }
+    }
+  })
+
+  test('make it fail: the stderr of a marked server that crashes reaches the model only in the wrapper', async () => {
+    const server: ServerConfig = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, `crash-${Math.random()}.json`), '--exit-on-call'],
+      env: {},
+      untrusted: true,
+    }
+    const servers = new Map([['p' as ServerKey, server]])
+    const downstream = connectAll(servers, '0', () => {}, { now: () => 0 })
+    try {
+      const { run, ctx } = setup({ downstream, servers })
+      const failed = async () => {
+        for (let i = 0; i < 250 && downstream.states()[0]?.status !== 'failed'; i++)
+          await new Promise(r => setTimeout(r, 20))
+        assert.equal(downstream.states()[0]?.status, 'failed', 'the probe server exited')
+      }
+      const texts: string[] = []
+      // The first connect and two more: each call crashes the server.
+      for (let i = 0; i < 3; i++) {
+        texts.push((await run('return await call("mcp__p__probe", {})')).text)
+        await failed()
+      }
+      // The cap allows no more connects. A name built at run time meets the failed link in the run.
+      const inRun = await run('try { await call("mcp__p__" + "probe", {}) } catch (e) { return e.message }')
+      assert.ok(hostMark(inRun.text)?.inside.includes('the MCP server \\"p\\" is not connected'), inRun.text)
+      texts.push(inRun.text)
+      texts.push((await run('return await call("mcp__p__probe", {})')).text)
+      texts.push(searchResult(downstream.states(), '', 15, ctx.shapes))
+      for (const text of texts) assert.ok(!outside(text).includes(INJECTED), text)
+    } finally {
+      await downstream.close()
     }
   })
 

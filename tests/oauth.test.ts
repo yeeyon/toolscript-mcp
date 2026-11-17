@@ -294,7 +294,6 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
       kept: newKept(),
       written: new Map(),
       untrustedFiles: new Set(),
-      untrustedServers: new Set(),
       shapes: new Map(),
       filesDir: path.join(home, 'files'),
       policyNote: '',

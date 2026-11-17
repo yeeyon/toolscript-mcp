@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { searchResult } from '../core/catalog.ts'
-import { policyOf, type Config, type ServerKey } from '../core/config.ts'
+import { policyOf, type Config } from '../core/config.ts'
 import { appPath } from '../core/paths.ts'
 import {
   askText,
@@ -79,7 +79,6 @@ export const createServer = (
   const kept = newKept()
   const written: Written = new Map()
   const untrustedFiles = new Set<string>()
-  const untrustedServers = new Set<ServerKey>()
   const shapes = new Map<string, string>()
   const filesDir = path.resolve(appPath(os.homedir(), 'files', randomUUID()))
   const stopping = new AbortController()
@@ -167,7 +166,6 @@ export const createServer = (
       kept,
       written,
       untrustedFiles,
-      untrustedServers,
       shapes,
       filesDir,
       policyNote: fresh.note,

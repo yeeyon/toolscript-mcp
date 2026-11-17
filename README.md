@@ -482,6 +482,9 @@ because a program can write that file through a tool. It names a rule by its pla
 - After a server returns one wrapped result, each later result of that server in the session counts as untrusted.
   This includes its errors and its binary attachments, which the Azure DevOps server does not wrap.
 - If a server entry has `"untrusted": true`, each result of that server counts as untrusted from its first call.
+- If a server with untrusted results fails, the model does not get its error text. This text can be the end of
+  its stderr or an HTTP error body. `search_tools`, the check before a run and a failed call show a fixed text. The
+  log on stderr has the whole reason.
 - Without `"untrusted": true`, the results of a server before its first wrapped result stay trusted. Set it for the
   Azure DevOps MCP server, because its first call can return an error or a binary attachment.
 - init sets it when it finds the Azure DevOps MCP server. If the server starts in another way, for example through a

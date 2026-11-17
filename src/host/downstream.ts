@@ -66,6 +66,12 @@ const CHANGE_WINDOW_MS = 60_000
 /** Hides the secrets of one server, its OAuth tokens too, in the text of one of its errors. */
 type Hide = (text: string) => string
 
+/** Ends the reason of a server whose text is untrusted, in place of the error text that the server or its child wrote. */
+const UNSHOWN = 'Its error text is in the toolscript-mcp log only, because the text of this server is untrusted'
+
+/** An error whose text toolscript-mcp wrote: it holds no text of the server. */
+class OwnError extends Error {}
+
 /** The end of a wait: RETRY_WAIT_MS after its start, or the abort of the caller's signal, whichever comes first. */
 type Deadline = { readonly at: number; readonly signal: AbortSignal | undefined }
 
@@ -110,12 +116,13 @@ type Lists = {
  * The lists after the list at connect, which gave `first`. Each ask (a change or a miss) takes the next number, and
  * a list covers each ask before its start. One list runs at a time, `floorMs` after the start of the one before. So a
  * storm or an endless stream of changes costs one list per `floorMs`. A list that fails, or more than MAX_CHANGES
- * lists for a change in CHANGE_WINDOW_MS, stops the lists and gives `stop` the reason.
+ * lists for a change in CHANGE_WINDOW_MS, stops the lists and gives `stop` the reason, and the reason without the
+ * error text of the server.
  */
 export const startLists = (
   first: readonly DownstreamTool[],
   list: () => Promise<DownstreamTool[]>,
-  stop: (reason: string) => void,
+  stop: (reason: string, sealed?: string) => void,
   floorMs: number,
 ): Lists => {
   let tools = first
@@ -133,9 +140,9 @@ export const startLists = (
     wake()
     ended = new Promise<void>(resolve => (wake = resolve))
   }
-  const halt = (reason: string) => {
+  const halt = (reason: string, sealed?: string) => {
     stopped = true
-    stop(reason)
+    stop(reason, sealed)
   }
   const run = async () => {
     running = true
@@ -155,7 +162,7 @@ export const startLists = (
         endList()
       }
     } catch (err) {
-      halt(`could not list the tools again: ${errorText(err)}`)
+      halt(`could not list the tools again: ${errorText(err)}`, `could not list the tools again. ${UNSHOWN}`)
     } finally {
       running = false
       endList()
@@ -179,11 +186,14 @@ export const startLists = (
   }
 }
 
-/** One server: an attempt in progress, the client to call, or why it failed. */
+/**
+ * One server: an attempt in progress, the client to call, or why it failed. `sealed` is the reason without the error
+ * text of the server or its child, for a server whose text is untrusted.
+ */
 type Link =
   | { readonly status: 'connecting'; readonly done: Promise<void> }
   | { readonly status: 'connected'; readonly client: Client; readonly hide: Hide; readonly lists: Lists }
-  | { readonly status: 'failed'; readonly reason: string }
+  | { readonly status: 'failed'; readonly reason: string; readonly sealed: string }
 
 /** `tools`: the list after the last change of the server. */
 export type Linked =
@@ -218,6 +228,14 @@ export type Downstream = {
    * server. Waits for that list up to RETRY_WAIT_MS, or until `signal` aborts. Never rejects.
    */
   relist(key: ServerKey, signal?: AbortSignal): Promise<void>
+  /**
+   * True when the text of `key` is untrusted: its entry has `"untrusted": true`, or it returned a result in an
+   * untrusted wrapper in this session. Each result of such a server counts as untrusted, also an error, and the
+   * reason of its failed link holds no error text that the server or its child wrote. The log has that text.
+   */
+  untrusted(key: ServerKey): boolean
+  /** Makes the text of `key` untrusted for the rest of the session. */
+  distrust(key: ServerKey): void
   /** Closes every client, connected or still connecting, and so ends every stdio child. */
   close(): Promise<void>
 }
@@ -395,23 +413,27 @@ export const connectAll = (
     opened.add(client)
     let secrets = (): readonly string[] => []
     const hide: Hide = text => redact(text, server, secrets())
-    const fail = (reason: string) => {
+    // `sealed`: the reason without the error text of the server or its child.
+    const fail = (reason: string, sealed = reason) => {
       const safe = hide(reason)
       log(`${key}: failed: ${safe}`)
-      links.set(key, { status: 'failed', reason: safe })
+      links.set(key, { status: 'failed', reason: safe, sealed: hide(sealed) })
     }
     // Only while this client is still the link of `key`: a late event of an old client changes nothing.
-    const lost = (reason: string): boolean => {
+    const lost = (reason: string, sealed?: string): boolean => {
       const link = links.get(key)
       if (closing || link?.status !== 'connected' || link.client !== client) return false
-      fail(reason)
+      fail(reason, sealed)
       return true
     }
     // The SDK HTTP transport fires onclose only from close(), so a server that
     // restarted shows only as an error of a request. The link fails before
     // that request rejects, and the next use connects again.
     const sessionEnded = (err: Error) => {
-      if (!lost(isOAuthStop(err) ? err.message : `the HTTP session ended: ${errorText(err)}`)) return
+      const ended = isOAuthStop(err)
+        ? lost(err.message)
+        : lost(`the HTTP session ended: ${errorText(err)}`, `the HTTP session ended. ${UNSHOWN}`)
+      if (!ended) return
       // Later, so the failed request rejects with its own error first: close()
       // rejects each open request with "Connection closed".
       setImmediate(() => void client.close().catch(() => {}))
@@ -444,22 +466,28 @@ export const connectAll = (
           : undefined
       if (auth) secrets = auth.provider.secrets
       const problem = await cwdProblem(server)
-      if (problem !== undefined) throw new Error(problem)
+      if (problem !== undefined) throw new OwnError(problem)
       // close() closes only the clients that it sees: a shutdown during the check must not start a process after it.
-      if (closing) throw new Error('toolscript-mcp is shutting down')
+      if (closing) throw new OwnError('toolscript-mcp is shutting down')
       const made = transportOf(server, sessionEnded, auth)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const first = await list()
       // The old list can lack a new mark, so lists that stop fail the link, and the next use connects and lists anew.
-      lists = startLists(first, list, reason => lost(reason) && void client.close().catch(() => {}), listFloorMs)
+      lists = startLists(
+        first,
+        list,
+        (reason, sealed) => lost(reason, sealed) && void client.close().catch(() => {}),
+        listFloorMs,
+      )
       if (early) lists.changed()
       links.set(key, { status: 'connected', client, hide, lists })
       log(`${key}: connected, ${first.length} tools`)
       client.onclose = () => {
         opened.delete(client)
         const stderr = lastError()
-        lost(`the connection closed${stderr === '' ? '' : `. Its stderr ends with: ${stderr}`}`)
+        if (stderr === '') lost('the connection closed')
+        else lost(`the connection closed. Its stderr ends with: ${stderr}`, `the connection closed. ${UNSHOWN}`)
       }
     } catch (err) {
       // A child that exits gives only "Connection closed": its stderr says
@@ -468,7 +496,9 @@ export const connectAll = (
       // After an await: a failure that comes at once must not come before `attempt` marks the link connecting.
       await client.close().catch(() => {})
       opened.delete(client)
-      fail(stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`)
+      // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
+      const sealed = isOAuthStop(err) || err instanceof OwnError ? errorText(err) : `the connect failed. ${UNSHOWN}`
+      fail(stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`, sealed)
     }
   }
 
@@ -524,7 +554,14 @@ export const connectAll = (
     if (link.status === 'connected') return { key, status: 'connected', tools: link.lists.tools() }
     const wait = closing ? 0 : capWait(key)
     const note = wait > 0 ? `. toolscript-mcp tries again on next use after ${Math.ceil(wait / 1000)} s` : ''
-    return { key, status: 'failed', reason: `${link.reason}${note}` }
+    // Read at each look: a server can return its first untrusted wrapper after its link failed.
+    return { key, status: 'failed', reason: `${untrusted(key) ? link.sealed : link.reason}${note}` }
+  }
+
+  const distrusted = new Set<ServerKey>()
+  const untrusted = (key: ServerKey): boolean => {
+    const server = servers.get(key)
+    return distrusted.has(key) || (server !== undefined && server.kind !== 'invalid' && server.untrusted === true)
   }
 
   // Its errors name keys and variables, never values.
@@ -533,7 +570,7 @@ export const connectAll = (
       if (server.kind !== 'invalid') return attempt(key, server)
       const reason = invalidReason(server.errors)
       log(`${key}: failed: ${reason}`)
-      links.set(key, { status: 'failed', reason })
+      links.set(key, { status: 'failed', reason, sealed: reason })
     }),
   )
   return {
@@ -567,6 +604,8 @@ export const connectAll = (
       missed.set(key, now())
       await link.lists.until(deadline(signal), link.lists.miss())
     },
+    untrusted,
+    distrust: key => void distrusted.add(key),
     close: () => (closing ??= Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})),
   }
 }
