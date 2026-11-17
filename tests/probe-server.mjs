@@ -20,6 +20,7 @@
 //                      an error. It logs each list.
 //   --changes-before   declares tools.listChanged and sends notifications/tools/list_changed before each list reply
 //   --changes-after    the same, after each list reply
+//   --image            a call answers a text block and an image block of the bytes in IMAGE_BASE64
 //
 //   node tests/probe-server.mjs /tmp/probe.json [mode]
 
@@ -27,6 +28,8 @@ import fs from 'node:fs'
 import readline from 'node:readline'
 
 const [file, mode] = process.argv.slice(2)
+// tests/server.e2e.mjs checks these bytes.
+const IMAGE_BASE64 = Buffer.from('fake panel render').toString('base64')
 const event = e =>
   fs.appendFileSync(`${file}.log`, `${JSON.stringify({ ...e, pid: process.pid, ppid: process.ppid })}\n`)
 fs.writeFileSync(file, JSON.stringify({ pid: process.pid, cwd: process.cwd(), env: process.env }))
@@ -80,7 +83,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       fs.writeFileSync(msg.params.arguments.path, msg.params.arguments.text)
     if (mode === '--hang-calls') return
     if (mode === '--exit-on-call') process.exit(3)
-    reply({ content: [{ type: 'text', text: String(process.pid) }] })
+    const image = mode === '--image' ? [{ type: 'image', data: IMAGE_BASE64, mimeType: 'image/png' }] : []
+    reply({ content: [{ type: 'text', text: String(process.pid) }, ...image] })
     if (mode === '--exit-after-call') setTimeout(() => process.exit(3), 50)
     if (mode === '--list-changed') {
       fs.writeFileSync(changesFile, String(changes() + 1))

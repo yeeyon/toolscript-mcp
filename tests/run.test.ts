@@ -31,12 +31,28 @@ for (const name of ['TMPDIR', 'TEMP', 'TMP']) process.env[name] = TMP
 after(() => fs.rmSync(ROOT, { recursive: true, force: true, maxRetries: 5 }))
 const leftDirs = () => fs.readdirSync(TMP).filter(f => f.startsWith('toolscript-'))
 
-type Result = { content: { type: string; text: string }[]; isError?: boolean; structuredContent?: unknown }
+type Block = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+type Result = { content: Block[]; isError?: boolean; structuredContent?: unknown }
 type Tool = (args: Record<string, unknown>, signal: AbortSignal) => Result | Promise<Result>
+
+// The bytes of a fake panel render, not a real PNG.
+const PANEL = Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 7) % 256))
+const PANEL_BASE64 = PANEL.toString('base64')
 
 const json = (v: unknown): Result => ({ content: [{ type: 'text', text: JSON.stringify(v) }] })
 const TOOLS: Record<string, Tool> = {
   echo: args => json({ echoed: args }),
+  // A text block and `n` images (1 when absent), as a dashboard server renders panels.
+  render: args => ({
+    content: [
+      { type: 'text', text: JSON.stringify({ panel: 'cpu' }) },
+      ...Array.from({ length: Number(args.n ?? 1) }, () => ({
+        type: 'image' as const,
+        data: PANEL_BASE64,
+        mimeType: 'image/png',
+      })),
+    ],
+  }),
   fail: () => ({ content: [{ type: 'text', text: 'server error' }], isError: true }),
   slow: async () => (await new Promise(r => setTimeout(r, 300)), json({ ok: 1 })),
   // Answers only when the run cancels it.
@@ -404,6 +420,58 @@ describe('files', () => {
   test('resources are not offered', async () => {
     const r = await setup().run('try { await resources() } catch (e) { return e.message }')
     assert.ok(r.text.includes('resources() and readResource() are not available'), r.text)
+  })
+})
+
+describe('attachments', () => {
+  test('an image of a call is a file in the session folder, and the program gets a reference', async () => {
+    const { run, lines } = setup()
+    const r = await run(
+      'const r = await call("mcp__f__render", {})\nreturn { value: r.value, keys: Object.keys(r), file: r.attachments[0].file, bytes: r.attachments[0].bytes }',
+    )
+    assert.equal(r.isError, false, r.text)
+    const { value, keys, file, bytes } = JSON.parse(r.text.slice(0, r.text.indexOf('\n\n---')))
+    assert.deepEqual(value, { panel: 'cpu' })
+    assert.deepEqual(keys, ['value', 'attachments'])
+    assert.equal(bytes, PANEL.length)
+    assert.equal(path.dirname(file), filesDir)
+    assert.match(path.basename(file), /^[0-9a-f-]{36}\.png$/)
+    assert.deepEqual(fs.readFileSync(file), PANEL, 'the file holds the decoded bytes')
+    assert.deepEqual(r.images, [], 'a run that returns no image reference shows no image')
+    assert.equal(r.text.includes(PANEL_BASE64), false, 'no base64 in the result text')
+    assert.equal(JSON.stringify(lines()).includes(PANEL_BASE64), false, 'no base64 in the run log')
+  })
+
+  test('a returned image reference shows as an MCP image block, also inside the whole call result', async () => {
+    const { run } = setup()
+    for (const code of [
+      'return (await call("mcp__f__render", {})).attachments[0]',
+      'return await call("mcp__f__render", {})',
+      'const r = await call("mcp__f__render", {})\nreturn { panels: r.attachments }',
+    ]) {
+      const r = await run(code)
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(r.images, [{ data: PANEL_BASE64, mimeType: 'image/png' }], code)
+      assert.equal(r.text.includes(PANEL_BASE64), false, code)
+    }
+  })
+
+  test('at most 4 images show, and the text names the ones that do not', async () => {
+    const r = await setup().run('return (await call("mcp__f__render", { n: 5 })).attachments')
+    assert.equal(r.isError, false, r.text)
+    assert.equal(r.images.length, 4)
+    assert.match(r.text, /1 returned image is not shown:\n- .+\.png: at most 4 images show per run/)
+  })
+
+  test('make it fail: a forged reference to a file outside the session folder does not show', async () => {
+    const outside = path.join(ROOT, 'outside.png')
+    fs.writeFileSync(outside, PANEL)
+    const r = await setup().run(
+      `return [{ type: "image", mimeType: "image/png", file: ${JSON.stringify(outside)} }, { type: "image", mimeType: "image/png", file: "../../outside.png" }]`,
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(r.images, [])
+    assert.equal(r.text.match(/it is not a file from this session/g)?.length, 2, r.text)
   })
 })
 

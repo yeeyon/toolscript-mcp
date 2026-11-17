@@ -28,13 +28,19 @@ import {
   type Policy,
 } from '../core/policy.ts'
 import {
+  MAX_FILE_SIZE,
+  MAX_IMAGE_BYTES,
   MAX_SEEN,
+  MAX_SHOWN_IMAGES,
+  MAX_SHOWN_IMAGE_BYTES,
+  SHOWN_IMAGE_TYPES,
   callKey,
   checkCalls,
   errorText,
   fileNameError,
   fileText,
   formatOutcome,
+  hiddenImagesNote,
   isCallable,
   isEmpty,
   keep,
@@ -44,13 +50,17 @@ import {
   notListedText,
   problemReport,
   recallReply,
+  returnedImages,
   shapeOf,
   shownText,
   splitToolName,
   takeMessages,
   type CallRecord,
+  type HiddenWhy,
   type Kept,
+  type PendingFile,
   type Reply,
+  type ReturnedImage,
   type RunnerDone,
   type RunnerError,
   type RunnerMessage,
@@ -76,7 +86,6 @@ const MAX_PARALLEL_CALLS = 8
 // How long a run waits for calls still running after the sandbox ends. Then
 // they are cancelled, so a call that hangs does not hold the result.
 const SETTLE_MS = 1000
-const MAX_FILE_CHARS = 16 * 1024 * 1024
 const MAX_READ_BYTES = 4 * 1024 * 1024
 const MAX_STDERR_CHARS = 8000
 
@@ -104,7 +113,11 @@ export type RunContext = {
   readonly home: string
 }
 
-export type RunResult = { readonly text: string; readonly isError: boolean }
+/** An MCP image block: `data` is base64. */
+export type ShownImage = { readonly data: string; readonly mimeType: string }
+
+/** `images`: the image attachments that the program returned, read from their files. */
+export type RunResult = { readonly text: string; readonly isError: boolean; readonly images: readonly ShownImage[] }
 
 /** A result with what the run log needs to know about it. */
 type Ran = { readonly result: RunResult; readonly ending: RunEnding; readonly calls: readonly CallLog[] }
@@ -113,7 +126,7 @@ type Ran = { readonly result: RunResult; readonly ending: RunEnding; readonly ca
 type Attempt = Ran & { readonly known: ReadonlySet<string> }
 
 const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallLog[]): Attempt => ({
-  result: { text, isError: true },
+  result: { text, isError: true, images: [] },
   ending: 'refused',
   calls,
   known,
@@ -216,8 +229,8 @@ const saveFile = async (dir: string, name: string, data: unknown): Promise<Reply
   const problem = fileNameError(name)
   if (problem !== undefined) return { ok: false, error: problem }
   const text = fileText(name, data)
-  if (text.length > MAX_FILE_CHARS)
-    return { ok: false, error: `saveFile: ${text.length} characters is more than ${MAX_FILE_CHARS}; save less data` }
+  if (text.length > MAX_FILE_SIZE)
+    return { ok: false, error: `saveFile: ${text.length} characters is more than ${MAX_FILE_SIZE}; save less data` }
   // Only the person can read the saved data: a program can save what its calls returned.
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
   const file = path.join(dir, name)
@@ -225,6 +238,58 @@ const saveFile = async (dir: string, name: string, data: unknown): Promise<Reply
   if (old !== undefined && !old.isFile()) return { ok: false, error: `saveFile: ${name} exists and is not a file` }
   await fs.promises.writeFile(file, text, { mode: 0o600 })
   return { ok: true, value: file }
+}
+
+/** A new file in the session's saveFile folder, for an attachment of a tool result. */
+const attachmentFile = (dir: string) => (extension: string) => path.join(dir, `${randomUUID()}${extension}`)
+
+// The attachments of a tool result, as saveFile writes: only the person can read them.
+const writeAttachments = async (dir: string, files: readonly PendingFile[]): Promise<void> => {
+  if (files.length === 0) return
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
+  for (const { file, data } of files)
+    await fs.promises.writeFile(file, Buffer.from(data, 'base64'), { mode: 0o600, flag: 'wx' })
+}
+
+/**
+ * The image attachments that a program returned, read from their files, up
+ * to the caps. Only a file in the session's folder shows, by its real path,
+ * as readFile reads: a program can name any path in a reference.
+ */
+const showImages = async (
+  dir: string,
+  returned: readonly ReturnedImage[],
+): Promise<{ images: ShownImage[]; note: string }> => {
+  const images: ShownImage[] = []
+  const hidden: { file: string; why: HiddenWhy }[] = []
+  let total = 0
+  const realDir = returned.length === 0 ? undefined : await fs.promises.realpath(dir).catch(() => undefined)
+  const load = async ({ file, mimeType }: ReturnedImage): Promise<HiddenWhy | Buffer> => {
+    if (!SHOWN_IMAGE_TYPES.has(mimeType)) return 'type'
+    const real = await fs.promises.realpath(path.resolve(dir, file)).catch(() => undefined)
+    if (real === undefined || realDir === undefined || !isInside(real, realDir)) return 'outside'
+    const stat = await fs.promises.stat(real).catch(() => undefined)
+    if (stat === undefined || !stat.isFile()) return 'outside'
+    if (stat.size > MAX_IMAGE_BYTES) return 'size'
+    if (images.length >= MAX_SHOWN_IMAGES) return 'count'
+    if (total + stat.size > MAX_SHOWN_IMAGE_BYTES) return 'total'
+    const bytes = await fs.promises.readFile(real).catch(() => undefined)
+    if (bytes === undefined) return 'unreadable'
+    // The file can have grown since the stat.
+    if (bytes.length > MAX_IMAGE_BYTES) return 'size'
+    if (total + bytes.length > MAX_SHOWN_IMAGE_BYTES) return 'total'
+    return bytes
+  }
+  for (const image of returned) {
+    const loaded = await load(image)
+    if (typeof loaded === 'string') {
+      hidden.push({ file: image.file, why: loaded })
+      continue
+    }
+    total += loaded.length
+    images.push({ data: loaded.toString('base64'), mimeType: image.mimeType })
+  }
+  return { images, note: hiddenImagesNote(hidden) }
 }
 
 // readFile reads only a file in the session's saveFile folder: a program can
@@ -395,12 +460,20 @@ const execute = async (
         timeout: callSeconds * 1000,
         signal: own.signal,
       })
-      const reply = mcpReply({
-        content: Array.isArray(r.content) ? r.content : [],
-        isError: r.isError === true,
-        structuredContent: r.structuredContent,
-      })
-      return reply.ok ? reply : { ...reply, code: 'tool-error' }
+      const { reply, files } = mcpReply(
+        {
+          content: Array.isArray(r.content) ? r.content : [],
+          isError: r.isError === true,
+          structuredContent: r.structuredContent,
+        },
+        attachmentFile(ctx.filesDir),
+      )
+      if (!reply.ok) return { ...reply, code: 'tool-error' }
+      const unwritten = await writeAttachments(ctx.filesDir, files).then(
+        () => undefined,
+        (err: unknown) => `could not write an attachment of ${tool}: ${errorText(err)}`,
+      )
+      return unwritten === undefined ? reply : { ok: false, error: unwritten, code: 'failed' }
     } catch (err) {
       // An abort at the end of the run is also a RequestTimeout to the SDK. The SDK's own timer puts the limit in
       // `data`. A server can send the same code for its own error (mcp-remote does, for a failed login): its text stays.
@@ -571,7 +644,10 @@ const execute = async (
   const isCut = returned !== undefined && shownText(returned).length > MAX_RESULT_CHARS
   const wholeRef = isCut ? keep(kept, returned, Date.now()) : undefined
   const text = formatOutcome(outcome, calls.length, stderr, MAX_RESULT_CHARS, { calls, recalls, recalled, wholeRef })
+  // Image tokens are paid only for the images that the program returns.
+  const shown = await showImages(ctx.filesDir, returned === undefined ? [] : returnedImages(returned))
   const note = [
+    shown.note,
     approvalNote([...unapproved], ctx.canAsk()),
     interactiveNote([...needPerson], ctx.canAsk() ? { written } : 'cannot-ask'),
   ]
@@ -579,7 +655,11 @@ const execute = async (
     .join('\n\n')
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
-  const result = { text: note === '' ? text : `${text}\n\n${note}`, isError: outcome?.t !== 'done' }
+  const result = {
+    text: note === '' ? text : `${text}\n\n${note}`,
+    isError: outcome?.t !== 'done',
+    images: shown.images,
+  }
   return {
     result,
     ending: endingOf(outcome, ctx.signal.aborted),

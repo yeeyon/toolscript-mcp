@@ -170,7 +170,8 @@ export const createServer = (
     runs.add(running)
     try {
       const r = await running
-      return text(fresh.note === '' ? r.text : `${r.text}\n\n${fresh.note}`, r.isError)
+      const result = text(fresh.note === '' ? r.text : `${r.text}\n\n${fresh.note}`, r.isError)
+      return { ...result, content: [...result.content, ...r.images.map(i => ({ type: 'image' as const, ...i }))] }
     } finally {
       runs.delete(running)
     }

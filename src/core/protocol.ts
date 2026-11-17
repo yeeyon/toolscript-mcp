@@ -90,19 +90,149 @@ export const splitToolName = (tool: string): { server: string; name: string } | 
   return { server: rest.slice(0, at), name: rest.slice(at + 2) }
 }
 
+type McpBlock = {
+  type: string
+  text?: unknown
+  data?: unknown
+  mimeType?: unknown
+  uri?: unknown
+  name?: unknown
+  resource?: unknown
+  blob?: unknown
+}
+
 type McpResultLike = {
-  content: readonly { type: string; text?: unknown }[]
+  content: readonly McpBlock[]
   isError: boolean
   structuredContent?: unknown
 }
 
-/** The reply for a `$.mcp.call` result: its text blocks joined, as the model would read them. */
-export const mcpReply = (r: McpResultLike): Reply => {
-  const text = r.content
-    .map(block => (block.type === 'text' && typeof block.text === 'string' ? block.text : `[${block.type} block]`))
-    .join('\n')
-  if (r.isError) return { ok: false, error: text || 'the tool reported an error' }
-  return { ok: true, value: toValue({ structuredContent: r.structuredContent }, text) }
+/** The most a file of a program can hold: the characters of saveFile, the bytes of an attachment. */
+export const MAX_FILE_SIZE = 16 * 1024 * 1024
+
+/** Where a block with bytes went: its file in the session's saveFile folder, or why it was not written. */
+type Stored = { file: string } | { error: string }
+
+/**
+ * A non-text block of a tool result, as the program gets it: never the
+ * base64 data. A block with bytes (an image, audio, a resource blob) is a
+ * file. A text resource keeps its text. A resource_link is not fetched. A
+ * block of another type keeps only its type.
+ */
+export type Attachment =
+  | ({ type: 'image' | 'audio'; mimeType: string; bytes: number } & Stored)
+  | ({ type: 'resource'; uri: string; mimeType?: string; bytes: number } & Stored)
+  | { type: 'resource'; uri: string; mimeType?: string; text: string }
+  | { type: 'resource_link'; uri: string; name?: string; mimeType?: string }
+  | { type: string }
+
+/** A file that the host writes before the program gets the reply: `data` is base64. */
+export type PendingFile = { readonly file: string; readonly data: string }
+
+/** The reply for a tool result, and the files of its attachments, which the host writes before it replies. */
+export type CallReply = { readonly reply: Reply; readonly files: readonly PendingFile[] }
+
+/** The path of a new file in the session's saveFile folder, with this extension. */
+export type FileFor = (extension: string) => string
+
+const EXTENSIONS: Readonly<Record<string, string>> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/svg+xml': '.svg',
+  'audio/wav': '.wav',
+  'audio/mpeg': '.mp3',
+  'audio/ogg': '.ogg',
+  'audio/webm': '.webm',
+  'application/pdf': '.pdf',
+  'application/json': '.json',
+  'application/zip': '.zip',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+}
+
+const extensionOf = (mimeType: string | undefined): string =>
+  EXTENSIONS[(mimeType ?? '').split(';')[0]!.trim().toLowerCase()] ?? '.bin'
+
+const BASE64 = /^[A-Za-z0-9+/_-]*={0,2}$/
+
+/** The number of bytes that base64 text decodes to, or undefined when it is not base64. */
+export const base64Bytes = (data: string): number | undefined => {
+  const clean = data.replace(/\s+/g, '')
+  if (!BASE64.test(clean) || clean.length % 4 === 1) return undefined
+  const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0
+  return Math.floor(((clean.length - padding) * 3) / 4)
+}
+
+const optional = <K extends string>(key: K, v: unknown): Partial<Record<K, string>> =>
+  typeof v === 'string' ? ({ [key]: v } as Record<K, string>) : {}
+
+/** The attachment of one non-text block, and the file to write for it. */
+const attachmentOf = (block: McpBlock, fileFor: FileFor): { attachment: Attachment; file?: PendingFile } => {
+  const stored = (
+    data: unknown,
+    mimeType: string | undefined,
+  ): { stored: Stored & { bytes: number }; file?: PendingFile } => {
+    const bytes = typeof data === 'string' ? base64Bytes(data) : undefined
+    if (bytes === undefined) return { stored: { bytes: 0, error: 'the block has no base64 data: not written' } }
+    if (bytes > MAX_FILE_SIZE)
+      return { stored: { bytes, error: `${bytes} bytes is more than the file limit of ${MAX_FILE_SIZE}: not written` } }
+    const file = fileFor(extensionOf(mimeType))
+    return { stored: { bytes, file }, file: { file, data: data as string } }
+  }
+  if (block.type === 'image' || block.type === 'audio') {
+    const mimeType = typeof block.mimeType === 'string' ? block.mimeType : 'application/octet-stream'
+    const { stored: s, file } = stored(block.data, mimeType)
+    return { attachment: { type: block.type, mimeType, ...s }, file }
+  }
+  if (block.type === 'resource_link' && typeof block.uri === 'string')
+    return {
+      attachment: {
+        type: 'resource_link',
+        uri: block.uri,
+        ...optional('name', block.name),
+        ...optional('mimeType', block.mimeType),
+      },
+    }
+  const resource = block.resource as McpBlock | undefined
+  if (block.type === 'resource' && resource !== null && typeof resource?.uri === 'string') {
+    const head = { type: 'resource' as const, uri: resource.uri, ...optional('mimeType', resource.mimeType) }
+    if (typeof resource.text === 'string') return { attachment: { ...head, text: resource.text } }
+    const { stored: s, file } = stored(resource.blob, head.mimeType)
+    return { attachment: { ...head, ...s }, file }
+  }
+  return { attachment: { type: block.type } }
+}
+
+const isText = (block: McpBlock): block is McpBlock & { text: string } =>
+  block.type === 'text' && typeof block.text === 'string'
+
+/**
+ * The reply for a tool result. With text and structured content only, the
+ * value is the structured content, or the text blocks joined and parsed as
+ * JSON when they hold JSON. A result with a non-text block is
+ * `{ value, attachments }`: that same value (null with no text and no
+ * structured content), and one attachment per non-text block, in order.
+ * A tool error is the text of its blocks.
+ */
+export const mcpReply = (r: McpResultLike, fileFor: FileFor): CallReply => {
+  if (r.isError) {
+    const text = r.content.map(block => (isText(block) ? block.text : `[${block.type} block]`)).join('\n')
+    return { reply: { ok: false, error: text || 'the tool reported an error' }, files: [] }
+  }
+  const texts = r.content.filter(isText).map(block => block.text)
+  const others = r.content.filter(block => !isText(block))
+  const text = texts.join('\n')
+  if (others.length === 0)
+    return { reply: { ok: true, value: toValue({ structuredContent: r.structuredContent }, text) }, files: [] }
+  const value =
+    r.structuredContent !== undefined ? r.structuredContent : texts.length === 0 ? null : toValue(undefined, text)
+  const parts = others.map(block => attachmentOf(block, fileFor))
+  return {
+    reply: { ok: true, value: { value, attachments: parts.map(p => p.attachment) } },
+    files: parts.flatMap(p => (p.file === undefined ? [] : [p.file])),
+  }
 }
 
 // JSON.parse rounds an integer it cannot store, and it reports no error. It
@@ -267,20 +397,86 @@ const isBlocks = (v: unknown): v is McpResultLike['content'] =>
   v.every(b => b !== null && typeof b === 'object' && CONTENT_TYPES.has((b as { type?: unknown }).type as string))
 
 /** The reply for a saved result, read back from its file. */
-export const savedReply = (format: SavedResult['format'], fileText: string): Reply => {
-  if (format === 'text') return { ok: true, value: toValue(undefined, fileText) }
+export const savedReply = (format: SavedResult['format'], fileText: string, fileFor: FileFor): CallReply => {
+  const only = (reply: Reply): CallReply => ({ reply, files: [] })
+  if (format === 'text') return only({ ok: true, value: toValue(undefined, fileText) })
   let parsed: unknown
   try {
     parsed = parseToolJson(fileText)
   } catch {
     // JSON that does not parse was cut; text that is not JSON is the result.
-    if (format === 'unknown') return { ok: true, value: fileText }
-    return { ok: false, error: 'the saved result is not whole' }
+    if (format === 'unknown') return only({ ok: true, value: fileText })
+    return only({ ok: false, error: 'the saved result is not whole' })
   }
-  if (format === 'json' || !isBlocks(parsed)) return { ok: true, value: parsed }
-  // Content blocks: joined as the model would read them, like a live result.
-  return mcpReply({ content: parsed, isError: false })
+  if (format === 'json' || !isBlocks(parsed)) return only({ ok: true, value: parsed })
+  // Content blocks: the same reply as a live result.
+  return mcpReply({ content: parsed, isError: false }, fileFor)
 }
+
+/** An image attachment that a program returned: the host shows its file as an MCP image block. */
+export type ReturnedImage = { readonly file: string; readonly mimeType: string }
+
+const isImageAttachment = (v: unknown): v is ReturnedImage & { type: 'image' } =>
+  v !== null &&
+  typeof v === 'object' &&
+  (v as { type?: unknown }).type === 'image' &&
+  typeof (v as { file?: unknown }).file === 'string' &&
+  typeof (v as { mimeType?: unknown }).mimeType === 'string'
+
+const childrenOf = (v: unknown): unknown[] =>
+  Array.isArray(v) ? v : v !== null && typeof v === 'object' ? Object.values(v) : []
+
+/**
+ * The image attachments in a return value (JSON): the value itself, or one
+ * within two levels of arrays and objects, so `return await call(…)` shows its
+ * images too. Each file once, in order.
+ */
+export const returnedImages = (json: string): ReturnedImage[] => {
+  let value: unknown
+  try {
+    value = JSON.parse(json)
+  } catch {
+    return []
+  }
+  const found = new Map<string, ReturnedImage>()
+  const visit = (v: unknown, depth: number): void => {
+    if (isImageAttachment(v)) {
+      if (!found.has(v.file)) found.set(v.file, { file: v.file, mimeType: v.mimeType })
+      return
+    }
+    if (depth < 2) for (const child of childrenOf(v)) visit(child, depth + 1)
+  }
+  visit(value, 0)
+  return [...found.values()]
+}
+
+// The images of one run_code result. MCP clients show these types. An image
+// of 3,750,000 bytes is 5 MB as base64, the size limit of an image in the Claude API.
+export const SHOWN_IMAGE_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+export const MAX_SHOWN_IMAGES = 4
+export const MAX_IMAGE_BYTES = 3_750_000
+export const MAX_SHOWN_IMAGE_BYTES = 8_000_000
+
+/** Why a returned image is not shown. */
+export type HiddenWhy = 'type' | 'outside' | 'unreadable' | 'size' | 'count' | 'total'
+
+const HIDDEN_TEXT: Readonly<Record<HiddenWhy, string>> = {
+  type: 'only PNG, JPEG, GIF and WebP images show',
+  outside: 'it is not a file from this session',
+  unreadable: 'the file cannot be read',
+  size: `it is more than ${MAX_IMAGE_BYTES} bytes`,
+  count: `at most ${MAX_SHOWN_IMAGES} images show per run`,
+  total: `the images of one run show at most ${MAX_SHOWN_IMAGE_BYTES} bytes`,
+}
+
+/** The note for returned images that are not shown, or '' when every one shows. */
+export const hiddenImagesNote = (hidden: readonly { file: string; why: HiddenWhy }[]): string =>
+  hidden.length === 0
+    ? ''
+    : [
+        `${hidden.length} returned image${hidden.length === 1 ? ' is' : 's are'} not shown:`,
+        ...hidden.map(h => `- ${h.file}: ${HIDDEN_TEXT[h.why]}`),
+      ].join('\n')
 
 const clip = (text: string, max: number, whole?: number): string => {
   if (text.length <= max) return text
