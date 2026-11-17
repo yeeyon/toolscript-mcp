@@ -150,9 +150,28 @@ describe('a tool of a bridge', () => {
     ['node', ['C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js', 'mcp', 'serve'], true],
     ['node', ['/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js', 'mcp', 'serve'], true],
     ['wsl', ['--exec', 'claude', 'mcp', 'serve'], true],
-    // `--transport` has the shape of a flag of claude, such as `--debug`. A bridge too many only asks more.
+    ['claude', ['--settings', 'C:/s.json', 'mcp', 'serve'], true],
+    ['claude', ['--model', 'opus', 'mcp', 'serve'], true],
+    ['claude', ['--add-dir', '/x', 'mcp', 'serve'], true],
+    ['cmd', ['/c', 'claude', '--settings', 'C:\\s.json', 'mcp', 'serve'], true],
+    ['cmd', ['/c', 'cd /d C:\\work&&claude mcp serve'], true],
+    ['cmd', ['/c', 'set X=1&&claude mcp serve'], true],
+    ['cmd', ['/c', 'claude^ mcp serve'], true],
+    ['cmd', ['/c', 'cl^aude mcp serve'], true],
+    ['bash', ['-c', 'cl"aude" mcp serve'], true],
+    ['bash', ['-c', 'cd ~/w;claude mcp serve'], true],
+    ['bash', ['-c', '(claude mcp serve)'], true],
+    ['bash', ['-c', 'claude mcp serve;'], true],
+    ['bash', ['-c', 'claude mcp serve>/tmp/log'], true],
+    ['bash', ['-c', '"$(which claude)" mcp serve'], true],
+    ['bash', ['-c', '`which claude` mcp serve|tee log'], true],
+    // These launch no Claude Code, but any words can come between the three words. A bridge too many only asks more.
     ['uvx', ['my-server', '--name', 'claude', '--transport', 'mcp', 'serve'], true],
+    ['uvx', ['my-server', '--name', 'claude', '--transport', 'stdio', 'mcp', 'serve'], true],
+    ['uvx', ['my-server', '--name', 'claude', 'other', 'mcp', 'serve'], true],
+    ['bash', ['-lc', 'echo claude && run mcp serve'], true],
     ['node', ['server.js', 'mcp', 'serve'], false],
+    ['bash', ['-c', 'cd ~/w;my-server mcp serve'], false],
     ['claude', ['--version'], false],
     ['claude', ['mcp', 'list'], false],
     ['claude', ['serve', 'mcp'], false],
@@ -161,9 +180,6 @@ describe('a tool of a bridge', () => {
     ['myclaude', ['mcp', 'serve'], false],
     ['npx', ['-y', '@anthropic-ai/claude-code-router', 'mcp', 'serve'], false],
     ['node', ['/opt/not-claude-code/cli.js', 'mcp', 'serve'], false],
-    ['uvx', ['my-server', '--name', 'claude', '--transport', 'stdio', 'mcp', 'serve'], false],
-    ['uvx', ['my-server', '--name', 'claude', 'other', 'mcp', 'serve'], false],
-    ['bash', ['-lc', 'echo claude && run mcp serve'], false],
   ]
 
   test('the key claude-code, and any key whose stdio command runs claude mcp serve, is a bridge', () => {
@@ -176,6 +192,32 @@ describe('a tool of a bridge', () => {
       }),
       ['claude-code'],
     )
+  })
+
+  test('a long hostile command line parses at once', () => {
+    const HOSTILE: [string, string[], boolean][] = [
+      ['x', [Array(50_000).fill('-/claude').join(' ')], false],
+      ['x', Array(50_000).fill('-/claude'), false],
+      ['x', Array(10_000).fill(['-/claude', '--x', 'mcp', '"\'', ';&|']).flat(), false],
+      [
+        'x',
+        [
+          '"'.repeat(50_000) + 'a"',
+          'a' + '"'.repeat(50_000) + 'b',
+          "'".repeat(50_000) + 'claude',
+          'a/'.repeat(50_000) + 'claude-code/cli.j',
+        ],
+        false,
+      ],
+      ['claude', [...Array(50_000).fill('-x'), 'mcp', ...Array(50_000).fill('-x'), 'serve'], true],
+    ]
+    bridgesOf({ k: { command: 'claude', args: ['mcp', 'serve'] } })
+    for (const [command, args, bridge] of HOSTILE) {
+      const start = performance.now()
+      assert.equal(bridgesOf({ k: { command, args } }).length === 1, bridge, command)
+      const ms = performance.now() - start
+      assert.ok(ms < 500, `${args.length} arguments took ${ms.toFixed(0)} ms`)
+    }
   })
 
   test('an allow rule for every server does not allow a tool of the bridge, also one that it adds later', () => {

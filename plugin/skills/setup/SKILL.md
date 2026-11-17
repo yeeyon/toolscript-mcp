@@ -158,8 +158,8 @@ Ask the person for the rules, and run the command with approval. Show the policy
 An `allow` rule for more than one server, such as `allow "*"`, does not allow a tool of `claude-code`. toolscript-mcp
 asks the person for such a tool. Only an `allow` rule that starts with `mcp__claude-code__` allows it, such as
 `allow "mcp__claude-code__Read"`. To allow all tools of Claude Code, the person gives `allow "mcp__claude-code__*"`.
-The same rule applies to a stdio server under another key that runs Claude Code with `mcp serve`. Only flags can come
-between the Claude Code word, `mcp` and `serve`. The Claude Code word is one of these:
+The same rule applies to a stdio server under another key that runs Claude Code with `mcp serve`. Any words can come
+between the Claude Code word, `mcp` and `serve`, and shell operators such as `&&` or `;` split words. The Claude Code word is one of these:
 
 - `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path.
 - `@anthropic-ai/claude-code`, also with `@<version>`.

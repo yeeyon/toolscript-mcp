@@ -365,35 +365,32 @@ const BRIDGE_KEY = 'claude-code'
 // package `@anthropic-ai/claude-code`, also with `@<version>`; or a path that ends in `claude-code/cli.js`.
 const CLAUDE =
   /^(?:(?:.*[\\/])?claude(?:\.exe|\.cmd|\.ps1)?|@anthropic-ai\/claude-code(?:@[^\\/]+)?|.*[\\/]claude-code[\\/]cli\.js)$/i
-// `-x`, `--x` or `--x=v`.
-const CLAUDE_FLAG = /^--?[^-]/
+// What the stage of a bridge match waits for: the Claude Code word, then `mcp`, then `serve`.
+const BRIDGE_WORDS = [
+  (word: string) => CLAUDE.test(word),
+  (word: string) => word === 'mcp',
+  (word: string) => word === 'serve',
+]
 
 /**
  * True for Claude Code serving its own tools, such as Bash and Write: the key
  * BRIDGE_KEY, or a stdio entry whose words hold the Claude Code word, then
- * `mcp`, then `serve`, with only flags between. A launcher such as `cmd /c`,
- * `bash -lc` or `npx -y` can come first, and an argument such as
- * "claude mcp serve" counts as its words. A program that calls these tools
- * skips the permission rules and hooks of Claude Code, so only the policy
- * guards them.
+ * `mcp`, then `serve`, with any words between. A word ends at white space or
+ * a shell operator, and quotes and the `^` of cmd do not count, so
+ * `cmd /c "cd /d C:\w&&claude mcp serve"` and `claude --model opus mcp serve`
+ * count. A launch that is no bridge but has the three words counts too, which
+ * only asks more. A program that calls these tools skips the permission rules
+ * and hooks of Claude Code, so only the policy guards them. One pass over the
+ * words: a config can hold a long hostile command line.
  */
 const isBridge = (key: ServerKey, server: ServerEntry): boolean => {
   if (key === BRIDGE_KEY) return true
   if (server.kind !== 'stdio') return false
-  const words = [server.command, ...server.args]
-    .flatMap(arg => arg.split(/\s+/))
-    .map(word => word.replace(/^["']+|["']+$/g, ''))
-    .filter(word => word !== '')
-  // The index of the first word at or after `at` that is not a flag.
-  const skipFlags = (at: number): number => {
-    while (at < words.length && CLAUDE_FLAG.test(words[at]!)) at++
-    return at
-  }
-  return words.some((word, at) => {
-    if (!CLAUDE.test(word)) return false
-    const mcp = skipFlags(at + 1)
-    return words[mcp] === 'mcp' && words[skipFlags(mcp + 1)] === 'serve'
-  })
+  let stage = 0
+  for (const arg of [server.command, ...server.args])
+    for (const word of arg.replace(/["'^]/g, '').split(/[\s;&|()<>`$]+/))
+      if (word !== '' && BRIDGE_WORDS[stage]!(word) && ++stage === BRIDGE_WORDS.length) return true
+  return false
 }
 
 /** The JSON in `text`, or where it breaks. V8 quotes the text near the error, which can hold a token: only the place is kept. */

@@ -607,8 +607,8 @@ Add the entry to `mcpServers`, and the rules to `policy`, in your config:
 toolscript-mcp treats a server as the bridge in these cases:
 
 - Its key is `claude-code`.
-- It is a stdio server, and its command and arguments have the Claude Code word, then `mcp`, then `serve`. Only
-  flags, such as `--debug`, can come between these words.
+- It is a stdio server, and its command and arguments have the Claude Code word, then `mcp`, then `serve`. Any
+  words can come between these words, such as `--model opus` or `--settings C:/s.json`.
 
 The Claude Code word is one of these:
 
@@ -617,7 +617,10 @@ The Claude Code word is one of these:
 - A path that ends in `claude-code/cli.js` or `claude-code\cli.js`.
 
 A launcher can come first, such as `cmd /c`, `bash -lc`, `pwsh -Command`, `npx -y`, `pnpm dlx` or `bunx`.
-toolscript-mcp splits each argument at its spaces, so `"claude mcp serve"` in one argument also counts. At start,
+toolscript-mcp splits each argument at its spaces and at the shell operators `; & | ( ) < > $` and the backtick, and
+skips quotes and the `^` of cmd. So `"claude mcp serve"` in one argument, `cmd /c "cd /d C:\work&&claude mcp serve"`
+and `bash -c "(claude mcp serve)"` also count. A launch that is no bridge but has these words in this order counts as
+a bridge too: toolscript-mcp then asks for its tools. At start,
 toolscript-mcp writes the keys of the bridges to stderr, such as `Claude Code bridges: claude-code`.
 
 Use the key `claude-code` for any other launch (an HTTP proxy, a wrapper script). toolscript-mcp cannot find Claude
