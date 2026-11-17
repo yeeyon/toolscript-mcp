@@ -36,6 +36,9 @@ const slowFile = path.join(dir, 'slow.json')
 const hangFile = path.join(dir, 'hang.pid')
 const writerFile = path.join(dir, 'writer.json')
 const consentFile = path.join(dir, 'consent.json')
+const picFile = path.join(dir, 'pic.json')
+// The image that a probe in --image mode answers: a PNG of 1 by 1 pixel.
+const PIC_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const configFile = path.join(dir, 'config.json')
 // Every call that reaches the fake server, one JSON line each.
 const BENCH_LOG = path.join(dir, 'bench.jsonl')
@@ -72,6 +75,7 @@ fs.writeFileSync(
       { match: 'mcp__slow__probe', action: 'allow' },
       { match: 'mcp__x__probe', action: 'allow' },
       { match: 'mcp__consent__probe', action: 'allow' },
+      { match: 'mcp__pic__probe', action: 'allow' },
     ],
     mcpServers: {
       // `node` from PATH, not process.execPath: the SDK's short environment must still find it.
@@ -100,6 +104,8 @@ fs.writeFileSync(
       x: { command: process.execPath, args: [PROBE, writerFile, '--write-on-call'] },
       // Its tool requires a person on every call, and the policy allows it.
       consent: { command: process.execPath, args: [PROBE, consentFile, '--requires-person'] },
+      // Its tool answers a text block and an image block.
+      pic: { command: process.execPath, args: [PROBE, picFile, '--image'] },
       // A variable that is not set: this entry fails alone, and the server still starts.
       broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
       // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
@@ -790,6 +796,19 @@ test('run (l) a call with no answer in callTimeoutSeconds throws, the program go
     [{ tool: 'mcp__slow__probe', ok: false, error: 'timeout' }],
     'the run log records the call as a timeout',
   )
+})
+
+test('run (s) an image of a call is a file reference, and a returned reference is an MCP image block', async () => {
+  const code = 'return (await call("mcp__pic__probe", {})).attachments[0]'
+  const r = await client.callTool({ name: 'run_code', arguments: { code } })
+  assert.equal(r.isError, false, r.content[0].text)
+  const ref = JSON.parse(r.content[0].text.slice(0, r.content[0].text.indexOf('\n\n---')))
+  assert.equal(ref.type, 'image')
+  assert.equal(ref.mimeType, 'image/png')
+  assert.deepEqual(fs.readFileSync(ref.file), Buffer.from(PIC_BASE64, 'base64'), 'the file holds the decoded bytes')
+  assert.equal(path.dirname(path.dirname(ref.file)), path.join(HOME, '.toolscript-mcp', 'files'))
+  assert.deepEqual(r.content.slice(1), [{ type: 'image', data: PIC_BASE64, mimeType: 'image/png' }])
+  assert.equal(r.content[0].text.includes(PIC_BASE64), false, 'no base64 in the text')
 })
 
 test('(f) stdout holds only JSON-RPC, and (h) the server and its children end when stdin closes', async () => {
