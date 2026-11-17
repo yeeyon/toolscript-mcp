@@ -680,12 +680,67 @@ export const basicCredentials = (id: string, secret: string): string | undefined
 }
 
 /**
+ * encodeURIComponent with each lone surrogate as U+FFFD, as a form and fetch encode it: encodeURIComponent throws on
+ * one, and a server can send one in a token or a client.
+ */
+const encodeUri = (value: string): string =>
+  encodeURIComponent(
+    value.replace(
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g,
+      String.fromCharCode(0xfffd),
+    ),
+  )
+
+/**
+ * An OAuth client with a secret. `registered` when an authorization server registered it: that server picked both the
+ * id and the secret.
+ */
+export type ClientSecret = { readonly id: string; readonly secret: string; readonly registered: boolean }
+
+/** `value` as an HTML form writes it. */
+const formEncode = (value: string): string =>
+  encodeUri(value)
+    .replace(/[!'()~]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/%20/g, '+')
+
+/**
+ * `text` with each client secret replaced by `***` where it stands as one: the value of a `client_secret` form field
+ * or JSON key, and the secret of `client` in its Basic pair and Basic header value, as the SDK sends them, URL-encoded
+ * and form-encoded (RFC 6749 section 2.3.1). redact hides a secret under 8 characters nowhere else, so a server cannot
+ * blank a common word. For the same reason the pair `id:secret` hides only with an id that is not empty and a secret
+ * of 8 or more characters: a server that registers a client picks both, and id `https` with secret `//as.` would blank
+ * each `https://as.`. For a client of the config, a secret of 4 or more characters with a word character is enough.
+ * Any other pair shows, as one with a secret under 4 characters or without a word character, but its Basic value and
+ * `client_secret=` still hide.
+ */
+export const hideClientSecret = (text: string, client: ClientSecret | undefined): string => {
+  let hidden = text
+  if (client !== undefined) {
+    const { id, secret, registered } = client
+    hidden = hidden.replaceAll(`client_secret=${secret}`, () => 'client_secret=***')
+    const pairs = id !== '' && (registered ? secret.length >= 8 : secret.length >= 4 && /\w/.test(secret))
+    for (const [i, s] of [
+      [id, secret],
+      [encodeUri(id), encodeUri(secret)],
+      [formEncode(id), formEncode(secret)],
+    ] as const) {
+      const basic = basicCredentials(i, s)
+      if (basic !== undefined) hidden = hidden.replaceAll(`Basic ${basic}`, () => 'Basic ***')
+      if (pairs) hidden = hidden.replaceAll(`${i}:${s}`, () => `${i}:***`)
+    }
+  }
+  return hidden
+    .replace(/(client_secret=)[^&\s"]*/g, '$1***')
+    .replace(/("client_secret"\s*:\s*")(?:[^"\\]|\\.)*/g, '$1***')
+}
+
+/**
  * `value` as encodeURIComponent and as an HTML form write it, also with lowercase hex digits, and inside a JSON
  * string: an error can echo a URL, a form or a JSON body that it got.
  */
 const encodings = (value: string): string[] => {
-  const uri = encodeURIComponent(value)
-  const form = uri.replace(/[!'()~]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%20/g, '+')
+  const uri = encodeUri(value)
+  const form = formEncode(value)
   const lower = (encoded: string) => encoded.replace(/%[0-9A-F]{2}/g, hex => hex.toLowerCase())
   return [uri, form, lower(uri), lower(form), JSON.stringify(value).slice(1, -1)]
 }
@@ -696,8 +751,9 @@ const encodings = (value: string): string[] => {
  * values with a secret name or a secret word or of 12 characters or more, the OAuth client secret and its Basic
  * header value, the secrets in `more` (the OAuth tokens, code and verifier of this server), the secrets inside every
  * such value, each word of 8 or more in one ("Bearer <token>"), and the URL-decoded, URL-encoded and form-encoded
- * form of each. A number shorter than 12 digits is never replaced, and a plain word only as a whole word, so
- * `localhost:3000` stays readable. The user and password of any URL in `text` are hidden too.
+ * form of each, of 4 characters or more. A value in `more` and each of its forms count only with 8 or more. A number
+ * shorter than 12 digits is never replaced, and a plain word only as a whole word, so `localhost:3000` stays readable.
+ * The user and password of any URL in `text` are hidden too.
  */
 export const redact = (text: string, server: ServerConfig, more: readonly string[] = []): string => {
   const client = server.kind === 'http' ? server.oauth?.client : undefined
@@ -708,17 +764,18 @@ export const redact = (text: string, server: ServerConfig, more: readonly string
       ...hideArgSecrets([value]).secrets,
     ]),
     ...(client?.secret === undefined ? [] : [client.secret, basicCredentials(client.id, client.secret) ?? '']),
-    ...more,
   ]
-  const secrets = [
-    ...new Set(
-      [...values, ...values.flatMap(v => v.split(/\s+/).filter(w => w.length >= 8))].flatMap(v => [
-        v,
-        decoded(v),
-        ...encodings(v),
-      ]),
-    ),
-  ].filter(v => v.length >= 4 && !(/^\d+$/.test(v) && v.length < LONG))
+  const forms = (vs: readonly string[]) =>
+    [...vs, ...vs.flatMap(v => v.split(/\s+/).filter(w => w.length >= 8))].flatMap(v => [
+      v,
+      decoded(v),
+      ...encodings(v),
+    ])
+  // A server picks the values in `more`: one that is, decodes to or encodes to a common text would blank it in each
+  // reason, as `://` would blank each `%3A%2F%2F`.
+  const long = (vs: readonly string[]) => vs.filter(v => v.length >= 8)
+  const all = new Set([...forms(values).filter(v => v.length >= 4), ...long(forms(long(more)))])
+  const secrets = [...all].filter(v => !(/^\d+$/.test(v) && v.length < LONG))
   const hidden = secrets
     .sort((a, b) => b.length - a.length)
     .reduce(
