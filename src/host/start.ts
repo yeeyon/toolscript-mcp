@@ -8,4 +8,4 @@ const FROM_NPM = /[\\/]node_modules[\\/](\.bin[\\/])?toolscript-mcp([\\/]|$)/i
 
 /** `npx -y toolscript-mcp` when `script` is in an npm install, else `node <absolute path of script>`, as in a clone. */
 export const detectLaunch = (script: string): Launch =>
-  FROM_NPM.test(script) ? NPX_LAUNCH : { command: 'node', args: [path.resolve(script)] }
+  FROM_NPM.test(script) ? NPX_LAUNCH : { kind: 'node', main: path.resolve(script) }

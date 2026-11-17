@@ -7,8 +7,10 @@
 import {
   hideArgSecrets,
   hideUrlSecrets,
+  launchArgv,
   launchText,
   parseJson,
+  pathWord,
   serverKey,
   shellWord,
   type Env,
@@ -241,23 +243,23 @@ const steps = (c: ClientResult, configFile: string, platform: string, launch: La
   const remove = c.outcomes.flatMap(o =>
     o.kind === 'imported' || o.kind === 'same' || o.kind === 'self' ? [o.name] : [],
   )
-  const run = [...launch.args, '--config', configFile]
   if (c.file.client === 'claude-code') {
     // Claude Code on Windows starts npx only through cmd /c. It starts node directly.
-    const start = platform === 'win32' && launch.command === 'npx' ? ['cmd', '/c', 'npx'] : [launch.command]
+    const cmd = platform === 'win32' && launch.kind === 'npx' ? 'cmd /c ' : ''
     const word = (w: string) => shellWord(w, platform)
     return [
       platform === 'win32' ? 'Claude Code, in PowerShell:' : 'Claude Code:',
       ...remove.map(name => `  claude mcp remove ${word(name)} --scope user`),
-      `  claude mcp add --scope user toolscript ${['--', ...start, ...run].map(word).join(' ')}`,
+      `  claude mcp add --scope user toolscript ${word('--')} ${cmd}${launchText(launch, platform)} --config ${pathWord(configFile, platform)}`,
       '  Then start a new Claude Code session.',
     ]
   }
   const client = CLIENT_NAME[c.file.client]
+  const [command, ...args] = launchArgv(launch)
   return [
     `${client}, in ${c.file.path}:`,
     ...(remove.length > 0 ? [`  Remove from "mcpServers": ${remove.map(n => JSON.stringify(n)).join(', ')}`] : []),
-    `  Add to "mcpServers": "toolscript": ${JSON.stringify({ command: launch.command, args: run })}`,
+    `  Add to "mcpServers": "toolscript": ${JSON.stringify({ command, args: [...args, '--config', configFile] })}`,
     `  Then restart ${client}.`,
   ]
 }
@@ -292,7 +294,7 @@ export const initReport = (imp: Import, configFile: string, platform: string, la
   if (bare.length > 0)
     out.push(
       '',
-      `These HTTP servers have no headers: ${bare.join(', ')}. If one asks for an OAuth login, run ${launchText(launch, platform, ['login'])} <server> for it.`,
+      `These HTTP servers have no headers: ${bare.join(', ')}. If one asks for an OAuth login, run ${launchText(launch, platform)} login <server> --config ${pathWord(configFile, platform)} for it.`,
     )
 
   const [first] = imp.servers.keys()
