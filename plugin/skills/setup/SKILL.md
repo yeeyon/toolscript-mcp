@@ -102,7 +102,8 @@ file as `<config>.bak`, and it lists the servers that the new config leaves out.
 
 ## 5. Add toolscript-mcp to Claude Code
 
-If step 1 showed a server with the same `<main>` and `<config>`, skip this step. If it showed a different
+If step 1 showed a server with the same `<main>` and `<config>`, skip this step. On Windows, a path with `/` and the
+same path with `\` are the same path. If it showed a different
 command, ask to run `claude mcp remove toolscript --scope user` first.
 
 With approval, run:
