@@ -691,6 +691,11 @@ const execute = async (
   const returned = outcome?.t === 'done' ? outcome.value : undefined
   const isCut = returned !== undefined && shownText(returned).length > MAX_RESULT_CHARS
   const wholeRef = isCut ? keep(kept, returned, Date.now(), untrusted) : undefined
+  // Image tokens are paid only for the images that the program returns.
+  const shown = await showImages(
+    ctx.written,
+    returned === undefined ? { files: [], unsearched: false } : returnedImages(returned),
+  )
   const text = formatOutcome(
     outcome,
     calls.length,
@@ -698,14 +703,9 @@ const execute = async (
     MAX_RESULT_CHARS,
     { calls, recalls, recalled, wholeRef },
     untrusted ? randomBytes(16).toString('hex') : undefined,
-  )
-  // Image tokens are paid only for the images that the program returns.
-  const shown = await showImages(
-    ctx.written,
-    returned === undefined ? { files: [], unsearched: false } : returnedImages(returned),
+    shown.note,
   )
   const note = [
-    shown.note,
     approvalNote([...unapproved], ctx.canAsk()),
     interactiveNote([...needPerson], ctx.canAsk() ? { written } : 'cannot-ask'),
   ]

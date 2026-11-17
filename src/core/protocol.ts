@@ -571,9 +571,8 @@ const MAX_LISTED_HIDDEN = 8
 /** Why a returned image is not shown. */
 export type HiddenWhy = 'type' | 'not-written' | 'unreadable' | 'changed' | 'not-image' | 'size' | 'count' | 'total'
 
-const HIDDEN_TEXT: Readonly<Record<HiddenWhy, string>> = {
+const HIDDEN_TEXT: Readonly<Record<Exclude<HiddenWhy, 'not-written'>, string>> = {
   type: 'only PNG, JPEG, GIF and WebP images show',
-  'not-written': 'it is not an image file that a call of this session wrote',
   unreadable: 'the file cannot be read',
   changed: 'the file changed after the call wrote it',
   'not-image': 'the file does not hold an image of its type',
@@ -582,14 +581,23 @@ const HIDDEN_TEXT: Readonly<Record<HiddenWhy, string>> = {
   total: `the images of one run show at most ${MAX_SHOWN_IMAGE_BYTES} bytes`,
 }
 
-/** The note for returned images that are not shown, or '' when every one shows. */
+/**
+ * The note for returned images that are not shown, or '' when every one shows.
+ * It names only files that a call wrote: any other reference can be text of a tool.
+ */
 export const hiddenImagesNote = (hidden: readonly { file: string; why: HiddenWhy }[], unsearched: boolean): string => {
   const lines =
     hidden.length === 0
       ? []
       : [
           `${hidden.length} returned image${hidden.length === 1 ? ' is' : 's are'} not shown:`,
-          ...hidden.slice(0, MAX_LISTED_HIDDEN).map(h => `- ${h.file}: ${HIDDEN_TEXT[h.why]}`),
+          ...hidden
+            .slice(0, MAX_LISTED_HIDDEN)
+            .map(h =>
+              h.why === 'not-written'
+                ? '- a reference to a file that no call of this session wrote'
+                : `- ${h.file}: ${HIDDEN_TEXT[h.why]}`,
+            ),
           ...(hidden.length > MAX_LISTED_HIDDEN ? [`- ${hidden.length - MAX_LISTED_HIDDEN} more`] : []),
         ]
   if (unsearched)
@@ -639,6 +647,7 @@ const resultText = (json: string, max: number, whole?: number): string => {
  * The text the model reads after a run. With `nonce`, the run read untrusted
  * content: all but the footer goes in an untrusted wrapper with that nonce.
  * The host draws the nonce after the run, so no tool and no program knows it.
+ * `imageNote` (hiddenImagesNote) follows the result and the console.
  */
 export const formatOutcome = (
   outcome: RunnerDone | RunnerError | undefined,
@@ -647,6 +656,7 @@ export const formatOutcome = (
   maxChars: number,
   projection?: Projection,
   nonce?: string,
+  imageNote = '',
 ): string => {
   const parts: string[] = []
   if (outcome === undefined) {
@@ -660,6 +670,7 @@ export const formatOutcome = (
   }
   const logs = outcome?.logs ?? []
   if (logs.length > 0) parts.push(`--- console (${logs.length} lines) ---\n${clip(logs.join('\n'), 4000)}`)
+  if (imageNote !== '') parts.push(imageNote)
   const footer =
     projection === undefined
       ? `--- ${calls} MCP call${calls === 1 ? '' : 's'} ---`

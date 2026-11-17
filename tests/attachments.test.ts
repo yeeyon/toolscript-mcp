@@ -277,7 +277,7 @@ describe('attachments', () => {
       [
         '3 returned images are not shown:',
         '- /f/5.png: at most 4 images show per run',
-        '- /etc/x.png: it is not an image file that a call of this session wrote',
+        '- a reference to a file that no call of this session wrote',
         '- /f/6.png: the file does not hold an image of its type',
       ].join('\n'),
     )
