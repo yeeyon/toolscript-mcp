@@ -361,22 +361,39 @@ const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
 /** The key of the Claude Code bridge in the README and the setup skill. */
 const BRIDGE_KEY = 'claude-code'
 
-// `claude`, `claude.exe` or `claude.cmd`, alone or at the end of a path, in any case.
-const CLAUDE = /(?:^|[\\/])claude(?:\.exe|\.cmd)?$/i
+// Claude Code, in any case: `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path; the
+// package `@anthropic-ai/claude-code`, also with `@<version>`; or a path that ends in `claude-code/cli.js`.
+const CLAUDE =
+  /^(?:(?:.*[\\/])?claude(?:\.exe|\.cmd|\.ps1)?|@anthropic-ai\/claude-code(?:@[^\\/]+)?|.*[\\/]claude-code[\\/]cli\.js)$/i
+// `-x`, `--x` or `--x=v`.
+const CLAUDE_FLAG = /^--?[^-]/
 
 /**
  * True for Claude Code serving its own tools, such as Bash and Write: the key
- * BRIDGE_KEY, or a stdio entry that runs `claude mcp serve`, also through a
- * launcher such as `cmd /c`. A program that calls these tools skips the
- * permission rules and hooks of Claude Code, so only the policy guards them.
+ * BRIDGE_KEY, or a stdio entry whose words hold the Claude Code word, then
+ * `mcp`, then `serve`, with only flags between. A launcher such as `cmd /c`,
+ * `bash -lc` or `npx -y` can come first, and an argument such as
+ * "claude mcp serve" counts as its words. A program that calls these tools
+ * skips the permission rules and hooks of Claude Code, so only the policy
+ * guards them.
  */
 const isBridge = (key: ServerKey, server: ServerEntry): boolean => {
   if (key === BRIDGE_KEY) return true
   if (server.kind !== 'stdio') return false
   const words = [server.command, ...server.args]
-  const claude = words.findIndex(word => CLAUDE.test(word))
-  const mcp = words.indexOf('mcp', claude + 1)
-  return claude >= 0 && mcp >= 0 && words.includes('serve', mcp + 1)
+    .flatMap(arg => arg.split(/\s+/))
+    .map(word => word.replace(/^["']+|["']+$/g, ''))
+    .filter(word => word !== '')
+  // The index of the first word at or after `at` that is not a flag.
+  const skipFlags = (at: number): number => {
+    while (at < words.length && CLAUDE_FLAG.test(words[at]!)) at++
+    return at
+  }
+  return words.some((word, at) => {
+    if (!CLAUDE.test(word)) return false
+    const mcp = skipFlags(at + 1)
+    return words[mcp] === 'mcp' && words[skipFlags(mcp + 1)] === 'serve'
+  })
 }
 
 /** The JSON in `text`, or where it breaks. V8 quotes the text near the error, which can hold a token: only the place is kept. */

@@ -128,28 +128,53 @@ describe('a tool of a bridge', () => {
   }
   const LATER = ['Bash', 'Write', 'Agent', 'DesignSync', 'PublishPlugin', 'AToolOfALaterVersion']
 
+  // [command, args, bridge]
+  const LAUNCHES: [string, string[], boolean][] = [
+    ['claude', ['mcp', 'serve'], true],
+    ['C:\\Users\\me\\.local\\bin\\Claude.EXE', ['mcp', 'serve', '--debug'], true],
+    ['C:/Users/me/AppData/Roaming/npm/claude.cmd', ['mcp', 'serve'], true],
+    ['/usr/local/bin/claude', ['--verbose', 'mcp', 'serve'], true],
+    ['claude', ['--debug=api', 'mcp', '-d', 'serve'], true],
+    ['"C:\\Program Files\\claude.exe"', ['mcp', 'serve'], true],
+    ['cmd', ['/c', 'claude.cmd', 'mcp', 'serve'], true],
+    ['cmd', ['/c', 'claude mcp serve'], true],
+    ['cmd', ['/c', '"claude mcp serve"'], true],
+    ['bash', ['-lc', 'claude mcp serve'], true],
+    ['bash', ['-lc', "exec 'claude' mcp serve"], true],
+    ['pwsh', ['-NoProfile', '-Command', 'claude mcp serve'], true],
+    ['npx', ['-y', '@anthropic-ai/claude-code', 'mcp', 'serve'], true],
+    ['npx', ['--yes', '@anthropic-ai/claude-code@2.1.0', 'mcp', 'serve'], true],
+    ['npx', ['-p', '@anthropic-ai/claude-code', 'claude', 'mcp', 'serve'], true],
+    ['pnpm', ['dlx', '@anthropic-ai/claude-code', 'mcp', 'serve'], true],
+    ['bunx', ['@anthropic-ai/claude-code@latest', 'mcp', 'serve'], true],
+    ['node', ['C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js', 'mcp', 'serve'], true],
+    ['node', ['/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js', 'mcp', 'serve'], true],
+    ['wsl', ['--exec', 'claude', 'mcp', 'serve'], true],
+    // `--transport` has the shape of a flag of claude, such as `--debug`. A bridge too many only asks more.
+    ['uvx', ['my-server', '--name', 'claude', '--transport', 'mcp', 'serve'], true],
+    ['node', ['server.js', 'mcp', 'serve'], false],
+    ['claude', ['--version'], false],
+    ['claude', ['mcp', 'list'], false],
+    ['claude', ['serve', 'mcp'], false],
+    ['claude', ['MCP', 'SERVE'], false],
+    ['claude-code-helper', ['mcp', 'serve'], false],
+    ['myclaude', ['mcp', 'serve'], false],
+    ['npx', ['-y', '@anthropic-ai/claude-code-router', 'mcp', 'serve'], false],
+    ['node', ['/opt/not-claude-code/cli.js', 'mcp', 'serve'], false],
+    ['uvx', ['my-server', '--name', 'claude', '--transport', 'stdio', 'mcp', 'serve'], false],
+    ['uvx', ['my-server', '--name', 'claude', 'other', 'mcp', 'serve'], false],
+    ['bash', ['-lc', 'echo claude && run mcp serve'], false],
+  ]
+
   test('the key claude-code, and any key whose stdio command runs claude mcp serve, is a bridge', () => {
-    const serve = ['mcp', 'serve']
+    for (const [command, args, bridge] of LAUNCHES)
+      assert.equal(bridgesOf({ k: { command, args } }).length === 1, bridge, `${command} ${JSON.stringify(args)}`)
     assert.deepEqual(
       bridgesOf({
         'claude-code': { type: 'http', url: 'https://example.com/mcp' },
-        claude: { command: 'claude', args: serve },
-        windows: { command: 'C:\\Users\\me\\.local\\bin\\Claude.EXE', args: [...serve, '--debug'] },
-        shim: { command: 'cmd', args: ['/c', 'claude.cmd', ...serve] },
-        flags: { command: '/usr/local/bin/claude', args: ['--verbose', 'mcp', 'serve'] },
-      }),
-      ['claude-code', 'claude', 'windows', 'shim', 'flags'],
-    )
-    assert.deepEqual(
-      bridgesOf({
-        node: { command: 'node', args: ['server.js', ...serve] },
-        version: { command: 'claude', args: ['--version'] },
-        list: { command: 'claude', args: ['mcp', 'list'] },
-        helper: { command: 'claude-code-helper', args: serve },
-        backwards: { command: 'claude', args: ['serve', 'mcp'] },
         web: { type: 'http', url: 'https://example.com/claude/mcp/serve' },
       }),
-      [],
+      ['claude-code'],
     )
   })
 
@@ -207,7 +232,18 @@ describe('a tool of a bridge', () => {
       interactive: [],
     })
     const check = checkCall(c.policy, c.bridges, new Set(), 'mcp__claude-code__PublishPlugin', new Set())
-    assert.ok(!check.ok && check.needs === 'rule', JSON.stringify(check))
+    assert.deepEqual(check, {
+      ok: false,
+      error:
+        'not approved: an allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__, such as {"match": "mcp__claude-code__PublishPlugin", "action": "allow"}, and the person did not approve it for this run',
+      needs: 'rule',
+    })
+    assert.ok(
+      askText({ ask: ['mcp__claude-code__DesignSync'], interactive: [] }, 'return 1', c.bridges).includes(
+        'which no policy rule allows:\n- mcp__claude-code__DesignSync\nAn allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__.\n\n',
+      ),
+    )
+    assert.ok(!askText({ ask: ['mcp__x__y'], interactive: [] }, 'return 1', c.bridges).includes('Claude Code'))
     assert.deepEqual(
       checkCall(c.policy, c.bridges, new Set(['mcp__claude-code__Bash']), 'mcp__claude-code__Bash', new Set()),
       {
@@ -373,16 +409,18 @@ describe('the decision before a run', () => {
   })
 
   test('the prompt lists the tools and shows the program', () => {
-    const text = askText({ ask: ['mcp__x__y', 'mcp__x__z'], interactive: [] }, 'return 1')
+    const text = askText({ ask: ['mcp__x__y', 'mcp__x__z'], interactive: [] }, 'return 1', NONE)
     assert.ok(text.includes('these tools, which no policy rule allows:\n- mcp__x__y\n- mcp__x__z\n'), text)
     assert.ok(text.includes('Approve for this run only? The approval covers each call of these tools in the program.'))
     assert.ok(!text.includes('each time'), text)
     assert.ok(text.endsWith('The program:\nreturn 1'), text)
-    assert.ok(askText({ ask: ['mcp__x__y'], interactive: [] }, 'x'.repeat(5000)).endsWith('… [1000 more characters]'))
+    assert.ok(
+      askText({ ask: ['mcp__x__y'], interactive: [] }, 'x'.repeat(5000), NONE).endsWith('… [1000 more characters]'),
+    )
   })
 
   test('the prompt names apart the tools whose server requires a person each time', () => {
-    const both = askText({ ask: ['mcp__x__y'], interactive: ['mcp__x__grant'] }, 'return 1')
+    const both = askText({ ask: ['mcp__x__y'], interactive: ['mcp__x__grant'] }, 'return 1', NONE)
     assert.ok(
       both.startsWith('A toolscript program wants to call this tool, which no policy rule allows:\n- mcp__x__y\n'),
     )
@@ -392,7 +430,7 @@ describe('the decision before a run', () => {
       ),
       both,
     )
-    const alone = askText({ ask: [], interactive: ['mcp__x__a', 'mcp__x__b'] }, 'return 1')
+    const alone = askText({ ask: [], interactive: ['mcp__x__a', 'mcp__x__b'] }, 'return 1', NONE)
     assert.ok(
       alone.startsWith(
         'A toolscript program wants to call these tools. Their servers require your approval each time, so a policy rule cannot allow them:\n- mcp__x__a\n- mcp__x__b\n',

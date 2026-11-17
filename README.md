@@ -332,6 +332,8 @@ A changed policy applies at once only when the change has these steps alone:
 - It makes the `action` of a rule stricter: `allow` to `ask` or `deny`, or `ask` to `deny`. The rule keeps its `match`.
 
 These steps never let a tool run with less approval. toolscript-mcp compares the rules only, not a list of tools.
+If the config has a [Claude Code bridge](#claude-code-as-a-downstream-server), an `allow` rule for more than one
+server, lowered to `ask`, waits for your approval.
 
 Any other change waits for your approval, also a new order of the same rules. toolscript-mcp asks you before the run
 and shows the rules added and removed. If you decline, the run uses the policy in force. toolscript-mcp does not ask
@@ -602,8 +604,26 @@ Add the entry to `mcpServers`, and the rules to `policy`, in your config:
 - The last rule denies the other tools of Claude Code, for example `Agent`, `WebFetch` and `CronCreate`.
 - `ask` needs a client with MCP elicitation. If your client cannot ask, toolscript-mcp refuses each `ask` tool.
 
-toolscript-mcp treats a server as the bridge when its key is `claude-code`, or when its stdio command runs
-`claude mcp serve`. A tool of the bridge skips the permission rules and hooks of Claude Code. So an `allow` rule
+toolscript-mcp treats a server as the bridge in these cases:
+
+- Its key is `claude-code`.
+- It is a stdio server, and its command and arguments have the Claude Code word, then `mcp`, then `serve`. Only
+  flags, such as `--debug`, can come between these words.
+
+The Claude Code word is one of these:
+
+- `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path.
+- The npm package `@anthropic-ai/claude-code`, also with a version, such as `@anthropic-ai/claude-code@latest`.
+- A path that ends in `claude-code/cli.js` or `claude-code\cli.js`.
+
+A launcher can come first, such as `cmd /c`, `bash -lc`, `pwsh -Command`, `npx -y`, `pnpm dlx` or `bunx`.
+toolscript-mcp splits each argument at its spaces, so `"claude mcp serve"` in one argument also counts. At start,
+toolscript-mcp writes the keys of the bridges to stderr, such as `Claude Code bridges: claude-code`.
+
+Use the key `claude-code` for any other launch (an HTTP proxy, a wrapper script). toolscript-mcp cannot find Claude
+Code behind such a launch.
+
+A tool of the bridge skips the permission rules and hooks of Claude Code. So an `allow` rule
 allows it only when the `match` starts with `mcp__<key>__`, with the key of the bridge. A broad `allow` rule, such as
 `*`, does not allow it. For example, with this policy:
 

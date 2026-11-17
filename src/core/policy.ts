@@ -321,12 +321,15 @@ export const checkCall = (
       error: `not approved: ${tool} needs the person's approval at each run, and an allow rule does not replace it`,
       needs: 'person',
     }
-  return {
-    ok: false,
-    error: `not approved: no policy rule allows ${tool}, and the person did not approve it for this run`,
-    needs: 'rule',
-  }
+  const bridge = bridgeOf(tool, bridges)
+  const missing =
+    bridge === undefined ? `no policy rule allows ${tool}` : `an ${bridgeRule(bridge)}, such as ${allowRule(tool)}`
+  return { ok: false, error: `not approved: ${missing}, and the person did not approve it for this run`, needs: 'rule' }
 }
+
+// Why `*` or `mcp__*__Bash` does not allow a tool of the bridge `bridge`.
+const bridgeRule = (bridge: string): string =>
+  `allow rule for a tool of the Claude Code bridge ${bridge} must start with mcp__${bridge}__`
 
 /** Why the tools that need approval did not get it. */
 export type Refusal = 'decline' | 'unsupported'
@@ -334,14 +337,16 @@ export type Refusal = 'decline' | 'unsupported'
 const these = (tools: readonly unknown[]): string => (tools.length === 1 ? 'this tool' : 'these tools')
 
 /** The message of the approval prompt: the tools, and the program they run in. */
-export const askText = ({ ask, interactive }: Asks, code: string): string => {
+export const askText = ({ ask, interactive }: Asks, code: string, bridges: Bridges): string => {
   const program = code.length <= 4000 ? code : `${code.slice(0, 4000)}\n… [${code.length - 4000} more characters]`
   const one = interactive.length === 1
+  const bridged = [...new Set(ask.flatMap(t => bridgeOf(t, bridges) ?? []))]
   return [
     ...(ask.length > 0
       ? [
           `A toolscript program wants to call ${these(ask)}, which no policy rule allows:`,
           ...ask.map(t => `- ${t}`),
+          ...bridged.map(b => `An ${bridgeRule(b)}.`),
           '',
         ]
       : []),

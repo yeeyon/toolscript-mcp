@@ -477,6 +477,7 @@ const bridgeCalls = () =>
 
 test('run (s) an allow rule that does not name the bridge asks for its tool, and the instructions keep its tools direct', async () => {
   assert.match(client.getInstructions() ?? '', /the other tools of claude-code, use your own built-in tools directly/)
+  assert.ok(transport.stderr.includes('toolscript-mcp: Claude Code bridges: claude-code\n'), transport.stderr)
   const code = 'return await call("mcp__claude-code__probe", {})'
   const refused = await run(code)
   assert.equal(refused.isError, true)
@@ -489,11 +490,23 @@ test('run (s) an allow rule that does not name the bridge asks for its tool, and
   const declined = await run(code, askingClient)
   assert.ok(declined.text.includes('the person did not approve'), declined.text)
   assert.equal(asking.prompts.length, prompts + 1)
-  assert.ok(asking.prompts.at(-1).includes('which no policy rule allows:\n- mcp__claude-code__probe\n'))
+  assert.ok(
+    asking.prompts
+      .at(-1)
+      .includes(
+        'which no policy rule allows:\n- mcp__claude-code__probe\nAn allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__.\n',
+      ),
+    asking.prompts.at(-1),
+  )
   const built = await run(
     'try { return await call("mcp__claude-code__" + "probe", {}) } catch (e) { return e.message }',
   )
-  assert.ok(built.text.includes('not approved: no policy rule allows mcp__claude-code__probe'), built.text)
+  assert.ok(
+    built.text.includes(
+      'not approved: an allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__, such as',
+    ),
+    built.text,
+  )
   assert.equal(bridgeCalls(), 0)
   asking.answer = 'accept'
 })

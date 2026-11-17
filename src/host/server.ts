@@ -160,7 +160,7 @@ export const createServer = (
       kept,
       shapes,
       filesDir,
-      ask: (needed, code) => elicit(extra, askText(needed, code)),
+      ask: (needed, code) => elicit(extra, askText(needed, code, config.bridges)),
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
       log,

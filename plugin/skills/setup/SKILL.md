@@ -158,7 +158,15 @@ Ask the person for the rules, and run the command with approval. Show the policy
 An `allow` rule for more than one server, such as `allow "*"`, does not allow a tool of `claude-code`. toolscript-mcp
 asks the person for such a tool. Only an `allow` rule that starts with `mcp__claude-code__` allows it, such as
 `allow "mcp__claude-code__Read"`. To allow all tools of Claude Code, the person gives `allow "mcp__claude-code__*"`.
-The same rule applies to a server under another key whose command runs `claude mcp serve`.
+The same rule applies to a stdio server under another key that runs Claude Code with `mcp serve`. Only flags can come
+between the Claude Code word, `mcp` and `serve`. The Claude Code word is one of these:
+
+- `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path.
+- `@anthropic-ai/claude-code`, also with `@<version>`.
+- A path that ends in `claude-code/cli.js`.
+
+A launcher such as `cmd /c`, `bash -lc`, `pwsh -Command` or `npx -y` can come first. Use the key
+`claude-code` for any other launch (an HTTP proxy, a wrapper script).
 
 Never allow a tool that can write the config file, such as a file server with access to its folder. A program can call
 that tool to change its own policy.

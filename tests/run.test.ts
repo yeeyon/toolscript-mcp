@@ -667,7 +667,10 @@ describe('a tool of a bridge', () => {
     const { run, called, asked } = setup({ policy: all, bridges: ['f' as ServerKey] })
     const r = await run('try { await call("mcp__f__" + "echo", {}) } catch (e) { return e.message }')
     assert.deepEqual(asked, [])
-    assert.ok(r.text.includes('not approved: no policy rule allows mcp__f__echo'), r.text)
+    assert.ok(
+      r.text.includes('not approved: an allow rule for a tool of the Claude Code bridge f must start with mcp__f__'),
+      r.text,
+    )
     assert.deepEqual(called, [])
   })
 
