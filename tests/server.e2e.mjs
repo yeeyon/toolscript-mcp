@@ -18,7 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
 import { after, before, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = process.env.TOOLSCRIPT_E2E_MAIN || path.join(ROOT, 'dist', 'host', 'main.js')
@@ -304,18 +304,27 @@ test('(k) an http entry whose URL does not parse fails alone, and the error name
 
 test('(p) an http server that answers 401 without tokens asks for a login, with this config file', async () => {
   const text = await search('')
-  // The server runs as `node <main>`, so the command is not npx.
-  const word = w =>
-    /^[\w./:\\@+~-]+$/.test(w)
-      ? w
-      : process.platform !== 'win32'
-        ? `'${w.replace(/'/g, `'\\''`)}'`
-        : /[$`"%!]|\\$/.test(w)
-          ? `'${w.replace(/'/g, "''")}'`
-          : `"${w}"`
-  const command = ['node', path.resolve(MAIN), 'login', 'locked', '--config', path.resolve(configFile)]
-    .map(word)
-    .join(' ')
+  // The command from the sources: node with this main.js from a clone, npx from an npm install. Node 22.13 runs
+  // TypeScript only with the flag.
+  const source = f => JSON.stringify(pathToFileURL(path.join(ROOT, f)).href)
+  const expected = spawnSync(
+    process.execPath,
+    [
+      '--experimental-strip-types',
+      '--no-warnings',
+      '--input-type=module',
+      '-e',
+      `import { loginCommand } from ${source('src/core/config.ts')}
+import { detectLaunch } from ${source('src/host/start.ts')}
+process.stdout.write(loginCommand(detectLaunch(process.argv[1]), process.platform, 'locked', process.argv[2]))`,
+      path.resolve(MAIN),
+      path.resolve(configFile),
+    ],
+    { encoding: 'utf8' },
+  )
+  assert.equal(expected.status, 0, expected.stderr)
+  const command = expected.stdout
+  assert.match(command, /^(node|npx) .* login locked --config /)
   assert.ok(text.includes(`- locked: it needs an OAuth login. Ask the person to run \`${command}\``), text)
   const login = spawnSync(process.execPath, [MAIN, 'login', 'bench', '--config', configFile], {
     env: SERVER_ENV,
