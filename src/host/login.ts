@@ -324,13 +324,16 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
   const connect = async (authFetch: FetchLike = plain) => {
     // Login never reads the stream of server messages. A 401 to its GET would start a second authorization beside the
     // one of a request or of login itself: a second registration and browser tab, of which only the last works. A GET
-    // with Last-Event-ID resumes the stream of a request, which can carry the answer, so it goes to the server.
+    // with Last-Event-ID resumes the stream of a request, which can carry the answer, so it goes to the server, but a
+    // 401 to it becomes a 403: the SDK starts an authorization on a 401 to a GET, and retries it once.
     const fetchFn: FetchLike = (url, init) =>
       new URL(url).href !== serverUrl
         ? authFetch(url, init)
-        : init?.method === 'GET' && !new Headers(init.headers).has('last-event-id')
-          ? Promise.resolve(new Response(null, { status: 405 }))
-          : plain(url, init)
+        : init?.method !== 'GET'
+          ? plain(url, init)
+          : new Headers(init.headers).has('last-event-id')
+            ? plain(url, init).then(r => (r.status === 401 ? new Response(null, { status: 403 }) : r))
+            : Promise.resolve(new Response(null, { status: 405 }))
     const transport = new StreamableHTTPClientTransport(new URL(server.url), { authProvider: provider, fetch: fetchFn })
     const client = new Client({ name: 'toolscript-mcp', version: io.version })
     try {

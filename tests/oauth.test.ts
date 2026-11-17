@@ -110,6 +110,7 @@ const startFake = async () => {
     grantErrorMs: 0,
     refuseClient: '',
     resumeList: false,
+    resume401: false,
     noRefresh: false,
   }
   const held: (() => void)[] = []
@@ -140,6 +141,12 @@ const startFake = async () => {
         })
         .end()
     const sse = { 'content-type': 'text/event-stream' }
+    if (change.resume401 && req.method === 'GET' && req.headers['last-event-id'] !== undefined)
+      return void res
+        .writeHead(401, {
+          'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
+        })
+        .end()
     const resumed = req.method === 'GET' ? resumable.get(String(req.headers['last-event-id'])) : undefined
     if (resumed !== undefined) {
       seen.resumes++
@@ -513,6 +520,20 @@ describe('login', () => {
       assert.equal(fake.seen.authorizations.length, 1, anonymous)
       assert.equal(await s.ping(s.connect()), PONG, anonymous)
     }
+  })
+
+  test('a 401 to the GET that resumes a stream opens no tab', { timeout: 60_000 }, async () => {
+    const fake = await startFake()
+    fake.change.anonymous = 'list'
+    fake.change.resumeList = true
+    fake.change.resume401 = true
+    const s = setup(fake)
+    const opened: string[] = []
+    const follow = browser()
+    const code = await s.login(url => (opened.push(url), follow(url)), 5000)
+    assert.equal(opened.length, 0, s.lines.join('\n'))
+    assert.equal(fake.seen.registrations, 0)
+    assert.equal(code, 1, s.lines.join('\n'))
   })
 
   test('a server that still answers 401 after the token exchange fails the login and opens one tab', async () => {
