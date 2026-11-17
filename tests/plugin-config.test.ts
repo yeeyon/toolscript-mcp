@@ -232,6 +232,36 @@ describe('plugin config helper', () => {
     assert.deepEqual(JSON.parse(read(file)), { mcpServers: { fake: { command: 'node' } }, policy: [] })
   })
 
+  it('sets and removes "untrusted": true on a server, shows it, and keeps the rest', () => {
+    const file = makeConfig()
+    for (const [args, value, line] of [
+      [['remote'], true, 'remote  http  https://mcp.example.com  untrusted'],
+      [['remote', 'true'], true, 'remote  http  https://mcp.example.com  untrusted'],
+      [['remote', 'false'], undefined, 'remote  http  https://mcp.example.com'],
+      [['local', 'true'], true, 'local  stdio  fake-server  untrusted'],
+    ] as const) {
+      const { code, out } = run(file, 'untrusted', ...args)
+      assert.equal(code, 0)
+      assert.ok(out.split('\n').includes(line), out)
+      for (const secret of SECRETS) assert.ok(!out.includes(secret), secret)
+      const saved = JSON.parse(read(file))
+      assert.equal(saved.mcpServers[args[0]].untrusted, value)
+      const { untrusted: _, ...rest } = saved.mcpServers[args[0]]
+      assert.deepEqual(rest, FIXTURE.mcpServers[args[0]])
+      assert.deepEqual(saved.policy, FIXTURE.policy)
+    }
+  })
+
+  it('refuses untrusted for a missing server or a bad value and leaves the file as it was', () => {
+    const file = makeConfig()
+    const before = read(file)
+    assert.equal(run(file, 'untrusted', 'missing').code, 1)
+    assert.equal(run(file, 'untrusted', 'remote', 'yes').code, 2)
+    assert.equal(run(file, 'untrusted').code, 2)
+    assert.equal(run(file, 'untrusted', 'remote', 'true', 'more').code, 2)
+    assert.equal(read(file), before)
+  })
+
   it('prints the default config path', () => {
     assert.equal(runWith({ TOOLSCRIPT_CONFIG: 'C:/fake/config.json' }, 'path').out.trim(), 'C:/fake/config.json')
     const base = process.platform === 'win32' ? { APPDATA: dir } : { XDG_CONFIG_HOME: dir }

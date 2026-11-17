@@ -97,13 +97,14 @@ const isSelf = (name: string, raw: unknown): boolean =>
   (isObject(raw) &&
     [raw.command, ...(Array.isArray(raw.args) ? raw.args : [])].some(a => typeof a === 'string' && SELF.test(a)))
 
-// The Azure DevOps MCP server, whose results hold text from outside sources: the package @azure-devops/mcp as an
-// argument of npx, a path into the package, its bin, or the remote server.
-const AZURE_DEVOPS =
-  /^@azure-devops\/mcp(@[^\\/]*)?$|[\\/]@azure-devops[\\/]mcp[\\/]|(^|[\\/])mcp-server-azuredevops(\.cmd|\.exe)?$/i
-const AZURE_DEVOPS_URL = /^https?:\/\/mcp\.dev\.azure\.com(?=[:/?#]|$)/i
+// An Azure DevOps MCP server returns text from outside sources: work items, wikis, pull requests. It can start as the
+// package @azure-devops/mcp, its bin mcp-server-azuredevops, a clone, a community package, the remote server through
+// mcp-remote, or a local bridge, so any mention counts. A server that this marks by mistake only gets more wrappers.
+const AZURE_DEVOPS = /azure[-_ ]?devops|mcp\.dev\.azure\.com/i
 
-const untrustedIf = (azureDevOps: boolean): { untrusted?: true } => (azureDevOps ? { untrusted: true } : {})
+/** True when the key, the command, an argument or the URL of a server names Azure DevOps. */
+const namesAzureDevOps = (key: ServerKey, entry: Entry): boolean =>
+  [key, ...('type' in entry ? [entry.url] : [entry.command, ...(entry.args ?? [])])].some(t => AZURE_DEVOPS.test(t))
 
 const STDIO_KEYS = ['type', 'command', 'args', 'env', 'cwd', 'disabled']
 const HTTP_KEYS = ['type', 'url', 'headers', 'disabled']
@@ -130,7 +131,6 @@ const toEntry = (raw: unknown): { entry: Entry; dropped: string[] } | { why: str
       ...(args?.length ? { args: [...args] } : {}),
       ...(map ? { env: map } : {}),
       ...(cwd ? { cwd } : {}),
-      ...untrustedIf([command, ...(args ?? [])].some(a => AZURE_DEVOPS.test(a))),
     }
     return { entry, dropped: extraKeys(raw, STDIO_KEYS) }
   }
@@ -139,13 +139,7 @@ const toEntry = (raw: unknown): { entry: Entry; dropped: string[] } | { why: str
     if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return { why: 'no http:// or https:// url' }
     if (headers !== undefined && !isStringMap(headers)) return { why: '"headers" is not an object of strings' }
     const map = nonEmpty(headers)
-    const entry = {
-      type: 'http' as const,
-      url,
-      ...(map ? { headers: map } : {}),
-      ...untrustedIf(AZURE_DEVOPS_URL.test(url)),
-    }
-    return { entry, dropped: extraKeys(raw, HTTP_KEYS) }
+    return { entry: { type: 'http', url, ...(map ? { headers: map } : {}) }, dropped: extraKeys(raw, HTTP_KEYS) }
   }
   if (type === 'sse') return { why: 'type "sse": toolscript-mcp connects over stdio and streamable HTTP only' }
   return { why: `type ${JSON.stringify(type)} is not supported` }
@@ -176,10 +170,11 @@ export const importServers = (reads: readonly ClientRead[]): Import => {
       if ('why' in parsed) return { kind: 'skipped', name, why: parsed.why }
       const key = keyOf(name)
       if (key === undefined) return { kind: 'skipped', name, why: 'no letter or digit to make a server key of' }
-      const json = JSON.stringify(parsed.entry)
+      const entry: Entry = namesAzureDevOps(key, parsed.entry) ? { ...parsed.entry, untrusted: true } : parsed.entry
+      const json = JSON.stringify(entry)
       const earlier = kept.get(key)
       if (earlier === undefined) {
-        kept.set(key, { entry: parsed.entry, from: read.client, json })
+        kept.set(key, { entry, from: read.client, json })
         return { kind: 'imported', name, key, dropped: parsed.dropped }
       }
       return earlier.json === json ? { kind: 'same', name } : { kind: 'conflict', name, key, keptFrom: earlier.from }
@@ -312,7 +307,7 @@ export const initReport = (imp: Import, configFile: string, platform: string): s
   if (untrusted.length > 0)
     out.push(
       '',
-      `The config sets "untrusted": true on the Azure DevOps MCP server: ${untrusted.join(', ')}. Each of its results reaches the model as untrusted text.`,
+      `The config sets "untrusted": true on the servers that name Azure DevOps: ${untrusted.join(', ')}. Each of their results reaches the model as untrusted text.`,
     )
   // The config gives each of them an OAuth login by default.
   const bare = [...imp.servers].flatMap(([key, e]) => ('type' in e && e.headers === undefined ? [key] : []))
