@@ -456,6 +456,14 @@ describe('redact', () => {
     assert.equal(redact('bad token fake-token-7 or %66ake-token-7', http, ['%66ake-token-7']), 'bad token *** or ***')
   })
 
+  test('a secret or client with a lone surrogate hides like any other and throws nothing', () => {
+    const http = { kind: 'http', url: 'https://x', headers: {} } as const
+    assert.equal(redact('bad token \ud800fake-token', http, ['\ud800fake-token']), 'bad token ***')
+    assert.equal(redact('the login failed', http, ['\ud800']), 'the login failed')
+    const client = { id: 'fake-id', secret: '\ud800abcd' }
+    assert.equal(hideClientSecret('bad pair fake-id:\ud800abcd', client), 'bad pair fake-id:***')
+  })
+
   test('hideClientSecret prints a client id with a $ pattern as it is', () => {
     for (const id of ['a$&b', "a$'b", 'a$`b']) {
       const text = `bad credentials ${id}:pass1 here`
