@@ -144,8 +144,8 @@ Explain these choices, and ask the person to choose one:
    rules and hooks of Claude Code do not apply to the nested calls. The policy matches tool names only, not arguments.
 3. Allow specific tools. Allow the tools that programs use often, such as read tools. Other tools stay `ask`.
 
-The `policy` command replaces the policy with the rules in order. Only old rules of `claude-code` can stay, as told
-below. Each rule is an action and a match that starts with `mcp__` or `*`:
+The `policy` command replaces the policy with the rules in order. Each rule is an action and a match that starts with
+`mcp__` or `*`:
 
 ```sh
 node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" policy
@@ -155,10 +155,14 @@ node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" policy allow "mcp__<server>__ge
 
 Ask the person for the rules, and run the command with approval. Show the policy that it prints.
 
-The `policy` command keeps each old rule of `claude-code` whose match no new rule gives. Without them, `allow "*"`
-allows every tool of Claude Code with no prompt. The command puts the new rules of `claude-code` first, then the kept
-rules, then the other new rules. It prints the kept rules. Show them to the person. To open a tool of Claude Code,
-the person names it in a rule, such as `allow "mcp__claude-code__*"`.
+The command gives no tool of `claude-code` a looser decision than the old policy, unless a new rule that starts with
+`mcp__claude-code__` decides that tool. Without this check, `allow "*"` allows every tool of Claude Code with no
+prompt. For each other tool that a new rule loosens, the command adds a rule with the old decision. It does this also
+when the config has no `claude-code` server. It prints the added rules under "added these rules for the tools of
+claude-code". Show them to the person.
+
+To open a tool of Claude Code, the person names it in a rule, such as `allow "mcp__claude-code__Read"`. To open all
+of them, the person gives `allow "mcp__claude-code__*"`. Put these rules before a `*` rule.
 
 Never allow a tool that can write the config file, such as a file server with access to its folder. A program can call
 that tool to change its own policy.
@@ -185,8 +189,24 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
    - Bash, PowerShell, Edit and Write run as the person. They reach files outside `<project>`, also `<config>`.
    - If a hook or a permission rule guards a tool, use the native tool of Claude Code for that work.
    - The section "Claude Code as a downstream server" of `<folder>/README.md` gives the full risks.
-4. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>"`. If it lists `claude-code`, the server exists. Go to item 6.
-5. Run `node -p "require('os').tmpdir()"`. With approval, write this entry to `<tmp>/toolscript-entry.json`:
+4. With approval, put these rules first in the policy. They allow Read, Grep and Glob, ask for the tools that change
+   something, and deny the other tools of Claude Code:
+
+   ```sh
+   node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" prepend allow "mcp__claude-code__Read" allow "mcp__claude-code__Grep" allow "mcp__claude-code__Glob" ask "mcp__claude-code__Bash" ask "mcp__claude-code__PowerShell" ask "mcp__claude-code__Edit" ask "mcp__claude-code__Write" deny "mcp__claude-code__*"
+   ```
+
+   If the person does not approve, stop, and do not add the server. Without these rules, an old rule such as
+   `allow "*"` can allow every tool of Claude Code.
+
+   `prepend` keeps the other rules of the person after these rules. It replaces an old rule with the same match. It
+   gives no tool of `claude-code` a looser decision than an old rule gives it. For such a tool, it adds a rule with the
+   old decision. Show the policy that it prints. If it prints rules under "added these rules for the tools of
+   claude-code", tell the person. To open such a tool, the person gives all the rules in the `policy` command, with a
+   rule that names the tool. Never allow Bash, PowerShell, Edit or Write. They can change `<config>`, and so the
+   policy.
+5. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>"`. If it lists `claude-code`, the server exists. Go to item 7.
+6. Run `node -p "require('os').tmpdir()"`. With approval, write this entry to `<tmp>/toolscript-entry.json`:
 
    ```json
    { "command": "<claude>", "args": ["mcp", "serve"], "cwd": "<project>" }
@@ -194,18 +214,6 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
 
    Then run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add claude-code "<tmp>/toolscript-entry.json"`, and
    delete the entry file.
-6. With approval, put these rules first in the policy. They allow Read, Grep and Glob, ask for the tools that change
-   something, and deny the other tools of Claude Code:
-
-   ```sh
-   node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" prepend allow "mcp__claude-code__Read" allow "mcp__claude-code__Grep" allow "mcp__claude-code__Glob" ask "mcp__claude-code__Bash" ask "mcp__claude-code__PowerShell" ask "mcp__claude-code__Edit" ask "mcp__claude-code__Write" deny "mcp__claude-code__*"
-   ```
-
-   `prepend` keeps the other rules of the person after these rules. It replaces an old rule with the same match. It
-   never loosens the old policy: each rule keeps the stricter action if the old policy decides a stricter one. Show
-   the policy that it prints. If it prints rules under "kept the stricter action", tell the person. To open such a
-   tool, the person gives all the rules of `claude-code` in the `policy` command. Never allow Bash, PowerShell, Edit or
-   Write. They can change `<config>`, and so the policy.
 7. Tell the person to start a new Claude Code session. toolscript-mcp starts its servers only at its own start.
 
 ## 8. Add a server
