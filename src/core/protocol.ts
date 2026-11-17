@@ -1300,6 +1300,8 @@ The program is the body of an async function. Available:
 - console.log(...) -> shown after the result
 - return <value> -> the result, as JSON
 
+A result with images, audio or binary resources is { value, attachments }: each attachment has a file path, not the data. Return an image attachment to see the image.
+
 A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process or setTimeout: only these functions.
 
 Write each tool name as a string in call("…"): a name built at run time is refused unless the config allows it.

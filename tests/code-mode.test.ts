@@ -712,9 +712,10 @@ describe('the tool table', () => {
   // every session. Raise the limit only for text that changes what the model does.
   // M4: run_code 1542, search_tools 550 (it names run_code). v0.1: + alwaysLoad 41 on each.
   // + 68 for the recall(n) line, which the bench showed second programs needed.
+  // + 170 for the attachments line: without it, a program cannot find a non-text result or show an image.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 2236, `size ${size} is over 2236`)
+    assert.ok(size <= 2406, `size ${size} is over 2406`)
   })
 
   // The bench: 5 of 9 second programs called a tool again for a result they could recall.
