@@ -641,6 +641,27 @@ describe('untrusted content', () => {
     assert.equal(r.text.match(/\n- \(a name that no server lists\) failed/g)?.length, 3, r.text)
   })
 
+  test('in an untrusted run, the footer names a listed tool of a server that dropped during the run', async () => {
+    const tools = [{ name: 'echo', inputSchema: { type: 'object' } }]
+    const fake = fakeDownstream([{ key: 'g' as ServerKey, status: 'connected', tools }])
+    const all = fake.downstream.states()
+    let states = all
+    const downstream = {
+      ...fake.downstream,
+      states: () => states,
+      client: async (key: ServerKey) => {
+        if (key === 'g') states = [all[0]!, { key, status: 'failed', reason: 'the connection closed' }]
+        return fake.downstream.client(key)
+      },
+    } as Downstream
+    const r = await setup({ downstream }).run(
+      'await call("mcp__f__item", {})\nawait call("mcp__g__echo", {})\nreturn 1',
+    )
+    assert.ok(hostMark(r.text) !== undefined, r.text)
+    assert.match(r.text, /\n#\d+ mcp__g__echo /)
+    assert.ok(!r.text.includes('(a name that no server lists)'), r.text)
+  })
+
   test('make it fail: after a wrapped result, each later result of its server is untrusted, also in a later run', async () => {
     const g = ['attach', 'itemthrow'].map(name => ({ name, inputSchema: { type: 'object' } }))
     const { run } = setup({ others: [{ key: 'g' as ServerKey, status: 'connected', tools: g }] })

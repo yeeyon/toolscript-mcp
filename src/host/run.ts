@@ -234,7 +234,7 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   }
   if (ctx.signal.aborted) return refuse('Error: the server is shutting down. The program did not run.')
   const approved = new Set([...plan.ask, ...plan.interactive])
-  const ran = await execute(ctx, code, approved, new Set(literal.map(c => c.tool)))
+  const ran = await execute(ctx, code, approved, new Set(literal.map(c => c.tool)), known)
   return { ...ran, result: { ...ran.result, text: withNote(ran.result.text) }, known }
 }
 
@@ -380,12 +380,13 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
-/** `written`: the tool names that the program writes as strings. */
+/** `written`: the tool names that the program writes as strings. `known`: the tool names before the run. */
 const execute = async (
   ctx: RunContext,
   code: string,
   approved: ReadonlySet<string>,
   written: ReadonlySet<string>,
+  known: ReadonlySet<string>,
 ): Promise<Ran> => {
   const { config, downstream, kept } = ctx
   const limitSeconds = config.sandbox.timeoutSeconds
@@ -705,8 +706,9 @@ const execute = async (
       error: 'unfinished',
     })
   }
-  // A program can build a tool name from untrusted text, and the footer is outside the wrapper.
-  const listed = untrusted ? new Set(catalogOf(downstream.states()).map(t => t.name)) : undefined
+  // A program can build a tool name from untrusted text, and the footer is outside the wrapper. A server that closes
+  // during the run lists no tools at its end, so the names before the run count too.
+  const listed = untrusted ? new Set([...known, ...catalogOf(downstream.states()).map(t => t.name)]) : undefined
   const calls = [...records]
     .sort((a, b) => a[0] - b[0])
     .map(([, r]) => (listed === undefined || listed.has(r.tool) ? r : { ...r, tool: '(a name that no server lists)' }))
