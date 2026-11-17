@@ -440,7 +440,8 @@ return panel.attachments[0]
 - The file must still hold the bytes that the call wrote. A file that `saveFile` writes over does not show.
 - Only PNG, JPEG, GIF and WebP images show. The first bytes of the file must match the type.
 - One result shows at most 4 images, each at most 3,750,000 bytes, and at most 8,000,000 bytes in total.
-- The result text names each returned image that does not show, and the reason.
+- The result text names each returned image that does not show, and the reason. It does not copy a reference
+  that no call of the session wrote.
 
 ### Untrusted text
 
@@ -460,14 +461,26 @@ the text
 - The text of a `resource` attachment gets the same treatment.
 
 The marker still reaches the model. If a run reads untrusted text, its `run_code` result starts with a new wrapper.
-The wrapper holds the return value, the console lines and an error. The call list follows it.
+The wrapper holds the return value, the console lines, an error and the note about images that do not show. The call
+list follows it.
 
 - toolscript-mcp makes a random nonce for each such result after the program ends. No tool and no program knows it,
   so a tool cannot close this wrapper.
 - A run reads untrusted text when a call returns it, a tool error holds it or `recall(n)` returns a kept result that
   held it.
+- After a run reads untrusted text, each later result of that run counts as untrusted too. The program can send the
+  text to any tool, and the tool can send it back.
 - A file can also hold untrusted text: the attachments of such a result, and each file that `saveFile` writes after
   its run read untrusted text. A run that reads such a file with `readFile` gets the wrapper too.
+
+The call list after the wrapper holds no untrusted text:
+
+- For an untrusted result, it shows the number of keys, not their names. `search_tools` does not show the shape of
+  such a result.
+- In a run that read untrusted text, a tool name that no server lists shows as `(a name that no server lists)`.
+
+Images are not in the wrapper. An image of an untrusted result reaches the model as an image block, and an image can
+hold text with instructions. Return an image only from a source that you trust.
 
 ### The config file
 
