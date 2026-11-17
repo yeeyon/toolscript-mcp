@@ -96,6 +96,9 @@ Show the person the servers to remove from each client. For Claude Code, offer t
 `claude mcp remove <name> --scope user` line. Run a line only after the person agrees. The person edits the files of
 the other clients.
 
+Recommend one path to each server. If a client also lists a server directly, the model calls the direct tools, and
+each full result goes into the context. toolscript-mcp cannot see the other servers of a client, so it cannot warn.
+
 If the person wants a new import over a config that exists, run init with `--force` after approval. init keeps the old
 file as `<config>.bak`, and it lists the servers that the new config leaves out.
 
@@ -150,6 +153,9 @@ node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" policy allow "mcp__<server>__ge
 
 Ask the person for the rules, and run the command with approval. Show the policy that it prints.
 
+The `policy` command also removes the rules of `claude-code`. Without them, `allow "*"` allows Bash, Edit and Write
+with no prompt. If `config.mjs` lists `claude-code`, run the `prepend` command of step 7 item 6 after it.
+
 Never allow a tool that can write the config file, such as a file server with access to its folder. A program can call
 that tool to change its own policy.
 
@@ -173,6 +179,7 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
    - The policy matches tool names only. If the person approves `Bash` for a run, each Bash command of that program
      runs.
    - Bash, PowerShell, Edit and Write run as the person. They reach files outside `<project>`, also `<config>`.
+   - If a hook or a permission rule guards a tool, use the native tool of Claude Code for that work.
    - The section "Claude Code as a downstream server" of `<folder>/README.md` gives the full risks.
 4. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>"`. If it lists `claude-code`, the server exists. Go to item 6.
 5. Run `node -p "require('os').tmpdir()"`. With approval, write this entry to `<tmp>/toolscript-entry.json`:
@@ -206,6 +213,7 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
    - HTTP: `{ "type": "http", "url": "https://mcp.example.com/mcp" }`
 5. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add <name> "<tmp>/toolscript-entry.json"`. It makes `<config>` if it does not exist.
    Then delete the entry file.
+   If `claude mcp list` shows the same server, offer to run `claude mcp remove <name> --scope user`. Step 4 tells why.
 6. Tell the person to set each variable in the environment of the client, or to put the value in `<config>` in an
    editor.
 7. Tell the person to start a new Claude Code session. toolscript-mcp reads the servers only at its start.

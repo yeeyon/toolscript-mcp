@@ -229,6 +229,10 @@ Use the config from init, or write one by hand. The config uses the `mcpServers`
 5. Remove the imported servers from your client config. This prevents duplicate direct connections.
 6. Ask the model for a task that needs your tools. It finds them with `search_tools` and uses `run_code`.
 
+Keep one path to each server. If your client also lists a server directly, the model calls the direct tools, and each
+full result goes into the context. In one real session with both paths, the model never called `run_code`. An MCP
+server cannot see the other servers of its client. So toolscript-mcp cannot find or report the duplicate.
+
 If your client cannot ask for approval, add explicit `allow` rules for the tools that programs need.
 Tools marked for user interaction still cannot run without approval. See [The policy](#the-policy).
 
@@ -366,6 +370,9 @@ it. To use that check in place of the toolscript-mcp prompts, allow every tool i
 Put a `deny` rule before the `*` rule for each tool that must never run. Keep the default `ask` in a client that has
 no check of its own, such as Claude Desktop.
 
+If your config has the [Claude Code bridge](#claude-code-as-a-downstream-server), keep its rules before the `*` rule.
+Without them, the `*` rule allows Bash, Edit and Write with no prompt.
+
 This setup does not give the checks of Code Mode. Code Mode checks each tool call of a program with your Claude Code
 rules and hooks. Claude Code sees only the `run_code` call of toolscript-mcp, not its nested calls:
 
@@ -437,6 +444,9 @@ toolscript-mcp refuses to start from its own config, so it cannot start copies o
 
 If a server fails or stops, toolscript-mcp connects to it again on the next search or call. It tries at most 3 times
 in 60 seconds for each server. Then `search_tools` shows the time until the next attempt.
+
+`search_tools` with an empty query is a cheap check of the servers. It tries each failed server again and lists the
+servers that are still not connected. Its description tells the model to use it after a reconnect.
 
 ### OAuth login
 
@@ -530,6 +540,8 @@ code. Read [SECURITY.md](SECURITY.md).
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
 - Each `run_code` call starts a new program. No variables stay between two calls. The files of `saveFile` and the
   results kept for `await recall(n)` stay within the session limits.
+- A run ends at `sandbox.timeoutSeconds`. For a longer wait, such as a CI run of 20 minutes, use a background task of
+  your client. Then send a program that reads the result.
 - The Claude Code bridge starts another process. It adds memory use, and `cwd` does not restrict file or shell access.
 - The Codex bench is a [test plan](bench/CODEX.md). No Codex performance results are published in this repo.
 
@@ -587,6 +599,9 @@ on what a program does.
   any command text.
 - Bash and PowerShell run as your user. They can reach the network and any folder, also outside `cwd`.
 - Write and Edit take any absolute path, also outside `cwd`. In a test, a Write outside the project folder succeeded.
+
+If a hook or a permission rule guards a tool of Claude Code, use the native tool for that work, not a program. A
+program that calls Bash skips each `PreToolUse` hook on Bash, for example a guard on `git push`.
 
 ### In a program
 
