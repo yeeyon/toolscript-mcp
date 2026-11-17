@@ -72,7 +72,8 @@ const startFake = async () => {
    * `rejectAll`, the MCP endpoint answers 401 to every token. The token endpoint waits for `holdRefreshes` refresh
    * requests before it answers the first, so two clients use one refresh token. With `stallRefreshes`, it never answers
    * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
-   * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`.
+   * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`. A registration answer
+   * gives the client `registeredSecret`, if set, and the first of `authMethods`.
    */
   const change = {
     authorizationEndpoint: '',
@@ -86,6 +87,7 @@ const startFake = async () => {
     refreshAnswer: undefined as { status: number; type: string; body: string } | undefined,
     grantErrorMs: 0,
     refuseClient: '',
+    registeredSecret: '',
   }
   const held: (() => void)[] = []
   const issue = (clientId: string) => {
@@ -187,7 +189,16 @@ const startFake = async () => {
       const metadata = JSON.parse(await body(req)) as { redirect_uris: string[] }
       const clientId = `fake-client-${++seen.registrations}`
       clients.set(clientId, { redirectUris: metadata.redirect_uris })
-      return json(res, 201, { ...metadata, client_id: clientId })
+      const secret = change.registeredSecret
+      if (secret === '') return json(res, 201, { ...metadata, client_id: clientId })
+      secrets.add(secret).add(Buffer.from(`${clientId}:${secret}`).toString('base64'))
+      const method = change.authMethods[0]
+      return json(res, 201, {
+        ...metadata,
+        client_id: clientId,
+        client_secret: secret,
+        token_endpoint_auth_method: method,
+      })
     }
     if (url.pathname === '/authorize') {
       seen.authorizations.push(url)
@@ -996,6 +1007,24 @@ describe('secrets that a server echoes', () => {
       const printed = s.lines.join('\n')
       assert.match(printed, /login to fake failed: .*bad request: .*\*\*\*/, printed)
       assert.deepEqual(s.leaks(), [], method)
+    }
+  })
+
+  test('login hides a registered client secret shorter than 8 characters that a token endpoint echoes', async () => {
+    for (const [method, secret] of [
+      ['client_secret_post', 'fk5ec7'],
+      ['client_secret_post', 'k3y9'],
+      ['client_secret_basic', 'fk5ec7'],
+    ] as const) {
+      const fake = await startFake()
+      fake.change.echo = 'exchange'
+      fake.change.authMethods = [method]
+      fake.change.registeredSecret = secret
+      const s = setup(fake)
+      assert.equal(await s.login(), 1, method)
+      const printed = s.lines.join('\n')
+      assert.match(printed, /login to fake failed: .*bad request: .*\*\*\*/, printed)
+      assert.deepEqual(s.leaks(), [], `${method} ${secret}`)
     }
   })
 })
