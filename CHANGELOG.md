@@ -127,6 +127,13 @@ Run log:
 - The run log of a refused run lists each call that has a literal tool name, with its policy decision, `ok: false` and 0 ms.
 - A program that changes `Array.prototype.toJSON` or `JSON.stringify` now gets its result instead of "the sandbox exited without a result".
 
+Non-text results (#35, G6):
+
+- A tool result with an image, audio or resource block now gives the program `{ value, attachments }`. Before, each such block became the text `[image block]` and its data was lost. A result with only text and structured content keeps the value it had.
+- An image, an audio block or a resource blob is written as its decoded bytes to a new file in the session's `saveFile` folder (mode 0600). Its attachment is `{ type, mimeType, bytes, file }`, never the base64 data. A block over 16,777,216 bytes is not written, and its attachment has `error` with the reason. A text resource keeps its `uri` and `text`. A `resource_link` keeps `uri`, `name` and `mimeType`, and is not fetched.
+- When a program returns an image attachment, alone or at most two levels deep, the `run_code` result holds it as an MCP image block, so the model sees it. Only a file in the session's `saveFile` folder shows, by its real path. At most 4 PNG, JPEG, GIF or WebP images show, each at most 3,750,000 bytes and 8,000,000 bytes in total. The result text names each returned image that does not show, and why.
+- The `run_code` description names the `{ value, attachments }` shape and how to show an image (170 characters).
+
 Runner fixes (inherited from claude-code-mode at eea4077):
 
 - A failed call that the program awaits later no longer crashes the sandbox.

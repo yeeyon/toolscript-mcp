@@ -26,7 +26,7 @@ The goal is a server that works with any MCP client, for example Claude Code, Cl
 | Authentication | HTTP headers or native OAuth login, token refresh, dynamic client registration and static client credentials. |
 | Local development | The optional `claude mcp serve` bridge offers file tools and a shell. See its [policy and risks](#claude-code-as-a-downstream-server). |
 | Policy | Ordered `allow`, `deny` and `ask` rules. Tools marked for user interaction need approval for each run. |
-| Results | Compact output, `await recall(n)` for kept results, and `await saveFile(name, data)` for exports. |
+| Results | Compact output, `await recall(n)` for kept results, and `await saveFile(name, data)` for exports. Images and other non-text blocks become files, and a returned image shows to the model. |
 | Clients | Setup examples for Claude Code, Claude Desktop, Cursor and Codex. Tests cover Claude Code and the MCP TypeScript SDK client. |
 
 JavaScript variables do not persist between runs. MCP resources, hint tools and saved-function tools are not available.
@@ -399,6 +399,42 @@ return issues.issues.map(issue => ({ key: issue.key, title: issue.fields.summary
 `call()` returns the server's structured content when present. Otherwise, it returns parsed JSON or text.
 A tool error throws an error that the program can catch.
 
+### Non-text results
+
+A tool result can hold images, audio and resources. A program value never holds their base64 data.
+
+- If a result holds only text and structured content, `call()` returns the value that the previous section describes.
+- If a result holds another block, `call()` returns `{ value, attachments }`. `value` is the value of the text and
+  structured content, or `null` when the result has neither.
+- Each item of `attachments` describes one block, in the order of the result:
+
+| Block | Attachment |
+| --- | --- |
+| `image`, `audio` | `{ type, mimeType, bytes, file }` |
+| `resource` with `blob` | `{ type: "resource", uri, mimeType, bytes, file }` |
+| `resource` with `text` | `{ type: "resource", uri, mimeType, text }` |
+| `resource_link` | `{ type: "resource_link", uri, name, mimeType }`, not fetched |
+| other | `{ type }` |
+
+- `file` is a new file in the `saveFile` folder of the session. It holds the decoded bytes. `bytes` is their number.
+- If a block has more than 16,777,216 bytes, toolscript-mcp does not write it. Its attachment has `error` with the
+  reason, and no `file`.
+
+To show an image to the model, return its attachment:
+
+```js
+const panel = await call("mcp__grafana__render_panel", { dashboard: "fake", panelId: 2 })
+return panel.attachments[0]
+```
+
+- The `run_code` result then holds the image as an MCP image block. The model pays image tokens only for images
+  that a program returns.
+- The attachment can be the return value, or an item at most two levels deep in it. So `return await call(…)` also
+  shows the images of that call.
+- Only files in the `saveFile` folder of the session show. Only PNG, JPEG, GIF and WebP images show.
+- One result shows at most 4 images, each at most 3,750,000 bytes, and at most 8,000,000 bytes in total.
+- The result text names each returned image that does not show, and the reason.
+
 ### The config file
 
 - toolscript-mcp reads the file from `--config`, else from `TOOLSCRIPT_CONFIG`.
@@ -528,6 +564,8 @@ code. Read [SECURITY.md](SECURITY.md).
   again. toolscript-mcp sees a lost session in a 404, or in a 400 with a session error text of the MCP TypeScript
   SDK. If a server answers a lost session with a different 400, restart toolscript-mcp.
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
+- A program gets each image, audio or binary resource of a result as a file, not as data. A `run_code` result shows
+  at most 4 images. See [Non-text results](#non-text-results).
 - Each `run_code` call starts a new program. No variables stay between two calls. The files of `saveFile` and the
   results kept for `await recall(n)` stay within the session limits.
 - The Claude Code bridge starts another process. It adds memory use, and `cwd` does not restrict file or shell access.
@@ -665,6 +703,7 @@ Code 2.1.325.
 - [x] Offer guided beta setup through the Claude Code plugin.
 - [x] Run Claude Code tools through the optional stdio bridge, with a project `cwd`.
 - [x] Require per-run approval for tools marked for user interaction.
+- [x] Keep images and other non-text results as files, and show the images that a program returns.
 - [ ] Publish 0.1.0 to npm.
 - [ ] Run the Codex comparison and publish its results.
 - [ ] Keep state between `run_code` calls, as an option.
