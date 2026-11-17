@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, describe, it } from 'node:test'
+import { decide, type Action } from '../src/core/policy.ts'
 
 const SCRIPT = fileURLToPath(new URL('../plugin/skills/setup/config.mjs', import.meta.url))
 const SECRETS = [
@@ -136,6 +137,83 @@ describe('plugin config helper', () => {
       assert.deepEqual(saved.mcpServers, FIXTURE.mcpServers)
       assert.deepEqual(saved.sandbox, FIXTURE.sandbox)
     }
+  })
+
+  // The rules of step 7 item 6 of the setup skill.
+  const BRIDGE_ARGS = [
+    ['allow', 'Read'],
+    ['allow', 'Grep'],
+    ['allow', 'Glob'],
+    ['ask', 'Bash'],
+    ['ask', 'PowerShell'],
+    ['ask', 'Edit'],
+    ['ask', 'Write'],
+    ['deny', '*'],
+  ].flatMap(([action, tool]) => [action!, `mcp__claude-code__${tool}`])
+  const bridgeRules = (args: string[]) =>
+    args.flatMap((action, i) => (i % 2 === 0 ? [{ match: args[i + 1]!, action: action as Action }] : []))
+  const savedPolicy = (file: string): { match: string; action: Action }[] => JSON.parse(read(file)).policy
+  const decides = (file: string, tool: string) =>
+    decide(
+      savedPolicy(file).map((rule, index) => ({ ...rule, index })),
+      `mcp__claude-code__${tool}`,
+    ).action
+
+  it('keeps the rules of the bridge first when the new policy does not name the bridge', () => {
+    const file = makeConfig(JSON.stringify({ ...FIXTURE, policy: [] }))
+    assert.equal(run(file, 'prepend', ...BRIDGE_ARGS).code, 0)
+    assert.equal(run(file, 'policy', 'deny', 'mcp__fake__delete*', 'allow', '*').code, 0)
+    assert.deepEqual(savedPolicy(file), [
+      ...bridgeRules(BRIDGE_ARGS),
+      { match: 'mcp__fake__delete*', action: 'deny' },
+      { match: '*', action: 'allow' },
+    ])
+    for (const tool of ['Bash', 'PowerShell', 'Edit', 'Write']) assert.equal(decides(file, tool), 'ask', tool)
+    for (const tool of ['Agent', 'WebFetch']) assert.equal(decides(file, tool), 'deny', tool)
+    assert.equal(run(file, 'policy').code, 0)
+    assert.deepEqual(savedPolicy(file), bridgeRules(BRIDGE_ARGS))
+  })
+
+  // The review of #47: after `policy deny "mcp__claude-code__*" allow "*"`, the skill had the model prepend the
+  // bridge rules again, which allowed Read and turned the deny of Bash into ask.
+  it('takes new rules that name the bridge as they are, so a stricter choice of the person stays', () => {
+    const file = makeConfig(JSON.stringify({ ...FIXTURE, policy: bridgeRules(BRIDGE_ARGS) }))
+    const { code, out } = run(file, 'policy', 'deny', 'mcp__claude-code__*', 'allow', '*')
+    assert.equal(code, 0)
+    assert.ok(out.includes('policy:\n{"match":"mcp__claude-code__*","action":"deny"}\n{"match":"*","action":"allow"}'))
+    assert.deepEqual(savedPolicy(file), [
+      { match: 'mcp__claude-code__*', action: 'deny' },
+      { match: '*', action: 'allow' },
+    ])
+    for (const tool of ['Read', 'Bash', 'Write', 'Agent']) assert.equal(decides(file, tool), 'deny', tool)
+  })
+
+  it('never loosens the action of an old rule with the same match in prepend', () => {
+    const file = makeConfig(
+      JSON.stringify({
+        ...FIXTURE,
+        policy: [
+          { match: 'mcp__claude-code__Bash', action: 'deny' },
+          { match: 'mcp__claude-code__Read', action: 'ask' },
+          { match: 'mcp__claude-code__Write', action: 'allow' },
+          { match: '*', action: 'allow' },
+        ],
+      }),
+    )
+    const expected = bridgeRules(BRIDGE_ARGS).map(rule =>
+      rule.match === 'mcp__claude-code__Bash'
+        ? { ...rule, action: 'deny' }
+        : rule.match === 'mcp__claude-code__Read'
+          ? { ...rule, action: 'ask' }
+          : rule,
+    )
+    for (let round = 0; round < 2; round++) {
+      assert.equal(run(file, 'prepend', ...BRIDGE_ARGS).code, 0)
+      assert.deepEqual(savedPolicy(file), [...expected, { match: '*', action: 'allow' }])
+    }
+    assert.equal(decides(file, 'Bash'), 'deny')
+    assert.equal(decides(file, 'Read'), 'ask')
+    assert.equal(decides(file, 'Write'), 'ask')
   })
 
   it('refuses prepend with no pairs or a bad rule and leaves the file as it was', () => {

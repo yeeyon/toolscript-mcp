@@ -7,7 +7,9 @@
 //   node config.mjs <config> prepend <action> <match> [<action> <match>]...
 //   node config.mjs <config> add <name> <entry.json>
 // path prints the default config path, as toolscript-mcp finds it without --config.
+// policy keeps the old rules of the Claude Code bridge first, unless a new rule names mcp__claude-code__.
 // prepend puts its rules first and drops the old rules with the same match, so a second run changes nothing.
+// For the same match it keeps the stricter action of the old rule.
 // add makes the config when it does not exist.
 // Exit 1 is a failure of the config or the entry. Exit 2 is a usage error.
 import fs from 'node:fs'
@@ -16,6 +18,10 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 
 const ACTIONS = ['allow', 'deny', 'ask']
+// LOOSENESS in src/core/policy.ts: each step up lets a tool run with less from the person.
+const LOOSENESS = { deny: 0, ask: 1, allow: 2 }
+// Without its rules, a later "*" allow rule lets programs run every tool of the bridge, Bash too, with no prompt.
+const BRIDGE = 'mcp__claude-code__'
 const NAME = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/
 // The match rule of parsePolicy in src/core/config.ts. A policy error stops the server at its start.
 const MATCH = /^(mcp__|\*)/
@@ -124,6 +130,8 @@ function usage() {
   )
 }
 
+const oldRules = config => (Array.isArray(config.policy) ? config.policy : [])
+
 function parseRules(args) {
   if (args.length % 2 !== 0) usage()
   const rules = []
@@ -147,16 +155,24 @@ const COMMANDS = {
   policy(file, args) {
     const rules = parseRules(args)
     const config = readConfig(file)
-    config.policy = rules
+    const isBridge = rule => typeof rule?.match === 'string' && rule.match.startsWith(BRIDGE)
+    const kept = rules.some(isBridge) ? [] : oldRules(config).filter(isBridge)
+    config.policy = [...kept, ...rules]
     writeConfig(file, config)
     return show(config)
   },
   prepend(file, args) {
     if (args.length === 0) usage()
-    const rules = parseRules(args)
+    const asked = parseRules(args)
     const config = readConfig(file)
+    const old = oldRules(config)
+    const rules = asked.map(rule => ({
+      ...rule,
+      action: old
+        .filter(was => was?.match === rule.match)
+        .reduce((action, was) => (LOOSENESS[was.action] < LOOSENESS[action] ? was.action : action), rule.action),
+    }))
     const matches = new Set(rules.map(rule => rule.match))
-    const old = Array.isArray(config.policy) ? config.policy : []
     config.policy = [...rules, ...old.filter(rule => !matches.has(rule?.match))]
     writeConfig(file, config)
     return show(config)
