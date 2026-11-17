@@ -554,14 +554,15 @@ const execute = async (
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
     const ref = r.ok ? keep(kept, json, Date.now(), fromTool === true) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
-    if (r.ok) learnShape(ctx.shapes, tool, r.value)
+    // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
+    if (r.ok && fromTool !== true) learnShape(ctx.shapes, tool, r.value)
     records.set(id, {
       ref,
       tool,
       status: r.ok ? 'ok' : 'failed',
       chars: json.length,
       data: r.ok && !isEmpty(r.value),
-      shape: r.ok ? shapeOf(r.value) : undefined,
+      shape: r.ok ? shapeOf(r.value, fromTool !== true) : undefined,
       repeatOf,
     })
   }

@@ -509,7 +509,7 @@ describe('untrusted content', () => {
       toolNonces.every(n => !r.text.includes(n)),
       r.text,
     )
-    assert.match(r.text, /\n#\d+ mcp__f__item \d+ \{id, fields: \{title\}\} -> await recall\(\d+\)$/)
+    assert.match(r.text, /\n#\d+ mcp__f__item \d+ \{2 keys\} -> await recall\(\d+\)$/)
     const again = hostMark((await run('return (await call("mcp__f__item", {})).id')).text)
     assert.ok(again !== undefined && again.nonce !== mark.nonce, 'each run draws a new nonce')
   })
@@ -565,6 +565,15 @@ describe('untrusted content', () => {
       mark.inside,
       /\n\n1 returned image is not shown:\n- a reference to a file that no call of this session wrote$/,
     )
+  })
+
+  test('make it fail: the key names of an untrusted result reach neither the footer nor search_tools', async () => {
+    const { run, ctx, downstream } = setup()
+    const r = await run('await call("mcp__f__itemkeys", {})\nreturn 1')
+    assert.ok(hostMark(r.text) !== undefined, r.text)
+    assert.ok(!r.text.includes('IGNORE_ALL'), r.text)
+    assert.match(r.text, /\n#\d+ mcp__f__itemkeys \d+ \{3 keys\} -> await recall\(\d+\)$/)
+    assert.ok(!searchResult(downstream.states(), 'itemkeys', 15, ctx.shapes).includes('IGNORE_ALL'))
   })
 
   test('an attachment of an untrusted result marks the run that reads its file', async () => {

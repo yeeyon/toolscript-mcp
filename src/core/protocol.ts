@@ -803,8 +803,8 @@ const isMap = (o: Record<string, unknown>): boolean => {
 // The keys of an object are shown only when they are field names: keys that
 // are data would put the data into the context, which the program kept out.
 // The merged items of an array are records (their keys repeat), so only the
-// spelling of their keys counts.
-const shapeAt = (v: unknown, depth: number, isRecord = false): string => {
+// spelling of their keys counts. `names` false shows no key at all.
+const shapeAt = (v: unknown, depth: number, names: boolean, isRecord = false): string => {
   if (v === null || v === undefined) return 'null'
   if (Array.isArray(v)) {
     if (v.length === 0) return '[]'
@@ -816,18 +816,18 @@ const shapeAt = (v: unknown, depth: number, isRecord = false): string => {
     // The items are at the array's own depth: a list of records shows their keys.
     const inner =
       objects.length === sample.length
-        ? shapeAt(mergeObjects(objects), depth, objects.length > 1)
-        : shapeAt(sample[0], depth + 1)
+        ? shapeAt(mergeObjects(objects), depth, names, objects.length > 1)
+        : shapeAt(sample[0], depth + 1, names)
     return `[${v.length} × ${inner}]`
   }
   if (typeof v === 'object') {
     const keys = Object.keys(v)
     if (keys.length === 0) return '{}'
-    const hidden = !keys.every(isFieldName) || (!isRecord && isMap(v as Record<string, unknown>))
+    const hidden = !names || !keys.every(isFieldName) || (!isRecord && isMap(v as Record<string, unknown>))
     if (depth >= 2 || hidden) return `{${keys.length} key${keys.length === 1 ? '' : 's'}}`
     const fields = keys.slice(0, MAX_KEYS).map(k => {
       const inner = (v as Record<string, unknown>)[k]
-      return inner !== null && typeof inner === 'object' ? `${k}: ${shapeAt(inner, depth + 1)}` : k
+      return inner !== null && typeof inner === 'object' ? `${k}: ${shapeAt(inner, depth + 1, names)}` : k
     })
     const more = keys.length > MAX_KEYS ? [`…+${keys.length - MAX_KEYS}`] : []
     return `{${[...fields, ...more].join(', ')}}`
@@ -839,9 +839,12 @@ const shapeAt = (v: unknown, depth: number, isRecord = false): string => {
   return typeof v
 }
 
-/** The structure of a value in one short line: keys, array lengths, nesting to depth 2. */
-export const shapeOf = (v: unknown): string => {
-  const shape = shapeAt(v, 0)
+/**
+ * The structure of a value in one short line: keys, array lengths, nesting to
+ * depth 2. `names` false: no key names, for a value that can hold untrusted text.
+ */
+export const shapeOf = (v: unknown, names = true): string => {
+  const shape = shapeAt(v, 0, names)
   return shape.length <= MAX_SHAPE_CHARS ? shape : `${shape.slice(0, MAX_SHAPE_CHARS)}…`
 }
 
