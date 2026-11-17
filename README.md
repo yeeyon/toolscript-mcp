@@ -481,6 +481,12 @@ The call list after the wrapper holds no untrusted text:
 - For an untrusted result, it shows the number of keys, not their names. `search_tools` does not show the shape of
   such a result.
 - In a run that read untrusted text, a tool name that no server lists shows as `(a name that no server lists)`.
+- It still shows numbers that untrusted text can choose: the size of a result, its number of keys and the lengths of
+  its arrays.
+
+toolscript-mcp tracks untrusted text only inside one run, and across runs only through `recall(n)`, `readFile` and
+attachment files. A downstream tool can store untrusted text in one run and return it in a later run. That later
+result counts as untrusted only when its server returned a wrapped result before.
 
 Images are not in the wrapper. An image of an untrusted result reaches the model as an image block, and an image can
 hold text with instructions. Return an image only from a source that you trust.

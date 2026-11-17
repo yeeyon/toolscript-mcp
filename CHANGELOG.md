@@ -147,6 +147,8 @@ Untrusted text (#48):
 - In a run that read untrusted text, the notes about a tool with no allow rule, a tool that needs the person and a policy change are inside the wrapper. Before, they came after it, named a tool that the untrusted text could choose, and told the model to ask for an allow rule for that tool. In other runs they still follow the call list.
 - A CR at the end of the text inside the wrapper stays. Only a wrapper whose first line ends in CRLF can end in CRLF.
 - An image of an untrusted result still reaches the model as an image block outside the wrapper.
+- The call list outside the wrapper still shows the numbers of an untrusted result: its size, its number of keys and the lengths of its arrays.
+- The host does not track untrusted text that a tool stores in one run and returns in a later run, unless the server of that tool returned a wrapped result before. The README states this limit.
 
 Runner fixes (inherited from claude-code-mode at eea4077):
 
