@@ -1043,19 +1043,28 @@ const splitName = (name: string): { server: string; short: string } => {
   return m === null ? { server: '', short: name } : { server: m[1]!, short: m[2]! }
 }
 
+const RANK_QUERY_MAX = 1000
+
+const trimStop = (token: string): string => {
+  let end = token.length
+  while (end > 0 && (token[end - 1] === '.' || token[end - 1] === '-')) end--
+  return token.slice(0, end)
+}
+
 /**
  * Ranks tools. A query token that is a tool's full name, `server__tool` or short name ranks it first, in that order.
  * A short name counts only when it is the whole query or holds `_`, `-` or `.`: a plain word such as "search" in a
  * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2 as a
- * word of the server key, else 1 in the description. Equal scores rank the short name that the matched words cover
- * most first, then by name.
+ * word of the server key, else 1 in the description. Equal scores rank by name. Only the first
+ * `RANK_QUERY_MAX` characters of the query count.
  */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
-  const wanted = words(query)
-  const idents = query
+  const q = query.slice(0, RANK_QUERY_MAX)
+  const wanted = words(q)
+  const idents = q
     .toLowerCase()
     .split(/[^a-z0-9_.-]+/)
-    .map(t => t.replace(/[.-]+$/, ''))
+    .map(trimStop)
     .filter(t => t !== '')
   const serverWords = new Map<string, ReadonlySet<string>>()
   const scored = tools.map(tool => {
@@ -1071,19 +1080,16 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     if (idents.includes(name)) score += 1000
     else if (server !== '' && idents.includes(`${server}__${short}`)) score += 900
     else if (idents.includes(short) && (idents.length === 1 || /[_.-]/.test(short))) score += 800
-    let covered = 0
     for (const w of wanted) {
-      if (short.includes(w)) {
-        score += 3
-        covered += w.length
-      } else if (ofServer.has(w)) score += 2
+      if (short.includes(w)) score += 3
+      else if (ofServer.has(w)) score += 2
       else if (description.includes(w)) score += 1
     }
-    return { tool, score, cover: Math.min(covered, short.length) / short.length }
+    return { tool, score }
   })
   return scored
     .filter(s => wanted.length === 0 || s.score > 0)
-    .sort((a, b) => b.score - a.score || b.cover - a.cover || a.tool.name.localeCompare(b.tool.name))
+    .sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name))
     .slice(0, limit)
     .map(s => s.tool)
 }
