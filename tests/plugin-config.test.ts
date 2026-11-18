@@ -318,6 +318,72 @@ describe('plugin config helper', () => {
     }
   })
 
+  it('allows exact tools first, and keeps a deny or an exact ask rule that matches one of them', () => {
+    const policy = [
+      { match: 'mcp__gh__*delete*', action: 'deny' },
+      { match: 'mcp__gh__get_pr', action: 'ask' },
+      { match: 'mcp__gh__list_prs', action: 'allow' },
+      { match: 'mcp__gh__*', action: 'ask' },
+      { match: 'mcp__gh__search', action: 'deny' },
+    ]
+    const file = makeConfig(JSON.stringify({ ...FIXTURE, policy }))
+    const tools = [
+      'mcp__gh__list_prs',
+      'mcp__gh__get_pr',
+      'mcp__gh__delete_pr',
+      'mcp__gh__search',
+      'mcp__gh__list_files',
+    ]
+    const expected = [{ match: 'mcp__gh__list_files', action: 'allow' }, ...policy]
+
+    const dry = run(file, 'allow-tools', '--dry-run', ...tools)
+    assert.equal(dry.code, 0)
+    assert.equal(read(file), JSON.stringify({ ...FIXTURE, policy }))
+    const plan = dry.out.split('\n')
+    for (const line of [
+      'keep mcp__gh__list_prs: allowed already by "mcp__gh__list_prs"',
+      'keep mcp__gh__get_pr: the ask rule "mcp__gh__get_pr" stays',
+      'keep mcp__gh__delete_pr: the deny rule "mcp__gh__*delete*" stays',
+      'keep mcp__gh__search: the deny rule "mcp__gh__search" stays',
+      'add allow mcp__gh__list_files',
+      'Dry run: config.mjs wrote nothing. The policy would be:',
+    ]) {
+      assert.ok(plan.includes(line), `${line}\n${dry.out}`)
+    }
+    for (const rule of expected) assert.ok(plan.includes(JSON.stringify(rule)), JSON.stringify(rule))
+
+    for (let round = 0; round < 2; round++) {
+      const { code } = run(file, 'allow-tools', ...tools)
+      assert.equal(code, 0)
+      const saved = JSON.parse(read(file))
+      assert.deepEqual(saved.policy, expected)
+      assert.deepEqual(saved.mcpServers, FIXTURE.mcpServers)
+      assert.deepEqual(saved.sandbox, FIXTURE.sandbox)
+    }
+  })
+
+  it('refuses allow-tools with no tool or a glob, and leaves the file as it was', () => {
+    const file = makeConfig()
+    const before = read(file)
+    assert.equal(run(file, 'allow-tools').code, 2)
+    assert.equal(run(file, 'allow-tools', '--dry-run').code, 2)
+    for (const tool of ['mcp__gh__*', '*', 'gh__get', 'mcp__gh', 'mcp____get']) {
+      const { code, err } = run(file, 'allow-tools', 'mcp__gh__get', tool)
+      assert.equal(code, 2, tool)
+      assert.match(err, /exact tool name/, tool)
+    }
+    assert.equal(read(file), before)
+  })
+
+  it('makes the config when allow-tools finds no config', () => {
+    const file = path.join(dir, `new-${n++}`, 'config.json')
+    assert.equal(run(file, 'allow-tools', 'mcp__demo__list_pull_requests').code, 0)
+    assert.deepEqual(JSON.parse(read(file)), {
+      mcpServers: {},
+      policy: [{ match: 'mcp__demo__list_pull_requests', action: 'allow' }],
+    })
+  })
+
   it('prints the default config path', () => {
     assert.equal(runWith({ TOOLSCRIPT_CONFIG: 'C:/fake/config.json' }, 'path').out.trim(), 'C:/fake/config.json')
     const base = process.platform === 'win32' ? { APPDATA: dir } : { XDG_CONFIG_HOME: dir }
