@@ -310,6 +310,11 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - A name with a blank or a character outside printable ASCII shows in double quotes. Such a character shows as a `\u`
   escape in each column and in the output of `--add`.
 - The status is `in config`, `not in config`, `name taken by a different entry`, `toolscript itself`, or `skipped` with the reason.
+- Claude Code runs a server of a `.mcp.json` file only after you approve it. The status of a project server that Claude
+  Code has not approved ends with `not approved in Claude Code`. If you disabled it, the status ends with `disabled in Claude Code`.
+- init reads these choices from `~/.claude/settings.json`, from `.claude/settings.json` and `.claude/settings.local.json`
+  of the `--project` folder, and from `~/.claude.json`. The project files count only in a folder that you trust in
+  Claude Code. init does not read managed settings, so a server that they approve shows as not approved.
 - `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
 - Claude Code starts a stdio server of the local or project scope in the folder where the session starts. It does not
   read the `cwd` of the entry. So `--add` sets the `cwd` of such a server to the `--project` folder, and leaves out
@@ -318,7 +323,8 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - For a name in more than one Claude Code scope, `--add` takes the server that Claude Code runs. It names that scope and
   the scopes that it hides.
 - `--add` changes nothing when a name is in the config already, in no client file, or in two clients with different
-  entries.
+  entries. It also changes nothing for a project server that is not approved or disabled in Claude Code.
+- `--unapproved` adds such a server. Use it only for a server that you trust: toolscript-mcp starts it without a question.
 - `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:user` or `--from cursor`.
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
   through toolscript-mcp works.

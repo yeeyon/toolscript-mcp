@@ -846,14 +846,24 @@ describe('init --list and --add', () => {
     sandbox: { timeoutSeconds: 60 },
   }
 
-  /** A temp home and project. `key` is the name of the project in `projects` of `.claude.json`. */
+  /** User settings that approve every server of a `.mcp.json` file in Claude Code. */
+  const APPROVE_ALL = { '.claude/settings.json': { enableAllProjectMcpServers: true } }
+
+  /**
+   * A temp home and project. `key` is the name of the project in `projects` of `.claude.json`. Claude Code trusts the
+   * project and approves its servers.
+   */
   const setup = (key: (project: string) => string = p => p, config?: unknown) => {
     const project = homeWith({ '.mcp.json': { mcpServers: PROJECT } })
     const home = homeWith({
       '.claude.json': {
         mcpServers: USER,
         projects: {
-          [key(project)]: { mcpServers: LOCAL },
+          [key(project)]: {
+            mcpServers: LOCAL,
+            hasTrustDialogAccepted: true,
+            enabledMcpjsonServers: ['shared', 'azure-devops'],
+          },
           '/elsewhere': { mcpServers: { elsewhere: { command: 'x' } } },
         },
       },
@@ -924,7 +934,7 @@ describe('init --list and --add', () => {
         },
       }),
     )
-    const home = homeWith({})
+    const home = homeWith(APPROVE_ALL)
     const listed = await run(home, folder, ['--list'])
     const added = await run(home, folder, ['--add', 'a  b,evil\u001b[31m\u202e'])
     for (const out of [listed.out, added.out]) assert.doesNotMatch(out, /[^\x20-\x7e\n]/, out)
@@ -933,7 +943,7 @@ describe('init --list and --add', () => {
       row('"evil\\u001b[31m\\u202e"', 'claude-code', 'project', 'stdio \\u009b31mbad\\u202e.exe'),
     )
     assert.match(listed.out, row('odd', 'claude-code', 'project', '-', 'skipped: type "\\u009b2J" is not supported'))
-    const shown = folder.replace('‮', '\\u202e')
+    const shown = `${top}${path.sep}f\\u202eo`
     assert.match(listed.out, row('"a  b"', 'claude-code', 'project', 'stdio node', 'not in config', shown))
     assert.equal(added.code, 0, added.out)
     assert.match(added.out, /^- a-b, from Claude Code \(project scope\) "a {2}b"\. Left out: x\\u001b$/m)
@@ -972,7 +982,7 @@ describe('init --list and --add', () => {
     const near = path.join(top, 'near')
     const start = path.join(near, 'deeper')
     fs.mkdirSync(start)
-    const home = homeWith({})
+    const home = homeWith(APPROVE_ALL)
     const listed = await run(home, start, ['--list'])
     assert.equal(listed.code, 0, listed.out)
     assert.match(listed.out, row('dup', 'claude-code', 'project', 'stdio node', 'not in config', near), listed.out)
@@ -1118,6 +1128,7 @@ describe('init --list and --add', () => {
     fs.mkdirSync(start, { recursive: true })
     const srv = path.resolve('/srv')
     const home = homeWith({
+      ...APPROVE_ALL,
       '.claude.json': {
         mcpServers: { user: { command: 'node', cwd: srv } },
         projects: { [project]: { mcpServers: { local: { command: 'node', args: ['./srv.mjs'], cwd: 'x' } } } },
@@ -1149,6 +1160,91 @@ describe('init --list and --add', () => {
     assert.match(fromRoot.out, row('bare', 'claude-code', 'project', 'stdio node', 'name taken by a different entry'))
   })
 
+  // Each case as claude mcp list of Claude Code 2.1 showed it in a temp CLAUDE_CONFIG_DIR: Pending approval, a failed
+  // health check of a server it ran (approved), or no line (disabled).
+  test('--list shows a project server that Claude Code has not approved or has disabled, and --add needs --unapproved', async () => {
+    const on = { enabledMcpjsonServers: ['alpha'] }
+    const off = { disabledMcpjsonServers: ['alpha'] }
+    const all = { enableAllProjectMcpServers: true }
+    const trust = { hasTrustDialogAccepted: true }
+    type Case = { start?: string; projects?: Record<string, object>; files?: Record<string, object>; user?: object }
+    const cases: [string, Case, string][] = [
+      ['no choice', {}, 'not approved'],
+      ['settings of the start folder, trusted', { projects: { '.': trust }, files: { '.': on } }, 'approved'],
+      [
+        'shared settings of the start folder, trusted',
+        { projects: { '.': trust }, files: { '.:shared': on } },
+        'approved',
+      ],
+      ['settings of the start folder, not trusted', { files: { '.': on } }, 'not approved'],
+      [
+        'settings of the root, start in a subfolder',
+        { start: 'sub/deep', projects: { '.': trust }, files: { '.': on } },
+        'not approved',
+      ],
+      [
+        'settings of a subfolder start',
+        { start: 'sub/deep', projects: { '.': trust }, files: { 'sub/deep': on } },
+        'approved',
+      ],
+      [
+        'trust on a folder between',
+        { start: 'sub/deep', projects: { sub: trust }, files: { 'sub/deep': on } },
+        'approved',
+      ],
+      ['trust above the project root', { projects: { '..': trust }, files: { '.': on } }, 'not approved'],
+      ['list in .claude.json, trusted', { start: 'sub/deep', projects: { '.': { ...trust, ...on } } }, 'approved'],
+      ['enable all in .claude.json, trusted', { projects: { '.': { ...trust, ...all } } }, 'approved'],
+      [
+        'list in .claude.json of the start folder',
+        { start: 'sub/deep', projects: { 'sub/deep': { ...trust, ...on } } },
+        'not approved',
+      ],
+      ['user settings', { user: on }, 'approved'],
+      ['user settings, disabled in .claude.json', { user: all, projects: { '.': off } }, 'disabled'],
+      ['user settings, disabled in the start folder', { user: on, files: { '.': off } }, 'disabled'],
+    ]
+    for (const [label, c, approval] of cases) {
+      const project = homeWith({ '.git/HEAD': '', '.mcp.json': { mcpServers: { alpha: { command: 'node' } } } })
+      const at = (rel: string) => (rel === '..' ? path.dirname(project) : path.join(project, rel))
+      for (const [where, settings] of Object.entries(c.files ?? {})) {
+        const [rel = '.', shared] = where.split(':')
+        const file = path.join(at(rel), '.claude', shared ? 'settings.json' : 'settings.local.json')
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        fs.writeFileSync(file, JSON.stringify(settings))
+      }
+      const projects = Object.fromEntries(Object.entries(c.projects ?? {}).map(([rel, v]) => [at(rel), v]))
+      const home = homeWith({
+        '.claude.json': { projects },
+        ...(c.user && { '.claude/settings.json': c.user }),
+      })
+      const start = at(c.start ?? '.')
+      fs.mkdirSync(start, { recursive: true })
+      const listed = await run(home, start, ['--list'], process.platform)
+      const status = approval === 'approved' ? 'not in config' : `not in config, ${approval} in Claude Code`
+      assert.match(listed.out, row('alpha', 'claude-code', 'project', 'stdio node', status), `${label}:\n${listed.out}`)
+
+      const added = await run(home, start, ['--add', 'alpha'], process.platform)
+      if (approval === 'approved') {
+        assert.equal(added.code, 0, `${label}: ${added.out}`)
+        continue
+      }
+      assert.equal(added.code, 1, `${label}: ${added.out}`)
+      const mcpJson = path.join(project, '.mcp.json')
+      assert.ok(
+        added.out
+          .split('\n')
+          .includes(
+            `alpha of ${mcpJson} is ${approval} in Claude Code for this folder. To add it anyway, add --unapproved.`,
+          ),
+        `${label}: ${added.out}`,
+      )
+      assert.ok(!fs.existsSync(added.file), label)
+      const forced = await run(home, start, ['--add', 'alpha', '--unapproved'], process.platform)
+      assert.equal(forced.code, 0, `${label}: ${forced.out}`)
+    }
+  })
+
   test('--add makes the config when there is none', async () => {
     const { home, project } = setup()
     const { code, out, file } = await run(home, project, ['--add', 'my notes'])
@@ -1167,6 +1263,7 @@ describe('init --list and --add', () => {
       '.mcp.json': { mcpServers: { all: { command: 'all-project' }, pu: { command: 'pu-project' } } },
     })
     const home = homeWith({
+      ...APPROVE_ALL,
       '.claude.json': {
         mcpServers: { all: { command: 'all-user' }, pu: { command: 'pu-user' }, lu: { command: 'lu-user' } },
         projects: { [project]: { mcpServers: { all: { command: 'all-local' }, lu: { command: 'lu-local' } } } },
@@ -1271,6 +1368,7 @@ describe('init --list and --add', () => {
       ['--add', 'gh', '--dry-run'],
       ['--list', '--add', 'gh'],
       ['--list', '--from', 'cursor'],
+      ['--list', '--unapproved'],
       ['--add', 'gh', '--from', 'vscode'],
     ]) {
       const { code, out, file } = await run(home, project, args)
