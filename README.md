@@ -166,7 +166,10 @@ something:
 5. You start a new session and give the task. Then `/toolscript:start verify` runs `runs --server <server>`. It confirms the run, or it names the step that fixes it.
 6. After a run works, the skill offers to remove the direct copy of the server from Claude Code. It shows the scope of the copy first.
 
-The skill does not edit the config files of your clients. It shows the lines to change. To update or uninstall
+`/toolscript:doctor` checks the whole setup and changes nothing. It runs [doctor](#doctor), then checks the Claude Code
+registration, the direct copies of your servers and the clone. For each problem, it names the step that fixes it.
+
+The skills do not edit the config files of your clients. They show the lines to change. To update or uninstall
 toolscript-mcp, ask Claude again.
 
 ### Client setup
@@ -324,6 +327,28 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:local` or `--from cursor`.
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
   through toolscript-mcp works.
+
+### Doctor
+
+`toolscript-mcp doctor [--config <path>]` checks the whole setup in one pass. Start it as you start `init`. It prints
+to stderr.
+
+Each line has a status, the name of the check and the detail. The status is `ok`, `info`, `warn` or `fail`. The
+checks come in this order:
+
+1. `node`: the version of this Node and of `sandbox.node`. Both must be 22.13 or later.
+2. `config`: the config exists and has no errors. If it does not exist, doctor prints the `init` command.
+3. `servers`: doctor connects to each server in parallel. Each line shows the tool count, the login command or the
+   reason of the failure. It marks each server with `"untrusted": true`.
+4. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
+   [Claude Code bridge](#claude-code-as-a-downstream-server), and the tools that require a person.
+5. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
+6. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run.
+7. `files`: doctor can write to `~/.toolscript-mcp`. OAuth tokens that no server of the config uses show as stale.
+
+doctor skips the check for allow rules that match no tool when a server does not connect. The output never shows
+tool descriptions, arguments, `env` or header values, or tokens. doctor changes no file. The exit code is 1 when a
+check fails, and 2 on a usage error.
 
 ### Check a server and a run
 
