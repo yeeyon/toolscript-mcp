@@ -43,6 +43,10 @@ and Cursor: the name, client, scope, kind and status. Show the list to the perso
 - For a server with the status `not in config`, run `node "<main>" init --add <name> --config "<config>"` with
   approval. If init says that the name has different entries, ask which one, and add `--from` with the source that
   init names. init prints the steps that remove the direct entry. Do not run them now. Step 7 does.
+- A status with `hidden by <scope>` is a copy that Claude Code does not run. init adds the copy that Claude Code runs.
+- A status with `not approved in Claude Code` or `disabled in Claude Code` is a server of a `.mcp.json` that the person
+  did not approve. Anyone who can change that file chose its command. Tell the person this. Add `--unapproved` to
+  `init --add` only after the person reads the server name and agrees.
 - If no server fits, or the person wants a test first, offer the demo server. It needs no account, and its tools only
   read fixed sample data. Run `node -p "require('os').tmpdir()"`. With approval, write
   `{ "command": "node", "args": ["<folder>/demo/server.mjs"] }` to `<tmp>/toolscript-entry.json`. Then run
