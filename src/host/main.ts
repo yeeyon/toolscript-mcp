@@ -5,6 +5,7 @@
 // `toolscript-mcp init` writes the config from the configs of the clients.
 // `toolscript-mcp login <server>` gets the OAuth tokens of an HTTP server.
 // `toolscript-mcp tools <server>` and `toolscript-mcp runs` check a first run.
+// `toolscript-mcp doctor` checks the whole setup.
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import fs from 'node:fs'
@@ -13,6 +14,7 @@ import { parseArgs } from 'node:util'
 import { configPath, nestedStart } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
 import { RUNS_USAGE, runRuns, runTools, TOOLS_USAGE } from './diagnose.ts'
+import { DOCTOR_USAGE, runDoctor } from './doctor.ts'
 import { connectAll } from './downstream.ts'
 import { INIT_USAGE, runInit } from './init.ts'
 import { LOGIN_USAGE, runLogin } from './login.ts'
@@ -31,7 +33,14 @@ const { version } = JSON.parse(fs.readFileSync(new URL('../../package.json', imp
 }
 
 const launch = detectLaunch(process.argv[1] ?? '')
-const USAGE = ['usage: toolscript-mcp [--config <path>] [--help]', INIT_USAGE, LOGIN_USAGE, TOOLS_USAGE, RUNS_USAGE]
+const USAGE = [
+  'usage: toolscript-mcp [--config <path>] [--help]',
+  INIT_USAGE,
+  LOGIN_USAGE,
+  TOOLS_USAGE,
+  RUNS_USAGE,
+  DOCTOR_USAGE,
+]
 
 if (process.argv[2] === 'init')
   process.exit(
@@ -39,7 +48,7 @@ if (process.argv[2] === 'init')
   )
 
 const io = { env: process.env, platform: process.platform, home: os.homedir(), version, launch, print: console.error }
-const COMMANDS = { login: runLogin, tools: runTools, runs: runRuns }
+const COMMANDS = { login: runLogin, tools: runTools, runs: runRuns, doctor: runDoctor }
 const command = process.argv[2]
 if (command !== undefined && Object.hasOwn(COMMANDS, command))
   process.exit(await COMMANDS[command as keyof typeof COMMANDS](process.argv.slice(3), io))
