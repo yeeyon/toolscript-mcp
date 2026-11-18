@@ -322,6 +322,7 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
   `.claude/settings.json`, `~/.claude/settings.json`. A `true` in `~/.claude.json` counts only when
   `.claude/settings.local.json` does not set it. Claude Code decides the same way.
 - `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
+  If a name starts with `-`, write `--add=<name>`.
 - Claude Code starts a stdio server of the local or project scope in the folder where the session starts. It does not
   read the `cwd` of the entry. So `--add` sets the `cwd` of such a server to the `--project` folder, and leaves out
   the `cwd` of the entry.

@@ -1514,6 +1514,17 @@ describe('init --list and --add', () => {
     )
   })
 
+  test('--add=<name> adds a name that starts with a dash, which --add <name> reads as an option', async () => {
+    const home = homeWith({ '.cursor/mcp.json': { mcpServers: { '-dash': { command: 'node' } } } })
+    const split = await run(home, home, ['--add', '-dash'])
+    assert.equal(split.code, 2, split.out)
+    assert.match(split.out, /use '--add=-XYZ'/)
+    unchanged(split.file, undefined)
+    const joined = await run(home, home, ['--add=-dash'])
+    assert.equal(joined.code, 0, joined.out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(joined.file, 'utf8')).mcpServers, { '-dash': { command: 'node' } })
+  })
+
   test('--add refuses, exits 1 and writes nothing', async () => {
     const cases: [string, string[], unknown, RegExp][] = [
       [
