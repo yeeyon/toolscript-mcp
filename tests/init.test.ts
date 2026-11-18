@@ -892,6 +892,23 @@ describe('init --list and --add', () => {
     assert.doesNotMatch(out, /elsewhere/)
   })
 
+  test('--list shows only stdio for a command with a space, which can hold arguments and secrets', async () => {
+    const home = homeWith({
+      '.cursor/mcp.json': {
+        mcpServers: {
+          tool: { command: 'C:/tools/mytool.exe --tokenfile=abc fakesecretvalue123 fakeshortpw' },
+          npx: { command: 'npx -y @acme/mcp ghp_fakefakefakefakefake xoxb-12-fake' },
+        },
+      },
+    })
+    const { code, out } = await run(home, home, ['--list'])
+    assert.equal(code, 0, out)
+    assert.match(out, row('"tool"', 'cursor', '-', 'stdio', 'not in config'), out)
+    assert.match(out, row('"npx"', 'cursor', '-', 'stdio', 'not in config'), out)
+    for (const word of ['mytool', 'abc', 'fakesecretvalue123', 'fakeshortpw', '@acme', 'ghp_', 'xoxb'])
+      assert.ok(!out.includes(word), `${word} is shown:\n${out}`)
+  })
+
   // Claude Code keys the local scope on the root of the main checkout, also from a subfolder or a git worktree
   // (checked with claude mcp add --scope local in a temp CLAUDE_CONFIG_DIR, Claude Code 2.1).
   test('--list from a subfolder or a worktree finds the local scope of the main checkout', async () => {

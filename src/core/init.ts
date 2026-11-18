@@ -481,6 +481,8 @@ const kindOf = ({ parsed }: Candidate): string => {
   if (parsed.kind !== 'entry') return '-'
   const { entry } = parsed
   if ('type' in entry) return `http ${urlOrigin(entry.url) ?? '-'}`
+  // A command with a space can hold arguments, and so a secret.
+  if (/\s/.test(entry.command)) return 'stdio'
   return `stdio ${hideArgSecrets([entry.command.split(/[\\/]/).at(-1) ?? '']).args.join('')}`
 }
 
