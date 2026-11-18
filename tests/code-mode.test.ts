@@ -542,6 +542,68 @@ describe('protocol', () => {
     assert.equal(rankTools(tools, '', 2).length, 2)
   })
 
+  describe('rankTools with a real-shaped catalog', () => {
+    const ado = (tool: string, description: string) => ({
+      name: `mcp__azure-devops__${tool}`,
+      description,
+    })
+    const tools = [
+      ado('work', 'Reads iterations and team settings of the Azure DevOps boards'),
+      ado('work_capacity_write', 'Sets the capacity of a team in Azure DevOps'),
+      ado('work_iteration_write', 'Creates an iteration in Azure DevOps'),
+      ado('wit_work_item', 'Gets a work item from Azure DevOps'),
+      ado('wit_work_item_write', 'Updates a work item in Azure DevOps'),
+      ado('work_items', 'Lists the work items of a backlog in Azure DevOps'),
+      ado('wiki', 'Reads a wiki page of Azure DevOps'),
+      ado('repo_branch', 'Lists the branches of an Azure DevOps repo'),
+      { name: 'mcp__atlassian__search', description: 'Searches Jira' },
+      { name: 'mcp__atlassian__getJiraIssue', description: 'Gets an issue' },
+      { name: 'mcp__claude-code__work', description: 'Does work' },
+    ]
+    const names = (query: string, limit = 20) => rankTools(tools, query, limit).map(t => t.name)
+
+    test('a full name ranks that tool first at limit 1', () => {
+      assert.deepEqual(names('mcp__azure-devops__work', 1), ['mcp__azure-devops__work'])
+      assert.deepEqual(names('mcp__azure-devops__work_items', 1), ['mcp__azure-devops__work_items'])
+      assert.deepEqual(names('mcp__azure-devops__wit_work_item', 1), ['mcp__azure-devops__wit_work_item'])
+    })
+
+    test('a server__tool name and a short name rank the tool first', () => {
+      assert.equal(names('azure-devops__work', 1)[0], 'mcp__azure-devops__work')
+      assert.equal(names('work_items', 1)[0], 'mcp__azure-devops__work_items')
+      assert.equal(names('wit_work_item')[0], 'mcp__azure-devops__wit_work_item')
+      assert.equal(names('search', 1)[0], 'mcp__atlassian__search')
+    })
+
+    test('an exact name ranks first, in name order, before the names that only hold the word', () => {
+      const found = names('work')
+      assert.deepEqual(found.slice(0, 2), ['mcp__azure-devops__work', 'mcp__claude-code__work'])
+      assert.deepEqual(found.slice(2).sort(), [
+        'mcp__azure-devops__wit_work_item',
+        'mcp__azure-devops__wit_work_item_write',
+        'mcp__azure-devops__work_capacity_write',
+        'mcp__azure-devops__work_items',
+        'mcp__azure-devops__work_iteration_write',
+      ])
+    })
+
+    test('the words of a server key do not lift every tool of the server', () => {
+      assert.equal(names('azure devops wiki', 1)[0], 'mcp__azure-devops__wiki')
+      assert.equal(names('azure devops branch', 1)[0], 'mcp__azure-devops__repo_branch')
+      assert.equal(names('devops capacity', 1)[0], 'mcp__azure-devops__work_capacity_write')
+    })
+
+    test('a query of server words still lists the tools of that server', () => {
+      const found = names('azure devops')
+      assert.equal(found.length, 8)
+      assert.ok(found.every(n => n.startsWith('mcp__azure-devops__')))
+    })
+
+    test('plain words rank by name and description as before', () => {
+      assert.deepEqual(names('jira issue', 2), ['mcp__atlassian__getJiraIssue', 'mcp__atlassian__search'])
+    })
+  })
+
   test('extractDeclaration finds one entry of McpToolInputs', () => {
     const dts = [
       "declare module 'claude-code' {",

@@ -387,6 +387,8 @@ export const learnShape = (shapes: Map<string, string>, tool: string, value: unk
   shapes.set(tool, shape)
 }
 
+const ECHO_MAX = 200
+
 /**
  * The text of a search_tools result: the best matches, then the servers that
  * are not connected. Up to DETAIL_HITS matches of a query with words show in
@@ -405,7 +407,11 @@ export const searchResult = (
   const all = catalogOf(states)
   const found = rankTools(all, query, limit)
   const tail = notConnectedText(states)
-  if (found.length === 0) return `No MCP tool matches "${query}". ${all.length} MCP tools are connected.${tail}`
+  if (found.length === 0) {
+    const shown = query.length > ECHO_MAX ? `${query.slice(0, ECHO_MAX)}... (${query.length} characters)` : query
+    const hint = all.length > 0 ? ' An empty query lists them.' : ''
+    return `No MCP tool matches "${shown}". ${all.length} MCP tools are connected.${hint}${tail}`
+  }
   const blocks =
     found.length <= DETAIL_HITS && !listsAll(query)
       ? found.map(t => detailBlock(t, shapes, canAsk))

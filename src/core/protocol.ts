@@ -1379,18 +1379,65 @@ const words = (text: string): string[] =>
     .split(/[^a-z0-9]+/)
     .filter(w => w.length > 1)
 
-/** True when the query has no word to rank by, so rankTools lists every tool. */
-export const listsAll = (query: string): boolean => words(query).length === 0
+const splitName = (name: string): { server: string; short: string } => {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name)
+  return m === null ? { server: '', short: name } : { server: m[1]!, short: m[2]! }
+}
 
-/** Ranks tools by how many query words their name and description hold. */
+const RANK_QUERY_MAX = 1000
+
+/** The first `RANK_QUERY_MAX` characters of the query, without a token that the cut splits. */
+const rankQuery = (query: string): string => {
+  let q = query.slice(0, RANK_QUERY_MAX)
+  if (query.length > RANK_QUERY_MAX && !/[^a-z0-9_.-]/i.test(query[RANK_QUERY_MAX]!)) {
+    let end = q.length
+    while (end > 0 && !/[^a-z0-9_.-]/i.test(q[end - 1]!)) end--
+    q = q.slice(0, end)
+  }
+  return q
+}
+
+/** True when the query has no word to rank by, so rankTools lists every tool. */
+export const listsAll = (query: string): boolean => words(rankQuery(query)).length === 0
+
+const trimStop = (token: string): string => {
+  let end = token.length
+  while (end > 0 && (token[end - 1] === '.' || token[end - 1] === '-')) end--
+  return token.slice(0, end)
+}
+
+/**
+ * Ranks tools. A query token that is a tool's full name, `server__tool` or short name ranks it first, in that order.
+ * A short name counts only when it is the whole query or holds `_`, `-` or `.`: a plain word such as "search" in a
+ * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2 as a
+ * word of the server key, else 1 in the description. Equal scores rank by name. Only the first
+ * `RANK_QUERY_MAX` characters of the query count, and a token that the cut splits is dropped.
+ */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
-  const wanted = words(query)
+  const q = rankQuery(query)
+  const wanted = words(q)
+  const idents = q
+    .toLowerCase()
+    .split(/[^a-z0-9_.-]+/)
+    .map(trimStop)
+    .filter(t => t !== '')
+  const serverWords = new Map<string, ReadonlySet<string>>()
   const scored = tools.map(tool => {
     const name = tool.name.toLowerCase()
+    const { server, short } = splitName(name)
     const description = tool.description.toLowerCase()
+    let ofServer = serverWords.get(server)
+    if (ofServer === undefined) {
+      ofServer = new Set(words(server))
+      serverWords.set(server, ofServer)
+    }
     let score = 0
+    if (idents.includes(name)) score += 1000
+    else if (server !== '' && idents.includes(`${server}__${short}`)) score += 900
+    else if (idents.includes(short) && (idents.length === 1 || /[_.-]/.test(short))) score += 800
     for (const w of wanted) {
-      if (name.includes(w)) score += 3
+      if (short.includes(w)) score += 3
+      else if (ofServer.has(w)) score += 2
       else if (description.includes(w)) score += 1
     }
     return { tool, score }

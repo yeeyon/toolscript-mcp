@@ -12,9 +12,37 @@ import { serverKey } from '../src/core/config.ts'
 import { checkCalls } from '../src/core/protocol.ts'
 
 const server = (tools: DownstreamTool[]): ServerState[] => [{ key: serverKey('x')!, status: 'connected', tools }]
-// "mcp" is in the full name of each tool, so the one tool is a hit in full. An empty query shows a summary.
+// The full name of the tool ranks it first, so the one tool is a hit in full. An empty query shows a summary.
 const one = (tool: DownstreamTool, shapes?: Map<string, string>): string =>
-  searchResult(server([tool]), 'mcp', 15, shapes).replace(/^1 of 1 MCP tools\.\n\n/, '')
+  searchResult(server([tool]), `mcp__x__${tool.name}`, 15, shapes).replace(/^1 of 1 MCP tools\.\n\n/, '')
+
+describe('search_tools with no match', () => {
+  const tools = [{ name: 'grant', description: 'Grant access.' }]
+
+  test('a short query is echoed whole', () => {
+    assert.equal(
+      searchResult(server(tools), 'zzzqq', 15),
+      'No MCP tool matches "zzzqq". 1 MCP tools are connected. An empty query lists them.',
+    )
+  })
+
+  // #49 review: "mcp" is no longer a word of every tool name, so a model that searched it to list all needs the way out.
+  test('a search for "mcp" finds no tool and names the empty query', () => {
+    assert.match(searchResult(server(tools), 'mcp', 15), /^No MCP tool matches "mcp"\. .* An empty query lists them\.$/)
+  })
+
+  test('with no tool connected, the text names no empty query', () => {
+    assert.equal(searchResult([], 'zzzqq', 15), 'No MCP tool matches "zzzqq". 0 MCP tools are connected.')
+  })
+
+  test('a long query is cut to 200 characters and its length is named', () => {
+    const query = 'zzz '.repeat(1250)
+    assert.equal(
+      searchResult(server(tools), query, 15),
+      `No MCP tool matches "${query.slice(0, 200)}... (5000 characters)". 1 MCP tools are connected. An empty query lists them.`,
+    )
+  })
+})
 
 describe('search_tools and a tool whose server requires a person', () => {
   const MARK = { 'anthropic/requiresUserInteraction': true }
