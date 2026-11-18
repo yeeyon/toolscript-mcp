@@ -133,7 +133,7 @@ In a measured start, the GitHub check of npx added about 12 seconds.
 The commands that toolscript-mcp prints, such as the login command and the steps of `init`, use the start of the
 running process. From a clone, they start with `node /absolute/path/to/toolscript-mcp/dist/host/main.js`. From npm,
 they start with `npx -y toolscript-mcp`. On Windows, each path in them has forward slashes. So the login command
-works in cmd.exe, PowerShell and Git Bash. The Claude Code step of an npm install is for PowerShell. Run
+works in cmd.exe, PowerShell and Git Bash. Run the Claude Code step of an npm install in PowerShell or cmd.exe. Run
 `node dist/host/main.js --help` to see the usage.
 
 #### With the Claude Code plugin
@@ -336,22 +336,35 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:user` or `--from cursor`.
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
   through toolscript-mcp works.
-- In a step of Claude Code, a name that starts with `-` comes after `--`, as in `claude mcp remove --scope user -- -dash`.
 
-After the list, `init --list` prints a command for each server with the status `not in config`:
+After the list, `init --list` prints a command for each server with the status `not in config`. It also prints the
+steps that remove each direct copy of a server with the status `in config`:
 
 ```
 Commands that add a server:
-- notes (claude-code:local): npx -y toolscript-mcp init --add=notes --project /home/me/app --config /home/me/.config/toolscript-mcp/config.json
-- alpha (claude-code:project, ask first: not approved in Claude Code): npx -y toolscript-mcp init --add=alpha --unapproved --project /home/me/app --config /home/me/.config/toolscript-mcp/config.json
+  notes (claude-code:local)
+    npx -y toolscript-mcp init --add=notes --project "/home/me/app" --config "/home/me/.config/toolscript-mcp/config.json"
+  alpha (claude-code:project, ask first: not approved in Claude Code)
+    npx -y toolscript-mcp init --add=alpha --unapproved --project "/home/me/app" --config "/home/me/.config/toolscript-mcp/config.json"
+
+Steps that remove a direct copy. Run each command in the folder above it, when it has one.
+  gh (claude-code:local)
+    folder: /home/me/app
+    claude mcp remove --scope local "gh"
 ```
 
-- The command has the options that pick the server of its line: `--from`, `--unapproved`, `--project` and `--config`.
-- A line with `ask first` has `--unapproved` in its command. Run it only after you check the entry of the server in its file.
-- A name in a `.mcp.json` file comes from anyone who can change the project. So init quotes each name as one word for the shell.
-- On Windows, a command passes each word as it is in PowerShell and Git Bash. cmd.exe runs no other command from it.
-- If init cannot quote a name or a path in this way, the line has no command and gives the reason.
-- The same rule applies to the steps that remove a server. If a step has no command, remove the entry from the client file by hand.
+- Each command is alone on its line, under the line that names its server.
+- The command has the options that pick the server: `--from`, `--unapproved`, `--project` and `--config`.
+- A server with `ask first` has `--unapproved` in its command. Run it only after you check the entry of the server in its file.
+- In a step of Claude Code, a name that starts with `-` comes after `"--"`, as in `claude mcp remove --scope user "--" "-dash"`.
+- A name in a `.mcp.json` file comes from anyone who can change the project. So a command holds a name only when the
+  name has only letters, digits and `. _ -`.
+- A command holds a path only when the path has only letters, digits, spaces, a drive letter and `. _ - ( ) ~ /`.
+  Each path is in double quotes, with forward slashes on Windows.
+- These characters pass unchanged in sh, bash, zsh, fish, tcsh, cmd.exe and PowerShell, also in an interactive shell.
+- For any other name, init prints no command. It names the file, and you change the entry in an editor.
+- If a path has any other character, init prints no command and names the path. Run init again with a plainer `--config` path or project folder.
+- On Windows, Git Bash changes the `/c` of `cmd /c` in the step that adds toolscript to Claude Code. Run that step in PowerShell or cmd.exe.
 
 ## Configuration
 
