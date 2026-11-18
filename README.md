@@ -163,7 +163,7 @@ something:
 2. The skill runs `tools` on that server. It shows each tool with its hint and its policy action, or the login command when the server needs OAuth.
 3. The skill proposes a small read task. For the demo, the task is "Count the open pull requests per author".
 4. You pick the starter policy. With "Ask when needed", Claude Code asks you before each program. "Allow this workflow" adds an allow rule for each exact tool name of the task. It keeps each deny rule that matches one of these tools.
-5. You start a new session and give the task. Then `/toolscript:start verify` runs `runs --server <server>`. It confirms the run, or it names the step that fixes it.
+5. You start a new session and give the task. Then `/toolscript:start verify` runs `runs --server <server> --since 2h`. It confirms a recent run that called the server, or it names the step that fixes it.
 6. After a run works, the skill offers to remove the direct copy of the server from Claude Code. It shows the scope of the copy first.
 
 The skill does not edit the config files of your clients. It shows the lines to change. To update or uninstall

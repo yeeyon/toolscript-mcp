@@ -84,14 +84,22 @@ tool. Tell the person. The other tools keep their rules, and a tool that no rule
 Tell the person to start a new Claude Code session, because toolscript-mcp reads its servers only at its start. In
 that session, the person gives the task and names toolscript, then runs `/toolscript:start verify`.
 
-For `verify`, do step 1, then run `node "<main>" runs --server <server> --config "<config>"`. If this session does not
-know `<server>`, leave out `--server <server>`. Then `runs` judges the newest run of any server.
+For `verify`, do step 1. If this session does not know `<server>`, run `node "<helper>" "<config>"`. It shows the
+server names. Ask the person which server the task used. Then run:
 
-- Exit 0: the run worked. Compare the answer with the expected answer of step 4, if it has one. Go to step 7.
+```sh
+node "<main>" runs --server <server> --since 2h --config "<config>"
+```
+
+`--since 2h` counts only the runs of the last 2 hours, so an older run does not confirm this task. If the person gave
+the task earlier, ask when, and use a longer time, such as `1d`.
+
+- Exit 0: the newest run called a tool of `<server>`, and each call worked. Compare the answer with the expected answer of step 4, if it has one. Go to step 7.
 - Exit 1: show the lines that it prints. Each code has a line with the step to take. `no-server` is a connection or
   login problem: do step 3 again. `denied` is a deny rule: the policy decides, and this skill does not change it.
   `unapproved` is a declined prompt or an `ask` with no prompt: do step 5 again.
-- `no run yet`: the model did not call `run_code` with this server. Ask the person to give the task again and to name
+- `no run yet`, `no run since <time>` or a line that the run called no tool of `<server>`: the model did not call
+  `run_code` with this server. Ask the person to give the task again and to name
   toolscript. If `runs` says that the config sets `"log": false`, there is no run log, and this check cannot work.
   Tell the person.
 - A line about unreadable lines of the run log: show it. If `runs` says that it does not confirm the run, ask the
@@ -102,8 +110,10 @@ know `<server>`, leave out `--server <server>`. Then `runs` judges the newest ru
 Do this only after step 6 shows exit 0. If `init --list` showed the server in a client too, the model can still call it
 directly, and each full result goes into the context. Run `init --list` again if this session did not run it.
 
-For Claude Code, show the scope that `init --list` shows, and offer `claude mcp remove <name> --scope <scope>`. Run it
-only after the person agrees. For the `project` scope, the person decides, because `.mcp.json` is shared.
+For Claude Code, show the scope and the folder that `init --list` shows, and offer
+`claude mcp remove <name> --scope <scope>`. Run it only after the person agrees. Run it in that folder, because
+`claude mcp remove` finds a `project` or `local` server only from its folder. For the `project` scope, the person
+decides, because `.mcp.json` is shared.
 
 To restore the direct entry later, the person copies it from `<config>` in an editor. Then the person runs
 `claude mcp add-json <name> '<entry>' --scope <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1
