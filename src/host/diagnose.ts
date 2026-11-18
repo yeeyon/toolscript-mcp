@@ -5,21 +5,30 @@
 
 import fs from 'node:fs'
 import { parseArgs } from 'node:util'
-import { toolLines, toolLineText } from '../core/catalog.ts'
-import { configPath, loginReason, serverKey, toolsCommand, type Env, type Launch } from '../core/config.ts'
+import { toolLines, toolLineText, type SettledState } from '../core/catalog.ts'
+import {
+  configPath,
+  loginReason,
+  serverKey,
+  toolsCommand,
+  type Env,
+  type Launch,
+  type ServerEntry,
+  type ServerKey,
+} from '../core/config.ts'
 import { oldRunLogFile, runLogFile } from '../core/paths.ts'
 import { printable } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
-import { parseRunLine, runsReport } from '../core/runlog.ts'
+import { parseRunLine, runsReport, type LogEntry } from '../core/runlog.ts'
 import { connectAll } from './downstream.ts'
 import { loadConfig, loginFor, otherConfig } from './start.ts'
 
 export const TOOLS_USAGE = 'usage: toolscript-mcp tools <server> [--config <path>] [--help]'
 export const RUNS_USAGE = 'usage: toolscript-mcp runs [--server <key>] [--last <n>] [--config <path>] [--help]'
 
-// An agent can read what tools prints, and tools logs nothing: only a running server writes the text to its log.
-const TOOLS_UNSHOWN =
-  'tools does not show its error text, because the text of this server is untrusted. When the client starts toolscript-mcp, its log holds the text'
+// An agent can read what a command prints, and the command logs nothing: only a running server writes the text to its log.
+const unshown = (command: string): string =>
+  `${command} does not show its error text, because the text of this server is untrusted. When the client starts toolscript-mcp, its log holds the text`
 
 export type CheckIo = {
   readonly env: Env
@@ -29,6 +38,35 @@ export type CheckIo = {
   /** How this process started, so a printed command starts it the same way. */
   readonly launch: Launch
   readonly print: (text: string) => void
+}
+
+/**
+ * Connects to `servers` of the config `file` in parallel, as the running server does, and returns their states once
+ * none is connecting. It starts no login, drops the stderr of each child and logs nothing. Each attempt has the time
+ * limit of a connect. `command` names the command in the reason of an untrusted server.
+ */
+export const connectStates = async (
+  servers: ReadonlyMap<ServerKey, ServerEntry>,
+  io: CheckIo,
+  file: string,
+  command: string,
+): Promise<readonly SettledState[]> => {
+  const downstream = connectAll(servers, io.version, () => {}, {
+    home: io.home,
+    login: loginFor(io.launch, file, io.env, io.platform, io.home),
+    childStderr: () => {},
+    unshown: unshown(command),
+  })
+  try {
+    // Each retry waits for the attempts in progress, at most a few seconds: the connect itself has its time limit.
+    for (;;) {
+      const states = downstream.states()
+      if (states.every((s): s is SettledState => s.status !== 'connecting')) return states
+      await downstream.retry(states.filter(s => s.status === 'connecting').map(s => s.key))
+    }
+  } finally {
+    await downstream.close()
+  }
 }
 
 /** Runs `tools` with these arguments and returns the exit code. */
@@ -68,25 +106,9 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     )
     return 1
   }
-  const login = loginFor(io.launch, file, io.env, io.platform, io.home)
-  const downstream = connectAll(new Map([[key, entry]]), io.version, () => {}, {
-    home: io.home,
-    login,
-    childStderr: () => {},
-    unshown: TOOLS_UNSHOWN,
-  })
-  let state = downstream.states()[0]!
-  try {
-    // Each retry waits for the attempt in progress, at most a few seconds: the connect itself has its time limit.
-    while (state.status === 'connecting') {
-      await downstream.retry([key])
-      state = downstream.states()[0]!
-    }
-  } finally {
-    await downstream.close()
-  }
+  const state = (await connectStates(new Map([[key, entry]]), io, file, 'tools'))[0]!
   if (state.status === 'failed') {
-    const command = login(key)
+    const command = loginFor(io.launch, file, io.env, io.platform, io.home)(key)
     io.print(
       state.reason.startsWith(loginReason(command))
         ? `${key}: needs an OAuth login. Run this command in a terminal, then run tools again: ${command}`
@@ -108,6 +130,22 @@ const readLog = async (file: string): Promise<string> => {
     throw err
   }
 }
+
+/** The lines of the run log, oldest first. Throws when a file exists and cannot be read. */
+export const readRunLog = async (home: string): Promise<LogEntry[]> => {
+  // The old file first: right after a rotation, the newest runs are in both.
+  const text = (await Promise.all([oldRunLogFile(home), runLogFile(home)].map(readLog))).join('\n')
+  return text
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .map(parseRunLine)
+}
+
+/** The tools command of a server of the config `file`. */
+export const toolsFor =
+  (io: CheckIo, file: string) =>
+  (key: ServerKey): string =>
+    toolsCommand(io.launch, io.platform, key, otherConfig(file, io.env, io.platform, io.home))
 
 /** Runs `runs` with these arguments and returns the exit code. */
 export const runRuns = async (args: readonly string[], io: CheckIo): Promise<number> => {
@@ -146,21 +184,14 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
     return 1
   }
   const off = loaded.ok && !loaded.config.log
-  // The old file first: right after a rotation, the newest runs are in both.
-  const files = [oldRunLogFile(io.home), runLogFile(io.home)]
-  let text: string
+  let entries: LogEntry[]
   try {
-    text = (await Promise.all(files.map(readLog))).join('\n')
+    entries = await readRunLog(io.home)
   } catch (err) {
     io.print(`cannot read the run log: ${errorText(err)}`)
     return 1
   }
-  const entries = text
-    .split('\n')
-    .filter(line => line.trim() !== '')
-    .map(parseRunLine)
-  const other = otherConfig(file, io.env, io.platform, io.home)
-  const report = runsReport(entries, server, last, key => toolsCommand(io.launch, io.platform, key, other))
+  const report = runsReport(entries, server, last, toolsFor(io, file))
   // With the log off, the newest run in the file is not a run of this config.
   const note = off
     ? [

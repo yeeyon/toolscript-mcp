@@ -24,6 +24,9 @@ export type ServerState =
   | { readonly key: ServerKey; readonly status: 'connected'; readonly tools: readonly DownstreamTool[] }
   | { readonly key: ServerKey; readonly status: 'failed'; readonly reason: string }
 
+/** A server that connected or failed. */
+export type SettledState = Exclude<ServerState, { readonly status: 'connecting' }>
+
 export type CatalogEntry = ToolEntry & {
   readonly server: ServerKey
   /** The name on its own server. */

@@ -21,22 +21,27 @@ const FROM_NPM = /[\\/]node_modules[\\/](\.bin[\\/])?toolscript-mcp([\\/]|$)/i
 export const detectLaunch = (script: string): Launch =>
   FROM_NPM.test(script) ? NPX_LAUNCH : { kind: 'node', main: path.resolve(script) }
 
+/** The config of a file, or the lines that say why it cannot be read. `missing`: the file does not exist. */
+export type Loaded =
+  | { readonly ok: true; readonly config: Config }
+  | { readonly ok: false; readonly lines: readonly string[]; readonly missing: boolean }
+
 /** The config in `file`, or the lines that say why it cannot be read. */
-export const loadConfig = (
-  file: string,
-  env: Env,
-  platform: string,
-): { readonly ok: true; readonly config: Config } | { readonly ok: false; readonly lines: readonly string[] } => {
+export const loadConfig = (file: string, env: Env, platform: string): Loaded => {
   let text: string
   try {
     text = fs.readFileSync(file, 'utf8')
   } catch (err) {
-    return { ok: false, lines: [`cannot read the config ${file}: ${errorText(err)}`] }
+    return {
+      ok: false,
+      lines: [`cannot read the config ${file}: ${errorText(err)}`],
+      missing: (err as NodeJS.ErrnoException).code === 'ENOENT',
+    }
   }
   const parsed = parseConfig(text, env, process.execPath, platform)
   return parsed.ok
     ? parsed
-    : { ok: false, lines: [`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)] }
+    : { ok: false, lines: [`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)], missing: false }
 }
 
 /**
