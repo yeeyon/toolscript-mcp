@@ -22,6 +22,8 @@ const REQUIRED = [
   'dist/host/main.js',
   'dist/third-party-licenses.txt',
   'runtime/runner.mjs',
+  'demo/server.mjs',
+  'demo/data.mjs',
 ]
 const FORBIDDEN =
   /^(src|tests|bench|scripts|plugin|\.github|\.audit|\.claude|\.claude-plugin|\.githooks|node_modules)\//

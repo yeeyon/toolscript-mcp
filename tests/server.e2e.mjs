@@ -269,8 +269,10 @@ test('(c) "issue" ranks list_issues first', async () => {
 test('(d) a server whose command does not exist shows as failed, and bench still works', async () => {
   const text = await search('deploys')
   assert.match(text, /### mcp__bench__get_deploys/, text)
-  // Linux and macOS: spawn ... ENOENT. Windows: cmd.exe says the command is not recognized.
-  assert.match(text, /## Not connected\n(- .+\n)*- missing: .*(ENOENT|toolscript-e2e-no-such-command)/, text)
+  // Linux and macOS: spawn ... ENOENT. Windows: cmd.exe says on stderr that the command is not recognized, and
+  // search_tools shows no stderr, because it can hold a secret that is not in the config.
+  assert.match(text, /## Not connected\n(- .+\n)*- missing: .*(ENOENT|Its stderr is not shown here)/, text)
+  assert.doesNotMatch(text, /not recognized/, text)
 })
 
 test('(d) a server that hangs does not block the search', async () => {
@@ -362,7 +364,8 @@ test('(p2) --help and -h print the usage to stderr and exit 0, for the server, i
 
 test('(e) a nested toolscript-mcp refuses to start', async () => {
   const text = await search('')
-  assert.match(text, /- nested: .*refused to start, because TOOLSCRIPT_MCP_DEPTH is set/, text)
+  // The refusal goes to the stderr of the nested child, which search_tools does not show.
+  assert.match(text, /- nested: .*Its stderr is not shown here/, text)
   const direct = spawnSync(process.execPath, [MAIN, '--config', configFile], {
     env: { ...process.env, TOOLSCRIPT_MCP_DEPTH: '1' },
     input: '',

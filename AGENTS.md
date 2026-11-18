@@ -27,6 +27,11 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
     or in the mode of the running server, which never starts a login.
   - `login.ts`: `toolscript-mcp login <server>`: the callback listener, the browser and the token exchange.
   - `launch.ts`: starts the runner with the sandbox layers of each OS, the host kill timer and the exchange dir.
+  - `diagnose.ts`: `toolscript-mcp tools <server>` (connects to one server and prints each tool with its hint and
+    policy decision) and `toolscript-mcp runs` (reads the run log and gives the next step for each problem).
+  - `start.ts`: how the process started, the config read and the login command, shared by the server and the CLI.
+- `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
+  ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
 - `hints/` holds the bundled hints and `hints/sha256.json`.
 - `.claude-plugin/marketplace.json` makes the repo a Claude Code plugin marketplace with one plugin, `plugin/`. Its

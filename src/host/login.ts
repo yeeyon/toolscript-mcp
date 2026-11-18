@@ -6,7 +6,6 @@
 
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
@@ -23,7 +22,6 @@ import {
   configPath,
   hideClientSecret,
   invalidReason,
-  parseConfig,
   redact,
   serverKey,
   type Env,
@@ -32,9 +30,11 @@ import {
   type ServerKey,
 } from '../core/config.ts'
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { printableText } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { CONNECT_TIMEOUT_MS, listAll, serverFetch } from './downstream.ts'
 import { isLoopbackHttp, oauthProvider, readStore, storeFile, type Stored } from './oauth.ts'
+import { loadConfig } from './start.ts'
 
 export const LOGIN_USAGE = 'usage: toolscript-mcp login <server> [--config <path>] [--help]'
 
@@ -120,16 +120,6 @@ const openBrowser =
 
 type Callback = { readonly ok: true; readonly code: string } | { readonly ok: false; readonly why: string }
 
-/**
- * `text` with each control character, line or paragraph separator and bidi control as `\uXXXX`, so text from the
- * browser cannot move the cursor, fake a line or turn text around.
- */
-const escapeControls = (text: string): string =>
-  text.replace(
-    /[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g,
-    c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  )
-
 /** Listens on 127.0.0.1:`port` for the one callback of the login. Rejects with EADDRINUSE when the port is taken. */
 const listen = async (port: number, state: string) => {
   let settle: (callback: Callback) => void = () => {}
@@ -152,7 +142,8 @@ const listen = async (port: number, state: string) => {
       const detail = q.get('error_description')
       settle({
         ok: false,
-        why: escapeControls(`the authorization server answered ${error ?? 'no code'}${detail ? `: ${detail}` : ''}`),
+        // Text from the browser: printed, it cannot move the cursor, fake a line or turn text around.
+        why: printableText(`the authorization server answered ${error ?? 'no code'}${detail ? `: ${detail}` : ''}`),
       })
       return reply(400, 'login failed. See the terminal.')
     }
@@ -244,16 +235,10 @@ type Found = { readonly key: ServerKey; readonly server: HttpServer; readonly oa
 
 /** The HTTP server `name` of the config and its OAuth entry, or why it cannot log in. */
 const serverOf = (name: string, file: string, io: LoginIo): Found | string => {
-  let text: string
-  try {
-    text = fs.readFileSync(file, 'utf8')
-  } catch (err) {
-    return `cannot read the config ${file}: ${errorText(err)}`
-  }
-  const parsed = parseConfig(text, io.env, process.execPath, io.platform)
-  if (!parsed.ok) return [`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)].join('\n')
+  const loaded = loadConfig(file, io.env, io.platform)
+  if (!loaded.ok) return loaded.lines.join('\n')
   const key = serverKey(name)
-  const entry = key === undefined ? undefined : parsed.config.servers.get(key)
+  const entry = key === undefined ? undefined : loaded.config.servers.get(key)
   if (key === undefined || entry === undefined) return `the config ${file} has no server "${name}"`
   if (entry.kind === 'invalid') return `${name}: ${invalidReason(entry.errors)}`
   if (entry.kind === 'stdio') return `${name} is a stdio server. Only an HTTP server logs in with OAuth.`
