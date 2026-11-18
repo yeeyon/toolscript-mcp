@@ -294,6 +294,51 @@ Then use [Client setup](#client-setup) with the path of this clone.
 - `--config <path>` writes the config to a different path.
 - The config from init has an empty `policy`, so each tool is `ask`.
 
+### Check a server and a run
+
+Two commands check a setup. Start them as you start `init`. They print to stderr.
+
+`toolscript-mcp tools <server> [--config <path>]` connects to one server of the config and lists its tools. The first
+line is `<server>: connected, <n> tools`. Each next line shows one tool:
+
+- the full name, such as `mcp__demo__list_pull_requests`
+- the hint of the server: `read-only`, `destructive` or `-`
+- the decision of the policy now: `allow`, `ask` or `deny`. The text `, a person each run` marks a tool that needs
+  your approval at each run. See [Tools that require a person](#tools-that-require-a-person).
+
+If the server needs an OAuth login, `tools` prints the login command. If the server cannot connect, `tools` prints
+the reason. The output never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1
+on a failure and 2 on a usage error.
+
+`toolscript-mcp runs [--server <key>] [--last <n>]` reads the [run log](#run-log). It shows the newest `n` runs that
+call a tool of the server, newest first. The default of `n` is 1. Without `--server`, it shows the newest runs of all
+servers.
+
+- For each run, it shows the time, the ending and the duration.
+- For each call, it shows the tool, the policy decision, and `ok` or the error code.
+- After the runs, it gives one next step for each problem.
+
+The exit code is 0 only when the newest run ended `done` and each call of the server worked. With no run, `runs`
+prints `no run yet` and the exit code is 1.
+
+#### Demo server
+
+`demo/server.mjs` is a read-only MCP server with 40 sample pull requests of a made-up repository. It needs no account
+and no network. The npm package and a clone both hold it. Add it to the config with the absolute path of the file:
+
+```json
+{
+  "mcpServers": {
+    "demo": { "command": "node", "args": ["/absolute/path/to/toolscript-mcp/demo/server.mjs"] }
+  },
+  "policy": [{ "match": "mcp__demo__list_pull_requests", "action": "allow" }]
+}
+```
+
+Then give the model the task "Count the open pull requests per author". The task needs more than one page of
+`list_pull_requests`. The correct answer is ada 7, bruno 6, chen 5, dara 4, emil 3 and farah 1. `demo/data.mjs`
+exports it as `OPEN_BY_AUTHOR`.
+
 ## Configuration
 
 ### The policy
