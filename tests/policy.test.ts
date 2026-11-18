@@ -14,6 +14,8 @@ import {
   onlyTightens,
   planRun,
   policyChange,
+  printable,
+  printableText,
   refusedReport,
   type Policy,
   type Rule,
@@ -917,5 +919,23 @@ describe('paths on Windows', () => {
     assert.equal(normalizePath('C:\\Users\\u\\.toolscript-mcp\\files'), 'C:/Users/u/.toolscript-mcp/files')
     assert.equal(appPath('C:\\Users\\u', 'files', 'x'), 'C:/Users/u/.toolscript-mcp/files/x')
     assert.equal(appPath('/home/u/', 'files'), '/home/u/.toolscript-mcp/files')
+  })
+})
+
+describe('printable text', () => {
+  test('keeps the letters of each script and escapes each control, format and separator character', () => {
+    const text = 'C:\\Users\\홍길동\\é ü 日本 \u{1F600}'
+    assert.equal(printableText(text), text)
+    assert.equal(
+      printableText(
+        'a\u0000\t\n\r\u001b[2J\u007f\u0085\u009b\u00ad\u200b\u200e\u2028\u2029\u202a\u202e\u2066\u2069\ufeff',
+      ),
+      'a\\u0000\\u0009\\u000a\\u000d\\u001b[2J\\u007f\\u0085\\u009b\\u00ad\\u200b\\u200e\\u2028\\u2029\\u202a\\u202e\\u2066\\u2069\\ufeff',
+    )
+    assert.equal(printableText('x\u{e0041}y\ud800z\udc00'), 'x\\u{e0041}y\\ud800z\\udc00', 'a tag and lone surrogates')
+  })
+
+  test('a name keeps the strict form, which also shows a look-alike', () => {
+    assert.equal(printable('pаypal 홍'), 'p\\u0430ypal \\ud64d')
   })
 })

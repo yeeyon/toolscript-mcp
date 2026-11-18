@@ -100,9 +100,25 @@ export const launchArgv = (launch: Launch): readonly string[] =>
 export const launchText = (launch: Launch, platform: string): string =>
   launch.kind === 'npx' ? launchArgv(launch).join(' ') : `node ${pathWord(launch.main, platform)}`
 
-/** The command that logs in to a server. `config` is the config file, when it is not the default one. */
+/**
+ * A command of the CLI for one server. `config` is the config file, when it is not the default one. A key can start
+ * with `-`, so it then comes last, after `--`: the CLI would read it as an option.
+ */
+const serverCommand = (command: string, launch: Launch, platform: string, key: ServerKey, config?: string): string => {
+  const option = config === undefined ? [] : ['--config', pathWord(config, platform)]
+  const words = key.startsWith('-')
+    ? [...option, shellWord('--', platform), shellWord(key, platform)]
+    : [shellWord(key, platform), ...option]
+  return [launchText(launch, platform), command, ...words].join(' ')
+}
+
+/** The command that logs in to a server. */
 export const loginCommand = (launch: Launch, platform: string, key: ServerKey, config?: string): string =>
-  `${launchText(launch, platform)} login ${shellWord(key, platform)}${config === undefined ? '' : ` --config ${pathWord(config, platform)}`}`
+  serverCommand('login', launch, platform, key, config)
+
+/** The command that connects to one server and lists its tools. */
+export const toolsCommand = (launch: Launch, platform: string, key: ServerKey, config?: string): string =>
+  serverCommand('tools', launch, platform, key, config)
 
 /** Why a server that needs an OAuth login, or whose refresh was refused, is not connected, as search_tools shows it. */
 export const loginReason = (command: string): string =>
