@@ -1357,6 +1357,149 @@ describe('init --list and --add', () => {
     assert.ok(!lines.includes('  claude mcp remove all --scope user'), out)
   })
 
+  // Each case as claude mcp get dup of Claude Code 2.1 showed it in a temp CLAUDE_CONFIG_DIR: it runs the user server
+  // when the project one is not approved or disabled, and the local server in every case.
+  test('a project server that is not approved hides no other scope, and --add takes the server that Claude Code runs', async () => {
+    const skipped = (approval: string, runs: string) =>
+      `not in config, ${approval} in Claude Code, Claude Code runs the ${runs} one`
+    type Case = { choice?: object; local?: true; user?: true; far?: true }
+    // The status of the server in each file, and the file that --add dup copies, or undefined when it refuses.
+    const cases: [string, Case, Record<string, string>, string | undefined][] = [
+      [
+        'not approved, and a user server',
+        { user: true },
+        { project: skipped('not approved', 'user'), user: 'not in config' },
+        'user',
+      ],
+      [
+        'disabled, and a user server',
+        { user: true, choice: { disabledMcpjsonServers: ['dup'] } },
+        { project: skipped('disabled', 'user'), user: 'not in config' },
+        'user',
+      ],
+      [
+        'approved, and a user server',
+        { user: true, choice: { enabledMcpjsonServers: ['dup'] } },
+        { project: 'not in config', user: 'not in config, hidden by project' },
+        'project',
+      ],
+      [
+        'not approved, and a local and a user server',
+        { local: true, user: true },
+        { local: 'not in config', project: skipped('not approved', 'local'), user: 'not in config, hidden by local' },
+        'local',
+      ],
+      [
+        'approved, and a local server',
+        { local: true, choice: { enabledMcpjsonServers: ['dup'] } },
+        { local: 'not in config', project: 'not in config, hidden by local' },
+        'local',
+      ],
+      [
+        'not approved in two files, and a user server',
+        { user: true, far: true },
+        { project: skipped('not approved', 'user'), far: skipped('not approved', 'user'), user: 'not in config' },
+        'user',
+      ],
+      [
+        'not approved in two files',
+        { far: true },
+        {
+          project: 'not in config, not approved in Claude Code',
+          far: 'not in config, not approved in Claude Code, hidden by project',
+        },
+        undefined,
+      ],
+    ]
+    for (const [label, c, statuses, added] of cases) {
+      const top = homeWith({
+        'proj/.git/HEAD': '',
+        'proj/.mcp.json': { mcpServers: { dup: { command: 'dup-project' } } },
+        ...(c.far && { '.mcp.json': { mcpServers: { dup: { command: 'dup-far' } } } }),
+      })
+      const project = path.join(top, 'proj')
+      const home = homeWith({
+        '.claude.json': {
+          mcpServers: c.user ? { dup: { command: 'dup-user' } } : {},
+          projects: {
+            [project]: {
+              hasTrustDialogAccepted: true,
+              ...c.choice,
+              ...(c.local && { mcpServers: { dup: { command: 'dup-local' } } }),
+            },
+          },
+        },
+      })
+      const listed = await run(home, project, ['--list'], process.platform)
+      const rows = listed.out.split('\n').filter(l => l.startsWith('dup '))
+      assert.equal(rows.length, Object.keys(statuses).length, `${label}:\n${listed.out}`)
+      for (const [file, status] of Object.entries(statuses)) {
+        const scope = file === 'far' ? 'project' : file
+        assert.match(
+          listed.out,
+          row('dup', 'claude-code', scope, `stdio dup-${file}`, status),
+          `${label}:\n${listed.out}`,
+        )
+      }
+
+      const entry = (from: string) => ({ command: `dup-${from}`, ...(from === 'user' ? {} : { cwd: project }) })
+      for (const args of [
+        ['--add', 'dup'],
+        ['--add', 'dup', '--unapproved'],
+      ]) {
+        const result = await run(home, project, args, process.platform)
+        if (added === undefined) {
+          assert.equal(result.code, args.length === 2 ? 1 : 0, `${label}, ${args.join(' ')}: ${result.out}`)
+          if (result.code === 0)
+            assert.deepEqual(JSON.parse(fs.readFileSync(result.file, 'utf8')).mcpServers.dup, entry('project'))
+        } else {
+          assert.equal(result.code, 0, `${label}, ${args.join(' ')}: ${result.out}`)
+          assert.deepEqual(JSON.parse(fs.readFileSync(result.file, 'utf8')).mcpServers.dup, entry(added), label)
+        }
+        fs.rmSync(result.file, { force: true })
+      }
+    }
+  })
+
+  test('--add of a project server that Claude Code skips for the user one copies the user one, unless --from picks it', async () => {
+    const project = homeWith({ '.git/HEAD': '', '.mcp.json': { mcpServers: { dup: { command: 'dup-project' } } } })
+    const home = homeWith({
+      '.claude.json': {
+        mcpServers: { dup: { command: 'dup-user' } },
+        projects: { [project]: { hasTrustDialogAccepted: true } },
+      },
+    })
+    const mcpJson = path.join(project, '.mcp.json')
+    const added = await run(home, project, ['--add', 'dup'], process.platform)
+    assert.equal(added.code, 0, added.out)
+    const lines = added.out.split('\n')
+    for (const line of [
+      '- dup, from Claude Code (user scope)',
+      `  Claude Code (project scope) in ${mcpJson} also has dup, which is not approved in Claude Code.`,
+      '  claude mcp remove dup --scope user',
+    ])
+      assert.ok(lines.includes(line), `missing line: ${line}\n\n${added.out}`)
+    assert.ok(!added.out.includes('--scope project'), added.out)
+    fs.rmSync(added.file)
+
+    const picked = ['--add', 'dup', '--from', 'claude-code:project']
+    const refused = await run(home, project, picked, process.platform)
+    assert.equal(refused.code, 1, refused.out)
+    assert.ok(
+      refused.out
+        .split('\n')
+        .includes(
+          `dup of ${mcpJson} is not approved in Claude Code for this folder. To add it anyway, add --unapproved.`,
+        ),
+      refused.out,
+    )
+    const forced = await run(home, project, [...picked, '--unapproved'], process.platform)
+    assert.equal(forced.code, 0, forced.out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(forced.file, 'utf8')).mcpServers, {
+      dup: { command: 'dup-project', cwd: project },
+    })
+  })
+
   test('--from picks one of the different entries of a name', async () => {
     const { home, project } = setup()
     const { code, out, file } = await run(home, project, ['--add', 'gh', '--from', 'claude-code:user'])

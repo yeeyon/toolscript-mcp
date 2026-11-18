@@ -302,6 +302,8 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - If more than one scope has a server with the same name, Claude Code runs only one of them. The order is local,
   then the closest `.mcp.json`, then user. The status of each other server ends with `hidden by` and the scope that
   hides it.
+- Claude Code skips a project server that you did not approve. If another scope has the name, the status of the
+  project server ends with `Claude Code runs the`, then that scope.
 - The folder is the project folder of a local server, or the folder of the `.mcp.json` file of a project server.
 - `--project <dir>` names the project folder. The default is the current folder. Use the folder where you start Claude Code.
   In a git checkout, init reads the local servers of the main checkout, as Claude Code does. This also applies in a subfolder or a git worktree.
@@ -327,7 +329,8 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - For a name in more than one Claude Code scope, `--add` takes the server that Claude Code runs. It names that scope and
   the scopes that it hides.
 - `--add` changes nothing when a name is in the config already, in no client file, or in two clients with different
-  entries. It also changes nothing for a project server that is not approved or disabled in Claude Code.
+  entries. It also changes nothing for a project server that is not approved or disabled in Claude Code. This applies
+  when no other scope has the name, or when `--from` picks the project server.
 - `--unapproved` adds such a server. Use it only for a server that you trust: toolscript-mcp starts it without a question.
 - `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:user` or `--from cursor`.
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
