@@ -88,7 +88,7 @@ For `verify`, do step 1. If this session does not know `<server>`, run `node "<h
 server names. Ask the person which server the task used. Then run:
 
 ```sh
-node "<main>" runs --server <server> --since 2h --config "<config>"
+node "<main>" runs --server=<server> --since 2h --config "<config>"
 ```
 
 `--since 2h` counts only the runs of the last 2 hours, so an older run does not confirm this task. If the person gave
