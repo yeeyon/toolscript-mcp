@@ -256,7 +256,7 @@ Then use [Client setup](#client-setup) with the path of this clone.
 ### init
 
 - `node /absolute/path/to/toolscript-mcp/dist/host/main.js init` imports the user-scope servers of Claude Code. It does not import the servers of a
-  project.
+  project. To add them, use `--list` and `--add` below.
 - If two clients have a server with the same name, init keeps the first one. The order is Claude Code, Claude
   Desktop, Cursor.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
@@ -293,6 +293,22 @@ Then use [Client setup](#client-setup) with the path of this clone.
   replaces.
 - `--config <path>` writes the config to a different path.
 - The config from init has an empty `policy`, so each tool is `ask`.
+
+To pick servers one at a time, use `--list` and `--add`. They also read the Claude Code servers of a project:
+
+- `init --list` shows one line for each server of the client files: its name, client, scope, kind and status. It writes nothing.
+- The Claude Code scopes are `local`, `project` and `user`. Claude Code keeps the local servers in `~/.claude.json`, under the path of the project.
+  The project servers are in `.mcp.json` in the project folder.
+- `--project <dir>` names the project folder. The default is the current folder. Use the folder where you start Claude Code.
+- The kind is `stdio` with the file name of the command, or `http` with the origin of the URL. The list shows no argument, env
+  value, header value, URL path or query.
+- The status is `in config`, `not in config`, `name taken by a different entry`, `toolscript itself`, or `skipped` with the reason.
+- `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
+- `--add` keeps the other servers, the policy and the other keys of the config. It keeps the old file as `<config>.bak`.
+- `--add` changes nothing when a name is in the config already, in no client file, or in two files with different entries.
+- `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:local` or `--from cursor`.
+- `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
+  through toolscript-mcp works.
 
 ## Configuration
 
