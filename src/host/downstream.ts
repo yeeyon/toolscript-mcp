@@ -73,6 +73,10 @@ type Hide = (text: string) => string
  */
 const UNSHOWN = 'Its error text is in the toolscript-mcp log only, because the text of this server is untrusted'
 
+/** Ends the reason of a failed stdio child that wrote to stderr, in place of that text. */
+const STDERR_UNSHOWN =
+  'Its stderr is not shown here. To read it, run the command of the server in a terminal. When the client starts toolscript-mcp, its log also holds it'
+
 /** An error whose text toolscript-mcp wrote: it holds no text of the server. */
 class OwnError extends Error {}
 
@@ -393,8 +397,8 @@ export type ConnectOptions = {
   readonly listFloorMs?: number
   /**
    * Gets what each stdio child writes to stderr. The running server passes it on to its own stderr, the log of the
-   * client. `toolscript-mcp tools` drops it, so it prints only its own lines. Either way, the reason of a failed child
-   * ends with the last 300 characters of that stderr, config values hidden, as search_tools shows it.
+   * client. `toolscript-mcp tools` drops it, so it prints only its own lines. No reason holds that text: `redact` hides
+   * only the values of the config, and a child can print a secret from anywhere.
    */
   readonly childStderr?: (chunk: Buffer) => void
   /** The sentence that ends the reason of an untrusted server in place of its error text. */
@@ -502,7 +506,7 @@ export const connectAll = (
         opened.delete(client)
         const stderr = lastError()
         if (stderr === '') lost('the connection closed')
-        else lost(`the connection closed. Its stderr ends with: ${stderr}`, 'the connection closed')
+        else lost(`the connection closed. ${STDERR_UNSHOWN}`, 'the connection closed')
       }
     } catch (err) {
       // A child that exits gives only "Connection closed": its stderr says
@@ -513,11 +517,7 @@ export const connectAll = (
       opened.delete(client)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
       if (isOAuthStop(err) || err instanceof OwnError) fail(errorText(err))
-      else
-        fail(
-          stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`,
-          'the connect failed',
-        )
+      else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
     }
   }
 

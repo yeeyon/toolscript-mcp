@@ -174,7 +174,8 @@ const pick = async (
     {
       claudeJson: local?.kind === 'text' ? local.text : undefined,
       user: await settingsText(settings.user),
-      start: await Promise.all(settings.start.map(settingsText)),
+      shared: await settingsText(settings.shared),
+      local: await settingsText(settings.local),
     },
     project,
     platform,

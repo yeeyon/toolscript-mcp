@@ -1,7 +1,7 @@
 // The checks of a first run. `toolscript-mcp tools <server>` connects to one server of the config as the running
 // server does, then prints its tools and what the policy decides for each. `toolscript-mcp runs` reads the run log and
 // says whether the newest run of a server worked, and the next step when it did not. Both print to stderr, as init and
-// login do. Neither prints a description, an argument, an env or header value, or a token.
+// login do. Neither prints a description, an argument, an env or header value, a token or the stderr of a child.
 
 import fs from 'node:fs'
 import { parseArgs } from 'node:util'
@@ -175,7 +175,8 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
   }
   const last = values.last === undefined ? 1 : Number(values.last)
   const server = values.server === undefined ? undefined : serverKey(values.server)
-  const since = values.since === undefined ? undefined : parseSince(values.since, new Date())
+  const now = new Date()
+  const since = values.since === undefined ? undefined : parseSince(values.since, now)
   if (
     !Number.isSafeInteger(last) ||
     last < 1 ||
@@ -201,7 +202,7 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
     io.print(`cannot read the run log: ${errorText(err)}`)
     return 1
   }
-  const report = runsReport(entries, { server, last, since }, toolsFor(io, file))
+  const report = runsReport(entries, { server, last, since, now }, toolsFor(io, file))
   // With the log off, the newest run in the file is not a run of this config.
   const note = off
     ? [

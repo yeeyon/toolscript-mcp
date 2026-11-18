@@ -635,7 +635,10 @@ describe('a server whose text is untrusted', () => {
       ...(untrusted && { untrusted: true as const }),
     }
     const lines: string[] = []
-    const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line))
+    const stderr: string[] = []
+    const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line), {
+      childStderr: chunk => void stderr.push(chunk.toString()),
+    })
     opened.push(downstream)
     const link = await downstream.client(KEY)
     if (!link.ok) throw new Error(link.reason)
@@ -645,26 +648,23 @@ describe('a server whose text is untrusted', () => {
       const state = downstream.states()[0]
       return state?.status === 'failed' ? state.reason : ''
     }
-    return { downstream, lines, reason }
+    return { downstream, lines, stderr, reason }
   }
 
-  test('the reason of a server that the config does not mark ends with the stderr of its child', async () => {
-    const { downstream, reason } = await crashed()
+  test('make it fail: the reason of a closed child holds no text of its stderr, which goes only to childStderr', async () => {
+    const { downstream, lines, stderr, reason } = await crashed()
     assert.equal(downstream.untrusted(KEY), false)
-    assert.ok(
-      reason().startsWith(`the connection closed. Its stderr ends with: the call failed: ${INJECTED}`),
-      reason(),
-    )
+    assert.ok(reason().startsWith('the connection closed. Its stderr is not shown here. To read it, run '), reason())
+    assert.ok(!reason().includes(INJECTED), reason())
+    assert.ok(!lines.some(l => l.includes(INJECTED)), lines.join('\n'))
+    assert.ok(stderr.join('').includes(INJECTED), stderr.join(''))
   })
 
-  test('make it fail: the reason of a marked server holds no text of its child, and the log has it', async () => {
-    const { downstream, lines, reason } = await crashed(true)
+  test('make it fail: the reason of a marked server holds no text of its child, which goes only to childStderr', async () => {
+    const { downstream, stderr, reason } = await crashed(true)
     assert.equal(downstream.untrusted(KEY), true)
     assert.equal(reason(), `the connection closed. ${SEALED}`)
-    assert.ok(
-      lines.some(l => l.includes(INJECTED)),
-      lines.join('\n'),
-    )
+    assert.ok(stderr.join('').includes(INJECTED), stderr.join(''))
   })
 
   test('make it fail: after the server returned untrusted text, its reason holds no text of its child', async () => {

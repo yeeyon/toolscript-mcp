@@ -315,6 +315,8 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - If more than one scope has a server with the same name, Claude Code runs only one of them. The order is local,
   then the closest `.mcp.json`, then user. The status of each other server ends with `hidden by` and the scope that
   hides it.
+- Claude Code skips a project server that you did not approve. If another scope has the name, the status of the
+  project server ends with `Claude Code runs the`, then that scope.
 - The folder is the project folder of a local server, or the folder of the `.mcp.json` file of a project server.
 - `--project <dir>` names the project folder. The default is the current folder. Use the folder where you start Claude Code.
   In a git checkout, init reads the local servers of the main checkout, as Claude Code does. This also applies in a subfolder or a git worktree.
@@ -328,7 +330,12 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - init reads these choices from `~/.claude/settings.json`, from `.claude/settings.json` and `.claude/settings.local.json`
   of the `--project` folder, and from `~/.claude.json`. The project files count only in a folder that you trust in
   Claude Code. init does not read managed settings, so a server that they approve shows as not approved.
+- A server in `disabledMcpjsonServers` of any of these files is disabled.
+- For `enableAllProjectMcpServers`, the first file that sets it counts, in this order: `.claude/settings.local.json`,
+  `.claude/settings.json`, `~/.claude/settings.json`. A `true` in `~/.claude.json` counts only when
+  `.claude/settings.local.json` does not set it. Claude Code decides the same way.
 - `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
+  If a name starts with `-`, write `--add=<name>`.
 - Claude Code starts a stdio server of the local or project scope in the folder where the session starts. It does not
   read the `cwd` of the entry. So `--add` sets the `cwd` of such a server to the `--project` folder, and leaves out
   the `cwd` of the entry.
@@ -336,7 +343,8 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - For a name in more than one Claude Code scope, `--add` takes the server that Claude Code runs. It names that scope and
   the scopes that it hides.
 - `--add` changes nothing when a name is in the config already, in no client file, or in two clients with different
-  entries. It also changes nothing for a project server that is not approved or disabled in Claude Code.
+  entries. It also changes nothing for a project server that is not approved or disabled in Claude Code. This applies
+  when no other scope has the name, or when `--from` picks the project server.
 - `--unapproved` adds such a server. Use it only for a server that you trust: toolscript-mcp starts it without a question.
 - `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:user` or `--from cursor`.
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
@@ -385,15 +393,20 @@ the reason, with each control and format character as a `\u` escape. For a serve
 never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 on a failure and 2 on a
 usage error.
 
+`tools` and `search_tools` never show what a stdio server writes to stderr. That text can hold a secret that is not
+in the config. If the server wrote to stderr, the reason says so. To read that text, run the command of the server in a terminal. When
+your client starts toolscript-mcp, the log of the client also holds that text.
+
 `toolscript-mcp runs [--server <key>] [--last <n>] [--since <time>] [--config <path>]` reads the
 [run log](#run-log). It shows the newest `n` runs that call a tool of the server, newest first. The default of `n`
 is 1. Without `--server`, it shows the newest runs of all servers.
 
 - For each run, it shows the time, the ending and the duration.
 - For each call, it shows the tool, the policy decision, and `ok` or the error code. A call that `runs` cannot read
-  shows as `unreadable`.
+  shows as `unreadable`. A call with `ok` is also `unreadable` when it has an error code, or the decision `denied`, `unapproved` or `invalid`.
 - After the runs, it gives one next step for each problem.
 - It counts the lines of the log that are not runs, and skips them.
+- It skips a run with a time more than 5 minutes after now, and counts these runs.
 
 With `--since`, `runs` counts only the runs at or after that time. The time is an ISO 8601 time with a zone, such as
 `2026-11-18T09:30:00Z`, or a duration back from now: `30m`, `2h` or `1d`. The first line shows the time in UTC. To
@@ -408,7 +421,8 @@ worked. Without `--server`, the run must call a tool of any server. These cases 
 
 - The log has no run. `runs` prints `no run yet`.
 - No run is at or after the time of `--since`. `runs` prints `no run since <time>`.
-- An unreadable line is newer than the newest run shown. That line can be a newer run.
+- An unreadable line or a skipped run is newer than the newest run shown. That line can be a newer run.
+- The log does not hold all calls of the newest run. The log holds at most 200 calls of a run.
 - The config sets `"log": false`. `runs` says so in its first line.
 - `runs` cannot read the config of `--config`.
 
@@ -638,9 +652,9 @@ because a program can write that file through a tool. It names a rule by its pla
 - After a server returns one wrapped result, each later result of that server in the session counts as untrusted.
   This includes its errors and its binary attachments, which the Azure DevOps server does not wrap.
 - If a server entry has `"untrusted": true`, each result of that server counts as untrusted from its first call.
-- If a server with untrusted results fails, the model does not get its error text. This text can be the end of
-  its stderr or an HTTP error body. `search_tools`, the check before a run and a failed call show a fixed text. The
-  log on stderr has the whole reason.
+- If a server with untrusted results fails, the model does not get its error text. This text can be an HTTP error
+  body. `search_tools`, the check before a run and a failed call show a fixed text. The log on stderr has the whole
+  reason. The model never gets the stderr of a stdio server, also for a trusted server.
 - Without `"untrusted": true`, the results of a server before its first wrapped result stay trusted. Set it for the
   Azure DevOps MCP server, because its first call can return an error or a binary attachment.
 - init sets it on each server that names Azure DevOps. If no part of the entry names it, set the key yourself.

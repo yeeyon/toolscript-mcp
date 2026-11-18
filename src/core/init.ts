@@ -281,14 +281,17 @@ export type ApprovalFiles = {
   readonly claudeJson: string | undefined
   /** The user settings. They count in any folder. */
   readonly user: string | undefined
-  /** `.claude/settings.json` and `.claude/settings.local.json` of the start folder, not of a parent. */
-  readonly start: readonly (string | undefined)[]
+  /** `.claude/settings.json` of the start folder, not of a parent. */
+  readonly shared: string | undefined
+  /** `.claude/settings.local.json` of the start folder, not of a parent. */
+  readonly local: string | undefined
 }
 
 /** The paths of the settings files of `ApprovalFiles`. */
 export const settingsFiles = (env: Env, home: string, start: string) => ({
   user: `${env.CLAUDE_CONFIG_DIR || `${home}/.claude`}/settings.json`,
-  start: [`${start}/.claude/settings.json`, `${start}/.claude/settings.local.json`],
+  shared: `${start}/.claude/settings.json`,
+  local: `${start}/.claude/settings.local.json`,
 })
 
 const objectOf = (text: string | undefined): Record<string, unknown> | undefined => {
@@ -299,15 +302,20 @@ const objectOf = (text: string | undefined): Record<string, unknown> | undefined
 const lists = (holder: unknown, key: string, name: string): boolean =>
   isObject(holder) && Array.isArray(holder[key]) && holder[key].includes(name)
 
-const enables = (holder: unknown, name: string): boolean =>
-  isObject(holder) && (holder.enableAllProjectMcpServers === true || lists(holder, 'enabledMcpjsonServers', name))
+const enablesAll = (holder: unknown): boolean | undefined =>
+  isObject(holder) && typeof holder.enableAllProjectMcpServers === 'boolean'
+    ? holder.enableAllProjectMcpServers
+    : undefined
 
 /**
- * The approval of each `.mcp.json` server for a session started in `folders.start`. A list of disabled servers in any
- * of the files disables it. Else the user settings approve it, or, in a trusted folder only, the settings of the
- * start folder or the project entry in `.claude.json`. A folder is trusted when it or a parent up to the project root
- * has `hasTrustDialogAccepted`. Claude Code can also approve a server in a way that init does not read, such as
- * managed settings: init then shows it as not approved, and `--unapproved` adds it.
+ * The approval of each `.mcp.json` server for a session started in `folders.start`, as Claude Code 2.1 decides it.
+ * A list of disabled servers in any of the files disables it, also in a folder that is not trusted. Else a list of
+ * enabled servers approves it, or `enableAllProjectMcpServers` of the last file that sets it, in the order user,
+ * shared, local. The project files and the project entry in `.claude.json` count only in a trusted folder: one that
+ * has `hasTrustDialogAccepted` on it or on a parent up to the project root. Claude Code moves `true` of the entry
+ * into the local settings of the start folder when they do not set it, and drops `false`. Claude Code can also
+ * approve a server in a way that init does not read, such as managed settings: init then shows it as not approved,
+ * and `--unapproved` adds it.
  */
 export const approvals = (
   files: ApprovalFiles,
@@ -318,15 +326,20 @@ export const approvals = (
   const entry = (dir: string) => (claude === undefined ? undefined : projectOf(claude, dir, platform))
   const project = entry(folders.local)
   const user = objectOf(files.user)
-  const start = files.start.map(objectOf)
+  const shared = objectOf(files.shared)
+  const local = objectOf(files.local)
   const root = folders.shared.findIndex(dir => sameFolder(dir, folders.local, platform))
   const trusted = folders.shared.slice(0, root === -1 ? 1 : root + 1).some(dir => {
     const e = entry(dir)
     return isObject(e) && e.hasTrustDialogAccepted === true
   })
+  const moved = enablesAll(project) === true ? true : undefined
+  const all = [enablesAll(user), ...(trusted ? [enablesAll(shared), enablesAll(local) ?? moved] : [])]
+  const approvesAll = all.findLast(v => v !== undefined) === true
+  const enabling = trusted ? [user, shared, local, project] : [user]
   return name => {
-    if ([project, user, ...start].some(h => lists(h, 'disabledMcpjsonServers', name))) return 'disabled'
-    if (enables(user, name) || (trusted && [project, ...start].some(h => enables(h, name)))) return 'approved'
+    if ([user, shared, local, project].some(h => lists(h, 'disabledMcpjsonServers', name))) return 'disabled'
+    if (approvesAll || enabling.some(h => lists(h, 'enabledMcpjsonServers', name))) return 'approved'
     return 'not approved'
   }
 }
@@ -362,8 +375,10 @@ const fileServers = (read: ClientRead, platform: string, start?: string): FileSe
 }
 
 /**
- * The servers of the files of `scopedFiles` for a session started in `start`. Claude Code runs the server of a name
- * from the first of its files in that order, so each later server of the name is hidden by that scope.
+ * The servers of the files of `scopedFiles` for a session started in `start`. Claude Code 2.1 runs the server of a
+ * name from the first of its files in that order, but skips a project server that is not approved. Each other server
+ * of the name is hidden by the scope that Claude Code runs. With no such scope, the closest project server hides the
+ * farther ones: Claude Code runs it once approved.
  */
 export const scopedServers = (
   reads: readonly ClientRead[],
@@ -371,14 +386,20 @@ export const scopedServers = (
   start: string,
   approval: (name: string) => Approval,
 ): FileServers[] => {
+  const files = reads.map(read => fileServers(read, platform, start))
   const runs = new Map<string, Scope>()
-  return reads.map(read => {
-    const servers = fileServers(read, platform, start)
-    const { scope } = read
-    if (read.client !== 'claude-code' || scope === undefined) return servers
+  for (const { file, candidates } of files)
+    for (const { name } of candidates)
+      if (file.scope && !runs.has(name) && (file.scope !== 'project' || approval(name) === 'approved'))
+        runs.set(name, file.scope)
+  const placed = new Set<string>()
+  return files.map(servers => {
+    const { scope } = servers.file
+    if (scope === undefined) return servers
     const candidates = servers.candidates.map(c => {
-      const hiddenBy = runs.get(c.name)
-      if (hiddenBy === undefined) runs.set(c.name, scope)
+      const head = runs.get(c.name) ?? 'project'
+      const hiddenBy = scope === head && !placed.has(c.name) ? undefined : head
+      if (hiddenBy === undefined) placed.add(c.name)
       return {
         ...c,
         ...(hiddenBy && { hiddenBy }),
@@ -599,12 +620,26 @@ const configStatus = (parsed: Parsed, servers: OldConfig['servers']): string => 
   return canonical(servers[parsed.key]) === canonical(parsed.entry) ? 'in config' : 'name taken by a different entry'
 }
 
-const statusOf = ({ parsed, hiddenBy, approval }: Candidate, servers: OldConfig['servers']): string =>
-  [
-    configStatus(parsed, servers),
-    ...(approval === undefined || approval === 'approved' ? [] : [`${approval} in Claude Code`]),
-    ...(hiddenBy ? [`hidden by ${hiddenBy}`] : []),
+/** The approval of a project server that Claude Code does not run for it, or undefined. */
+const gateOf = ({ approval }: Candidate): Exclude<Approval, 'approved'> | undefined =>
+  approval === 'approved' ? undefined : approval
+
+/**
+ * True for a project server that Claude Code skips for lack of approval, and runs the server of the same name in
+ * another scope instead. A closer project server hides one that is not approved only when it is not approved either.
+ */
+const runsAnother = (c: Candidate): boolean =>
+  gateOf(c) !== undefined && c.hiddenBy !== undefined && c.hiddenBy !== 'project'
+
+const statusOf = (c: Candidate, servers: OldConfig['servers']): string => {
+  const gate = gateOf(c)
+  const hidden = runsAnother(c) ? `Claude Code runs the ${c.hiddenBy} one` : c.hiddenBy && `hidden by ${c.hiddenBy}`
+  return [
+    configStatus(c.parsed, servers),
+    ...(gate ? [`${gate} in Claude Code`] : []),
+    ...(hidden ? [hidden] : []),
   ].join(', ')
+}
 
 /** `stdio <executable>` or `http <origin>`: no argument, path, query or login. */
 const kindOf = ({ parsed }: Candidate): string => {
@@ -662,8 +697,9 @@ export type Added = {
 /**
  * The servers `names` of the client files, or every reason to add none. `from` keeps only the files of one client,
  * as `cursor`, or of one scope, as `claude-code:local`. Of a name in several Claude Code scopes, `--add` takes the
- * one that Claude Code runs: the first in the order of `scopedFiles`. Different entries in two clients need `from`.
- * A project server that Claude Code does not run without an approval needs `unapproved`.
+ * one that Claude Code runs: the one that `scopedServers` does not hide. Different entries in two clients need
+ * `from`. A project server that is not approved needs `unapproved`. `--add` picks such a server only when no other
+ * scope has the name, or when `from` leaves out the others.
  */
 export const planAdd = (
   files: readonly FileServers[],
@@ -679,10 +715,14 @@ export const planAdd = (
   for (const name of names) {
     const quoted = shownName(name)
     const found = pool.filter(c => c.name === name)
-    const picked = found.filter((c, i) => found.findIndex(o => o.file.client === c.file.client) === i)
+    // Of each client, the server that it runs, or the first one when --from leaves that one out.
+    const picked = found.filter(c => {
+      const own = found.filter(o => o.file.client === c.file.client)
+      return c === (own.find(o => o.hiddenBy === undefined) ?? own[0])
+    })
     const usable = picked.flatMap(c => (c.parsed.kind === 'entry' ? [{ c, parsed: c.parsed }] : []))
     const first = usable[0]
-    const gated = usable.find(u => u.c.approval !== undefined && u.c.approval !== 'approved')?.c
+    const gated = usable.find(u => gateOf(u.c))?.c
     if (found.length === 0) errors.push(`${quoted} is in no client file${from ? ` of ${printable(from)}` : ''}.`)
     else if (first === undefined)
       errors.push(
@@ -728,10 +768,12 @@ export const addReport = (added: readonly Added[], configFile: string, platform:
     const dropped = [...new Set(from.flatMap(c => (c.parsed.kind === 'entry' ? c.parsed.dropped : [])))]
     out.push(`- ${key}, from ${sources.join(', ')}${dropped.length > 0 ? `. Left out: ${dropped.join(', ')}` : ''}`)
     const runs = from.find(c => c.file.client === 'claude-code')?.file.scope
-    for (const h of hides)
+    for (const h of hides) {
+      const why = runsAnother(h) ? `which is ${h.approval} in Claude Code` : `which the ${runs} one hides`
       out.push(
-        `  ${sourceLabel(h.file)}${h.file.scope === 'project' ? ` in ${h.file.path}` : ''} also has ${shownName(h.name)}, which the ${runs} one hides.`,
+        `  ${sourceLabel(h.file)}${h.file.scope === 'project' ? ` in ${h.file.path}` : ''} also has ${shownName(h.name)}, ${why}.`,
       )
+    }
     for (const c of from) {
       // The local and user scopes share a file, and the project scope has a file in each folder.
       const where = `${sourceName(c.file)} ${c.file.path}`
