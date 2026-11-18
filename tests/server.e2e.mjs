@@ -36,6 +36,7 @@ const slowFile = path.join(dir, 'slow.json')
 const hangFile = path.join(dir, 'hang.pid')
 const writerFile = path.join(dir, 'writer.json')
 const consentFile = path.join(dir, 'consent.json')
+const bridgeFile = path.join(dir, 'bridge.json')
 const picFile = path.join(dir, 'pic.json')
 // The image that a probe in --image mode answers: a PNG of 1 by 1 pixel.
 const PIC_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
@@ -76,6 +77,8 @@ fs.writeFileSync(
       { match: 'mcp__x__probe', action: 'allow' },
       { match: 'mcp__consent__probe', action: 'allow' },
       { match: 'mcp__pic__probe', action: 'allow' },
+      // It matches the tools of the bridge claude-code, but does not name that server, so it does not allow them.
+      { match: 'mcp__claude-code*', action: 'allow' },
     ],
     mcpServers: {
       // `node` from PATH, not process.execPath: the SDK's short environment must still find it.
@@ -113,6 +116,8 @@ fs.writeFileSync(
       badvar: { type: 'http', url: '${TOOLSCRIPT_E2E_BAD_URL}' },
       // Answers 401 to everything, and HOME has no tokens: it needs a login.
       locked: { type: 'http', url: `${LOCKED_URL}/mcp` },
+      // The key of the Claude Code bridge: its tools skip the checks of the client.
+      'claude-code': { command: process.execPath, args: [PROBE, bridgeFile] },
     },
   }),
 )
@@ -497,6 +502,49 @@ test('run (r) a tool that requires a person, with a name built at run time, is r
   assert.ok(r.text.startsWith('"caught: not approved: mcp__consent__probe needs the person\'s approval'), r.text)
   assert.equal(asking.prompts.length, prompts, 'a name built at run time is never asked')
   assert.equal(consentCalls(), calls)
+})
+
+// The calls that reached the bridge probe of either server.
+const bridgeCalls = () =>
+  (fs.existsSync(`${bridgeFile}.log`) ? fs.readFileSync(`${bridgeFile}.log`, 'utf8') : '')
+    .split('\n')
+    .filter(Boolean)
+    .filter(line => JSON.parse(line).event === 'call').length
+
+test('run (s) an allow rule that does not name the bridge asks for its tool, and the instructions keep its tools direct', async () => {
+  assert.match(client.getInstructions() ?? '', /the other tools of claude-code, use your own built-in tools directly/)
+  assert.ok(transport.stderr.includes('toolscript-mcp: Claude Code bridges: claude-code\n'), transport.stderr)
+  const code = 'return await call("mcp__claude-code__probe", {})'
+  const refused = await run(code)
+  assert.equal(refused.isError, true)
+  assert.ok(refused.text.includes('this MCP client cannot ask the person'), refused.text)
+  assert.ok(refused.text.includes('{"match": "mcp__claude-code__probe", "action": "allow"}'), refused.text)
+  assert.equal(bridgeCalls(), 0)
+
+  const prompts = asking.prompts.length
+  asking.answer = 'decline'
+  const declined = await run(code, askingClient)
+  assert.ok(declined.text.includes('the person did not approve'), declined.text)
+  assert.equal(asking.prompts.length, prompts + 1)
+  assert.ok(
+    asking.prompts
+      .at(-1)
+      .includes(
+        'which no policy rule allows:\n- mcp__claude-code__probe\nAn allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__.\n',
+      ),
+    asking.prompts.at(-1),
+  )
+  const built = await run(
+    'try { return await call("mcp__claude-code__" + "probe", {}) } catch (e) { return e.message }',
+  )
+  assert.ok(
+    built.text.includes(
+      'not approved: an allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__, such as',
+    ),
+    built.text,
+  )
+  assert.equal(bridgeCalls(), 0)
+  asking.answer = 'accept'
 })
 
 test('run (f) a busy loop ends at the limit, and the server stays usable', async () => {
