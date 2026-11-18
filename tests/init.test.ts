@@ -1166,6 +1166,7 @@ describe('init --list and --add', () => {
     const on = { enabledMcpjsonServers: ['alpha'] }
     const off = { disabledMcpjsonServers: ['alpha'] }
     const all = { enableAllProjectMcpServers: true }
+    const none = { enableAllProjectMcpServers: false }
     const trust = { hasTrustDialogAccepted: true }
     type Case = { start?: string; projects?: Record<string, object>; files?: Record<string, object>; user?: object }
     const cases: [string, Case, string][] = [
@@ -1203,6 +1204,61 @@ describe('init --list and --add', () => {
       ['user settings', { user: on }, 'approved'],
       ['user settings, disabled in .claude.json', { user: all, projects: { '.': off } }, 'disabled'],
       ['user settings, disabled in the start folder', { user: on, files: { '.': off } }, 'disabled'],
+      ['user settings, disabled in the shared settings', { user: all, files: { '.:shared': off } }, 'disabled'],
+      [
+        'enable all in .claude.json, disabled in the user settings',
+        { user: off, projects: { '.': { ...trust, ...all } } },
+        'disabled',
+      ],
+      // enableAllProjectMcpServers: the last file that sets it wins, in the order user, shared, local.
+      ['user all, local none, trusted', { user: all, projects: { '.': trust }, files: { '.': none } }, 'not approved'],
+      [
+        'user all, shared none, trusted',
+        { user: all, projects: { '.': trust }, files: { '.:shared': none } },
+        'not approved',
+      ],
+      ['user none, local all, trusted', { user: none, projects: { '.': trust }, files: { '.': all } }, 'approved'],
+      [
+        'shared all, local none, trusted',
+        { projects: { '.': trust }, files: { '.:shared': all, '.': none } },
+        'not approved',
+      ],
+      [
+        'shared none, local all, trusted',
+        { projects: { '.': trust }, files: { '.:shared': none, '.': all } },
+        'approved',
+      ],
+      ['user all, local none, not trusted', { user: all, files: { '.': none } }, 'approved'],
+      ['user list, local none, trusted', { user: on, projects: { '.': trust }, files: { '.': none } }, 'approved'],
+      // Claude Code moves true of the .claude.json entry into the local settings of the start folder, if they lack it.
+      ['user all, none in .claude.json, trusted', { user: all, projects: { '.': { ...trust, ...none } } }, 'approved'],
+      ['user none, all in .claude.json, trusted', { user: none, projects: { '.': { ...trust, ...all } } }, 'approved'],
+      ['user none, all in .claude.json, not trusted', { user: none, projects: { '.': all } }, 'not approved'],
+      [
+        'all in .claude.json, local none',
+        { projects: { '.': { ...trust, ...all } }, files: { '.': none } },
+        'not approved',
+      ],
+      [
+        'all in .claude.json, shared none',
+        { projects: { '.': { ...trust, ...all } }, files: { '.:shared': none } },
+        'approved',
+      ],
+      [
+        'all in .claude.json, shared none of a subfolder start',
+        { start: 'sub/deep', projects: { '.': { ...trust, ...all } }, files: { 'sub/deep:shared': none } },
+        'approved',
+      ],
+      [
+        'all in .claude.json, local none of a subfolder start',
+        { start: 'sub/deep', projects: { '.': { ...trust, ...all } }, files: { 'sub/deep': none } },
+        'not approved',
+      ],
+      [
+        'user all, local none of the root, start in a subfolder',
+        { start: 'sub/deep', user: all, projects: { '.': trust }, files: { '.': none } },
+        'approved',
+      ],
     ]
     for (const [label, c, approval] of cases) {
       const project = homeWith({ '.git/HEAD': '', '.mcp.json': { mcpServers: { alpha: { command: 'node' } } } })

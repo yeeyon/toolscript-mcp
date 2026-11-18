@@ -315,6 +315,10 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - init reads these choices from `~/.claude/settings.json`, from `.claude/settings.json` and `.claude/settings.local.json`
   of the `--project` folder, and from `~/.claude.json`. The project files count only in a folder that you trust in
   Claude Code. init does not read managed settings, so a server that they approve shows as not approved.
+- A server in `disabledMcpjsonServers` of any of these files is disabled.
+- For `enableAllProjectMcpServers`, the first file that sets it counts, in this order: `.claude/settings.local.json`,
+  `.claude/settings.json`, `~/.claude/settings.json`. A `true` in `~/.claude.json` counts only when
+  `.claude/settings.local.json` does not set it. Claude Code decides the same way.
 - `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
 - Claude Code starts a stdio server of the local or project scope in the folder where the session starts. It does not
   read the `cwd` of the entry. So `--add` sets the `cwd` of such a server to the `--project` folder, and leaves out

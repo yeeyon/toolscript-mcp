@@ -281,14 +281,17 @@ export type ApprovalFiles = {
   readonly claudeJson: string | undefined
   /** The user settings. They count in any folder. */
   readonly user: string | undefined
-  /** `.claude/settings.json` and `.claude/settings.local.json` of the start folder, not of a parent. */
-  readonly start: readonly (string | undefined)[]
+  /** `.claude/settings.json` of the start folder, not of a parent. */
+  readonly shared: string | undefined
+  /** `.claude/settings.local.json` of the start folder, not of a parent. */
+  readonly local: string | undefined
 }
 
 /** The paths of the settings files of `ApprovalFiles`. */
 export const settingsFiles = (env: Env, home: string, start: string) => ({
   user: `${env.CLAUDE_CONFIG_DIR || `${home}/.claude`}/settings.json`,
-  start: [`${start}/.claude/settings.json`, `${start}/.claude/settings.local.json`],
+  shared: `${start}/.claude/settings.json`,
+  local: `${start}/.claude/settings.local.json`,
 })
 
 const objectOf = (text: string | undefined): Record<string, unknown> | undefined => {
@@ -299,15 +302,20 @@ const objectOf = (text: string | undefined): Record<string, unknown> | undefined
 const lists = (holder: unknown, key: string, name: string): boolean =>
   isObject(holder) && Array.isArray(holder[key]) && holder[key].includes(name)
 
-const enables = (holder: unknown, name: string): boolean =>
-  isObject(holder) && (holder.enableAllProjectMcpServers === true || lists(holder, 'enabledMcpjsonServers', name))
+const enablesAll = (holder: unknown): boolean | undefined =>
+  isObject(holder) && typeof holder.enableAllProjectMcpServers === 'boolean'
+    ? holder.enableAllProjectMcpServers
+    : undefined
 
 /**
- * The approval of each `.mcp.json` server for a session started in `folders.start`. A list of disabled servers in any
- * of the files disables it. Else the user settings approve it, or, in a trusted folder only, the settings of the
- * start folder or the project entry in `.claude.json`. A folder is trusted when it or a parent up to the project root
- * has `hasTrustDialogAccepted`. Claude Code can also approve a server in a way that init does not read, such as
- * managed settings: init then shows it as not approved, and `--unapproved` adds it.
+ * The approval of each `.mcp.json` server for a session started in `folders.start`, as Claude Code 2.1 decides it.
+ * A list of disabled servers in any of the files disables it, also in a folder that is not trusted. Else a list of
+ * enabled servers approves it, or `enableAllProjectMcpServers` of the last file that sets it, in the order user,
+ * shared, local. The project files and the project entry in `.claude.json` count only in a trusted folder: one that
+ * has `hasTrustDialogAccepted` on it or on a parent up to the project root. Claude Code moves `true` of the entry
+ * into the local settings of the start folder when they do not set it, and drops `false`. Claude Code can also
+ * approve a server in a way that init does not read, such as managed settings: init then shows it as not approved,
+ * and `--unapproved` adds it.
  */
 export const approvals = (
   files: ApprovalFiles,
@@ -318,15 +326,20 @@ export const approvals = (
   const entry = (dir: string) => (claude === undefined ? undefined : projectOf(claude, dir, platform))
   const project = entry(folders.local)
   const user = objectOf(files.user)
-  const start = files.start.map(objectOf)
+  const shared = objectOf(files.shared)
+  const local = objectOf(files.local)
   const root = folders.shared.findIndex(dir => sameFolder(dir, folders.local, platform))
   const trusted = folders.shared.slice(0, root === -1 ? 1 : root + 1).some(dir => {
     const e = entry(dir)
     return isObject(e) && e.hasTrustDialogAccepted === true
   })
+  const moved = enablesAll(project) === true ? true : undefined
+  const all = [enablesAll(user), ...(trusted ? [enablesAll(shared), enablesAll(local) ?? moved] : [])]
+  const approvesAll = all.findLast(v => v !== undefined) === true
+  const enabling = trusted ? [user, shared, local, project] : [user]
   return name => {
-    if ([project, user, ...start].some(h => lists(h, 'disabledMcpjsonServers', name))) return 'disabled'
-    if (enables(user, name) || (trusted && [project, ...start].some(h => enables(h, name)))) return 'approved'
+    if ([user, shared, local, project].some(h => lists(h, 'disabledMcpjsonServers', name))) return 'disabled'
+    if (approvesAll || enabling.some(h => lists(h, 'enabledMcpjsonServers', name))) return 'approved'
     return 'not approved'
   }
 }
