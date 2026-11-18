@@ -107,10 +107,13 @@ For each `warn` and `fail`, give the cause and the step that fixes it:
 | `run-log` | off | The config sets `"log": false`. `/toolscript:start verify` needs the run log. The person removes the key in an editor. |
 | `run-log` | newest run | `/toolscript:start verify` shows the calls of the run and the next step. |
 | `files` | not writable | The person checks the permissions of `<home>/.toolscript-mcp`. |
-| `files` | OAuth tokens that no server uses | The server is gone, or its URL changed. The person can delete the named files. |
 
 An `info` line about a tool that needs a person at each run is not a problem. Its server asks for the person each time,
 and no rule can replace that.
+
+An `info` line about OAuth tokens that no server of this config uses is not a problem. All configs share the token
+folder, so the tokens can belong to another config. The person deletes a named file only if no other config uses that
+server.
 
 End with a short list: each problem, and the step that fixes it. If no check shows a problem, the setup is ready. Then
 offer `/toolscript:start` for a first run.

@@ -151,7 +151,7 @@ const writable = async (dir: string): Promise<Finding> => {
   }
 }
 
-/** The OAuth stores of servers that the config no longer has, or whose URL changed. */
+/** The OAuth stores that no server of this config uses. The folder is shared, so a store can belong to another config. */
 const staleStores = async (home: string, loaded: Loaded): Promise<Finding[]> => {
   if (!loaded.ok) return []
   const folder = oauthFolder(home)
@@ -171,8 +171,8 @@ const staleStores = async (home: string, loaded: Loaded): Promise<Finding[]> => 
   return keys.length === 0
     ? []
     : [
-        warn(
-          `OAuth tokens that no server of the config uses: ${keys.map(shownName).join(', ')}. The server is gone or its URL changed. Delete the file of each in ${folder} if you do not need it`,
+        info(
+          `OAuth tokens that no server of this config uses: ${keys.map(shownName).join(', ')}. They can belong to another config, or the server is gone or its URL changed. If no other config uses the server, you can delete its file in ${folder}`,
         ),
       ]
 }

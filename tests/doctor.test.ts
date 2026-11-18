@@ -206,7 +206,7 @@ const demoEntry = { command: process.execPath, args: [DEMO] }
 const exiting = (script: string, extra: object = {}) => ({ command: process.execPath, args: ['-e', script], ...extra })
 
 describe('doctor', () => {
-  test('a setup with warnings only: a hidden rule, a dead allow rule, a bridge `*`, the log off, stale tokens', async () => {
+  test('a setup with warnings only: a hidden rule, a dead allow rule, a bridge `*`, the log off, tokens of no server', async () => {
     const s = setup({
       mcpServers: { demo: demoEntry, 'claude-code': demoEntry },
       policy: [
@@ -234,7 +234,7 @@ describe('doctor', () => {
     ])
     assert.deepEqual(s.of('files'), [
       `ok    files    ${appPath(s.home)} is writable`,
-      `warn  files    OAuth tokens that no server of the config uses: old-server. The server is gone or its URL changed. Delete the file of each in ${oauthFolder(s.home)} if you do not need it`,
+      `info  files    OAuth tokens that no server of this config uses: old-server. They can belong to another config, or the server is gone or its URL changed. If no other config uses the server, you can delete its file in ${oauthFolder(s.home)}`,
     ])
     assert.equal(s.of('config')[0], `ok    config   ${s.config}`)
     // The checks print in this order.
