@@ -40,15 +40,17 @@ and Cursor: the name, client, scope, kind and status. Show the list to the perso
 `<server>` is its name in `<config>`.
 
 - A server with the status `in config` is ready.
-- For a server with the status `not in config`, run `node "<main>" init --add=<name> --config "<config>"` with
-  approval. Keep the `=`, because a name can start with `-`. If init says that the name has different entries, ask which one, and add `--from` with the source that
-  init names. init prints the steps that remove the direct entry. Do not run them now. Step 7 does.
-- A status with `hidden by <scope>` is a copy that Claude Code does not run. init adds the copy that Claude Code runs.
-- A status with `not approved in Claude Code` or `disabled in Claude Code` is a server of a `.mcp.json` that the person
-  did not approve. Anyone who can change that file chose its command. Before you offer `--unapproved`, show the
-  person the name, the kind (the command file name or the URL origin) and the folder of that `.mcp.json`. A name can
-  copy the name of a server that the person trusts, so the name alone proves nothing. Add `--unapproved` to
-  `init --add` only after the person agrees.
+- To add a server with the status `not in config`, use its line under `Commands that add a server:`. Run that line as
+  init printed it, with approval. Never type a server name into a command yourself: a name can come from a
+  `.mcp.json` that someone else wrote, and init quotes it for the shell. If the line says `no command`, tell the person
+  why, and do not add that server.
+- init prints the steps that remove the direct entry. Do not run them now. Step 7 does.
+- A status with `hidden by <scope>` is a copy that Claude Code does not run. Use the command of the copy that Claude
+  Code runs.
+- A command line with `ask first` adds a server of a `.mcp.json` that the person did not approve in Claude Code.
+  Anyone who can change that file chose its command. Before you run that line, show the person its name, kind and
+  folder. The kind is the command file name or the URL origin. A name can copy the name of a server
+  that the person trusts, so the name alone proves nothing. Run the line only after the person agrees.
 - If no server fits, or the person wants a test first, offer the demo server. It needs no account, and its tools only
   read fixed sample data. Run `node -p "require('os').tmpdir()"`. With approval, write
   `{ "command": "node", "args": ["<folder>/demo/server.mjs"] }` to `<tmp>/toolscript-entry.json`. Then run
@@ -116,10 +118,13 @@ the task earlier, ask when, and use a longer time, such as `1d`.
 Do this only after step 6 shows exit 0. If `init --list` showed the server in a client too, the model can still call it
 directly, and each full result goes into the context. Run `init --list` again if this session did not run it.
 
-For Claude Code, show the scope and the folder that `init --list` shows, and offer
-`claude mcp remove <name> --scope <scope>`. Run it only after the person agrees. Run it in that folder, because
-`claude mcp remove` finds a `project` or `local` server only from its folder. For the `project` scope, the person
-decides, because `.mcp.json` is shared.
+For Claude Code, show the scope and the folder that `init --list` shows. `init --add` printed the `claude mcp remove`
+line for that scope and folder. Offer that line as init printed it, and run it only after the person agrees. Run it in
+the folder that init names, because `claude mcp remove` finds a `project` or `local` server only from its folder. For
+the `project` scope, the person decides, because `.mcp.json` is shared.
+
+If this session does not have the output of `init --add`, do not type the remove command yourself. Tell the person the
+name, the scope and the folder, and let the person run `claude mcp remove` in that folder.
 
 To restore the direct entry later, the person copies it from `<config>` in an editor. Then the person runs
 `claude mcp add-json <name> '<entry>' --scope <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1
