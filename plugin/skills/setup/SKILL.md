@@ -268,8 +268,10 @@ init lists the HTTP servers without headers, and `config.mjs` marks them `oauth`
 this command:
 
 ```sh
-node "<main>" login <server> --config "<config>"
+node "<main>" login --config "<config>" -- <server>
 ```
+
+The `--` keeps a server name that starts with `-` a name.
 
 The person runs it. Do not run it yourself. A browser opens, and login waits 5 minutes for the approval. In Claude
 Code, the person can type the command after the `!` prefix.
