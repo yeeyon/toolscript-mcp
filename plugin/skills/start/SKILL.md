@@ -16,12 +16,19 @@ With the argument `verify`, do step 6 only.
   header values of the servers.
 - Write each path in full, with forward slashes, also on Windows. Put each path in double quotes.
 - If a command fails, show its output and stop. Do not change a step to work around the failure.
+- A name of a server or a tool comes from a client file, a repo or a server. Never type such a name into a command.
+  toolscript-mcp prints a ready command for a name that every shell passes as it is.
+- A ready command is a line that toolscript-mcp printed, indented by 4 spaces, that starts with `node `, `npx `,
+  `claude ` or `pushd `. Run it exactly as printed, and do not change a character. Never run a label line. A label
+  starts with `- ` after its indent.
 
 The names in the commands:
 
 - `<folder>` is the clone of toolscript-mcp. `<main>` is `<folder>/dist/host/main.js`.
 - `<config>` is the toolscript-mcp config file.
 - `<helper>` is `${CLAUDE_SKILL_DIR}/../setup/config.mjs`, the config helper of the setup skill.
+- `<server>` is a server key: the value in the `key` column of `init --list`, or `demo`. A key has only letters,
+  digits, hyphens and single underscores.
 
 ## 1. Find the state
 
@@ -36,14 +43,13 @@ Run `claude mcp get toolscript`.
 ## 2. Pick a server
 
 Run `node "<main>" init --list --config "<config>"`. It shows one line for each server of Claude Code, Claude Desktop
-and Cursor: the name, client, scope, kind and status. Show the list to the person, and ask which server to use first.
-`<server>` is its name in `<config>`.
+and Cursor: the name, client, scope, kind, status, key and folder. Show the list to the person, and ask which server to
+use first. `<server>` is the value in the `key` column of its line: the key that the server has or gets in `<config>`.
+A line with `-` as its key cannot go into `<config>`.
 
 - A server with the status `in config` is ready.
-- To add a server with the status `not in config`, find its label under `Commands that add a server:`. The command is
-  the next line, indented under the label, and it starts with `node`, `npx` or `claude`. Run only such a line, exactly
-  as init printed it, with approval. Never run a label line, and never type a server name into a command yourself: a
-  name can come from a `.mcp.json` that someone else wrote.
+- To add a server with the status `not in config`, find its label under `Commands that add a server:`. Run the ready
+  command under the label, with approval. A name can come from a `.mcp.json` that someone else wrote.
 - If the line under the label says `no command`, init found a character in the name or a path that a shell can
   change. Show the person the lines that init printed there. The person copies the entry in an editor, or adds the
   server under a plain name.
@@ -62,9 +68,10 @@ and Cursor: the name, client, scope, kind and status. Show the list to the perso
 
 ## 3. See the tools
 
-Run `node "<main>" tools --config "<config>" -- <server>`. The `--` keeps a name that starts with `-` a name. It connects to the server and shows each tool with its hint
-(`read-only`, `destructive` or `-`) and the action of the policy. `a person each run` means that the tool asks for each
-program, also under an allow rule.
+Run `node "<main>" tools --config "<config>" -- <server>`. The `--` keeps a key that starts with `-` a key. It connects
+to the server and shows each tool with its hint (`read-only`, `destructive` or `-`) and the action of the policy.
+`a person each run` means that the tool asks for each program, also under an allow rule. Keep the output for step 5:
+it ends with `Commands that allow tools:`.
 
 - If it says that the server needs an OAuth login, give the person the login command that it prints. The person runs
   it. Then run `tools` again.
@@ -82,25 +89,34 @@ Explain the two choices, and ask the person to choose one:
 
 - Ask when needed. Claude Code shows a prompt before a program calls a tool, and the person approves it there. The
   policy does not change.
-- Allow this workflow. An allow rule for the exact name of each tool of the task. Run
-  `node "<helper>" "<config>" allow-tools --dry-run <tool>...` and show its output. Then run the same command without
-  `--dry-run`, with approval.
+- Allow this workflow. An allow rule for the exact name of each tool of the task.
 
-`allow-tools` adds no rule for a tool that a deny rule matches or an ask rule names. Its output says `keep` for such a
-tool. Tell the person. The other tools keep their rules, and a tool that no rule matches stays `ask`. A tool with
-`a person each run` still asks. A client that cannot show a prompt runs the task only with the second choice.
+For the second choice, use the output of step 3:
+
+1. Under `Commands that allow tools:`, find the label of each tool of the task. If each tool of the task is
+   `read-only`, use the label `every read-only tool above with a command`.
+2. Run the ready command under each label. It writes nothing. It shows the new policy, then a ready command with
+   `--apply` under `To write this policy, run the command below.` Show the output to the person.
+3. With approval, run each `--apply` command, exactly as printed.
+
+If the line under a label says `no command`, show it to the person. A deny rule or an ask rule that names the tool
+stays, and the policy keeps asking for the tool. A name that a shell can change needs a rule that the person adds in an
+editor. The other tools keep their rules, and a tool that no rule matches stays `ask`. A tool with `a person each run`
+still asks. A client that cannot show a prompt runs the task only with the second choice.
 
 ## 6. Run and check
 
 Tell the person to start a new Claude Code session, because toolscript-mcp reads its servers only at its start. In
 that session, the person gives the task and names toolscript, then runs `/toolscript:start verify`.
 
-For `verify`, do step 1. If this session does not know `<server>`, run `node "<helper>" "<config>"`. It shows the
-server names. Ask the person which server the task used. Then run:
+For `verify`, do step 1. Then run:
 
 ```sh
 node "<main>" runs --server=<server> --since 2h --config "<config>"
 ```
+
+If this session does not know `<server>`, leave out `--server=<server>`. `runs` then checks the newest run with a call
+of any server.
 
 `--since 2h` counts only the runs of the last 2 hours, so an older run does not confirm this task. If the person gave
 the task earlier, ask when, and use a longer time, such as `1d`.
@@ -122,13 +138,13 @@ Do this only after step 6 shows exit 0. If a client still has a copy of the serv
 directly, and each full result goes into the context.
 
 Run `node "<main>" init --list --config "<config>"`. Under `Steps that remove a direct copy`, find the label of the
-server. For Claude Code, the lines under it name the scope, the folder when it has one, and the command, which starts
-with `claude`. Show them to the person. Run only that command line, exactly as init printed it, in the folder that init
-names, and only after the person agrees. `claude mcp remove` finds a `project` or `local` server only from its folder.
-For the `project` scope, the person decides, because `.mcp.json` is shared.
+server. For Claude Code, the lines under it are ready commands. For the `local` and `project` scopes, a `pushd` command
+comes first: `claude mcp remove` finds such a server only from its folder. Show the lines to the person. After the
+person agrees, run the ready commands of the step in one shell call, in order, one line each. For the `project` scope,
+the person decides, because `.mcp.json` is shared.
 
-Never type a server name into a remove command yourself. init can print no command for the server, or a file of
-Claude Desktop or Cursor. Then the person removes the entry from that file in an editor.
+init can print no command for the server, or a file of Claude Desktop or Cursor. Then the person removes the entry
+from that file in an editor.
 
 To restore the direct entry later, the person copies it from `<config>` in an editor. Then the person runs
 `claude mcp add-json <name> '<entry>' --scope <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1

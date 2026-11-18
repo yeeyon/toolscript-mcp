@@ -94,14 +94,15 @@ adds other servers.
 init sets `"untrusted": true` on each server that names Azure DevOps, and its report names them. If the person has an
 Azure DevOps server that the report does not name, mark it as the end of step 9 shows.
 
-init also prints the steps for each client. They start toolscript-mcp with `node` and the path of `<main>`. An older
-clone prints `npx -y toolscript-mcp` or `cmd /c npx -y toolscript-mcp` there. If you see one of them, use
-`node "<main>"` in its place.
+init also prints the steps for each client. Do not run its `claude mcp add` line: step 5 adds toolscript-mcp to
+Claude Code.
 
-Show the person the servers to remove from each client. For Claude Code, offer to run each `claude mcp remove` line
-that init prints. Run a line only after the person agrees. Run each line as init prints it, and never type a server
-name into a command yourself. For a server without a command, and for the other clients, the person edits the file
-that init names.
+Show the person the servers to remove from each client. For Claude Code, offer to run the ready commands under the
+label of each server. A ready command is a line that init printed, indented by 4 spaces, that starts with `node `,
+`npx `, `claude ` or `pushd `. A label starts with `- ` after its indent. Never run a label line. Run the ready
+commands of one server only after the person agrees, in one shell call, in order, exactly as init printed them. Never
+type a server name into a command yourself. For a server without a command, and for the other clients, the person
+edits the file that init names.
 
 Recommend one path to each server. If a client also lists a server directly, the model calls the direct tools, and
 each full result goes into the context. MCP gives a server no list of the servers of its client. So toolscript-mcp does
@@ -245,7 +246,7 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
    Then delete the entry file.
    Then run `node "<main>" init --list --config "<config>"`. If a client still has the same server, it is under
    `Steps that remove a direct copy`. Step 4 tells why it matters.
-   - For the user or local scope, offer the `claude mcp remove` line under its label, as init printed it. Never type the
+   - For the user or local scope, offer the ready commands under its label, as step 4 runs them. Never type the
      name into a command yourself.
    - For the project scope, tell the person that `.mcp.json` of the project holds the server. Other people can share
      that file, so the person decides.

@@ -12,7 +12,9 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   (downstream tools, the `search_tools` result, argument specs from input schemas), `policy.ts` (the allow, deny and
   ask rules: the decision before a run, the check of each call and the refusal texts). An allow rule allows a tool of
   a bridge only when its match starts with `mcp__<key>__` (`counts` in `policy.ts`). `doctor.ts` holds the line shape
-  of `toolscript-mcp doctor` and the pure parts of its checks, such as `hiddenBy` (one glob covers another). Imports
+  of `toolscript-mcp doctor` and the pure parts of its checks, such as `hiddenBy` (one glob covers another).
+  `commands.ts` holds the commands that the CLI prints for a person or an agent to run: the allowlist of names and
+  paths (`PLAIN_NAME`, `PLAIN_PATH`), the label lines, and the plan and lines of `toolscript-mcp allow`. Imports
   between them use `.ts` extensions.
 - `src/host/` holds the host code, which runs in Node. `tsconfig.host.json` checks its types. `scripts/build.mjs`
   bundles it with the SDK into `dist/host/main.js`, the one file that the package runs.
@@ -29,7 +31,10 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   - `login.ts`: `toolscript-mcp login <server>`: the callback listener, the browser and the token exchange.
   - `launch.ts`: starts the runner with the sandbox layers of each OS, the host kill timer and the exchange dir.
   - `diagnose.ts`: `toolscript-mcp tools <server>` (connects to one server and prints each tool with its hint and
-    policy decision) and `toolscript-mcp runs` (reads the run log and gives the next step for each problem).
+    policy decision, then the `allow` commands) and `toolscript-mcp runs` (reads the run log and gives the next step
+    for each problem).
+  - `allow.ts`: `toolscript-mcp allow <tool>...`, a dry run that prints its `--apply` command, or with `--apply` the
+    write of the policy. `configfile.ts` writes the config for init and allow: a 0600 temp file, then a rename.
   - `doctor.ts`: `toolscript-mcp doctor`, one pass over the whole setup. Its checks are a table of small async
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.

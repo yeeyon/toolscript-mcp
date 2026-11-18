@@ -162,7 +162,7 @@ something:
 1. You pick one server from `init --list`, which shows the servers of your clients with their scope. With no server, you can pick the demo server. It needs no account.
 2. The skill runs `tools` on that server. It shows each tool with its hint and its policy action, or the login command when the server needs OAuth.
 3. The skill proposes a small read task. For the demo, the task is "Count the open pull requests per author".
-4. You pick the starter policy. With "Ask when needed", Claude Code asks you before each program. "Allow this workflow" adds an allow rule for each exact tool name of the task. It keeps each deny rule that matches one of these tools.
+4. You pick the starter policy. With "Ask when needed", Claude Code asks you before each program. "Allow this workflow" runs the `allow` commands that `tools` prints for the tools of the task. Each one shows the new policy first, and it writes the policy only after you agree. It keeps each deny rule that matches one of these tools.
 5. You start a new session and give the task. Then `/toolscript:start verify` runs `runs --server <server> --since 2h`. It confirms a recent run that called the server, or it names the step that fixes it.
 6. After a run works, the skill offers to remove the direct copy of the server from Claude Code. It shows the scope of the copy first.
 
@@ -309,7 +309,8 @@ Then use [Client setup](#client-setup) with the path of this clone.
 
 To pick servers one at a time, use `--list` and `--add`. They also read the Claude Code servers of a project:
 
-- `init --list` shows one line for each server of the client files: its name, client, scope, kind, status and folder. It writes nothing.
+- `init --list` shows one line for each server of the client files: its name, client, scope, kind, status, key and folder. It writes nothing.
+- The key is the name of the server in the config, which it has now or gets from `--add`. A key has only letters, digits, hyphens and single underscores. Give the key to `tools`, `login` and `runs`.
 - The Claude Code scopes are `local`, `project` and `user`. Claude Code keeps the local servers in `~/.claude.json`, under the path of the project.
 - Claude Code reads the project servers from the `.mcp.json` of the project folder and of each folder above it.
 - If more than one scope has a server with the same name, Claude Code runs only one of them. The order is local,
@@ -355,28 +356,32 @@ steps that remove each direct copy of a server with the status `in config`:
 
 ```
 Commands that add a server:
-  notes (claude-code:local)
+  - notes (claude-code:local)
     npx -y toolscript-mcp init --add=notes --project "/home/me/app" --config "/home/me/.config/toolscript-mcp/config.json"
-  alpha (claude-code:project, ask first: not approved in Claude Code)
+  - alpha (claude-code:project, ask first: not approved in Claude Code)
     npx -y toolscript-mcp init --add=alpha --unapproved --project "/home/me/app" --config "/home/me/.config/toolscript-mcp/config.json"
 
-Steps that remove a direct copy. Run each command in the folder above it, when it has one.
-  gh (claude-code:local)
-    folder: /home/me/app
+Steps that remove a direct copy. Run the command lines of a step in order, in one shell.
+  - gh (claude-code:local)
+    pushd "/home/me/app"
     claude mcp remove --scope local "gh"
 ```
 
-- Each command is alone on its line, under the line that names its server.
+- Each command is alone on its line, under the line that names its server. That line starts with `- `.
 - The command has the options that pick the server: `--from`, `--unapproved`, `--project` and `--config`.
 - A server with `ask first` has `--unapproved` in its command. Run it only after you check the entry of the server in its file.
 - In a step of Claude Code, a name that starts with `-` comes after `"--"`, as in `claude mcp remove --scope user "--" "-dash"`.
+- `claude mcp remove` finds a local or project server only from its folder. So the step goes to that folder with `pushd` first.
 - A name in a `.mcp.json` file comes from anyone who can change the project. So a command holds a name only when the
   name has only letters, digits and `. _ -`.
-- A command holds a path only when the path has only letters, digits, spaces, a drive letter and `. _ - ( ) ~ /`.
+- A command holds a path only when the path has only ASCII letters, digits, spaces, a drive letter and `. _ - ( ) ~ / ' @ +`.
   Each path is in double quotes, with forward slashes on Windows.
 - These characters pass unchanged in sh, bash, zsh, fish, tcsh, cmd.exe and PowerShell, also in an interactive shell.
 - For any other name, init prints no command. It names the file, and you change the entry in an editor.
-- If a path has any other character, init prints no command and names the path. Run init again with a plainer `--config` path or project folder.
+- If the path of toolscript-mcp or of the config has any other character, init prints no command and names the path.
+  Run init again with a plainer `--config` path.
+- If the project folder has any other character, init prints no command that needs `--project` or `pushd`.
+  Run init again from a plainer folder, or give a plainer folder with `--project`.
 - On Windows, Git Bash changes the `/c` of `cmd /c` in the step that adds toolscript to Claude Code. Run that step in PowerShell or cmd.exe.
 
 ### Doctor
@@ -408,7 +413,8 @@ the OAuth tokens of a server, it writes the new tokens to the token store, as th
 
 ### Check a server and a run
 
-Two commands check a setup. Start them as you start `init`. They print to stderr.
+Two commands check a setup, and `allow` adds the rules of a first task. Start them as you start `init`. They print to
+stderr.
 
 `toolscript-mcp tools <server> [--config <path>]` connects to one server of the config and lists its tools. The first
 line is `<server>: connected, <n> tools`. Each next line shows one tool:
@@ -422,6 +428,30 @@ If the server needs an OAuth login, `tools` prints the login command. If the ser
 the reason, with each control and format character as a `\u` escape. For a server with `"untrusted": true`, the reason does not show the error text of the server. The output
 never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 on a failure and 2 on a
 usage error.
+
+After the tools, `tools` prints an `allow` command for each tool that the policy asks for. The command follows the
+rules of `init --list` for names and paths. A tool whose name has another character gets no command. The block names
+the rule that stays for a tool that a deny rule matches or an ask rule names. The last command allows all such
+`read-only` tools:
+
+```
+Commands that allow tools:
+  - mcp__demo__get_pull_request
+    npx -y toolscript-mcp allow --config "/home/me/.config/toolscript-mcp/config.json" "mcp__demo__get_pull_request"
+```
+
+`toolscript-mcp allow [--apply] [--config <path>] <tool>...` puts an allow rule for the exact name of each tool first
+in the policy:
+
+- Each tool is `mcp__<server>__<tool>`, with a server key of the config. The tool part has only letters, digits and
+  `. _ -`. For any other name, `allow` exits 2 and changes nothing.
+- A deny rule that matches the tool stays, also below an allow rule. An ask rule with the exact name stays.
+- A tool that the policy allows now gets no new rule. An allow rule with the exact name below an earlier rule moves
+  to the top.
+- Without `--apply`, `allow` writes nothing. It shows the new policy and the command with `--apply` that writes it.
+- With `--apply`, it writes the config with mode 0600 and keeps the other keys of the config.
+- A running toolscript-mcp reads the policy again at each run. It asks you to approve a new allow rule before it
+  applies. If your client cannot ask, restart toolscript-mcp.
 
 `tools` and `search_tools` never show what a stdio server writes to stderr. That text can hold a secret that is not
 in the config. If the server wrote to stderr, the reason says so. To read that text, run the command of the server in a terminal. When
