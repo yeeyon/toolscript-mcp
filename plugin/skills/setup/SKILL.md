@@ -98,9 +98,10 @@ init also prints the steps for each client. They start toolscript-mcp with `node
 clone prints `npx -y toolscript-mcp` or `cmd /c npx -y toolscript-mcp` there. If you see one of them, use
 `node "<main>"` in its place.
 
-Show the person the servers to remove from each client. For Claude Code, offer to run each
-`claude mcp remove <name> --scope user` line. Run a line only after the person agrees. The person edits the files of
-the other clients.
+Show the person the servers to remove from each client. For Claude Code, offer to run each `claude mcp remove` line
+that init prints. Run a line only after the person agrees. Run each line as init prints it, and never type a server
+name into a command yourself. For a server without a command, and for the other clients, the person edits the file
+that init names.
 
 Recommend one path to each server. If a client also lists a server directly, the model calls the direct tools, and
 each full result goes into the context. MCP gives a server no list of the servers of its client. So toolscript-mcp does

@@ -834,7 +834,10 @@ test('(j) init imports the servers of a client into a config that the server sta
   assert.equal(init.status, 0, init.stderr)
   assert.equal(init.stdout, '', 'init writes nothing to stdout')
   assert.ok(!init.stderr.includes(secret), init.stderr)
-  assert.ok(init.stderr.includes('Remove from "mcpServers": "bench"'), init.stderr)
+  assert.ok(
+    init.stderr.includes('  bench (cursor)\n    In an editor, remove its entry from "mcpServers" of this file.'),
+    init.stderr,
+  )
   assert.ok(fs.existsSync(written), init.stderr)
   if (process.platform !== 'win32') assert.equal(fs.statSync(written).mode & 0o777, 0o600)
   assert.equal(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8'), JSON.stringify(cursor))
