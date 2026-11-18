@@ -296,9 +296,11 @@ Then use [Client setup](#client-setup) with the path of this clone.
 
 To pick servers one at a time, use `--list` and `--add`. They also read the Claude Code servers of a project:
 
-- `init --list` shows one line for each server of the client files: its name, client, scope, kind and status. It writes nothing.
+- `init --list` shows one line for each server of the client files: its name, client, scope, kind, status and folder. It writes nothing.
 - The Claude Code scopes are `local`, `project` and `user`. Claude Code keeps the local servers in `~/.claude.json`, under the path of the project.
-  The project servers are in `.mcp.json` in the project folder.
+- Claude Code reads the project servers from the `.mcp.json` of the project folder and of each folder above it. If two
+  of these files have a server with the same name, the closer file wins. init lists and adds only that server.
+- The folder is the project folder of a local server, or the folder of the `.mcp.json` file of a project server.
 - `--project <dir>` names the project folder. The default is the current folder. Use the folder where you start Claude Code.
   In a git checkout, init reads the local servers of the main checkout, as Claude Code does. This also applies in a subfolder or a git worktree.
 - The kind is `stdio` with the file name of the command, or `http` with the origin of the URL. The list shows no argument, env
@@ -306,7 +308,7 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - The status is `in config`, `not in config`, `name taken by a different entry`, `toolscript itself`, or `skipped` with the reason.
 - `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
 - Claude Code starts a stdio server of the local or project scope in the project folder. So `--add` sets the `cwd` of
-  such a server to that folder. A relative `cwd` becomes a path in that folder.
+  such a server to the folder that `--list` shows. A relative `cwd` becomes a path in that folder.
 - `--add` keeps the other servers, the policy and the other keys of the config. It keeps the old file as `<config>.bak`.
 - `--add` changes nothing when a name is in the config already, in no client file, or in two files with different entries.
 - `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:local` or `--from cursor`.

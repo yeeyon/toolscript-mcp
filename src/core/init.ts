@@ -62,20 +62,22 @@ const claudeJson = (env: Env, home: string) => `${env.CLAUDE_CONFIG_DIR || home}
 
 /**
  * The files of `clientFiles` after the Claude Code scopes of the folder `project`, in the order in which Claude Code
- * picks a server that two scopes define: local, project, user.
+ * picks a server that two scopes define: local, project, user. The project files go from the closest.
  */
 export const scopedFiles = (env: Env, platform: string, home: string, project: ProjectFolders): ClientFile[] => [
   { client: 'claude-code', scope: 'local', path: claudeJson(env, home), project: project.local },
-  { client: 'claude-code', scope: 'project', path: `${project.shared}/.mcp.json`, project: project.shared },
+  ...project.shared.map(
+    (dir): ClientFile => ({ client: 'claude-code', scope: 'project', path: `${dir}/.mcp.json`, project: dir }),
+  ),
   ...clientFiles(env, platform, home),
 ]
 
 /**
  * The folders that Claude Code reads for a session started in a folder. `local`: the key of the local scope in
- * `.claude.json`, the root of the main checkout (also for a subfolder or a git worktree). `shared`: the folder of
- * `.mcp.json`, the top of the checkout. Outside git, both are the folder itself.
+ * `.claude.json`, the root of the main checkout (also for a subfolder or a git worktree), or the folder itself
+ * outside git. `shared`: the folders whose `.mcp.json` it reads, the start folder and each parent up to the root.
  */
-export type ProjectFolders = { readonly local: string; readonly shared: string }
+export type ProjectFolders = { readonly local: string; readonly shared: readonly string[] }
 
 /**
  * The root of the main checkout for a worktree whose `.git` file holds `gitdir: <main>/.git/worktrees/<name>`, or
@@ -278,13 +280,28 @@ export type FileServers = {
   readonly candidates: readonly Candidate[]
 }
 
-export const fileServers = (read: ClientRead, platform: string): FileServers => {
+const fileServers = (read: ClientRead, platform: string): FileServers => {
   const { client, path, scope, project } = read
   const file: ClientFile = { client, path, ...(scope && { scope }), ...(project !== undefined && { project }) }
   const found = serversOf(read, platform)
   if ('problem' in found) return { file, problem: found.problem, candidates: [] }
   const parse = ([name, raw]: [string, unknown]) => ({ file, name, parsed: parseServer(name, raw, project, platform) })
   return { file, candidates: found.servers.map(parse) }
+}
+
+/**
+ * The servers of the files of `scopedFiles`. A name in two `.mcp.json` files is the server of the closer one, as in
+ * Claude Code, so the farther file drops it.
+ */
+export const scopedServers = (reads: readonly ClientRead[], platform: string): FileServers[] => {
+  const closer = new Set<string>()
+  return reads.map(read => {
+    const servers = fileServers(read, platform)
+    if (read.scope !== 'project') return servers
+    const candidates = servers.candidates.filter(c => !closer.has(c.name))
+    for (const c of servers.candidates) closer.add(c.name)
+    return { ...servers, candidates }
+  })
 }
 
 /** The servers of every client file, merged by key: the first client wins, and a different entry with the same key is a conflict. */
@@ -521,6 +538,7 @@ export const listReport = (files: readonly FileServers[], config: OldConfig): st
       c.file.scope ?? '-',
       kindOf(c),
       statusOf(c, config.servers),
+      c.file.project ?? '-',
     ]),
   )
   const problems = files.flatMap(f =>
@@ -530,7 +548,7 @@ export const listReport = (files: readonly FileServers[], config: OldConfig): st
   )
   const list =
     rows.length > 0
-      ? table([['name', 'client', 'scope', 'kind', 'status'], ...rows])
+      ? table([['name', 'client', 'scope', 'kind', 'status', 'folder'], ...rows])
       : ['No MCP server in the client files.']
   return [...list, ...problems].join('\n')
 }
@@ -592,9 +610,11 @@ export const addReport = (added: readonly Added[], configFile: string, platform:
     const dropped = [...new Set(from.flatMap(c => (c.parsed.kind === 'entry' ? c.parsed.dropped : [])))]
     out.push(`- ${key}, from ${sources.join(', ')}${dropped.length > 0 ? `. Left out: ${dropped.join(', ')}` : ''}`)
     for (const c of from) {
-      const at = remove.get(sourceName(c.file)) ?? { file: c.file, names: [] }
+      // The local and user scopes share a file, and the project scope has a file in each folder.
+      const where = `${sourceName(c.file)} ${c.file.path}`
+      const at = remove.get(where) ?? { file: c.file, names: [] }
       at.names.push(c.name)
-      remove.set(sourceName(c.file), at)
+      remove.set(where, at)
     }
   }
   out.push(...serverNotes(new Map(added.map(a => [a.key, a.entry])), configFile, platform, launch))

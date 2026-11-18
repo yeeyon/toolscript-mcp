@@ -13,7 +13,6 @@ import {
   addReport,
   clientFiles,
   configText,
-  fileServers,
   importServers,
   initReport,
   listReport,
@@ -23,6 +22,7 @@ import {
   parseOldConfig,
   planAdd,
   scopedFiles,
+  scopedServers,
   sourceName,
   type ClientFile,
   type ClientRead,
@@ -109,18 +109,26 @@ const misuseOf = (o: Options): string | undefined => {
   return undefined
 }
 
-/** The folders of Claude Code for a session started in `start`: the nearest folder up with `.git` decides. */
+/** `start` and each parent folder up to the root. */
+const upFrom = (start: string): string[] =>
+  path.dirname(start) === start ? [start] : [start, ...upFrom(path.dirname(start))]
+
+/**
+ * The folders of Claude Code for a session started in `start`. The nearest folder up with `.git` decides the local
+ * scope, and Claude Code 2.1 reads the `.mcp.json` of every folder up from `start`.
+ */
 const projectFolders = async (start: string): Promise<ProjectFolders> => {
-  for (let dir = start; ; dir = path.dirname(dir)) {
+  const shared = upFrom(start)
+  for (const dir of shared) {
     const dotGit = path.join(dir, '.git')
     const stat = await fs.promises.stat(dotGit).catch(() => undefined)
-    if (stat?.isDirectory()) return { local: dir, shared: dir }
+    if (stat?.isDirectory()) return { local: dir, shared }
     if (stat?.isFile()) {
       const main = mainCheckoutOf(await fs.promises.readFile(dotGit, 'utf8').catch(() => ''))
-      return { local: main === undefined ? dir : path.resolve(dir, main), shared: dir }
+      return { local: main === undefined ? dir : path.resolve(dir, main), shared }
     }
-    if (path.dirname(dir) === dir) return { local: start, shared: start }
   }
+  return { local: start, shared }
 }
 
 /** `--list` and `--add`: the servers of every client file and Claude Code scope against the config in `file`. */
@@ -135,7 +143,7 @@ const pick = async (
 ): Promise<number> => {
   const project = await projectFolders(path.resolve(options.project ?? process.cwd()))
   const reads = await Promise.all(scopedFiles(env, platform, home, project).map(readClient))
-  const files = reads.map(read => fileServers(read, platform))
+  const files = scopedServers(reads, platform)
   const sources = [...new Set(files.flatMap(f => [f.file.client, sourceName(f.file)]))]
   if (options.from !== undefined && !sources.includes(options.from)) {
     print(`--from takes one of ${list(sources)}.\n${INIT_USAGE}`)

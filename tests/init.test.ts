@@ -928,6 +928,47 @@ describe('init --list and --add', () => {
     assert.doesNotMatch(fromWorktree.out, /"shared"/)
   })
 
+  // Claude Code 2.1 reads the .mcp.json of the start folder and of each parent, and the closer file wins.
+  test('--list and --add read the .mcp.json of each folder up from the project, and a closer file wins', async () => {
+    const top = homeWith({
+      '.mcp.json': {
+        mcpServers: {
+          dup: { command: 'node', args: ['far.mjs'] },
+          far: { type: 'http', url: 'https://far.example.com/mcp' },
+        },
+      },
+      'near/.mcp.json': { mcpServers: { dup: { command: 'node', args: ['near.mjs'] } } },
+    })
+    const near = path.join(top, 'near')
+    const start = path.join(near, 'deeper')
+    fs.mkdirSync(start)
+    const home = homeWith({})
+    const listed = await run(home, start, ['--list'])
+    assert.equal(listed.code, 0, listed.out)
+    assert.match(listed.out, row('"dup"', 'claude-code', 'project', 'stdio node', 'not in config', near), listed.out)
+    assert.match(
+      listed.out,
+      row('"far"', 'claude-code', 'project', 'http https://far.example.com', 'not in config', top),
+    )
+    assert.equal(listed.out.match(/"dup"/g)?.length, 1, listed.out)
+
+    const added = await run(home, start, ['--add', 'dup,far', '--from', 'claude-code:project'])
+    assert.equal(added.code, 0, added.out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(added.file, 'utf8')).mcpServers, {
+      dup: { command: 'node', args: ['near.mjs'], cwd: near },
+      far: { type: 'http', url: 'https://far.example.com/mcp' },
+    })
+    const steps = added.out.split('\n').map(l => l.trim())
+    for (const [folder, name] of [
+      [near, 'dup'],
+      [top, 'far'],
+    ]) {
+      const at = steps.indexOf(`Claude Code, in the folder ${folder}:`)
+      assert.ok(at >= 0 && steps[at + 1] === `claude mcp remove ${name} --scope project`, added.out)
+      assert.ok(steps[at + 2]?.startsWith(path.join(folder, '.mcp.json')), added.out)
+    }
+  })
+
   test('mainCheckoutOf reads the main checkout of a worktree only', () => {
     assert.equal(mainCheckoutOf('gitdir: C:/r/main/.git/worktrees/wt\n'), 'C:/r/main')
     assert.equal(mainCheckoutOf('gitdir: C:\\r\\main\\.git\\worktrees\\wt\r\n'), 'C:/r/main')
@@ -1041,7 +1082,7 @@ describe('init --list and --add', () => {
 
     const listed = await run(home, project, ['--list'], process.platform)
     for (const name of names.split(',')) assert.match(listed.out, row(`"${name}"`, 'claude-code'), listed.out)
-    assert.equal(listed.out.match(/ in config$/gm)?.length, 7, listed.out)
+    assert.equal(listed.out.match(/ {2}in config {2}/g)?.length, 7, listed.out)
   })
 
   test('--add makes the config when there is none', async () => {
