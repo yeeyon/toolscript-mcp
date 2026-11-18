@@ -310,15 +310,15 @@ describe('doctor', () => {
     ])
   })
 
-  test('the newest run of the log: done is ok, an error names the runs command', async () => {
-    const run = (ending: RunRecord['ending'], ok: boolean): string =>
+  test('the newest run of the log: done is ok, done without a call is info, an error names the runs command', async () => {
+    const run = (ending: RunRecord['ending'], ok: boolean, called = true): string =>
       runLine({
         time: '2026-01-02T03:04:05.000Z',
         id: 'r',
         ms: 12,
         ending,
         chars: 1,
-        calls: [{ tool: 'mcp__demo__list_pull_requests', decision: 'allow', ms: 3, ok }],
+        calls: called ? [{ tool: 'mcp__demo__list_pull_requests', decision: 'allow', ms: 3, ok }] : [],
       })
     const s = setup({ mcpServers: {} })
     await s.doctor()
@@ -329,6 +329,22 @@ describe('doctor', () => {
     s.printed.length = 0
     assert.equal(await s.doctor(), 0, s.printed.join('\n'))
     assert.equal(s.of('run-log')[1], 'ok    run-log  newest run: 2026-01-02T03:04:05.000Z done 12 ms')
+
+    fs.appendFileSync(runLogFile(s.home), run('done', true, false))
+    s.printed.length = 0
+    await s.doctor()
+    assert.equal(
+      s.of('run-log')[1],
+      'info  run-log  newest run: 2026-01-02T03:04:05.000Z done 12 ms. It called no tool',
+    )
+
+    fs.appendFileSync(runLogFile(s.home), 'not a run\n')
+    s.printed.length = 0
+    await s.doctor()
+    assert.equal(
+      s.of('run-log')[1],
+      'info  run-log  newest run: 2026-01-02T03:04:05.000Z done 12 ms. It called no tool',
+    )
 
     fs.appendFileSync(runLogFile(s.home), run('error', false))
     s.printed.length = 0

@@ -27,8 +27,7 @@ import {
 import { appPath, oauthFolder, runLogFile } from '../core/paths.ts'
 import { shownName } from '../core/policy.ts'
 import { errorText, takeMessages, type RunnerDone, type RunnerError } from '../core/protocol.ts'
-import { runsReport } from '../core/runlog.ts'
-import { connectStates, readRunLog, toolsFor, type CheckIo } from './diagnose.ts'
+import { connectStates, readRunLog, type CheckIo } from './diagnose.ts'
 import { LAYERS, RUNNER, launch, makeExchangeDir, removeExchangeDir } from './launch.ts'
 import { storeFile } from './oauth.ts'
 import { loadConfig, loginFor, otherConfig, type Loaded } from './start.ts'
@@ -224,7 +223,7 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
   ],
 
   'run-log': async c => {
-    const { io, file, loaded } = c
+    const { io, loaded } = c
     const log = runLogFile(io.home)
     if (loaded.ok && !loaded.config.log)
       return [
@@ -233,15 +232,13 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
     const head = ok(`${loaded.ok ? 'on' : 'on, unless the config sets "log": false'}: ${log}`)
     const entries = await readRunLog(io.home).catch((err: unknown) => errorText(err))
     if (typeof entries === 'string') return [head, warn(`cannot read the run log: ${entries}`)]
-    const report = runsReport(entries, { server: undefined, last: 1, since: undefined }, toolsFor(io, file))
-    const newest = report.lines[0]!
-    if (newest === 'no run yet') return [head, info(newest)]
-    return [
-      head,
-      report.ok
-        ? ok(`newest run: ${newest}`)
-        : warn(`newest run: ${newest}. Run \`${command(c, 'runs')}\` to see its calls and the next step`),
-    ]
+    const newest = entries.findLast(e => e !== 'unreadable')
+    if (newest === undefined) return [head, info('no run yet')]
+    // The ending is a fact about the last task, not about the setup: only a run that did not end done is a problem.
+    const text = `newest run: ${shownName(newest.time)} ${newest.ending} ${newest.ms} ms`
+    if (newest.ending !== 'done')
+      return [head, warn(`${text}. Run \`${command(c, 'runs')}\` to see its calls and the next step`)]
+    return [head, newest.calls.length === 0 ? info(`${text}. It called no tool`) : ok(text)]
   },
 
   files: async ({ io, loaded }) => [await writable(appPath(io.home)), ...(await staleStores(io.home, loaded))],
