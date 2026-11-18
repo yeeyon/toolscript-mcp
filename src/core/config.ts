@@ -100,9 +100,17 @@ export const launchArgv = (launch: Launch): readonly string[] =>
 export const launchText = (launch: Launch, platform: string): string =>
   launch.kind === 'npx' ? launchArgv(launch).join(' ') : `node ${pathWord(launch.main, platform)}`
 
-/** A command of the CLI for one server. `config` is the config file, when it is not the default one. */
-const serverCommand = (command: string, launch: Launch, platform: string, key: ServerKey, config?: string): string =>
-  `${launchText(launch, platform)} ${command} ${shellWord(key, platform)}${config === undefined ? '' : ` --config ${pathWord(config, platform)}`}`
+/**
+ * A command of the CLI for one server. `config` is the config file, when it is not the default one. A key can start
+ * with `-`, so it then comes last, after `--`: the CLI would read it as an option.
+ */
+const serverCommand = (command: string, launch: Launch, platform: string, key: ServerKey, config?: string): string => {
+  const option = config === undefined ? [] : ['--config', pathWord(config, platform)]
+  const words = key.startsWith('-')
+    ? [...option, shellWord('--', platform), shellWord(key, platform)]
+    : [shellWord(key, platform), ...option]
+  return [launchText(launch, platform), command, ...words].join(' ')
+}
 
 /** The command that logs in to a server. */
 export const loginCommand = (launch: Launch, platform: string, key: ServerKey, config?: string): string =>

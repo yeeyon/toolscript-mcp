@@ -4,6 +4,7 @@
 
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -15,6 +16,7 @@ import { newKept } from '../src/core/protocol.ts'
 import { runLine, type RunRecord } from '../src/core/runlog.ts'
 import { runRuns, runTools, type CheckIo } from '../src/host/diagnose.ts'
 import { connectAll } from '../src/host/downstream.ts'
+import { runLogin } from '../src/host/login.ts'
 import { runCode, type RunContext } from '../src/host/run.ts'
 import { MAX_PAGE_SIZE, OPEN_BY_AUTHOR, PULL_REQUESTS } from '../demo/data.mjs'
 
@@ -303,6 +305,33 @@ describe('runs', () => {
       s.printed.join('\n'),
       /^no-server: the server did not connect\. Run `npx -y toolscript-mcp tools other --config \S+config\.json` to see/m,
     )
+  })
+
+  test('make it fail: the printed command of a key that starts with - runs in a shell and checks that server', async () => {
+    const tool = 'mcp__-x__ping'
+    const s = setupLog(
+      [forged({ ending: 'error', calls: [{ tool, decision: 'allow', ms: 1, ok: false, error: 'no-server' }] })],
+      [],
+      { mcpServers: { '-x': demoEntry } },
+    )
+    const argv = path.join(path.dirname(s.config), 'argv.js')
+    fs.writeFileSync(argv, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
+    assert.equal(
+      await runRuns(['--server=-x', '--config', s.config], { ...s.io, launch: { kind: 'node', main: argv } }),
+      1,
+    )
+    const line = /Run `(.+)` to see/.exec(s.printed.join('\n'))?.[1]
+    assert.ok(line !== undefined, s.printed.join('\n'))
+    const shell = spawnSync(line, { shell: true, encoding: 'utf8', windowsHide: true })
+    assert.equal(shell.status, 0, `${line}\n${shell.stderr}`)
+    const [command, ...args] = JSON.parse(shell.stdout) as string[]
+    assert.equal(command, 'tools')
+    s.printed.length = 0
+    assert.equal(await runTools(args, s.io), 0, s.printed.join('\n'))
+    assert.equal(s.printed[0], '-x: connected, 2 tools')
+    s.printed.length = 0
+    assert.equal(await runLogin(args, s.io), 1, 'login reads the same words')
+    assert.deepEqual(s.printed, ['-x is a stdio server. Only an HTTP server logs in with OAuth.'])
   })
 
   test('make it fail: a server name that is not a key never reaches a printed command', async () => {

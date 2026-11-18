@@ -519,6 +519,14 @@ describe('the login command', () => {
     )
   })
 
+  test('make it fail: a key that starts with - comes last, after --', () => {
+    assert.equal(loginCommand(NPX_LAUNCH, 'linux', '-x' as never), 'npx -y toolscript-mcp login -- -x')
+    assert.equal(
+      loginCommand(NPX_LAUNCH, 'win32', '-x' as never, 'C:\\c.json'),
+      'npx -y toolscript-mcp login --config C:/c.json "--" -x',
+    )
+  })
+
   const hidden = { encoding: 'utf8', windowsHide: true } as const
   const SHELLS: Record<string, (line: string) => ReturnType<typeof spawnSync<string>>> = {
     cmd: line =>
@@ -553,12 +561,18 @@ describe('the login command', () => {
             'process.stdout.write(JSON.stringify(process.argv.slice(1)).replace(/[^\\x00-\\x7f]/g, c => `\\\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`))\n',
           )
           const config = path.join(dir, 'config.json')
-          const line = loginCommand({ kind: 'node', main: script }, 'win32', 'x' as never, config)
-          const run = SHELLS[shell](line)
-          assert.equal(run.status, 0, `${line}\n${run.stdout}${run.stderr}`)
-          const [main, ...args] = JSON.parse(run.stdout)
-          const got = [main, ...args.slice(0, 3), path.resolve(args[3])]
-          assert.deepEqual(got, [script, 'login', 'x', '--config', config], line)
+          // A key that starts with - comes after "--", so the CLI does not read it as an option.
+          for (const [key, words] of [
+            ['x', ['login', 'x', '--config', config]],
+            ['-x', ['login', '--config', config, '--', '-x']],
+          ] as const) {
+            const line = loginCommand({ kind: 'node', main: script }, 'win32', key as never, config)
+            const run = SHELLS[shell](line)
+            assert.equal(run.status, 0, `${line}\n${run.stdout}${run.stderr}`)
+            const [main, ...args] = JSON.parse(run.stdout) as string[]
+            const at = args.indexOf('--config') + 1
+            assert.deepEqual([main, ...args.with(at, path.resolve(args[at]!))], [script, ...words], line)
+          }
         }
       },
     )
