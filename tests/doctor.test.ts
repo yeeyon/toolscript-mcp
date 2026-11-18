@@ -351,6 +351,20 @@ describe('doctor', () => {
     assert.equal(fs.existsSync(home), false)
   })
 
+  test('doctor removes no folder that it did not make, also in a chain of empty folders', async () => {
+    const s = setup({ mcpServers: {} })
+    const chain = ['a', 'b', 'c', 'home'].map((_, i, names) => path.join(s.dir, 'empty', ...names.slice(0, i + 1)))
+    const home = chain.at(-1)!
+    fs.mkdirSync(home, { recursive: true })
+    s.printed.length = 0
+    await runDoctor(['--config', s.config], { ...s.io, home })
+    assert.deepEqual(s.of('files'), [
+      `ok    files    ${appPath(home)} does not exist yet, and toolscript-mcp can make it`,
+    ])
+    for (const dir of [path.join(s.dir, 'empty'), ...chain]) assert.ok(fs.existsSync(dir), `${dir} still exists`)
+    assert.deepEqual(fs.readdirSync(home), [])
+  })
+
   test('a store file of a server in the config is not stale', async () => {
     const s = setup({ mcpServers: { remote: { type: 'http', url: 'http://127.0.0.1:9/mcp' } } })
     const used = storeFile(s.home, key('remote'), 'http://127.0.0.1:9/mcp')

@@ -121,30 +121,32 @@ const layerFindings = (): Finding[] => [
   ok(`environment of the sandbox: ${LAYERS.env}`),
 ]
 
-/** Makes `dir` when it does not exist, and removes each folder that it made, from the deepest up. */
-const withFolder = async <T>(dir: string, use: (made: boolean) => Promise<T>): Promise<T> => {
-  const made = await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
-  try {
-    return await use(made !== undefined)
-  } finally {
-    if (made !== undefined)
-      // rmdir removes only an empty folder: a file that a running server writes meanwhile stays.
-      for (let d = path.resolve(dir); ; d = path.dirname(d)) {
-        await fs.promises.rmdir(d).catch(() => {})
-        if (d === path.resolve(made) || path.dirname(d) === d) break
-      }
+/** `dir`, or its deepest parent that exists. */
+const deepestExisting = async (dir: string): Promise<string> => {
+  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
+    try {
+      await fs.promises.stat(d)
+      return d
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if ((code !== 'ENOENT' && code !== 'ENOTDIR') || path.dirname(d) === d) throw err
+    }
   }
 }
 
-/** The folder of toolscript-mcp in HOME, with a temp file that is gone at the end. */
+/**
+ * The folder of toolscript-mcp in HOME. A temp file goes into the folder, or into its deepest parent that exists when
+ * the folder does not exist, and is gone at the end. doctor makes no folder.
+ */
 const writable = async (dir: string): Promise<Finding> => {
   try {
-    return await withFolder(dir, async made => {
-      const probe = path.join(dir, `.doctor-${randomUUID()}.tmp`)
-      await fs.promises.writeFile(probe, '', { flag: 'wx', mode: 0o600 })
-      await fs.promises.rm(probe, { force: true })
-      return ok(made ? `${dir} does not exist yet, and toolscript-mcp can make it` : `${dir} is writable`)
-    })
+    const base = await deepestExisting(dir)
+    const probe = path.join(base, `.doctor-${randomUUID()}.tmp`)
+    await fs.promises.writeFile(probe, '', { flag: 'wx', mode: 0o600 })
+    await fs.promises.rm(probe, { force: true })
+    return ok(
+      base === path.resolve(dir) ? `${dir} is writable` : `${dir} does not exist yet, and toolscript-mcp can make it`,
+    )
   } catch (err) {
     return fail(`${dir} is not writable: ${errorText(err)}`)
   }
