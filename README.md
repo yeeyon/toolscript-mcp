@@ -367,8 +367,8 @@ checks come in this order:
 5. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
 6. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run. As in `runs`, it
    skips a run with a time more than 5 minutes after now, and counts these runs.
-7. `files`: doctor can write to `~/.toolscript-mcp`. An `info` line names the OAuth tokens that no server of the config
-   uses. They can belong to another config.
+7. `files`: doctor can write to `~/.toolscript-mcp`. If that path or a folder above it is a file, the check fails. An
+   `info` line names the OAuth tokens that no server of the config uses. They can belong to another config.
 
 doctor skips the check for allow rules that match no tool when a server does not connect. The output never shows
 tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 when a check fails, and 2 on a
