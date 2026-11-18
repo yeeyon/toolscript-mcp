@@ -63,8 +63,9 @@ export type Entry =
       readonly args?: readonly string[]
       readonly env?: StringMap
       readonly cwd?: string
+      readonly untrusted?: true
     }
-  | { readonly type: 'http'; readonly url: string; readonly headers?: StringMap }
+  | { readonly type: 'http'; readonly url: string; readonly headers?: StringMap; readonly untrusted?: true }
 
 /** What init did with one server of a client file. */
 type Outcome =
@@ -107,6 +108,15 @@ const isSelf = (name: string, raw: unknown): boolean =>
   name.toLowerCase() === 'toolscript' ||
   (isObject(raw) &&
     [raw.command, ...(Array.isArray(raw.args) ? raw.args : [])].some(a => typeof a === 'string' && SELF.test(a)))
+
+// An Azure DevOps MCP server returns text from outside sources: work items, wikis, pull requests. It can start as the
+// package @azure-devops/mcp, its bin mcp-server-azuredevops, a clone, a community package, the remote server through
+// mcp-remote, or a local bridge, so any mention counts. A server that this marks by mistake only gets more wrappers.
+const AZURE_DEVOPS = /azure[-_ ]?devops|mcp\.dev\.azure\.com/i
+
+/** True when the key, the command, an argument or the URL of a server names Azure DevOps. */
+const namesAzureDevOps = (key: ServerKey, entry: Entry): boolean =>
+  [key, ...('type' in entry ? [entry.url] : [entry.command, ...(entry.args ?? [])])].some(t => AZURE_DEVOPS.test(t))
 
 const STDIO_KEYS = ['type', 'command', 'args', 'env', 'cwd', 'disabled']
 const HTTP_KEYS = ['type', 'url', 'headers', 'disabled']
@@ -172,10 +182,11 @@ export const importServers = (reads: readonly ClientRead[]): Import => {
       if ('why' in parsed) return { kind: 'skipped', name, why: parsed.why }
       const key = keyOf(name)
       if (key === undefined) return { kind: 'skipped', name, why: 'no letter or digit to make a server key of' }
-      const json = JSON.stringify(parsed.entry)
+      const entry: Entry = namesAzureDevOps(key, parsed.entry) ? { ...parsed.entry, untrusted: true } : parsed.entry
+      const json = JSON.stringify(entry)
       const earlier = kept.get(key)
       if (earlier === undefined) {
-        kept.set(key, { entry: parsed.entry, from: read.client, json })
+        kept.set(key, { entry, from: read.client, json })
         return { kind: 'imported', name, key, dropped: parsed.dropped }
       }
       return earlier.json === json ? { kind: 'same', name } : { kind: 'conflict', name, key, keptFrom: earlier.from }
@@ -289,6 +300,12 @@ export const initReport = (imp: Import, configFile: string, platform: string, la
   if (left.length > 0) out.push('', 'Not imported:', ...left)
   if (imp.servers.size === 0) return [...out, '', 'No server to import. init wrote nothing.'].join('\n')
   out.push('', `Imported ${plural(imp.servers.size, 'server')}:`, ...imported)
+  const untrusted = [...imp.servers].flatMap(([key, e]) => (e.untrusted ? [key] : []))
+  if (untrusted.length > 0)
+    out.push(
+      '',
+      `The config sets "untrusted": true on the servers that name Azure DevOps: ${untrusted.join(', ')}. Each of their results reaches the model as untrusted text.`,
+    )
   // The config gives each of them an OAuth login by default.
   const bare = [...imp.servers].flatMap(([key, e]) => ('type' in e && e.headers === undefined ? [key] : []))
   if (bare.length > 0)

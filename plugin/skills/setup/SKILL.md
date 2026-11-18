@@ -89,6 +89,9 @@ node "<main>" init --config "<config>"
 init prints the servers that it imported and the servers that it left out, with no secret values. Show this list to
 the person. If init found no server, it writes nothing. Then add servers with step 8.
 
+init sets `"untrusted": true` on each server that names Azure DevOps, and its report names them. If the person has an
+Azure DevOps server that the report does not name, mark it as the end of step 8 shows.
+
 init also prints the steps for each client. They start toolscript-mcp with `node` and the path of `<main>`. An older
 clone prints `npx -y toolscript-mcp` or `cmd /c npx -y toolscript-mcp` there. If you see one of them, use
 `node "<main>"` in its place.
@@ -228,6 +231,8 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
    - stdio: `{ "command": "npx", "args": ["-y", "<package>"], "env": { "API_KEY": "${API_KEY}" } }`
    - stdio that works in one project folder: also add `"cwd": "<folder>"`, with the full path of the folder.
    - HTTP: `{ "type": "http", "url": "https://mcp.example.com/mcp" }`
+   - The Azure DevOps MCP server (`@azure-devops/mcp`, or a URL on `mcp.dev.azure.com`): also add
+     `"untrusted": true`. Then each of its results reaches the model as untrusted text.
 5. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add <name> "<tmp>/toolscript-entry.json"`. It makes `<config>` if it does not exist.
    Then delete the entry file.
    If `claude mcp list` shows the same server, run `claude mcp get <name>` to find its scope. Step 4 tells why.
@@ -239,6 +244,16 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
 7. Tell the person to start a new Claude Code session. toolscript-mcp reads the servers only at its start.
 
 An HTTP server without `headers` logs in with OAuth. Go to step 9 for it.
+
+An Azure DevOps MCP server in `<config>` needs `"untrusted": true`. `config.mjs` shows `untrusted` at the end of the
+line of such a server. init misses a server whose name, command, arguments and URL do not name Azure DevOps, such as
+a local proxy. If the line of an Azure DevOps server has no `untrusted`, run this command with approval:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" untrusted <name>
+```
+
+Then tell the person to start a new Claude Code session. `untrusted <name> false` removes the key.
 
 ## 9. Log in to an OAuth server
 

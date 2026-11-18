@@ -3,7 +3,7 @@
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -105,10 +105,22 @@ export type RunContext = {
   readonly kept: Kept
   /** The attachment files that the calls of this session wrote. */
   readonly written: Written
+  /**
+   * The names, in lower case, of the files in `filesDir` that can hold
+   * untrusted content: the attachments of an untrusted result, and each file
+   * that saveFile wrote after its run read untrusted content.
+   */
+  readonly untrustedFiles: Set<string>
   /** The shape of each tool's result, by tool name, for search_tools. */
   readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
   readonly filesDir: string
+  /**
+   * The note about the policy that the server read for this run, or ''. It
+   * holds no text of the config, so it comes last, after the wrapper of an
+   * untrusted run: what it asks for, only the person can do.
+   */
+  readonly policyNote: string
   /** Asks the person to approve the tools for one run. */
   readonly ask: (needed: Asks, code: string) => Promise<Approval>
   /** True when the client can show an approval prompt. */
@@ -178,7 +190,8 @@ export const runCode = async (ctx: RunContext, code: string): Promise<RunResult>
  * prompt comes before the run's timer starts.
  */
 const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
-  if (code.trim() === '') return refused('Error: code is empty.', new Set(), [])
+  const withNote = (text: string) => (ctx.policyNote === '' ? text : `${text}\n\n${ctx.policyNote}`)
+  if (code.trim() === '') return refused(withNote('Error: code is empty.'), new Set(), [])
   await ctx.downstream.settled
   const named = literalCalls(code)
   const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
@@ -187,7 +200,7 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     const states = ctx.downstream.states()
     const known = new Set(catalogOf(states).map(t => t.name))
     return refused(
-      text,
+      withNote(text),
       known,
       named.map(c => notMade(policy, bridges, states, c.tool)),
     )
@@ -222,7 +235,8 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   }
   if (ctx.signal.aborted) return refuse('Error: the server is shutting down. The program did not run.')
   const approved = new Set([...plan.ask, ...plan.interactive])
-  return { ...(await execute(ctx, code, approved, new Set(literal.map(c => c.tool)))), known }
+  const ran = await execute(ctx, code, approved, new Set(literal.map(c => c.tool)), known)
+  return { ...ran, result: { ...ran.result, text: withNote(ran.result.text) }, known }
 }
 
 /** True when `file` is inside `dir`. Both are real paths. */
@@ -314,8 +328,14 @@ const showImages = async (
 
 // readFile reads only a file in the session's saveFile folder: a program can
 // send what it reads to an MCP tool. The real paths stop a link out of the folder.
-const readFile = async (dir: string, asked: string): Promise<Reply> => {
-  const refusal: Reply = { ok: false, error: `readFile: ${asked} is not a file from saveFile in this session` }
+// `untrusted`: the file is one of `untrustedFiles`.
+const readFile = async (
+  dir: string,
+  asked: string,
+  untrustedFiles: ReadonlySet<string>,
+): Promise<{ reply: Reply; untrusted: boolean }> => {
+  const fail = (error: string) => ({ reply: { ok: false, error } as const, untrusted: false })
+  const refusal = fail(`readFile: ${asked} is not a file from saveFile in this session`)
   const [real, realDir] = await Promise.all([
     fs.promises.realpath(path.resolve(dir, asked)).catch(() => undefined),
     fs.promises.realpath(dir).catch(() => undefined),
@@ -323,9 +343,11 @@ const readFile = async (dir: string, asked: string): Promise<Reply> => {
   if (real === undefined || realDir === undefined || !isInside(real, realDir)) return refusal
   const stat = await fs.promises.stat(real)
   if (!stat.isFile()) return refusal
-  if (stat.size > MAX_READ_BYTES)
-    return { ok: false, error: `readFile: ${asked} is ${stat.size} bytes, more than readFile loads` }
-  return { ok: true, value: await fs.promises.readFile(real, 'utf8') }
+  if (stat.size > MAX_READ_BYTES) return fail(`readFile: ${asked} is ${stat.size} bytes, more than readFile loads`)
+  return {
+    reply: { ok: true, value: await fs.promises.readFile(real, 'utf8') },
+    untrusted: untrustedFiles.has(path.relative(realDir, real).toLowerCase()),
+  }
 }
 
 const NO_RESOURCES: Reply = { ok: false, error: 'resources() and readResource() are not available in toolscript-mcp' }
@@ -359,12 +381,13 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
-/** `written`: the tool names that the program writes as strings. */
+/** `written`: the tool names that the program writes as strings. `known`: the tool names before the run. */
 const execute = async (
   ctx: RunContext,
   code: string,
   approved: ReadonlySet<string>,
   written: ReadonlySet<string>,
+  known: ReadonlySet<string>,
 ): Promise<Ran> => {
   const { config, downstream, kept } = ctx
   const limitSeconds = config.sandbox.timeoutSeconds
@@ -385,6 +408,8 @@ const execute = async (
   const interactiveNow = () => interactiveTools(downstream.states())
   const recalled: { ref: number; ageMs: number }[] = []
   let recalls = 0
+  // Set before the program gets untrusted content, so a saveFile after it marks its file.
+  let untrusted = false
   const answers: Promise<void>[] = []
   const limit = limiter(MAX_PARALLEL_CALLS)
   const fileFor = runFiles(extension => path.join(ctx.filesDir, `${randomUUID()}${extension}`))
@@ -424,7 +449,7 @@ const execute = async (
     id: number,
     tool: string,
     args: Record<string, unknown>,
-  ): Promise<Reply & { code?: CallError }> => {
+  ): Promise<Reply & { code?: CallError; untrusted?: true }> => {
     const target = isCallable(tool, SERVER_NAME) ? splitToolName(tool) : undefined
     if (target === undefined) {
       decided.set(id, 'invalid')
@@ -448,6 +473,7 @@ const execute = async (
       callDecision(config.policy, config.bridges, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
+    const fromUntrusted = (): { untrusted?: true } => (downstream.untrusted(server) ? { untrusted: true } : {})
     // The link comes with the list after the last change of the server, so the check sees each new mark.
     const listed = (tools: readonly DownstreamTool[]) =>
       listedNames([{ key: server, status: 'connected', tools }], server)!
@@ -459,7 +485,7 @@ const execute = async (
     }
     if (!link.ok) {
       decided.set(id, callDecision(config.policy, config.bridges, approved, tool, interactiveNow()))
-      return { ok: false, error: link.reason, code: 'no-server' }
+      return { ok: false, error: link.reason, code: 'no-server', ...fromUntrusted() }
     }
     // A name that the server does not list can never run: say so before the policy offers a rule for it.
     const names = listed(link.tools)
@@ -482,7 +508,7 @@ const execute = async (
         timeout: callSeconds * 1000,
         signal: own.signal,
       })
-      const { reply, files } = mcpReply(
+      const { reply, files, ...mark } = mcpReply(
         {
           content: Array.isArray(r.content) ? r.content : [],
           isError: r.isError === true,
@@ -490,12 +516,17 @@ const execute = async (
         },
         fileFor,
       )
-      if (!reply.ok) return { ...reply, code: 'tool-error' }
+      if (mark.untrusted === true) downstream.distrust(server)
+      const fromServer = fromUntrusted()
+      if (!reply.ok) return { ...reply, code: 'tool-error', ...fromServer }
+      // After untrusted content, the program can have sent it to this tool, and the tool can send it back.
+      if (fromServer.untrusted === true || untrusted)
+        for (const { file } of files) ctx.untrustedFiles.add(path.basename(file).toLowerCase())
       const unwritten = await writeAttachments(ctx.filesDir, files, ctx.written).then(
         () => undefined,
         (err: unknown) => `could not write an attachment of ${tool}: ${errorText(err)}`,
       )
-      return unwritten === undefined ? reply : { ok: false, error: unwritten, code: 'failed' }
+      return unwritten === undefined ? { ...reply, ...fromServer } : { ok: false, error: unwritten, code: 'failed' }
     } catch (err) {
       // An abort at the end of the run is also a RequestTimeout to the SDK. The SDK's own timer puts the limit in
       // `data`. A server can send the same code for its own error (mcp-remote does, for a failed login): its text stays.
@@ -511,7 +542,12 @@ const execute = async (
           code: 'timeout',
         }
       // A server can echo a token of its own in an error, as an HTTP error body.
-      return { ok: false, error: link.hide(errorText(err)), code: own.signal.aborted ? 'cancelled' : 'failed' }
+      return {
+        ok: false,
+        error: link.hide(errorText(err)),
+        code: own.signal.aborted ? 'cancelled' : 'failed',
+        ...fromUntrusted(),
+      }
     } finally {
       cancel.signal.removeEventListener('abort', stop)
     }
@@ -520,8 +556,11 @@ const execute = async (
   const answerCall = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
     if (ended) return
     const began = performance.now()
-    const { code: failure, ...r } = await callTool(id, tool, args)
+    const { code: failure, untrusted: fromTool, ...r } = await callTool(id, tool, args)
     if (closed) return
+    if (fromTool === true) untrusted = true
+    // A call that returns after untrusted content can hold it: the program can have sent it to the tool.
+    const tainted = untrusted
     audits.set(id, {
       tool,
       decision: decided.get(id)!,
@@ -535,16 +574,17 @@ const execute = async (
     const key = callKey(tool, args)
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
-    const ref = r.ok ? keep(kept, json, Date.now()) : undefined
+    const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
-    if (r.ok) learnShape(ctx.shapes, tool, r.value)
+    // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
+    if (r.ok && !tainted) learnShape(ctx.shapes, tool, r.value)
     records.set(id, {
       ref,
       tool,
       status: r.ok ? 'ok' : 'failed',
       chars: json.length,
       data: r.ok && !isEmpty(r.value),
-      shape: r.ok ? shapeOf(r.value) : undefined,
+      shape: r.ok ? shapeOf(r.value, !tainted) : undefined,
       repeatOf,
     })
   }
@@ -554,6 +594,7 @@ const execute = async (
   const answerRecall = async (id: number, ref: number): Promise<void> => {
     recalls++
     const found = kept.results.get(ref)
+    if (found?.untrusted === true) untrusted = true
     await reply(id, recallReply(kept, ref))
     if (found !== undefined) recalled.push({ ref, ageMs: Date.now() - found.at })
   }
@@ -575,13 +616,21 @@ const execute = async (
         break
       case 'save':
         answer(
-          answerLocal(m.id, () => saveFile(ctx.filesDir, m.name, m.data)),
+          answerLocal(m.id, async () => {
+            // Marked before the write: the program can read the file as soon as it is there.
+            if (untrusted) ctx.untrustedFiles.add(m.name.toLowerCase())
+            return saveFile(ctx.filesDir, m.name, m.data)
+          }),
           m.id,
         )
         break
       case 'read':
         answer(
-          answerLocal(m.id, () => readFile(ctx.filesDir, m.path)),
+          answerLocal(m.id, async () => {
+            const read = await readFile(ctx.filesDir, m.path, ctx.untrustedFiles)
+            if (read.untrusted) untrusted = true
+            return read.reply
+          }),
           m.id,
         )
         break
@@ -659,32 +708,41 @@ const execute = async (
       error: 'unfinished',
     })
   }
-  const calls = [...records].sort((a, b) => a[0] - b[0]).map(([, r]) => r)
+  // A program can build a tool name from untrusted text, and the footer is outside the wrapper. A server that closes
+  // during the run lists no tools at its end, so the names before the run count too.
+  const listed = untrusted ? new Set([...known, ...catalogOf(downstream.states()).map(t => t.name)]) : undefined
+  const calls = [...records]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, r]) => (listed === undefined || listed.has(r.tool) ? r : { ...r, tool: '(a name that no server lists)' }))
 
   // A result too large to show is kept whole, so the next program can page it.
   const returned = outcome?.t === 'done' ? outcome.value : undefined
   const isCut = returned !== undefined && shownText(returned).length > MAX_RESULT_CHARS
-  const wholeRef = isCut ? keep(kept, returned, Date.now()) : undefined
-  const text = formatOutcome(outcome, calls.length, stderr, MAX_RESULT_CHARS, { calls, recalls, recalled, wholeRef })
+  const wholeRef = isCut ? keep(kept, returned, Date.now(), untrusted) : undefined
   // Image tokens are paid only for the images that the program returns.
   const shown = await showImages(
     ctx.written,
     returned === undefined ? { files: [], unsearched: false } : returnedImages(returned),
   )
-  const note = [
-    shown.note,
+  const notes = [
     approvalNote([...unapproved], ctx.canAsk()),
     interactiveNote([...needPerson], ctx.canAsk() ? { written } : 'cannot-ask'),
   ]
     .filter(n => n !== '')
     .join('\n\n')
+  const text = formatOutcome(
+    outcome,
+    calls.length,
+    stderr,
+    MAX_RESULT_CHARS,
+    { calls, recalls, recalled, wholeRef },
+    untrusted ? randomBytes(16).toString('hex') : undefined,
+    shown.note,
+    notes,
+  )
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
-  const result = {
-    text: note === '' ? text : `${text}\n\n${note}`,
-    isError: outcome?.t !== 'done',
-    images: shown.images,
-  }
+  const result = { text, isError: outcome?.t !== 'done', images: shown.images }
   return {
     result,
     ending: endingOf(outcome, ctx.signal.aborted),

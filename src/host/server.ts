@@ -78,6 +78,7 @@ export const createServer = (
   // One server process serves one client session: its kept results and its saveFile folder.
   const kept = newKept()
   const written: Written = new Map()
+  const untrustedFiles = new Set<string>()
   const shapes = new Map<string, string>()
   const filesDir = path.resolve(appPath(os.homedir(), 'files', randomUUID()))
   const stopping = new AbortController()
@@ -123,9 +124,13 @@ export const createServer = (
     declined = undefined
     const change = policyChange(policy, read.policy)
     if (change === '') return { policy, note: '' }
+    const note = policyChange(policy, read.policy, 'note')
     if (!onlyTightens(policy, read.policy, config.bridges)) {
-      // The prompt names every changed rule uncut. The log and the note keep the short form.
-      const answer = await prompt(extra, loosenText(configFile, policyChange(policy, read.policy, true), read.policy))
+      // The prompt names every changed rule uncut. The log keeps the short form, and the note no text of the file.
+      const answer = await prompt(
+        extra,
+        loosenText(configFile, policyChange(policy, read.policy, 'prompt'), read.policy),
+      )
       if (answer !== 'accept') {
         // Only an explicit decline stops the next prompts. A prompt with no answer is asked again at the next run.
         if (answer === 'decline') declined = read.policy
@@ -138,12 +143,12 @@ export const createServer = (
         log(
           `the policy in ${configFile} was not applied, because it can let a tool run with less approval (${change}): ${why}`,
         )
-        return { policy, note: keptPolicyNote(configFile, change, answer === 'unsupported' ? answer : 'decline') }
+        return { policy, note: keptPolicyNote(configFile, note, answer === 'unsupported' ? answer : 'decline') }
       }
     }
     policy = read.policy
     log(`the policy changed: ${change}`)
-    return { policy, note: `The policy changed: ${change}.` }
+    return { policy, note: `The policy changed: ${note}.` }
   }
   // One reload at a time: two runs never ask at once, and a run sees the answer to the prompt before it.
   let reloading: Promise<unknown> = Promise.resolve()
@@ -160,8 +165,10 @@ export const createServer = (
       config: { ...config, policy: fresh.policy },
       kept,
       written,
+      untrustedFiles,
       shapes,
       filesDir,
+      policyNote: fresh.note,
       ask: (needed, code) => elicit(extra, askText(needed, code, config.bridges)),
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
@@ -172,7 +179,7 @@ export const createServer = (
     runs.add(running)
     try {
       const r = await running
-      const result = text(fresh.note === '' ? r.text : `${r.text}\n\n${fresh.note}`, r.isError)
+      const result = text(r.text, r.isError)
       return { ...result, content: [...result.content, ...r.images.map(i => ({ type: 'image' as const, ...i }))] }
     } finally {
       runs.delete(running)
