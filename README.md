@@ -26,7 +26,7 @@ The goal is a server that works with any MCP client, for example Claude Code, Cl
 | Authentication | HTTP headers or native OAuth login, token refresh, dynamic client registration and static client credentials. |
 | Local development | The optional `claude mcp serve` bridge offers file tools and a shell. See its [policy and risks](#claude-code-as-a-downstream-server). |
 | Policy | Ordered `allow`, `deny` and `ask` rules. Tools marked for user interaction need approval for each run. |
-| Results | Compact output, `await recall(n)` for kept results, and `await saveFile(name, data)` for exports. |
+| Results | Compact output, `await recall(n)` for kept results, and `await saveFile(name, data)` for exports. Images and other non-text blocks become files, and a returned image shows to the model. |
 | Clients | Setup examples for Claude Code, Claude Desktop, Cursor and Codex. Tests cover Claude Code and the MCP TypeScript SDK client. |
 
 JavaScript variables do not persist between runs. MCP resources, hint tools and saved-function tools are not available.
@@ -73,7 +73,7 @@ Read [bench/RESULTS-codemode.md](bench/RESULTS-codemode.md) for the method, cold
 ## How it works
 
 1. Your MCP client connects to toolscript-mcp. toolscript-mcp connects to your other MCP servers.
-2. The model finds tools with `search_tools`. A search with 3 or fewer matches shows each tool in full, with a
+2. The model finds tools with `search_tools`. A keyword search with 3 or fewer matches shows each tool in full, with a
    TypeScript declaration of its `call()`: the nested types and the note of each argument.
 3. The model sends one program to `run_code`.
 4. The program runs in a separate Node process. Each nested tool call goes through your allow, deny and ask rules.
@@ -130,9 +130,11 @@ npm ci
 Then start a new session of your client. Do not start the server with `npx github:…` in a client.
 In a measured start, the GitHub check of npx added about 12 seconds.
 
-Some CLI messages still print `npx -y toolscript-mcp`. Replace that prefix with
-`node /absolute/path/to/toolscript-mcp/dist/host/main.js`. This text defect is tracked in
-[#42](https://github.com/yeeyon/toolscript-mcp/issues/42).
+The commands that toolscript-mcp prints, such as the login command and the steps of `init`, use the start of the
+running process. From a clone, they start with `node /absolute/path/to/toolscript-mcp/dist/host/main.js`. From npm,
+they start with `npx -y toolscript-mcp`. On Windows, each path in them has forward slashes. So the login command
+works in cmd.exe, PowerShell and Git Bash. The Claude Code step of an npm install is for PowerShell. Run
+`node dist/host/main.js --help` to see the usage.
 
 #### With the Claude Code plugin
 
@@ -229,6 +231,12 @@ Use the config from init, or write one by hand. The config uses the `mcpServers`
 5. Remove the imported servers from your client config. This prevents duplicate direct connections.
 6. Ask the model for a task that needs your tools. It finds them with `search_tools` and uses `run_code`.
 
+Keep one path to each server. If your client also lists a server directly, the model calls the direct tools, and each
+full result goes into the context. In one real session with both paths, the model never called `run_code`. MCP gives
+a server no list of the servers of its client. So toolscript-mcp does not check for a duplicate while it runs. init
+imports only the user-scope servers of each client. In Claude Code, run `claude mcp list` to find a project or local
+copy.
+
 If your client cannot ask for approval, add explicit `allow` rules for the tools that programs need.
 Tools marked for user interaction still cannot run without approval. See [The policy](#the-policy).
 
@@ -307,6 +315,12 @@ of your config.
 
 A refused call throws an error in the program. The program can catch it.
 
+An `allow` rule for more than one server, such as `*` or `mcp__*__Read`, never allows a tool of the
+[Claude Code bridge](#claude-code-as-a-downstream-server). Only an `allow` rule whose `match` starts with
+`mcp__<key>__`, with the key of the bridge, allows such a tool. For a tool of the bridge, toolscript-mcp skips each
+other `allow` rule, and the next rule that matches decides. `deny` and `ask` rules apply to the bridge as to the other
+servers.
+
 The policy matches tool names only. It does not read the arguments of a call, such as a command or a file path. If a
 tool needs limits on its arguments, set those limits in its server.
 
@@ -320,6 +334,8 @@ A changed policy applies at once only when the change has these steps alone:
 - It makes the `action` of a rule stricter: `allow` to `ask` or `deny`, or `ask` to `deny`. The rule keeps its `match`.
 
 These steps never let a tool run with less approval. toolscript-mcp compares the rules only, not a list of tools.
+If the config has a [Claude Code bridge](#claude-code-as-a-downstream-server), an `allow` rule for more than one
+server, lowered to `ask`, waits for your approval.
 
 Any other change waits for your approval, also a new order of the same rules. toolscript-mcp asks you before the run
 and shows the rules added and removed. If you decline, the run uses the policy in force. toolscript-mcp does not ask
@@ -366,6 +382,10 @@ it. To use that check in place of the toolscript-mcp prompts, allow every tool i
 Put a `deny` rule before the `*` rule for each tool that must never run. Keep the default `ask` in a client that has
 no check of its own, such as Claude Desktop.
 
+The `*` rule does not allow the tools of the [Claude Code bridge](#claude-code-as-a-downstream-server), such as `Bash`,
+`Write` and `Agent`. toolscript-mcp asks you for them. To allow a tool of the bridge, add a rule that names it, such as
+`mcp__claude-code__Read`.
+
 This setup does not give the checks of Code Mode. Code Mode checks each tool call of a program with your Claude Code
 rules and hooks. Claude Code sees only the `run_code` call of toolscript-mcp, not its nested calls:
 
@@ -398,6 +418,49 @@ return issues.issues.map(issue => ({ key: issue.key, title: issue.fields.summary
 
 `call()` returns the server's structured content when present. Otherwise, it returns parsed JSON or text.
 A tool error throws an error that the program can catch.
+
+### Non-text results
+
+A tool result can hold images, audio and resources. A program value never holds their base64 data.
+
+- If a result holds only text and structured content, `call()` returns the value that the previous section describes.
+- If a result holds another block, `call()` returns `{ value, attachments }`. `value` is the value of the text and
+  structured content, or `null` when the result has neither.
+- Each item of `attachments` describes one block, in the order of the result:
+
+| Block | Attachment |
+| --- | --- |
+| `image`, `audio` | `{ type, mimeType, bytes, file }` |
+| `resource` with `blob` | `{ type: "resource", uri, mimeType, bytes, file }` |
+| `resource` with `text` | `{ type: "resource", uri, mimeType, text }` |
+| `resource_link` | `{ type: "resource_link", uri, name, mimeType }`, not fetched |
+| other | `{ type }` |
+
+- `file` is a new file in the `saveFile` folder of the session. It holds the decoded bytes. `bytes` is their number.
+- If a block has more than 16,777,216 bytes, toolscript-mcp does not write it. Its attachment has `error` with the
+  reason, and no `file`. A block with no data gets the same.
+- One run writes at most 64 attachments and at most 67,108,864 bytes. An attachment past these limits has `error`
+  and no `file`.
+- If one file of a result cannot be written, `call()` throws an error. toolscript-mcp removes the files of that result
+  that it wrote before.
+
+To show an image to the model, return its attachment:
+
+```js
+const panel = await call("mcp__grafana__render_panel", { dashboard: "fake", panelId: 2 })
+return panel.attachments[0]
+```
+
+- The `run_code` result then holds the image as an MCP image block. The model pays image tokens only for images
+  that a program returns.
+- The attachment can be the return value, or an item at any depth in it. So `return await call(…)` also shows the
+  images of that call. The search stops after 100,000 values of the return value.
+- Only image files that a call of the session wrote show, with the type of their block. A reference with another
+  path does not show, also when a tool returns it as text. toolscript-mcp does not look up that path.
+- The file must still hold the bytes that the call wrote. A file that `saveFile` writes over does not show.
+- Only PNG, JPEG, GIF and WebP images show. The first bytes of the file must match the type.
+- One result shows at most 4 images, each at most 3,750,000 bytes, and at most 8,000,000 bytes in total.
+- The result text names each returned image that does not show, and the reason.
 
 ### The config file
 
@@ -438,6 +501,13 @@ toolscript-mcp refuses to start from its own config, so it cannot start copies o
 If a server fails or stops, toolscript-mcp connects to it again on the next search or call. It tries at most 3 times
 in 60 seconds for each server. Then `search_tools` shows the time until the next attempt.
 
+`search_tools` with an empty query shows one summary of each tool, and never a tool in full. With `limit` 1, it is a
+short check of the servers. It tries each failed server again. Its "Not connected" section lists the servers that are
+still not connected. If all servers connect, the result has no such section.
+
+The description of `search_tools` tells the model to use this check after a reconnect. With four sets of fake
+servers, the check returned 86 to 820 characters. An empty query with the default limit returned 1,039 to 8,512.
+
 ### OAuth login
 
 toolscript-mcp logs in to a remote HTTP server with OAuth. You do not need a proxy such as `mcp-remote`.
@@ -446,7 +516,13 @@ toolscript-mcp logs in to a remote HTTP server with OAuth. You do not need a pro
 2. Run `node /absolute/path/to/toolscript-mcp/dist/host/main.js login <server>`. If your config uses another path, add `--config <path>`.
 3. Log in and approve the access in the browser. If the browser does not open, open the URL that login prints.
 
-login waits 5 minutes for the browser. Then it connects to the server and prints the number of tools.
+login waits 5 minutes for the browser and 30 s for the token exchange. Then it connects to the server and prints the
+number of tools.
+
+Some servers, such as the Google Workspace MCP servers, list their tools without a token and ask for one only on a
+call. If such a server publishes protected-resource metadata, login starts the browser login all the same. A server
+that answers without a token and has no such metadata needs no login. If its authorization server has no dynamic
+client registration, give a client ID in `oauth`, as the next section shows.
 
 - An HTTP server without `headers` logs in with OAuth. To log in to a server with other headers, add `"oauth": true`.
 - `"oauth": false` turns the login off. An entry with an `Authorization` header and `oauth` is an error.
@@ -470,6 +546,8 @@ ID in `oauth`:
 ```
 
 - `clientSecret` takes `${VAR}`, as other values do. Use a variable, so the secret stays out of the config.
+- The token requests send the secret as `client_secret_basic` if the authorization server lists it, else as
+  `client_secret_post`. Box, for example, lists both.
 - `scopes` sets the scopes to ask for when the server names none.
 - `callbackPort` sets the port of the login callback on `127.0.0.1`. Register `http://127.0.0.1:<port>/callback` as
   the redirect URI of your client.
@@ -528,8 +606,12 @@ code. Read [SECURITY.md](SECURITY.md).
   again. toolscript-mcp sees a lost session in a 404, or in a 400 with a session error text of the MCP TypeScript
   SDK. If a server answers a lost session with a different 400, restart toolscript-mcp.
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
+- A program gets each image, audio or binary resource of a result as a file, not as data. A `run_code` result shows
+  at most 4 images. See [Non-text results](#non-text-results).
 - Each `run_code` call starts a new program. No variables stay between two calls. The files of `saveFile` and the
   results kept for `await recall(n)` stay within the session limits.
+- A run ends at `sandbox.timeoutSeconds`. For a longer wait, such as a CI run of 20 minutes, use a background task of
+  your client. Then send a program that reads the result.
 - The Claude Code bridge starts another process. It adds memory use, and `cwd` does not restrict file or shell access.
 - The Codex bench is a [test plan](bench/CODEX.md). No Codex performance results are published in this repo.
 
@@ -572,9 +654,51 @@ Add the entry to `mcpServers`, and the rules to `policy`, in your config:
 - On Linux and macOS, `command` is `claude`.
 - `cwd` is the folder of the project. Bash commands start there, and Grep and Glob search there.
 - Without `cwd`, Claude Code works in the folder where your client started toolscript-mcp.
-- Put the rules before a broad rule, such as `{ "match": "*", "action": "allow" }`. The first rule that matches decides.
+- Put the rules before a broad `deny` or `ask` rule, such as `{ "match": "*", "action": "deny" }`. The first rule that
+  matches decides.
 - The last rule denies the other tools of Claude Code, for example `Agent`, `WebFetch` and `CronCreate`.
 - `ask` needs a client with MCP elicitation. If your client cannot ask, toolscript-mcp refuses each `ask` tool.
+
+toolscript-mcp treats a server as the bridge in these cases:
+
+- Its key is `claude-code`.
+- It is a stdio server, and its command and arguments have the Claude Code word, then `mcp`, then `serve`. Any
+  words can come between these words, such as `--model opus` or `--settings C:/s.json`.
+
+The Claude Code word is one of these:
+
+- `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path.
+- The npm package `@anthropic-ai/claude-code`, also with a version, such as `@anthropic-ai/claude-code@latest`.
+- A path that ends in `claude-code/cli.js` or `claude-code/cli.mjs`, with either slash.
+
+A launcher can come first, such as `cmd /c`, `bash -lc`, `pwsh -Command`, `npx -y`, `pnpm dlx` or `bunx`.
+toolscript-mcp splits each argument at its spaces, at the shell operators `; & | ( ) < > $` and the backtick, and at
+commas, which PowerShell uses in argument lists. It
+skips quotes and the `^` of cmd. So `"claude mcp serve"` in one argument, `cmd /c "cd /d C:\work&&claude mcp serve"`
+and `bash -c "(claude mcp serve)"` also count. A launch that is no bridge but has these words in this order counts as
+a bridge too: toolscript-mcp then asks for its tools. At start,
+toolscript-mcp writes the keys of the bridges to stderr, such as `Claude Code bridges: claude-code`.
+
+Use the key `claude-code` for any other launch (an HTTP proxy, a wrapper script). toolscript-mcp cannot find Claude
+Code behind such a launch.
+
+A tool of the bridge skips the permission rules and hooks of Claude Code. So an `allow` rule
+allows it only when the `match` starts with `mcp__<key>__`, with the key of the bridge. A broad `allow` rule, such as
+`*`, does not allow it. For example, with this policy:
+
+```json
+"policy": [
+  { "match": "mcp__claude-code__Read", "action": "allow" },
+  { "match": "*", "action": "allow" }
+]
+```
+
+- `mcp__claude-code__Read` runs with no prompt.
+- Each other tool of Claude Code is `ask`, also a tool that a later version of Claude Code adds.
+- The tools of the other servers run with no prompt.
+
+To allow every tool of the bridge, add `{ "match": "mcp__claude-code__*", "action": "allow" }`. Read
+[The risks](#the-risks) first.
 
 ### The risks
 
@@ -587,6 +711,9 @@ on what a program does.
   any command text.
 - Bash and PowerShell run as your user. They can reach the network and any folder, also outside `cwd`.
 - Write and Edit take any absolute path, also outside `cwd`. In a test, a Write outside the project folder succeeded.
+
+If a hook or a permission rule guards a tool of Claude Code, use the native tool for that work, not a program. A
+program that calls Bash skips each `PreToolUse` hook on Bash, for example a guard on `git push`.
 
 ### In a program
 
@@ -665,6 +792,7 @@ Code 2.1.325.
 - [x] Offer guided beta setup through the Claude Code plugin.
 - [x] Run Claude Code tools through the optional stdio bridge, with a project `cwd`.
 - [x] Require per-run approval for tools marked for user interaction.
+- [x] Keep images and other non-text results as files, and show the images that a program returns.
 - [ ] Publish 0.1.0 to npm.
 - [ ] Run the Codex comparison and publish its results.
 - [ ] Keep state between `run_code` calls, as an option.

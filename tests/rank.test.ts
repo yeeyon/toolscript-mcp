@@ -2,7 +2,7 @@ import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { rankTools, type ToolEntry } from '../src/core/protocol.ts'
+import { listsAll, rankTools, type ToolEntry } from '../src/core/protocol.ts'
 
 type Servers = Record<string, [string, string][]>
 type Queries = [string, string][]
@@ -125,5 +125,12 @@ describe('rankTools on three sets of searches', () => {
       rankTools(catalog, `search wiki${tail}`, 3).map(t => t.name),
       rankTools(catalog, 'search wiki', 3).map(t => t.name),
     )
+  })
+
+  test('a query whose words all come after the cut lists every tool, and listsAll says so', () => {
+    const query = `${' '.repeat(1000)}jira issue`
+    assert.equal(listsAll(query), true)
+    assert.equal(rankTools(catalog, query, catalog.length).length, catalog.length)
+    assert.equal(listsAll('jira issue'), false)
   })
 })

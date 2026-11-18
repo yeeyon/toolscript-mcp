@@ -12,8 +12,9 @@ import { serverKey } from '../src/core/config.ts'
 import { checkCalls } from '../src/core/protocol.ts'
 
 const server = (tools: DownstreamTool[]): ServerState[] => [{ key: serverKey('x')!, status: 'connected', tools }]
+// The full name of the tool ranks it first, so the one tool is a hit in full. An empty query shows a summary.
 const one = (tool: DownstreamTool, shapes?: Map<string, string>): string =>
-  searchResult(server([tool]), '', 15, shapes).replace(/^1 of 1 MCP tools\.\n\n/, '')
+  searchResult(server([tool]), `mcp__x__${tool.name}`, 15, shapes).replace(/^1 of 1 MCP tools\.\n\n/, '')
 
 describe('search_tools with no match', () => {
   const tools = [{ name: 'grant', description: 'Grant access.' }]
@@ -463,6 +464,29 @@ describe('the argument check of a closed schema', () => {
   })
 })
 
+// The review of #47: limit 1 showed the one hit in full, longer than the 15 summaries of the default.
+describe('search_tools with an empty query', () => {
+  test('shows one summary line of each tool, also for limit 1, and the servers not connected', () => {
+    const tool = {
+      name: 'get',
+      description: `Gets a thing.\n${'More text. '.repeat(100)}`,
+      inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The id.' } }, required: ['id'] },
+    }
+    const states: ServerState[] = [
+      ...server([tool]),
+      { key: serverKey('down')!, status: 'failed', reason: 'spawn fake ENOENT' },
+    ]
+    const summary = '1 of 1 MCP tools.\n\n### mcp__x__get\nGets a thing.\nargs: { id: string }'
+    const tail = '\n\n## Not connected\n- down: spawn fake ENOENT'
+    for (const limit of [1, 15]) assert.equal(searchResult(states, '', limit), `${summary}${tail}`)
+    assert.equal(searchResult(states, ' ', 1), `${summary}${tail}`)
+    assert.match(
+      searchResult(states, 'get', 1),
+      /^1 of 1 MCP tools\.\n\n### mcp__x__get\nGets a thing\. More text\.[^]*\ncall\(/,
+    )
+  })
+})
+
 describe('search_tools with more than 3 hits', () => {
   test('keeps one line of description and the argument types of each tool', () => {
     const tools = ['a', 'b', 'c', 'd'].map(name => ({
@@ -476,7 +500,7 @@ describe('search_tools with more than 3 hits', () => {
       `4 of 4 MCP tools.\n\n${['a', 'b', 'c', 'd'].map(n => `### mcp__x__${n}\nTool ${n}.\nargs: { id: string }`).join('\n\n')}`,
     )
     assert.match(
-      searchResult(server(tools.slice(0, 3)), '', 15),
+      searchResult(server(tools.slice(0, 3)), 'tool', 15),
       /^3 of 3 MCP tools\.\n\n### mcp__x__a\nTool a\. More\.\ncall\(/,
     )
   })

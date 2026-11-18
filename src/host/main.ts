@@ -16,6 +16,7 @@ import { connectAll } from './downstream.ts'
 import { INIT_USAGE, runInit } from './init.ts'
 import { LOGIN_USAGE, runLogin } from './login.ts'
 import { createServer } from './server.ts'
+import { detectLaunch } from './start.ts'
 
 const log = (line: string) => console.error(`toolscript-mcp: ${line}`)
 
@@ -28,8 +29,13 @@ const { version } = JSON.parse(fs.readFileSync(new URL('../../package.json', imp
   version: string
 }
 
+const launch = detectLaunch(process.argv[1] ?? '')
+const USAGE = ['usage: toolscript-mcp [--config <path>] [--help]', INIT_USAGE, LOGIN_USAGE]
+
 if (process.argv[2] === 'init')
-  process.exit(await runInit(process.argv.slice(3), process.env, process.platform, os.homedir(), t => console.error(t)))
+  process.exit(
+    await runInit(process.argv.slice(3), process.env, process.platform, os.homedir(), t => console.error(t), launch),
+  )
 
 if (process.argv[2] === 'login') {
   const io = { env: process.env, platform: process.platform, home: os.homedir(), version, print: console.error }
@@ -44,9 +50,14 @@ if (refusal !== undefined) {
 
 let flag: string | undefined
 try {
-  flag = parseArgs({ options: { config: { type: 'string' } } }).values.config
+  const { values } = parseArgs({ options: { config: { type: 'string' }, help: { type: 'boolean', short: 'h' } } })
+  if (values.help) {
+    for (const line of USAGE) console.error(line)
+    process.exit(0)
+  }
+  flag = values.config
 } catch (err) {
-  fail([errorText(err), 'usage: toolscript-mcp [--config <path>]', INIT_USAGE, LOGIN_USAGE])
+  fail([errorText(err), ...USAGE])
 }
 
 const file = configPath(flag, process.env, process.platform, os.homedir())
@@ -59,11 +70,15 @@ try {
 const parsed = parseConfig(text, process.env, process.execPath, process.platform)
 if (!parsed.ok) fail([`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)])
 const { config } = parsed
+// A launch of Claude Code that parseConfig does not see is not a bridge: this line lets the person see the miss.
+log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 
 // The person runs login in a terminal, without the flag or the TOOLSCRIPT_CONFIG of this server.
 const usual = configPath(undefined, { ...process.env, TOOLSCRIPT_CONFIG: undefined }, process.platform, os.homedir())
 const other = path.resolve(file) === path.resolve(usual) ? undefined : path.resolve(file)
-const downstream = connectAll(config.servers, version, log, { login: key => loginCommand(key, other) })
+const downstream = connectAll(config.servers, version, log, {
+  login: key => loginCommand(launch, process.platform, key, other),
+})
 const { server, stopRuns } = createServer(downstream, config, file, version, log)
 
 // A run in flight gets its sandbox killed and its exchange dir removed before the exit.

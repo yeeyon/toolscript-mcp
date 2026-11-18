@@ -23,7 +23,7 @@ import {
   stalePolicyNote,
   type Policy,
 } from '../core/policy.ts'
-import { errorText, newKept, serverInstructions } from '../core/protocol.ts'
+import { errorText, newKept, serverInstructions, type Written } from '../core/protocol.ts'
 import { SEARCH_LIMIT, SERVED, parseInput, registration, type ServedName } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { runCode, type Approval, type RunContext } from './run.ts'
@@ -73,10 +73,11 @@ export const createServer = (
 ): Served => {
   const mcp = new McpServer(
     { name: 'toolscript-mcp', version },
-    { capabilities: { tools: {} }, instructions: serverInstructions([...config.servers.keys()]) },
+    { capabilities: { tools: {} }, instructions: serverInstructions([...config.servers.keys()], config.bridges) },
   )
   // One server process serves one client session: its kept results and its saveFile folder.
   const kept = newKept()
+  const written: Written = new Map()
   const shapes = new Map<string, string>()
   const filesDir = path.resolve(appPath(os.homedir(), 'files', randomUUID()))
   const stopping = new AbortController()
@@ -122,7 +123,7 @@ export const createServer = (
     declined = undefined
     const change = policyChange(policy, read.policy)
     if (change === '') return { policy, note: '' }
-    if (!onlyTightens(policy, read.policy)) {
+    if (!onlyTightens(policy, read.policy, config.bridges)) {
       // The prompt names every changed rule uncut. The log and the note keep the short form.
       const answer = await prompt(extra, loosenText(configFile, policyChange(policy, read.policy, true), read.policy))
       if (answer !== 'accept') {
@@ -158,9 +159,10 @@ export const createServer = (
       downstream,
       config: { ...config, policy: fresh.policy },
       kept,
+      written,
       shapes,
       filesDir,
-      ask: (needed, code) => elicit(extra, askText(needed, code)),
+      ask: (needed, code) => elicit(extra, askText(needed, code, config.bridges)),
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
       log,
@@ -170,7 +172,8 @@ export const createServer = (
     runs.add(running)
     try {
       const r = await running
-      return text(fresh.note === '' ? r.text : `${r.text}\n\n${fresh.note}`, r.isError)
+      const result = text(fresh.note === '' ? r.text : `${r.text}\n\n${fresh.note}`, r.isError)
+      return { ...result, content: [...result.content, ...r.images.map(i => ({ type: 'image' as const, ...i }))] }
     } finally {
       runs.delete(running)
     }

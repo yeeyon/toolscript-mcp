@@ -3,7 +3,7 @@
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -25,16 +25,24 @@ import {
   planRun,
   refusedReport,
   type Asks,
+  type Bridges,
   type Policy,
 } from '../core/policy.ts'
 import {
+  MAX_FILE_SIZE,
+  MAX_IMAGE_BYTES,
   MAX_SEEN,
+  MAX_SHOWN_IMAGES,
+  MAX_SHOWN_IMAGE_BYTES,
+  SHOWN_IMAGE_TYPES,
   callKey,
   checkCalls,
   errorText,
   fileNameError,
   fileText,
   formatOutcome,
+  hiddenImagesNote,
+  holdsImage,
   isCallable,
   isEmpty,
   keep,
@@ -44,16 +52,23 @@ import {
   notListedText,
   problemReport,
   recallReply,
+  recordWritten,
+  returnedImages,
+  runFiles,
   shapeOf,
   shownText,
   splitToolName,
   takeMessages,
   type CallRecord,
+  type HiddenWhy,
   type Kept,
+  type PendingFile,
   type Reply,
   type RunnerDone,
   type RunnerError,
   type RunnerMessage,
+  type Written,
+  type WrittenFile,
 } from '../core/protocol.ts'
 import {
   callDecision,
@@ -76,7 +91,6 @@ const MAX_PARALLEL_CALLS = 8
 // How long a run waits for calls still running after the sandbox ends. Then
 // they are cancelled, so a call that hangs does not hold the result.
 const SETTLE_MS = 1000
-const MAX_FILE_CHARS = 16 * 1024 * 1024
 const MAX_READ_BYTES = 4 * 1024 * 1024
 const MAX_STDERR_CHARS = 8000
 
@@ -89,6 +103,8 @@ export type RunContext = {
   readonly config: Config
   /** The results kept for recall(n), for the whole session. */
   readonly kept: Kept
+  /** The attachment files that the calls of this session wrote. */
+  readonly written: Written
   /** The shape of each tool's result, by tool name, for search_tools. */
   readonly shapes: Map<string, string>
   /** The folder of saveFile in this session, as an absolute path. */
@@ -104,7 +120,11 @@ export type RunContext = {
   readonly home: string
 }
 
-export type RunResult = { readonly text: string; readonly isError: boolean }
+/** An MCP image block: `data` is base64. */
+export type ShownImage = { readonly data: string; readonly mimeType: string }
+
+/** `images`: the image attachments that the program returned, read from their files. */
+export type RunResult = { readonly text: string; readonly isError: boolean; readonly images: readonly ShownImage[] }
 
 /** A result with what the run log needs to know about it. */
 type Ran = { readonly result: RunResult; readonly ending: RunEnding; readonly calls: readonly CallLog[] }
@@ -113,17 +133,17 @@ type Ran = { readonly result: RunResult; readonly ending: RunEnding; readonly ca
 type Attempt = Ran & { readonly known: ReadonlySet<string> }
 
 const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallLog[]): Attempt => ({
-  result: { text, isError: true },
+  result: { text, isError: true, images: [] },
   ending: 'refused',
   calls,
   known,
 })
 
 /** A call that a refused program names. It never started; `error` says why the policy or its server stops it. */
-const notMade = (policy: Policy, states: readonly ServerState[], tool: string): CallLog => {
+const notMade = (policy: Policy, bridges: Bridges, states: readonly ServerState[], tool: string): CallLog => {
   const server = splitToolName(tool)?.server
   const names = server === undefined ? undefined : listedNames(states, server)
-  const checked = callDecision(policy, new Set(), tool, interactiveTools(states))
+  const checked = callDecision(policy, bridges, new Set(), tool, interactiveTools(states))
   const decision = checked !== 'denied' && names !== undefined && !names.includes(tool) ? 'invalid' : checked
   return { tool, decision, ms: 0, ok: false, ...(decision === 'allow' ? {} : { error: decision }) }
 }
@@ -162,18 +182,18 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   await ctx.downstream.settled
   const named = literalCalls(code)
   const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
-  const { policy } = ctx.config
+  const { policy, bridges } = ctx.config
   const refuse = (text: string) => {
     const states = ctx.downstream.states()
     const known = new Set(catalogOf(states).map(t => t.name))
     return refused(
       text,
       known,
-      named.map(c => notMade(policy, states, c.tool)),
+      named.map(c => notMade(policy, bridges, states, c.tool)),
     )
   }
   // A denied name refuses the program before any traffic to its server.
-  const denied = planRun(policy, literal, new Set())
+  const denied = planRun(policy, bridges, literal, new Set())
   if (denied.kind === 'refused') return refuse(deniedReport(denied.denied))
   // A failed server that the program names connects again before the check.
   await ctx.downstream.retry(serversOf(literal), ctx.signal)
@@ -194,7 +214,7 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
 
-  const plan = planRun(policy, literal, interactiveTools(states))
+  const plan = planRun(policy, bridges, literal, interactiveTools(states))
   if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
   if (plan.ask.length + plan.interactive.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan, code) : 'unsupported'
@@ -216,8 +236,8 @@ const saveFile = async (dir: string, name: string, data: unknown): Promise<Reply
   const problem = fileNameError(name)
   if (problem !== undefined) return { ok: false, error: problem }
   const text = fileText(name, data)
-  if (text.length > MAX_FILE_CHARS)
-    return { ok: false, error: `saveFile: ${text.length} characters is more than ${MAX_FILE_CHARS}; save less data` }
+  if (text.length > MAX_FILE_SIZE)
+    return { ok: false, error: `saveFile: ${text.length} characters is more than ${MAX_FILE_SIZE}; save less data` }
   // Only the person can read the saved data: a program can save what its calls returned.
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
   const file = path.join(dir, name)
@@ -225,6 +245,71 @@ const saveFile = async (dir: string, name: string, data: unknown): Promise<Reply
   if (old !== undefined && !old.isFile()) return { ok: false, error: `saveFile: ${name} exists and is not a file` }
   await fs.promises.writeFile(file, text, { mode: 0o600 })
   return { ok: true, value: file }
+}
+
+const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
+
+// The attachments of a tool result, as saveFile writes: only the person can
+// read them. The program gets all of them or an error, so a failed write
+// removes the files of the result that it wrote before, and the file that it
+// was writing. EEXIST: that file was there before, so it stays.
+const writeAttachments = async (dir: string, files: readonly PendingFile[], written: Written): Promise<void> => {
+  if (files.length === 0) return
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
+  const done: { file: string; record: WrittenFile }[] = []
+  try {
+    for (const { file, data, mimeType } of files) {
+      const bytes = Buffer.from(data, 'base64')
+      await fs.promises.writeFile(file, bytes, { mode: 0o600, flag: 'wx' }).catch(async (err: unknown) => {
+        if ((err as { code?: unknown }).code !== 'EEXIST') await fs.promises.rm(file, { force: true }).catch(() => {})
+        throw err
+      })
+      done.push({ file, record: { mimeType, bytes: bytes.length, sha256: sha256(bytes) } })
+    }
+  } catch (err) {
+    await Promise.all(done.map(({ file }) => fs.promises.rm(file, { force: true }).catch(() => {})))
+    throw err
+  }
+  for (const { file, record } of done) recordWritten(written, file, record)
+}
+
+/**
+ * The image attachments that a program returned, read from their files, up
+ * to the caps. Only a file that a call of this session wrote shows, with the
+ * type of its block, while it holds the bytes that the call wrote. Any other
+ * path is never looked up on the disk.
+ */
+const showImages = async (
+  written: Written,
+  returned: { files: readonly string[]; unsearched: boolean },
+): Promise<{ images: ShownImage[]; note: string }> => {
+  const images: ShownImage[] = []
+  const hidden: { file: string; why: HiddenWhy }[] = []
+  let total = 0
+  const load = async (file: string): Promise<HiddenWhy | ShownImage> => {
+    const record = written.get(file)
+    if (record === undefined) return 'not-written'
+    if (!SHOWN_IMAGE_TYPES.has(record.mimeType)) return 'type'
+    if (record.bytes > MAX_IMAGE_BYTES) return 'size'
+    if (images.length >= MAX_SHOWN_IMAGES) return 'count'
+    if (total + record.bytes > MAX_SHOWN_IMAGE_BYTES) return 'total'
+    const stat = await fs.promises.lstat(file).catch(() => undefined)
+    if (stat === undefined || !stat.isFile()) return 'unreadable'
+    if (stat.size !== record.bytes) return 'changed'
+    const bytes = await fs.promises.readFile(file).catch(() => undefined)
+    if (bytes === undefined) return 'unreadable'
+    // saveFile can write over the file, also between the stat and the read.
+    if (bytes.length !== record.bytes || sha256(bytes) !== record.sha256) return 'changed'
+    if (!holdsImage(record.mimeType, bytes)) return 'not-image'
+    total += bytes.length
+    return { data: bytes.toString('base64'), mimeType: record.mimeType }
+  }
+  for (const file of returned.files) {
+    const loaded = await load(file)
+    if (typeof loaded === 'string') hidden.push({ file, why: loaded })
+    else images.push(loaded)
+  }
+  return { images, note: hiddenImagesNote(hidden, returned.unsearched) }
 }
 
 // readFile reads only a file in the session's saveFile folder: a program can
@@ -302,6 +387,7 @@ const execute = async (
   let recalls = 0
   const answers: Promise<void>[] = []
   const limit = limiter(MAX_PARALLEL_CALLS)
+  const fileFor = runFiles(extension => path.join(ctx.filesDir, `${randomUUID()}${extension}`))
   // Cancels the nested calls still running after the settle wait.
   const cancel = new AbortController()
   // Set when the sandbox ends: a call still in the queue has no reader, so it does not start.
@@ -349,16 +435,17 @@ const execute = async (
       }
     }
     const check = (interactive: ReadonlySet<string>): (Reply & { code: CallError }) | undefined => {
-      const decision = callDecision(config.policy, approved, tool, interactive)
+      const decision = callDecision(config.policy, config.bridges, approved, tool, interactive)
       decided.set(id, decision)
-      const result = checkCall(config.policy, approved, tool, interactive)
+      const result = checkCall(config.policy, config.bridges, approved, tool, interactive)
       if (result.ok) return undefined
       if (result.needs === 'rule') unapproved.add(tool)
       if (result.needs === 'person') needPerson.add(tool)
       return { ok: false, error: result.error, code: decision }
     }
     // A denied name sends nothing to its server, not even a list for a miss.
-    const denied = callDecision(config.policy, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
+    const denied =
+      callDecision(config.policy, config.bridges, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
     // The link comes with the list after the last change of the server, so the check sees each new mark.
@@ -371,7 +458,7 @@ const execute = async (
       link = await downstream.client(server, cancel.signal)
     }
     if (!link.ok) {
-      decided.set(id, callDecision(config.policy, approved, tool, interactiveNow()))
+      decided.set(id, callDecision(config.policy, config.bridges, approved, tool, interactiveNow()))
       return { ok: false, error: link.reason, code: 'no-server' }
     }
     // A name that the server does not list can never run: say so before the policy offers a rule for it.
@@ -395,12 +482,20 @@ const execute = async (
         timeout: callSeconds * 1000,
         signal: own.signal,
       })
-      const reply = mcpReply({
-        content: Array.isArray(r.content) ? r.content : [],
-        isError: r.isError === true,
-        structuredContent: r.structuredContent,
-      })
-      return reply.ok ? reply : { ...reply, code: 'tool-error' }
+      const { reply, files } = mcpReply(
+        {
+          content: Array.isArray(r.content) ? r.content : [],
+          isError: r.isError === true,
+          structuredContent: r.structuredContent,
+        },
+        fileFor,
+      )
+      if (!reply.ok) return { ...reply, code: 'tool-error' }
+      const unwritten = await writeAttachments(ctx.filesDir, files, ctx.written).then(
+        () => undefined,
+        (err: unknown) => `could not write an attachment of ${tool}: ${errorText(err)}`,
+      )
+      return unwritten === undefined ? reply : { ok: false, error: unwritten, code: 'failed' }
     } catch (err) {
       // An abort at the end of the run is also a RequestTimeout to the SDK. The SDK's own timer puts the limit in
       // `data`. A server can send the same code for its own error (mcp-remote does, for a failed login): its text stays.
@@ -558,7 +653,7 @@ const execute = async (
     // A call still in the queue at the end was never checked.
     audits.set(id, {
       tool,
-      decision: decided.get(id) ?? callDecision(config.policy, approved, tool, interactiveNow()),
+      decision: decided.get(id) ?? callDecision(config.policy, config.bridges, approved, tool, interactiveNow()),
       ms: 0,
       ok: false,
       error: 'unfinished',
@@ -571,7 +666,13 @@ const execute = async (
   const isCut = returned !== undefined && shownText(returned).length > MAX_RESULT_CHARS
   const wholeRef = isCut ? keep(kept, returned, Date.now()) : undefined
   const text = formatOutcome(outcome, calls.length, stderr, MAX_RESULT_CHARS, { calls, recalls, recalled, wholeRef })
+  // Image tokens are paid only for the images that the program returns.
+  const shown = await showImages(
+    ctx.written,
+    returned === undefined ? { files: [], unsearched: false } : returnedImages(returned),
+  )
   const note = [
+    shown.note,
     approvalNote([...unapproved], ctx.canAsk()),
     interactiveNote([...needPerson], ctx.canAsk() ? { written } : 'cannot-ask'),
   ]
@@ -579,7 +680,11 @@ const execute = async (
     .join('\n\n')
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
-  const result = { text: note === '' ? text : `${text}\n\n${note}`, isError: outcome?.t !== 'done' }
+  const result = {
+    text: note === '' ? text : `${text}\n\n${note}`,
+    isError: outcome?.t !== 'done',
+    images: shown.images,
+  }
   return {
     result,
     ending: endingOf(outcome, ctx.signal.aborted),

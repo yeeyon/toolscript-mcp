@@ -38,8 +38,15 @@ import {
   toValue,
   serverInstructions,
 } from '../src/core/protocol.ts'
+import { parseConfig, type ServerKey } from '../src/core/config.ts'
 
+const NO_BRIDGES = new Set<ServerKey>()
 const has = (text: string | undefined, part: string) => typeof text === 'string' && text.includes(part)
+
+// A result with no attachment writes no file, so it never asks for a path.
+const noFile = (): never => assert.fail('no file expected')
+const replyOf = (r: Parameters<typeof mcpReply>[0]) => mcpReply(r, noFile).reply
+const savedOf = (format: Parameters<typeof savedReply>[0], text: string) => savedReply(format, text, noFile).reply
 
 describe('protocol', () => {
   test('takeMessages keeps partial lines and skips foreign output', () => {
@@ -154,9 +161,9 @@ describe('protocol', () => {
     const raw = ['{9007199254740993:1}', '[1234567890123456789,]']
     for (const text of raw) {
       assert.equal(toValue(undefined, text), text)
-      assert.deepEqual(savedReply('text', text), { ok: true, value: text })
-      assert.deepEqual(savedReply('unknown', text), { ok: true, value: text })
-      assert.deepEqual(savedReply('json', text), { ok: false, error: 'the saved result is not whole' })
+      assert.deepEqual(savedOf('text', text), { ok: true, value: text })
+      assert.deepEqual(savedOf('unknown', text), { ok: true, value: text })
+      assert.deepEqual(savedOf('json', text), { ok: false, error: 'the saved result is not whole' })
     }
   })
 
@@ -171,15 +178,15 @@ describe('protocol', () => {
   })
 
   test('mcpReply joins text blocks and parses JSON', () => {
-    assert.deepEqual(mcpReply({ content: [{ type: 'text', text: '{"a":1}' }], isError: false }), {
+    assert.deepEqual(replyOf({ content: [{ type: 'text', text: '{"a":1}' }], isError: false }), {
       ok: true,
       value: { a: 1 },
     })
-    assert.deepEqual(
-      mcpReply({ content: [{ type: 'text', text: 'x' }], isError: false, structuredContent: { b: 2 } }),
-      { ok: true, value: { b: 2 } },
-    )
-    assert.deepEqual(mcpReply({ content: [{ type: 'text', text: 'bad' }], isError: true }), {
+    assert.deepEqual(replyOf({ content: [{ type: 'text', text: 'x' }], isError: false, structuredContent: { b: 2 } }), {
+      ok: true,
+      value: { b: 2 },
+    })
+    assert.deepEqual(replyOf({ content: [{ type: 'text', text: 'bad' }], isError: true }), {
       ok: false,
       error: 'bad',
     })
@@ -235,11 +242,11 @@ describe('protocol', () => {
 
   test('savedReply parses the file as its format says', () => {
     const value = (v: unknown) => ({ ok: true, value: v })
-    assert.deepEqual(savedReply('text', '[1,2]'), value([1, 2]))
-    assert.deepEqual(savedReply('text', 'plain'), value('plain'))
-    assert.deepEqual(savedReply('json', '{"a":1}'), value({ a: 1 }))
+    assert.deepEqual(savedOf('text', '[1,2]'), value([1, 2]))
+    assert.deepEqual(savedOf('text', 'plain'), value('plain'))
+    assert.deepEqual(savedOf('json', '{"a":1}'), value({ a: 1 }))
     assert.deepEqual(
-      savedReply(
+      savedOf(
         'blocks',
         JSON.stringify([
           { type: 'text', text: 'one' },
@@ -248,20 +255,20 @@ describe('protocol', () => {
       ),
       value('one\ntwo'),
     )
-    assert.deepEqual(savedReply('unknown', JSON.stringify([{ type: 'text', text: '[3]' }])), value([3]))
-    assert.deepEqual(savedReply('unknown', '[INFO] plain text'), value('[INFO] plain text'))
+    assert.deepEqual(savedOf('unknown', JSON.stringify([{ type: 'text', text: '[3]' }])), value([3]))
+    assert.deepEqual(savedOf('unknown', '[INFO] plain text'), value('[INFO] plain text'))
     // Data with a `type` field of its own is not content blocks.
     const messages = [{ type: 'message', text: 'hi' }]
-    assert.deepEqual(savedReply('blocks', JSON.stringify(messages)), value(messages))
-    assert.deepEqual(savedReply('unknown', JSON.stringify(messages)), value(messages))
+    assert.deepEqual(savedOf('blocks', JSON.stringify(messages)), value(messages))
+    assert.deepEqual(savedOf('unknown', JSON.stringify(messages)), value(messages))
     // JSON that does not parse was cut.
-    assert.deepEqual(savedReply('json', '{"cut": '), { ok: false, error: 'the saved result is not whole' })
+    assert.deepEqual(savedOf('json', '{"cut": '), { ok: false, error: 'the saved result is not whole' })
     // A saved JSON file is the same text as a live result, so a large id keeps its digits.
-    assert.deepEqual(savedReply('json', '{"id":1234567890123456789}'), {
+    assert.deepEqual(savedOf('json', '{"id":1234567890123456789}'), {
       ok: true,
       value: { id: '1234567890123456789' },
     })
-    assert.deepEqual(savedReply('json', '[9007199254740993]'), { ok: true, value: ['9007199254740993'] })
+    assert.deepEqual(savedOf('json', '[9007199254740993]'), { ok: true, value: ['9007199254740993'] })
   })
 
   test('hintNudge names the servers that work now and the searches that missed', () => {
@@ -769,9 +776,41 @@ describe('the tool table', () => {
   // every session. Raise the limit only for text that changes what the model does.
   // M4: run_code 1542, search_tools 550 (it names run_code). v0.1: + alwaysLoad 41 on each.
   // + 68 for the recall(n) line, which the bench showed second programs needed.
+  // + 170 for the attachments line: without it, a program cannot find a non-text result or show an image.
+  // + 365 (#47): the three examples of when to prefer run_code, and the empty search after a reconnect.
+  // + 76 (#47): limit 1 and the "Not connected" section. The check after a reconnect shows one summary line: with
+  // fake servers, 86 to 820 characters, against 1,039 to 8,512 for an empty query with the default limit.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 2236, `size ${size} is over 2236`)
+    assert.ok(size <= 2847, `size ${size} is over 2847`)
+  })
+
+  test('each example of the run_code description runs and returns only the small result', async () => {
+    const description = registration('run_code').description
+    const examples = description
+      .slice(description.indexOf('\nExamples:\n'))
+      .split(/\n\/\/ [^\n]*\n/)
+      .slice(1)
+    assert.equal(examples.length, 3, description)
+    const results: Record<string, (args: { key?: string }) => unknown> = {
+      mcp__tracker__get_issue: ({ key }) => ({ key, status: 'Open', avatarUrls: { '48x48': 'https://example.com/a' } }),
+      mcp__tracker__add_comment: () => ({ id: 'c1' }),
+      mcp__tracker__list_comments: () => [{ body: 'Before' }, { body: 'Fixed' }],
+      mcp__ci__get_log: () => 'step 1 ok\nerror: test failed\nstep 3 ok',
+    }
+    const call = async (tool: string, args: { key?: string }) => results[tool]!(args)
+    const AsyncFunction = (async () => {}).constructor as new (
+      ...args: string[]
+    ) => (c: typeof call) => Promise<unknown>
+    const returned = await Promise.all(examples.map(body => new AsyncFunction('call', body)(call)))
+    assert.deepEqual(returned, [
+      [
+        { key: 'A-1', status: 'Open' },
+        { key: 'A-2', status: 'Open' },
+      ],
+      true,
+      ['error: test failed'],
+    ])
   })
 
   // The bench: 5 of 9 second programs called a tool again for a result they could recall.
@@ -785,16 +824,49 @@ describe('the tool table', () => {
   })
 
   test('the instructions name the servers behind toolscript', () => {
-    const text = serverInstructions(['jira', 'grafana'])
+    const text = serverInstructions(['jira', 'grafana'], NO_BRIDGES)
     assert.match(text, /\bjira, grafana\b/)
     assert.match(text, /search_tools.*run_code/)
-    assert.doesNotMatch(serverInstructions([]), /:\s*\./)
+    assert.doesNotMatch(serverInstructions([], NO_BRIDGES), /:\s*\./)
+  })
+
+  // #47: with the same servers also listed as direct tools, a session never called run_code.
+  test('the instructions say when to prefer run_code to direct tools', () => {
+    for (const text of [serverInstructions(['jira'], NO_BRIDGES), serverInstructions([], NO_BRIDGES)])
+      assert.match(text, /Prefer run_code to their direct tools for several calls, a write and its check, or a part of/)
+  })
+
+  // #47: the direct tools of the Claude Code bridge are the client's own, which its permission rules and hooks guard.
+  // The bridge text costs 168 characters in each session with the bridge, and none without it.
+  test('the instructions keep the built-in tools direct only when a bridge is a server', () => {
+    const instructions = (servers: string[]) => {
+      const parsed = parseConfig(
+        JSON.stringify({ mcpServers: Object.fromEntries(servers.map(key => [key, { command: 'node' }])) }),
+        {},
+        process.execPath,
+        'linux',
+      )
+      assert.ok(parsed.ok)
+      return serverInstructions(servers, parsed.config.bridges)
+    }
+    const bridge =
+      /For Read, Bash, Edit and the other tools of claude-code, use your own built-in tools directly\. Call claude-code from a program only for data that stays/
+    assert.match(instructions(['jira', 'claude-code']), bridge)
+    assert.equal(instructions(['jira', 'claude-code']).length - instructions(['jira', 'claude-codf']).length, 168)
+    const keys = Array.from({ length: 400 }, (_, i) => `server-number-${i}`)
+    const cut = instructions([...keys, 'claude-code'])
+    assert.ok(cut.length <= 4096, `length ${cut.length}`)
+    assert.match(cut, bridge)
+    for (const servers of [['jira'], [], ['claude-code-extra']])
+      assert.equal(instructions(servers).includes('built-in'), false, servers.join(','))
+    const other = serverInstructions(['jira', 'claude'], new Set(['claude' as ServerKey]))
+    assert.match(other, /the other tools of claude, use your own built-in tools directly\. Call claude from a program/)
   })
 
   // Claude Code cuts server instructions at 4,096 characters.
   test('the instructions stay under 4,096 characters with many servers', () => {
     const keys = Array.from({ length: 400 }, (_, i) => `server-number-${i}`)
-    const text = serverInstructions(keys)
+    const text = serverInstructions(keys, NO_BRIDGES)
     assert.ok(text.length <= 4096, `length ${text.length}`)
     assert.match(text, /search_tools.*run_code/)
     const listed = keys.filter(k => new RegExp(`\\b${k}\\b`).test(text)).length
@@ -804,7 +876,7 @@ describe('the tool table', () => {
 
   // A served tool must not send the model to a tool that this server does not list.
   test('the listed text names no Claude Code tool and no tool that is not listed', () => {
-    const instructions = serverInstructions(['bench'])
+    const instructions = serverInstructions(['bench'], NO_BRIDGES)
     const text = [...SERVED.map(n => JSON.stringify(registration(n))), instructions].join('\n')
     for (const name of SERVED) assert.ok(instructions.includes(name), `the instructions do not name ${name}`)
     for (const name of TOOL_NAMES.filter(n => !(SERVED as readonly string[]).includes(n)))

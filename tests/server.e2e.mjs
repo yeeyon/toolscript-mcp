@@ -18,7 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
 import { after, before, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = process.env.TOOLSCRIPT_E2E_MAIN || path.join(ROOT, 'dist', 'host', 'main.js')
@@ -36,6 +36,10 @@ const slowFile = path.join(dir, 'slow.json')
 const hangFile = path.join(dir, 'hang.pid')
 const writerFile = path.join(dir, 'writer.json')
 const consentFile = path.join(dir, 'consent.json')
+const bridgeFile = path.join(dir, 'bridge.json')
+const picFile = path.join(dir, 'pic.json')
+// The image that a probe in --image mode answers: a PNG of 1 by 1 pixel.
+const PIC_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const configFile = path.join(dir, 'config.json')
 // Every call that reaches the fake server, one JSON line each.
 const BENCH_LOG = path.join(dir, 'bench.jsonl')
@@ -72,6 +76,9 @@ fs.writeFileSync(
       { match: 'mcp__slow__probe', action: 'allow' },
       { match: 'mcp__x__probe', action: 'allow' },
       { match: 'mcp__consent__probe', action: 'allow' },
+      { match: 'mcp__pic__probe', action: 'allow' },
+      // It matches the tools of the bridge claude-code, but does not name that server, so it does not allow them.
+      { match: 'mcp__claude-code*', action: 'allow' },
     ],
     mcpServers: {
       // `node` from PATH, not process.execPath: the SDK's short environment must still find it.
@@ -100,6 +107,8 @@ fs.writeFileSync(
       x: { command: process.execPath, args: [PROBE, writerFile, '--write-on-call'] },
       // Its tool requires a person on every call, and the policy allows it.
       consent: { command: process.execPath, args: [PROBE, consentFile, '--requires-person'] },
+      // Its tool answers a text block and an image block.
+      pic: { command: process.execPath, args: [PROBE, picFile, '--image'] },
       // A variable that is not set: this entry fails alone, and the server still starts.
       broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
       // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
@@ -107,6 +116,8 @@ fs.writeFileSync(
       badvar: { type: 'http', url: '${TOOLSCRIPT_E2E_BAD_URL}' },
       // Answers 401 to everything, and HOME has no tokens: it needs a login.
       locked: { type: 'http', url: `${LOCKED_URL}/mcp` },
+      // The key of the Claude Code bridge: its tools skip the checks of the client.
+      'claude-code': { command: process.execPath, args: [PROBE, bridgeFile] },
     },
   }),
 )
@@ -304,7 +315,27 @@ test('(k) an http entry whose URL does not parse fails alone, and the error name
 
 test('(p) an http server that answers 401 without tokens asks for a login, with this config file', async () => {
   const text = await search('')
-  const command = `npx -y toolscript-mcp login locked --config "${path.resolve(configFile)}"`
+  // The command from the sources: node with this main.js from a clone, npx from an npm install. Node 22.13 runs
+  // TypeScript only with the flag.
+  const source = f => JSON.stringify(pathToFileURL(path.join(ROOT, f)).href)
+  const expected = spawnSync(
+    process.execPath,
+    [
+      '--experimental-strip-types',
+      '--no-warnings',
+      '--input-type=module',
+      '-e',
+      `import { loginCommand } from ${source('src/core/config.ts')}
+import { detectLaunch } from ${source('src/host/start.ts')}
+process.stdout.write(loginCommand(detectLaunch(process.argv[1]), process.platform, 'locked', process.argv[2]))`,
+      path.resolve(MAIN),
+      path.resolve(configFile),
+    ],
+    { encoding: 'utf8' },
+  )
+  assert.equal(expected.status, 0, expected.stderr)
+  const command = expected.stdout
+  assert.match(command, /^(node|npx) .* login locked --config /)
   assert.ok(text.includes(`- locked: it needs an OAuth login. Ask the person to run \`${command}\``), text)
   const login = spawnSync(process.execPath, [MAIN, 'login', 'bench', '--config', configFile], {
     env: SERVER_ENV,
@@ -313,6 +344,16 @@ test('(p) an http server that answers 401 without tokens asks for a login, with 
   assert.equal(login.status, 1, login.stderr)
   assert.match(login.stderr, /bench is a stdio server\. Only an HTTP server logs in with OAuth\./)
   assert.equal(login.stdout, '')
+})
+
+test('(p2) --help and -h print the usage to stderr and exit 0, for the server, init and login', () => {
+  for (const args of [['--help'], ['-h'], ['init', '--help'], ['init', '-h'], ['login', '--help'], ['login', '-h']]) {
+    const run = spawnSync(process.execPath, [MAIN, ...args], { env: SERVER_ENV, input: '', encoding: 'utf8' })
+    assert.equal(run.status, 0, `${args.join(' ')}: ${run.stderr}`)
+    assert.equal(run.stdout, '', `${args.join(' ')} wrote to stdout`)
+    assert.match(run.stderr, /usage: toolscript-mcp/, args.join(' '))
+    assert.ok(!/Unknown option/.test(run.stderr), run.stderr)
+  }
 })
 
 test('(e) a nested toolscript-mcp refuses to start', async () => {
@@ -461,6 +502,49 @@ test('run (r) a tool that requires a person, with a name built at run time, is r
   assert.ok(r.text.startsWith('"caught: not approved: mcp__consent__probe needs the person\'s approval'), r.text)
   assert.equal(asking.prompts.length, prompts, 'a name built at run time is never asked')
   assert.equal(consentCalls(), calls)
+})
+
+// The calls that reached the bridge probe of either server.
+const bridgeCalls = () =>
+  (fs.existsSync(`${bridgeFile}.log`) ? fs.readFileSync(`${bridgeFile}.log`, 'utf8') : '')
+    .split('\n')
+    .filter(Boolean)
+    .filter(line => JSON.parse(line).event === 'call').length
+
+test('run (s) an allow rule that does not name the bridge asks for its tool, and the instructions keep its tools direct', async () => {
+  assert.match(client.getInstructions() ?? '', /the other tools of claude-code, use your own built-in tools directly/)
+  assert.ok(transport.stderr.includes('toolscript-mcp: Claude Code bridges: claude-code\n'), transport.stderr)
+  const code = 'return await call("mcp__claude-code__probe", {})'
+  const refused = await run(code)
+  assert.equal(refused.isError, true)
+  assert.ok(refused.text.includes('this MCP client cannot ask the person'), refused.text)
+  assert.ok(refused.text.includes('{"match": "mcp__claude-code__probe", "action": "allow"}'), refused.text)
+  assert.equal(bridgeCalls(), 0)
+
+  const prompts = asking.prompts.length
+  asking.answer = 'decline'
+  const declined = await run(code, askingClient)
+  assert.ok(declined.text.includes('the person did not approve'), declined.text)
+  assert.equal(asking.prompts.length, prompts + 1)
+  assert.ok(
+    asking.prompts
+      .at(-1)
+      .includes(
+        'which no policy rule allows:\n- mcp__claude-code__probe\nAn allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__.\n',
+      ),
+    asking.prompts.at(-1),
+  )
+  const built = await run(
+    'try { return await call("mcp__claude-code__" + "probe", {}) } catch (e) { return e.message }',
+  )
+  assert.ok(
+    built.text.includes(
+      'not approved: an allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__, such as',
+    ),
+    built.text,
+  )
+  assert.equal(bridgeCalls(), 0)
+  asking.answer = 'accept'
 })
 
 test('run (f) a busy loop ends at the limit, and the server stays usable', async () => {
@@ -760,6 +844,19 @@ test('run (l) a call with no answer in callTimeoutSeconds throws, the program go
     [{ tool: 'mcp__slow__probe', ok: false, error: 'timeout' }],
     'the run log records the call as a timeout',
   )
+})
+
+test('run (s) an image of a call is a file reference, and a returned reference is an MCP image block', async () => {
+  const code = 'return (await call("mcp__pic__probe", {})).attachments[0]'
+  const r = await client.callTool({ name: 'run_code', arguments: { code } })
+  assert.equal(r.isError, false, r.content[0].text)
+  const ref = JSON.parse(r.content[0].text.slice(0, r.content[0].text.indexOf('\n\n---')))
+  assert.equal(ref.type, 'image')
+  assert.equal(ref.mimeType, 'image/png')
+  assert.deepEqual(fs.readFileSync(ref.file), Buffer.from(PIC_BASE64, 'base64'), 'the file holds the decoded bytes')
+  assert.equal(path.dirname(path.dirname(ref.file)), path.join(HOME, '.toolscript-mcp', 'files'))
+  assert.deepEqual(r.content.slice(1), [{ type: 'image', data: PIC_BASE64, mimeType: 'image/png' }])
+  assert.equal(r.content[0].text.includes(PIC_BASE64), false, 'no base64 in the text')
 })
 
 test('(f) stdout holds only JSON-RPC, and (h) the server and its children end when stdin closes', async () => {

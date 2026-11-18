@@ -4,9 +4,10 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { parseConfig } from '../src/core/config.ts'
-import { clientFiles, importServers, initReport, shellWord } from '../src/core/init.ts'
+import { loginCommand, NPX_LAUNCH, parseConfig, pathWord, shellWord, type Launch } from '../src/core/config.ts'
+import { clientFiles, importServers, initReport } from '../src/core/init.ts'
 import { runInit } from '../src/host/init.ts'
+import { detectLaunch } from '../src/host/start.ts'
 
 const SECRETS = ['fake-secret-env', 'fake-secret-header', 'fake-secret-pass', 'fake-secret-query']
 
@@ -64,10 +65,10 @@ const homeWith = (files: Record<string, unknown>): string => {
   return dir
 }
 
-const init = async (home: string, args: string[] = [], platform = 'linux') => {
+const init = async (home: string, args: string[] = [], platform = 'linux', launch: Launch = NPX_LAUNCH) => {
   let out = ''
   const env = { XDG_CONFIG_HOME: path.join(home, '.config'), APPDATA: path.join(home, '.config') }
-  const code = await runInit(args, env, platform, home, text => (out += `${text}\n`))
+  const code = await runInit(args, env, platform, home, text => (out += `${text}\n`), launch)
   return { code, out, file: path.join(home, '.config', 'toolscript-mcp', 'config.json') }
 }
 
@@ -435,10 +436,188 @@ describe('toolscript-mcp init', () => {
     const { out, file } = await init(home, [], 'win32')
     assert.ok(
       out.includes(
-        `claude mcp add --scope user toolscript '--' cmd /c npx -y toolscript-mcp --config ${shellWord(file, 'win32')}`,
+        `claude mcp add --scope user toolscript "--" cmd /c npx -y toolscript-mcp --config ${pathWord(file, 'win32')}`,
       ),
       out,
     )
+  })
+
+  describe('from a clone', () => {
+    const clone: Launch = { kind: 'node', main: '/home/u/my tools/toolscript-mcp/dist/host/main.js' }
+
+    test('every client starts node with the path of main.js, and Windows has no cmd /c', async () => {
+      const home = homeWith(CLIENTS)
+      const { out, file } = await init(home, [], 'linux', clone)
+      assert.ok(!out.includes('npx'), out)
+      assert.ok(
+        out.includes(
+          `claude mcp add --scope user toolscript -- node '/home/u/my tools/toolscript-mcp/dist/host/main.js' --config ${shellWord(file, 'linux')}`,
+        ),
+        out,
+      )
+      assert.ok(
+        out.includes(
+          `"toolscript": {"command":"node","args":["/home/u/my tools/toolscript-mcp/dist/host/main.js","--config",${JSON.stringify(file)}]}`,
+        ),
+        out,
+      )
+      const main = 'C:\\Users\\u\\my tools\\toolscript-mcp\\dist\\host\\main.js'
+      const win = await init(homeWith(CLIENTS), [], 'win32', { kind: 'node', main })
+      assert.ok(!win.out.includes('cmd /c'), win.out)
+      assert.ok(
+        win.out.includes(
+          `claude mcp add --scope user toolscript "--" node "C:/Users/u/my tools/toolscript-mcp/dist/host/main.js" --config`,
+        ),
+        win.out,
+      )
+      assert.ok(
+        win.out.includes(`"toolscript": {"command":"node","args":[${JSON.stringify(main)},"--config",`),
+        'a client config keeps the path as it is',
+      )
+    })
+
+    test('the OAuth login line names the same start and the config file', () => {
+      const out = initReport(
+        importServers([
+          {
+            client: 'claude-code',
+            path: '/c/.claude.json',
+            kind: 'text',
+            text: JSON.stringify({ mcpServers: { jira: { type: 'http', url: 'https://mcp.example.com/mcp' } } }),
+          },
+        ]),
+        '/c/config.json',
+        'linux',
+        { kind: 'node', main: '/opt/tool/main.js' },
+      )
+      assert.ok(out.includes('run node /opt/tool/main.js login <server> --config /c/config.json for it.'), out)
+    })
+  })
+
+  test('--help and -h print the usage and exit 0, and write nothing', async () => {
+    for (const flag of ['--help', '-h']) {
+      const home = homeWith(CLIENTS)
+      const { code, out, file } = await init(home, [flag])
+      assert.equal(code, 0, out)
+      assert.match(out, /^usage: toolscript-mcp init /)
+      assert.ok(!fs.existsSync(file))
+    }
+  })
+})
+
+describe('the login command', () => {
+  test('is npx for the package and node with the path for a clone, quoted for the shell', () => {
+    assert.equal(loginCommand(NPX_LAUNCH, 'linux', 'jira' as never), 'npx -y toolscript-mcp login jira')
+    const clone: Launch = { kind: 'node', main: '/home/u/my tools/main.js' }
+    assert.equal(
+      loginCommand(clone, 'linux', 'jira' as never, "/home/u/it's.json"),
+      `node '/home/u/my tools/main.js' login jira --config '/home/u/it'\\''s.json'`,
+    )
+    assert.equal(
+      loginCommand({ kind: 'node', main: 'C:\\my tools\\main.js' }, 'win32', 'jira' as never, 'C:\\c.json'),
+      `node "C:/my tools/main.js" login jira --config C:/c.json`,
+    )
+  })
+
+  const hidden = { encoding: 'utf8', windowsHide: true } as const
+  const SHELLS: Record<string, (line: string) => ReturnType<typeof spawnSync<string>>> = {
+    cmd: line =>
+      spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+        ...hidden,
+        windowsVerbatimArguments: true,
+      }),
+    powershell: line => spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', line], hidden),
+    pwsh: line => spawnSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', line], hidden),
+    // Claude Code runs a `!` command in Git Bash on Windows.
+    'git bash': line => spawnSync('bash', ['-c', line], hidden),
+  }
+  const present = (shell: string) =>
+    shell === 'git bash'
+      ? spawnSync('bash', ['-c', 'uname -o'], { encoding: 'utf8', windowsHide: true }).stdout?.trim() === 'Msys'
+      : shell !== 'pwsh' || spawnSync('pwsh.exe', ['-v'], { windowsHide: true }).error === undefined
+
+  for (const shell of Object.keys(SHELLS))
+    test(
+      `on Windows ${shell} passes each word of the printed command as it is`,
+      { skip: process.platform !== 'win32' ? 'not Windows' : !present(shell) && `no ${shell}` },
+      () => {
+        // A bare path, and a path with characters that each need quotes in one of the shells. cmd.exe keeps a %NAME%
+        // that is not set.
+        for (const name of ['toolscript-', "toolscript a&b (x86) ^ %ts_unset% !x @+ ’q 'o;,= "]) {
+          const dir = fs.mkdtempSync(path.join(os.tmpdir(), name))
+          temps.push(dir)
+          const script = path.join(dir, 'main.js')
+          // ASCII only, so the code page of the shell cannot change the output.
+          fs.writeFileSync(
+            script,
+            'process.stdout.write(JSON.stringify(process.argv.slice(1)).replace(/[^\\x00-\\x7f]/g, c => `\\\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`))\n',
+          )
+          const config = path.join(dir, 'config.json')
+          const line = loginCommand({ kind: 'node', main: script }, 'win32', 'x' as never, config)
+          const run = SHELLS[shell](line)
+          assert.equal(run.status, 0, `${line}\n${run.stdout}${run.stderr}`)
+          const [main, ...args] = JSON.parse(run.stdout)
+          const got = [main, ...args.slice(0, 3), path.resolve(args[3])]
+          assert.deepEqual(got, [script, 'login', 'x', '--config', config], line)
+        }
+      },
+    )
+})
+
+describe('shellWord', () => {
+  test('on Windows a bare word stays bare and a word with a space gets double quotes', () => {
+    assert.equal(shellWord('C:\\a\\b.json', 'win32'), 'C:\\a\\b.json')
+    assert.equal(shellWord('C:\\a b\\main.js', 'win32'), '"C:\\a b\\main.js"')
+    assert.equal(shellWord('--', 'win32'), '"--"')
+    assert.equal(shellWord('-a:b', 'win32'), '"-a:b"')
+  })
+
+  test('on Windows a word that expands in double quotes gets single quotes, doubled inside', () => {
+    assert.equal(shellWord('C:\\a b\\$x\\c.json', 'win32'), `'C:\\a b\\$x\\c.json'`)
+    assert.equal(shellWord('$it’s', 'win32'), `'$it’’s'`)
+    assert.equal(shellWord("$it's", 'win32'), `'$it''s'`)
+    assert.equal(shellWord('C:\\a b\\', 'win32'), `'C:\\a b\\'`)
+    assert.equal(shellWord('a “b', 'win32'), `'a “b'`)
+  })
+
+  test('on Windows % and ! stay in double quotes, which cmd.exe reads too', () => {
+    assert.equal(shellWord('C:\\a b\\%TEMP%\\c.json', 'win32'), '"C:\\a b\\%TEMP%\\c.json"')
+    assert.equal(shellWord('a b!', 'win32'), '"a b!"')
+    assert.equal(shellWord('C:\\a b\\it’s\\c', 'win32'), '"C:\\a b\\it’s\\c"')
+  })
+
+  test('on POSIX a word with a space gets single quotes', () => {
+    assert.equal(shellWord('/a b/c', 'linux'), `'/a b/c'`)
+    assert.equal(shellWord("/a/it's", 'darwin'), `'/a/it'\\''s'`)
+    assert.equal(shellWord('/a/b.json', 'linux'), '/a/b.json')
+  })
+})
+
+describe('pathWord', () => {
+  test('on Windows a path gets forward slashes, and quotes as any word', () => {
+    assert.equal(pathWord('C:\\a\\b.json', 'win32'), 'C:/a/b.json')
+    assert.equal(pathWord('C:\\a b (x86)\\main.js', 'win32'), '"C:/a b (x86)/main.js"')
+    assert.equal(pathWord('\\\\host\\share\\main.js', 'win32'), '//host/share/main.js')
+    assert.equal(pathWord('C:\\a b\\', 'win32'), '"C:/a b/"')
+    assert.equal(pathWord('C:\\a b\\$x\\c.json', 'win32'), `'C:/a b/$x/c.json'`)
+  })
+
+  test('on POSIX a path keeps its backslashes', () => {
+    assert.equal(pathWord('/a/b\\c', 'linux'), `'/a/b\\c'`)
+  })
+})
+
+describe('detectLaunch', () => {
+  test('a clone gives node and the absolute path, and an npm install gives npx', () => {
+    assert.deepEqual(detectLaunch('main.js'), { kind: 'node', main: path.resolve('main.js') })
+    const clone = path.join(os.tmpdir(), 'toolscript-mcp', 'dist', 'host', 'main.js')
+    assert.deepEqual(detectLaunch(clone), { kind: 'node', main: clone })
+    for (const script of [
+      '/home/u/.npm/_npx/ab12/node_modules/toolscript-mcp/dist/host/main.js',
+      '/home/u/.npm/_npx/ab12/node_modules/.bin/toolscript-mcp',
+      'C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\ab\\node_modules\\toolscript-mcp\\dist\\host\\main.js',
+    ])
+      assert.deepEqual(detectLaunch(script), NPX_LAUNCH, script)
   })
 })
 
@@ -457,6 +636,7 @@ describe('the printed Claude Code commands', () => {
       ]),
       configFile,
       platform,
+      NPX_LAUNCH,
     )
 
   /** The arguments that `claude` gets when a shell runs the printed command lines, one list per line. */
@@ -509,7 +689,7 @@ describe('the printed Claude Code commands', () => {
     const config = `C:\\Users\\u\\$env:USERNAME\\it’s $(echo pwned) \`x\\config.json`
     const text = report(config, 'win32')
     const argv = argvInShell('pwsh', 'function claude { & $env:NODE $env:ARGV @args }', text)
-    const run = ['-y', 'toolscript-mcp', '--config', config]
+    const run = ['-y', 'toolscript-mcp', '--config', config.replaceAll('\\', '/')]
     assert.deepEqual(argv, [
       ['mcp', 'remove', NAME, '--scope', 'user'],
       ['mcp', 'add', '--scope', 'user', 'toolscript', '--', 'cmd', '/c', 'npx', ...run],
@@ -526,6 +706,7 @@ describe('the OAuth login in the report', () => {
       ]),
       '/c/config.json',
       'linux',
+      NPX_LAUNCH,
     )
 
   test('names the HTTP servers without headers, which log in with toolscript-mcp login', () => {
@@ -537,7 +718,7 @@ describe('the OAuth login in the report', () => {
     })
     assert.ok(
       out.includes(
-        'These HTTP servers have no headers: jira, docs. If one asks for an OAuth login, run npx -y toolscript-mcp login <server> for it.',
+        'These HTTP servers have no headers: jira, docs. If one asks for an OAuth login, run npx -y toolscript-mcp login <server> --config /c/config.json for it.',
       ),
       out,
     )

@@ -8,9 +8,11 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
 - `src/core/` holds the pure helpers, with no Node modules and no host types: `protocol.ts` (runner protocol,
   results, kept results for recall, search, model-facing text), `hints.ts` (hint files and matching), `functions.ts`
   (saved functions), `paths.ts` (folders and guarded ones), `tools.ts` (the tool table and `SERVED`), `config.ts`
-  (config parse, `${VAR}` expansion, config location, self-loop guard), `catalog.ts` (downstream tools, the
-  `search_tools` result, argument specs from input schemas), `policy.ts` (the allow, deny and ask rules: the decision
-  before a run, the check of each call and the refusal texts). Imports between them use `.ts` extensions.
+  (config parse, `${VAR}` expansion, config location, self-loop guard, the Claude Code bridges), `catalog.ts`
+  (downstream tools, the `search_tools` result, argument specs from input schemas), `policy.ts` (the allow, deny and
+  ask rules: the decision before a run, the check of each call and the refusal texts). An allow rule allows a tool of
+  a bridge only when its match starts with `mcp__<key>__` (`counts` in `policy.ts`). Imports between them use `.ts`
+  extensions.
 - `src/host/` holds the host code, which runs in Node. `tsconfig.host.json` checks its types. `scripts/build.mjs`
   bundles it with the SDK into `dist/host/main.js`, the one file that the package runs.
   - `main.ts`: the `toolscript-mcp` command. It reads the config, starts the server and closes the children.
@@ -31,7 +33,8 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   skill `setup` installs toolscript-mcp from the `beta` branch, and `config.mjs` beside it changes the
   config without printing secrets. The npm package does not hold them.
 - `bench/` holds the token and cost bench. `run.mjs` and `interactive.mjs` start Claude Code and spend money.
-  - `run.mjs`: direct MCP tools against toolscript-mcp in headless Claude Code. Results in `RESULTS.md`.
+  - `run.mjs`: direct MCP tools against toolscript-mcp in headless Claude Code, and the arm `both`, which lists both
+    and counts how often the model picks `run_code`. `--dry-run` starts no run. Results in `RESULTS.md`.
   - `interactive.mjs`: direct tools, Claude Code Code Mode and toolscript-mcp in the interactive TUI. Results in
     `RESULTS-codemode.md`. `spend.mjs` holds its spend cap.
   - `CODEX.md`: the test plan for the same arms in Codex. `check.mjs` judges an answer of another agent.

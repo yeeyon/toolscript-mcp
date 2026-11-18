@@ -18,6 +18,7 @@ import {
   invalidReason,
   loginCommand,
   loginReason,
+  NPX_LAUNCH,
   redact,
   type HttpServer,
   type ServerConfig,
@@ -376,7 +377,7 @@ export const connectAll = (
   log: (line: string) => void,
   {
     home = os.homedir(),
-    login = key => loginCommand(key),
+    login = key => loginCommand(NPX_LAUNCH, process.platform, key),
     now = Date.now,
     refreshTimeoutMs = REFRESH_TIMEOUT_MS,
     listFloorMs = LIST_FLOOR_MS,
