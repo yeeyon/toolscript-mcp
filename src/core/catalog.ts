@@ -2,7 +2,7 @@
 // entry per tool, named mcp__<server>__<tool>, and the servers that failed.
 
 import type { ServerKey } from './config.ts'
-import { decide, type Action, type Bridges, type Policy } from './policy.ts'
+import { decide, shownName, type Action, type Bridges, type Policy } from './policy.ts'
 import { learnedShape, listsAll, rankTools, type ArgSpec, type ToolEntry } from './protocol.ts'
 
 /** A tool as a downstream server lists it. */
@@ -117,7 +117,7 @@ export const toolLines = (
 
 /** `mcp__demo__list_pull_requests read-only allow`. A deny rule wins over the mark, so a denied tool shows no mark. */
 export const toolLineText = ({ name, hint, action, person }: ToolLine): string =>
-  `${name} ${hint} ${action}${person && action !== 'deny' ? ', a person each run' : ''}`
+  `${shownName(name)} ${hint} ${action}${person && action !== 'deny' ? ', a person each run' : ''}`
 
 /** Why a call cannot reach a server now, or undefined when it is connected. */
 export const notConnected = (s: ServerState): string | undefined =>

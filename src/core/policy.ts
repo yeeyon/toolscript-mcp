@@ -71,15 +71,23 @@ export const decide = (policy: Policy, bridges: Bridges, tool: string): Verdict 
 }
 
 /**
- * A string from the config file as JSON, with every character outside
- * printable ASCII escaped too: the text never breaks a line, turns around the
- * text after it, or hides a blank or look-alike character in a prompt.
+ * `s` with every character outside printable ASCII as a `\u` escape: printed, the text never breaks a line, moves
+ * the cursor, turns around the text after it, or hides a blank or look-alike character.
  */
-const quoted = (s: string): string =>
-  JSON.stringify(s).replace(/[^\x20-\x7e]/gu, c => {
+export const printable = (s: string): string =>
+  s.replace(/[^\x20-\x7e]/gu, c => {
     const hex = c.codePointAt(0)!.toString(16)
     return hex.length <= 4 ? `\\u${hex.padStart(4, '0')}` : `\\u{${hex}}`
   })
+
+/** A string from the config file as JSON, printable. */
+const quoted = (s: string): string => printable(JSON.stringify(s))
+
+/**
+ * A name from a file or a server as one word of printed text: bare when it is printable ASCII without a blank or a
+ * double quote, else quoted. So a name never fakes a column, or the quoted form of another name.
+ */
+export const shownName = (s: string): string => (/^[\x21\x23-\x7e]+$/.test(s) ? s : quoted(s))
 
 const SHOWN_MATCH = 120
 
