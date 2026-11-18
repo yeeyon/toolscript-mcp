@@ -81,12 +81,12 @@ export type ProjectFolders = { readonly local: string; readonly shared: readonly
 
 /**
  * The root of the main checkout for a worktree whose `.git` file holds `gitdir: <main>/.git/worktrees/<name>`, or
- * undefined for another `.git` file, such as the one of a submodule.
+ * undefined for another `.git` file, such as the one of a submodule, also of a submodule in a worktree.
  */
 export const mainCheckoutOf = (dotGitFile: string): string | undefined => {
-  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(dotGitFile)?.[1]?.replace(/\\/g, '/')
-  const at = gitdir?.lastIndexOf('/.git/worktrees/') ?? -1
-  return at > 0 ? gitdir!.slice(0, at) : undefined
+  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(dotGitFile)?.[1]?.replace(/\\/g, '/').replace(/\/+$/, '')
+  const at = gitdir === undefined ? undefined : /\/\.git\/worktrees\/[^/]+$/.exec(gitdir)?.index
+  return at ? gitdir!.slice(0, at) : undefined
 }
 
 /** True when `key` names the folder `project`. Windows paths match with `/` and `\` as one, in any case. */

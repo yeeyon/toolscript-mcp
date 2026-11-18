@@ -973,7 +973,9 @@ describe('init --list and --add', () => {
     assert.equal(mainCheckoutOf('gitdir: C:/r/main/.git/worktrees/wt\n'), 'C:/r/main')
     assert.equal(mainCheckoutOf('gitdir: C:\\r\\main\\.git\\worktrees\\wt\r\n'), 'C:/r/main')
     assert.equal(mainCheckoutOf('gitdir: ../main/.git/worktrees/wt'), '../main')
+    assert.equal(mainCheckoutOf('gitdir: /r/main/.git/worktrees/wt/\n'), '/r/main')
     assert.equal(mainCheckoutOf('gitdir: ../.git/modules/sub'), undefined)
+    assert.equal(mainCheckoutOf('gitdir: C:/r/main/.git/worktrees/wt/modules/sub\n'), undefined)
     assert.equal(mainCheckoutOf(''), undefined)
   })
 
