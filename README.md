@@ -311,6 +311,10 @@ the reason, with each control and format character as a `\u` escape. For a serve
 never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 on a failure and 2 on a
 usage error.
 
+`tools` never shows what a stdio server writes to stderr. That text can hold a secret that is not in the config. If
+the server wrote to stderr, the reason says so. To read that text, run the command of the server in a terminal. When
+your client starts toolscript-mcp, the log of the client also holds that text.
+
 `toolscript-mcp runs [--server <key>] [--last <n>] [--since <time>] [--config <path>]` reads the
 [run log](#run-log). It shows the newest `n` runs that call a tool of the server, newest first. The default of `n`
 is 1. Without `--server`, it shows the newest runs of all servers.

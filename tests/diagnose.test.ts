@@ -118,29 +118,34 @@ describe('tools', () => {
     assert.ok(!writes.join('').includes(SECRET), 'the stderr of the child stays out of the output')
   })
 
-  test('escapes the control characters that a child writes to stderr in the reason', async () => {
-    const s = setup({
-      mcpServers: {
-        broken: { command: process.execPath, args: ['-e', 'console.error("red \\u001b[31m"); process.exit(3)'] },
-      },
+  /** Runs tools on an HTTP server that answers each request with a 500 and `body`. */
+  const failingHttp = async (body: string) => {
+    const server = http.createServer((req, res) => {
+      req.resume()
+      res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' }).end(body)
     })
-    assert.equal(await s.tools('broken'), 1)
-    assert.match(s.printed.join('\n'), /red \\u001b\[31m/)
-    assert.ok(printableOnly(s.printed))
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const { port } = server.address() as AddressInfo
+      const s = setup({ mcpServers: { broken: { type: 'http', url: `http://127.0.0.1:${port}/mcp` } } })
+      return { code: await s.tools('broken'), printed: s.printed }
+    } finally {
+      server.close()
+    }
+  }
+
+  test('escapes the control characters of the error text of a server in the reason', async () => {
+    const { code, printed } = await failingHttp('red \u001b[31m')
+    assert.equal(code, 1)
+    assert.match(printed.join('\n'), /red \\u001b\[31m/)
+    assert.ok(printableOnly(printed))
   })
 
   test('keeps the letters of a user folder name in the reason, and escapes a bidi control', async () => {
-    const s = setup({
-      mcpServers: {
-        broken: {
-          command: process.execPath,
-          args: ['-e', 'console.error("cannot open C:\\\\Users\\\\홍길동 \\u202eevil"); process.exit(3)'],
-        },
-      },
-    })
-    assert.equal(await s.tools('broken'), 1)
-    assert.match(s.printed.join('\n'), /cannot open C:\\Users\\홍길동 \\u202eevil/)
-    assert.equal(s.printed.length, 1)
+    const { code, printed } = await failingHttp('cannot open C:\\Users\\\ud64d\uae38\ub3d9 \u202eevil')
+    assert.equal(code, 1)
+    assert.match(printed.join('\n'), /cannot open C:\\Users\\\ud64d\uae38\ub3d9 \\u202eevil/)
+    assert.equal(printed.length, 1)
   })
 
   test('make it fail: the reason of an untrusted server holds no text of its child, and names no log that tools lacks', async () => {
@@ -165,20 +170,27 @@ describe('tools', () => {
     assert.deepEqual(s.printed, [`the config ${s.config} has no server "nope". Its servers: demo, other`])
   })
 
-  test('gives the reason of a server that cannot connect, without its secrets', async () => {
+  test('make it fail: the reason of a child that cannot connect holds no text of its stderr, also a token from outside the config', async () => {
+    const outside = 'sk-live-NOTINCONFIG-5f2a9c81d7'
     const s = setup({
       mcpServers: {
         broken: {
           command: process.execPath,
-          args: ['-e', 'console.error("bad token " + process.env.API_TOKEN); process.exit(3)'],
+          args: [
+            '-e',
+            `console.error("bad token " + process.env.API_TOKEN + ", and ${outside} from ~/.netrc"); process.exit(3)`,
+          ],
           env: { API_TOKEN: SECRET },
         },
       },
     })
     assert.equal(await s.tools('broken'), 1)
     assert.equal(s.printed.length, 1)
-    assert.match(s.printed[0]!, /^broken: cannot connect: .*bad token \*\*\*/)
-    assert.ok(!s.printed[0]!.includes(SECRET))
+    assert.match(
+      s.printed[0]!,
+      /^broken: cannot connect: .*\. Its stderr is not shown here\. To read it, run the command of the server in a terminal\. /,
+    )
+    for (const text of [outside, SECRET, 'bad token']) assert.ok(!s.printed[0]!.includes(text), s.printed[0])
   })
 
   test('gives the login command of a server that needs an OAuth login, and registers no client', async () => {

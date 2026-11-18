@@ -626,7 +626,7 @@ describe('a server whose text is untrusted', () => {
   const SEALED = 'Its error text is in the toolscript-mcp log only, because the text of this server is untrusted'
 
   /** connectAll with one probe server that writes INJECTED to stderr and exits at its first call, after that call. */
-  const crashed = async (untrusted = false) => {
+  const crashed = async (untrusted = false, stderrInReason = true) => {
     const server: ServerConfig = {
       kind: 'stdio',
       command: process.execPath,
@@ -635,7 +635,7 @@ describe('a server whose text is untrusted', () => {
       ...(untrusted && { untrusted: true as const }),
     }
     const lines: string[] = []
-    const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line))
+    const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line), { stderrInReason })
     opened.push(downstream)
     const link = await downstream.client(KEY)
     if (!link.ok) throw new Error(link.reason)
@@ -648,13 +648,20 @@ describe('a server whose text is untrusted', () => {
     return { downstream, lines, reason }
   }
 
-  test('the reason of a server that the config does not mark ends with the stderr of its child', async () => {
+  test('with stderrInReason, the reason of a server that the config does not mark ends with the stderr of its child', async () => {
     const { downstream, reason } = await crashed()
     assert.equal(downstream.untrusted(KEY), false)
     assert.ok(
       reason().startsWith(`the connection closed. Its stderr ends with: the call failed: ${INJECTED}`),
       reason(),
     )
+  })
+
+  test('make it fail: by default, the reason of a closed child holds no text of its stderr, and the log neither', async () => {
+    const { lines, reason } = await crashed(false, false)
+    assert.ok(reason().startsWith('the connection closed. Its stderr is not shown here. To read it, run '), reason())
+    assert.ok(!reason().includes(INJECTED), reason())
+    assert.ok(!lines.some(l => l.includes(INJECTED)), lines.join('\n'))
   })
 
   test('make it fail: the reason of a marked server holds no text of its child, and the log has it', async () => {

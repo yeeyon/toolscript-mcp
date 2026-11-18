@@ -1,7 +1,7 @@
 // The checks of a first run. `toolscript-mcp tools <server>` connects to one server of the config as the running
 // server does, then prints its tools and what the policy decides for each. `toolscript-mcp runs` reads the run log and
 // says whether the newest run of a server worked, and the next step when it did not. Both print to stderr, as init and
-// login do. Neither prints a description, an argument, an env or header value, or a token.
+// login do. Neither prints a description, an argument, an env or header value, a token or the stderr of a child.
 
 import fs from 'node:fs'
 import { parseArgs } from 'node:util'
@@ -77,6 +77,8 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     login,
     childStderr: () => {},
     unshown: TOOLS_UNSHOWN,
+    // An agent reads what tools prints, and the stderr of a child can hold a secret that is not in the config.
+    stderrInReason: false,
   })
   let state = downstream.states()[0]!
   try {
