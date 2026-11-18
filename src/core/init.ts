@@ -524,7 +524,10 @@ export const commandWord = (word: string, platform: string): Word => {
   return refusal === undefined ? { ok: true, text } : { ok: false, why: refusal[1] }
 }
 
-/** The lines that remove the servers `names` from one client file. */
+/**
+ * The lines that remove the servers `names` from one client file. Claude Code reads a name that starts with `-` as an
+ * option, so such a name comes last, after `--`.
+ */
 const removeLines = (file: ClientFile, names: readonly string[], platform: string): string[] => {
   if (file.client === 'claude-code') {
     const scope = `--scope ${file.scope ?? 'user'}`
@@ -532,7 +535,9 @@ const removeLines = (file: ClientFile, names: readonly string[], platform: strin
       const word = commandWord(name, platform)
       if (!word.ok)
         return `  ${shownName(name)}: init prints no command, because the name ${word.why}. Remove it from ${file.path} by hand.`
-      return `  claude mcp remove ${word.text} ${scope}`
+      return name.startsWith('-')
+        ? `  claude mcp remove ${scope} ${shellWord('--', platform)} ${word.text}`
+        : `  claude mcp remove ${word.text} ${scope}`
     })
   }
   return names.length > 0 ? [`  Remove from "mcpServers": ${names.map(n => JSON.stringify(n)).join(', ')}`] : []

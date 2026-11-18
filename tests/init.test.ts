@@ -631,6 +631,8 @@ describe('the printed Claude Code commands', () => {
   const NAME = `x $(echo pwned) \`echo pwned\` $HOME 'q' "d" ; & | -a:b`
   // The Windows form passes no " to cmd.exe, and no ' with $ to Git Bash.
   const WINDOWS_NAME = `x $(echo pwned) \`echo pwned\` $HOME ; -a:b`
+  // Claude Code reads a name that starts with - as an option, unless it comes after --.
+  const DASH = '-dash'
   const report = (configFile: string, platform: string, names: readonly string[]) =>
     initReport(
       importServers(
@@ -687,9 +689,10 @@ describe('the printed Claude Code commands', () => {
 
   test('a POSIX shell passes the server name and the config path as they are', { skip: !has('sh') && 'no sh' }, () => {
     const config = `/home/u/$HOME/it's $(echo pwned) \`x\`/config.json`
-    const argv = argvInShell('sh', 'claude() { "$NODE" "$ARGV" "$@"; }', report(config, 'linux', [NAME]))
+    const argv = argvInShell('sh', 'claude() { "$NODE" "$ARGV" "$@"; }', report(config, 'linux', [NAME, DASH]))
     assert.deepEqual(argv, [
       ['mcp', 'remove', NAME, '--scope', 'user'],
+      ['mcp', 'remove', '--scope', 'user', '--', DASH],
       ['mcp', 'add', '--scope', 'user', 'toolscript', '--', 'npx', '-y', 'toolscript-mcp', '--config', config],
     ])
   })
@@ -697,11 +700,12 @@ describe('the printed Claude Code commands', () => {
   // A function, as the npm shim claude.ps1 is a script: PowerShell drops a bare -- before both.
   test('PowerShell passes the server name and the config path as they are', { skip: !has('pwsh') && 'no pwsh' }, () => {
     const config = `C:\\Users\\u\\$env:USERNAME\\it’s $(echo pwned) \`x\\config.json`
-    const text = report(config, 'win32', [WINDOWS_NAME])
+    const text = report(config, 'win32', [WINDOWS_NAME, DASH])
     const argv = argvInShell('pwsh', 'function claude { & $env:NODE $env:ARGV @args }', text)
     const run = ['-y', 'toolscript-mcp', '--config', config.replaceAll('\\', '/')]
     assert.deepEqual(argv, [
       ['mcp', 'remove', WINDOWS_NAME, '--scope', 'user'],
+      ['mcp', 'remove', '--scope', 'user', '--', DASH],
       ['mcp', 'add', '--scope', 'user', 'toolscript', '--', 'cmd', '/c', 'npx', ...run],
     ])
     assert.match(text, /Claude Code, in PowerShell:/)

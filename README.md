@@ -336,6 +336,7 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:user` or `--from cursor`.
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
   through toolscript-mcp works.
+- In a step of Claude Code, a name that starts with `-` comes after `--`, as in `claude mcp remove --scope user -- -dash`.
 
 After the list, `init --list` prints a command for each server with the status `not in config`:
 
