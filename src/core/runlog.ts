@@ -5,7 +5,8 @@
 // a line, decides when the file rotates, and reads the lines back for
 // `toolscript-mcp runs`.
 
-import { decide, type Bridges, type Policy } from './policy.ts'
+import { serverKey, type ServerKey } from './config.ts'
+import { decide, shownName, type Bridges, type Policy } from './policy.ts'
 import { isCallable, splitToolName } from './protocol.ts'
 import { SERVER_NAME } from './tools.ts'
 
@@ -115,49 +116,50 @@ export const rotates = (size: number, add: number, max = MAX_LOG_BYTES): boolean
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const oneOf = <T extends string>(values: readonly T[], v: unknown): v is T =>
   typeof v === 'string' && (values as readonly string[]).includes(v)
-// A control character in a printed name could move the cursor or fake a line.
-const isText = (v: unknown): v is string => typeof v === 'string' && !/[\u0000-\u001f\u007f]/.test(v)
 const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
 
-const parseCall = (v: unknown): CallLog | undefined => {
-  if (!isObject(v) || !isText(v.tool) || !oneOf(CALL_DECISIONS, v.decision) || !isCount(v.ms)) return undefined
-  if (typeof v.ok !== 'boolean' || (v.error !== undefined && !oneOf(CALL_ERRORS, v.error))) return undefined
-  return {
-    tool: v.tool,
-    decision: v.decision,
-    ms: v.ms,
-    ok: v.ok,
-    ...(v.error === undefined ? {} : { error: v.error }),
-  }
+/** A call as `runs` reads it back. `unreadable`: a call in a form that runLine does not write. It never counts as ok. */
+export type ReadCall = CallLog | { readonly unreadable: true; readonly tool?: string; readonly ok: false }
+
+/** A run as `runs` reads it back. Its strings are as the file holds them: print them only through `shownName`. */
+export type ReadRun = Omit<RunRecord, 'calls'> & { readonly calls: readonly ReadCall[] }
+
+/** A line of the run log: a run, or `unreadable` when it is not one. Anyone who can write the file can change it. */
+export type LogEntry = ReadRun | 'unreadable'
+
+const readCall = (v: unknown): ReadCall => {
+  if (!isObject(v) || typeof v.tool !== 'string') return { unreadable: true, ok: false }
+  const { tool, decision, ms, ok, error } = v
+  if (!oneOf(CALL_DECISIONS, decision) || !isCount(ms) || typeof ok !== 'boolean')
+    return { unreadable: true, ok: false, tool }
+  if (error !== undefined && !oneOf(CALL_ERRORS, error)) return { unreadable: true, ok: false, tool }
+  return { tool, decision, ms, ok, ...(error === undefined ? {} : { error }) }
 }
 
-/** A line of the run log as a record, or undefined when it is not one. Anyone who can write the file can change it. */
-export const parseRunLine = (line: string): RunRecord | undefined => {
+export const parseRunLine = (line: string): LogEntry => {
   let v: unknown
   try {
     v = JSON.parse(line)
   } catch {
-    return undefined
+    return 'unreadable'
   }
-  if (!isObject(v) || !isText(v.time) || !isText(v.id) || !isCount(v.ms) || !oneOf(RUN_ENDINGS, v.ending))
-    return undefined
-  if (!isCount(v.chars) || !Array.isArray(v.calls) || (v.omitted !== undefined && !isCount(v.omitted))) return undefined
-  const calls: CallLog[] = []
-  for (const raw of v.calls) {
-    const call = parseCall(raw)
-    if (call === undefined) return undefined
-    calls.push(call)
-  }
-  const { time, id, ms, ending, chars, omitted } = v
-  return { time, id, ms, ending, chars, calls, ...(omitted === undefined ? {} : { omitted }) }
+  if (!isObject(v)) return 'unreadable'
+  const { time, id, ms, ending, chars, calls, omitted } = v
+  if (typeof time !== 'string' || typeof id !== 'string' || !isCount(ms) || !oneOf(RUN_ENDINGS, ending))
+    return 'unreadable'
+  if (!isCount(chars) || !Array.isArray(calls) || (omitted !== undefined && !isCount(omitted))) return 'unreadable'
+  return { time, id, ms, ending, chars, calls: calls.map(readCall), ...(omitted === undefined ? {} : { omitted }) }
 }
 
-/** The next step for each code of a failed call. `tools` is the command that checks one server. */
-const CALL_FIXES: Record<CallError, ((server: string, tools: (server: string) => string) => string) | undefined> = {
+/** The next step for each code of a failed call. `tools` is the command that checks its server, when its key is valid. */
+const CALL_FIXES: Record<CallError, ((tools: string | undefined) => string) | undefined> = {
   allow: undefined,
   'ask-approved': undefined,
-  'no-server': (server, tools) =>
-    `no-server: the server did not connect. Run \`${tools(server)}\` to see the connection or login problem.`,
+  // The server part of a logged name can be any text, so it reaches a printed command only as a valid key.
+  'no-server': tools =>
+    tools === undefined
+      ? 'no-server: the server did not connect. Run toolscript-mcp tools with its key to see the connection or login problem.'
+      : `no-server: the server did not connect. Run \`${tools}\` to see the connection or login problem.`,
   denied: () => 'denied: a deny rule of the policy matches the tool. The policy decides: setup does not override it.',
   unapproved: () =>
     'unapproved: approve the tool in the prompt, or add an allow rule with its exact name. A tool that needs a person each run needs the prompt.',
@@ -181,38 +183,60 @@ const ENDING_FIXES: Record<RunEnding, string | undefined> = {
   failed: 'failed: the sandbox gave no answer. Read the stderr of toolscript-mcp in the log of the client.',
 }
 
+const UNREADABLE_CALL =
+  'unreadable: this toolscript-mcp cannot read the call. Another version or another program wrote it.'
+
 /** What `toolscript-mcp runs` prints, and true when the newest run that it shows worked. */
 export type RunsReport = { readonly lines: readonly string[]; readonly ok: boolean }
 
 /**
- * The newest `last` records with a call of `server` (any record without one), newest first, then the next step for
- * each distinct problem. `ok`: the newest ended done and each of its calls of `server` worked.
+ * The newest `last` runs with a call of `server` (any run without one), newest first, then the next step for each
+ * distinct problem, then the count of unreadable lines. `ok`: the newest ended done, each of its calls of `server`
+ * worked, and no unreadable line is newer. Such a line can be a newer run of `server`, so it never lets an older run
+ * confirm the route. `tools` is the command that checks one server.
  */
 export const runsReport = (
-  records: readonly RunRecord[],
-  server: string | undefined,
+  entries: readonly LogEntry[],
+  server: ServerKey | undefined,
   last: number,
-  tools: (server: string) => string,
+  tools: (server: ServerKey) => string,
 ): RunsReport => {
-  const serverOf = (call: CallLog) => splitToolName(call.tool)?.server
-  const counts = (call: CallLog) => server === undefined || serverOf(call) === server
-  const shown = records
-    .filter(r => server === undefined || r.calls.some(counts))
+  const serverOf = (call: ReadCall) => (call.tool === undefined ? undefined : splitToolName(call.tool)?.server)
+  // An unreadable call without a server can be a call of any server.
+  const counts = (call: ReadCall) =>
+    server === undefined || serverOf(call) === server || ('unreadable' in call && serverOf(call) === undefined)
+  const shown = entries
+    .flatMap((run, at) =>
+      run === 'unreadable' || (server !== undefined && !run.calls.some(counts)) ? [] : [{ run, at }],
+    )
     .slice(-last)
     .reverse()
+  const unreadable = entries.filter(e => e === 'unreadable').length
+  const skipped = unreadable === 0 ? [] : [`skipped unreadable lines of the run log: ${unreadable}`]
   const newest = shown[0]
-  if (newest === undefined) return { lines: ['no run yet'], ok: false }
-  const lines = shown.flatMap(r => [
-    `${r.time} ${r.ending} ${r.ms} ms`,
-    ...r.calls.map(c => `  ${c.tool} ${c.decision} ${c.ok ? 'ok' : (c.error ?? 'not-run')}`),
-    ...(r.omitted === undefined ? [] : [`  ${r.omitted} more calls`]),
+  if (newest === undefined) return { lines: ['no run yet', ...skipped], ok: false }
+  const newer = entries.slice(newest.at + 1).includes('unreadable')
+  const callText = (c: ReadCall) =>
+    'unreadable' in c
+      ? `  ${c.tool === undefined ? '-' : shownName(c.tool)} unreadable`
+      : `  ${shownName(c.tool)} ${c.decision} ${c.ok ? 'ok' : (c.error ?? 'not-run')}`
+  const fixOf = (c: ReadCall): string | undefined => {
+    if (!counts(c) || c.ok) return undefined
+    if ('unreadable' in c) return UNREADABLE_CALL
+    const key = serverKey(serverOf(c) ?? '')
+    return c.error === undefined ? undefined : CALL_FIXES[c.error]?.(key === undefined ? undefined : tools(key))
+  }
+  const lines = shown.flatMap(({ run }) => [
+    `${shownName(run.time)} ${run.ending} ${run.ms} ms`,
+    ...run.calls.map(callText),
+    ...(run.omitted === undefined ? [] : [`  ${run.omitted} more calls`]),
   ])
-  const fixes = shown.flatMap(r => {
-    const calls = r.calls.map(c =>
-      counts(c) && !c.ok && c.error !== undefined ? CALL_FIXES[c.error]?.(serverOf(c) ?? '<server>', tools) : undefined,
-    )
-    return [...calls, ENDING_FIXES[r.ending]].filter(fix => fix !== undefined)
-  })
-  const ok = newest.ending === 'done' && newest.calls.filter(counts).every(c => c.ok)
-  return { lines: [...lines, ...new Set(fixes)], ok }
+  const fixes = shown.flatMap(({ run }) =>
+    [...run.calls.map(fixOf), ENDING_FIXES[run.ending]].filter(f => f !== undefined),
+  )
+  const warning = newer
+    ? ['An unreadable line is newer than the newest run shown, so runs does not confirm that run. Run the task again.']
+    : []
+  const ok = !newer && newest.run.ending === 'done' && newest.run.calls.filter(counts).every(c => c.ok)
+  return { lines: [...lines, ...new Set(fixes), ...skipped, ...warning], ok }
 }

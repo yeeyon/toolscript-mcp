@@ -40,9 +40,15 @@ export const loadConfig = (
 }
 
 /**
- * The login command of a server of the config `file`. The person runs login in a terminal, without the flag or the
- * TOOLSCRIPT_CONFIG of this process, so the command names `file` when it is not the usual config.
+ * The config `file` for a printed command, or undefined when it is the usual config. The person runs the command in a
+ * terminal, without the flag or the TOOLSCRIPT_CONFIG of this process.
  */
+export const otherConfig = (file: string, env: Env, platform: string, home: string): string | undefined => {
+  const usual = configPath(undefined, { ...env, TOOLSCRIPT_CONFIG: undefined }, platform, home)
+  return path.resolve(file) === path.resolve(usual) ? undefined : path.resolve(file)
+}
+
+/** The login command of a server of the config `file`. */
 export const loginFor = (
   launch: Launch,
   file: string,
@@ -50,7 +56,6 @@ export const loginFor = (
   platform: string,
   home: string,
 ): ((key: ServerKey) => string) => {
-  const usual = configPath(undefined, { ...env, TOOLSCRIPT_CONFIG: undefined }, platform, home)
-  const other = path.resolve(file) === path.resolve(usual) ? undefined : path.resolve(file)
+  const other = otherConfig(file, env, platform, home)
   return key => loginCommand(launch, platform, key, other)
 }

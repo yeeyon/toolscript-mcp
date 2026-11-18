@@ -8,13 +8,18 @@ import { parseArgs } from 'node:util'
 import { toolLines, toolLineText } from '../core/catalog.ts'
 import { configPath, loginReason, serverKey, toolsCommand, type Env, type Launch } from '../core/config.ts'
 import { oldRunLogFile, runLogFile } from '../core/paths.ts'
+import { printable } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { parseRunLine, runsReport } from '../core/runlog.ts'
 import { connectAll } from './downstream.ts'
-import { loadConfig, loginFor } from './start.ts'
+import { loadConfig, loginFor, otherConfig } from './start.ts'
 
 export const TOOLS_USAGE = 'usage: toolscript-mcp tools <server> [--config <path>] [--help]'
-export const RUNS_USAGE = 'usage: toolscript-mcp runs [--server <key>] [--last <n>] [--help]'
+export const RUNS_USAGE = 'usage: toolscript-mcp runs [--server <key>] [--last <n>] [--config <path>] [--help]'
+
+// An agent can read what tools prints, and tools logs nothing: only a running server writes the text to its log.
+const TOOLS_UNSHOWN =
+  'tools does not show its error text, because the text of this server is untrusted. When the client starts toolscript-mcp, its log holds the text'
 
 export type CheckIo = {
   readonly env: Env
@@ -68,6 +73,7 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     home: io.home,
     login,
     childStderr: () => {},
+    unshown: TOOLS_UNSHOWN,
   })
   let state = downstream.states()[0]!
   try {
@@ -84,7 +90,7 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     io.print(
       state.reason.startsWith(loginReason(command))
         ? `${key}: needs an OAuth login. Run this command in a terminal, then run tools again: ${command}`
-        : `${key}: cannot connect: ${state.reason}`,
+        : `${key}: cannot connect: ${printable(state.reason)}`,
     )
     return 1
   }
@@ -109,7 +115,12 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
   try {
     parsed = parseArgs({
       args: [...args],
-      options: { server: { type: 'string' }, last: { type: 'string' }, help: { type: 'boolean', short: 'h' } },
+      options: {
+        server: { type: 'string' },
+        last: { type: 'string' },
+        config: { type: 'string' },
+        help: { type: 'boolean', short: 'h' },
+      },
     })
   } catch (err) {
     io.print(`${errorText(err)}\n${RUNS_USAGE}`)
@@ -126,6 +137,15 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
     io.print(`--last takes a whole number from 1, and --server a server key\n${RUNS_USAGE}`)
     return 2
   }
+  // The run log does not depend on the config. The config only turns the log off, and its path goes into the printed
+  // tools command. So only a config that the person names must be readable.
+  const file = configPath(values.config, io.env, io.platform, io.home)
+  const loaded = loadConfig(file, io.env, io.platform)
+  if (!loaded.ok && values.config !== undefined) {
+    io.print(loaded.lines.join('\n'))
+    return 1
+  }
+  const off = loaded.ok && !loaded.config.log
   // The old file first: right after a rotation, the newest runs are in both.
   const files = [oldRunLogFile(io.home), runLogFile(io.home)]
   let text: string
@@ -135,8 +155,18 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
     io.print(`cannot read the run log: ${errorText(err)}`)
     return 1
   }
-  const records = text.split('\n').flatMap(line => parseRunLine(line) ?? [])
-  const report = runsReport(records, server, last, key => toolsCommand(io.launch, io.platform, key))
-  io.print(report.lines.join('\n'))
-  return report.ok ? 0 : 1
+  const entries = text
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .map(parseRunLine)
+  const other = otherConfig(file, io.env, io.platform, io.home)
+  const report = runsReport(entries, server, last, key => toolsCommand(io.launch, io.platform, key, other))
+  // With the log off, the newest run in the file is not a run of this config.
+  const note = off
+    ? [
+        `the config ${file} sets "log": false, so toolscript-mcp writes no run log with it. Remove the key to check runs.`,
+      ]
+    : []
+  io.print([...note, ...report.lines].join('\n'))
+  return report.ok && !off ? 0 : 1
 }

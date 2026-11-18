@@ -35,6 +35,7 @@ const tools = [
   { name: 'wipe', inputSchema: { type: 'object' }, annotations: { destructiveHint: true } },
   { name: 'send', inputSchema: { type: 'object' }, _meta: { 'anthropic/requiresUserInteraction': true } },
   { name: 'both', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true, destructiveHint: true } },
+  { name: 'x\\u202ey z', inputSchema: { type: 'object' } },
 ]
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const m = JSON.parse(line)
@@ -73,6 +74,9 @@ const setup = (json: unknown) => {
 
 const demoEntry = { command: process.execPath, args: [DEMO] }
 
+/** True when no printed line holds a character outside printable ASCII. */
+const printableOnly = (lines: readonly string[]): boolean => lines.every(l => /^[\x20-\x7e]*$/.test(l))
+
 describe('tools', () => {
   test('lists the tools of the demo server with their hints and the decision of the policy', async () => {
     const s = setup({ mcpServers: { demo: demoEntry }, policy: [{ match: 'mcp__demo__list_*', action: 'allow' }] })
@@ -84,7 +88,7 @@ describe('tools', () => {
     ])
   })
 
-  test('shows a deny rule and the tools that need a person, and drops the stderr of the child', async () => {
+  test('shows a deny rule, the tools that need a person and an escaped name, and drops the stderr of the child', async () => {
     const s = setup({
       mcpServers: { fake: { command: process.execPath, args: [FAKE] } },
       policy: [
@@ -102,13 +106,41 @@ describe('tools', () => {
       process.stderr.write = write
     }
     assert.deepEqual(s.printed, [
-      'fake: connected, 4 tools',
+      'fake: connected, 5 tools',
       'mcp__fake__read read-only allow',
       'mcp__fake__wipe destructive deny',
       'mcp__fake__send - allow, a person each run',
       'mcp__fake__both read-only deny',
+      '"mcp__fake__x\\u202ey z" - allow',
     ])
     assert.ok(!writes.join('').includes(SECRET), 'the stderr of the child stays out of the output')
+  })
+
+  test('escapes the control characters that a child writes to stderr in the reason', async () => {
+    const s = setup({
+      mcpServers: {
+        broken: { command: process.execPath, args: ['-e', 'console.error("red \\u001b[31m"); process.exit(3)'] },
+      },
+    })
+    assert.equal(await s.tools('broken'), 1)
+    assert.match(s.printed.join('\n'), /red \\u001b\[31m/)
+    assert.ok(printableOnly(s.printed))
+  })
+
+  test('make it fail: the reason of an untrusted server holds no text of its child, and names no log that tools lacks', async () => {
+    const s = setup({
+      mcpServers: {
+        broken: {
+          command: process.execPath,
+          args: ['-e', `console.error(${JSON.stringify(SECRET)}); process.exit(3)`],
+          untrusted: true,
+        },
+      },
+    })
+    assert.equal(await s.tools('broken'), 1)
+    assert.deepEqual(s.printed, [
+      'broken: cannot connect: the connect failed. tools does not show its error text, because the text of this server is untrusted. When the client starts toolscript-mcp, its log holds the text',
+    ])
   })
 
   test('names the servers of the config when the server is not in it', async () => {
@@ -176,8 +208,8 @@ const record = (o: Partial<RunRecord> & Pick<RunRecord, 'time' | 'ending' | 'cal
 })
 
 describe('runs', () => {
-  const setupLog = (lines: readonly string[], old: readonly string[] = []) => {
-    const s = setup({ mcpServers: {} })
+  const setupLog = (lines: readonly string[], old: readonly string[] = [], config: unknown = { mcpServers: {} }) => {
+    const s = setup(config)
     fs.mkdirSync(path.dirname(runLogFile(s.home)), { recursive: true })
     fs.writeFileSync(runLogFile(s.home), lines.join(''))
     if (old.length > 0) fs.writeFileSync(oldRunLogFile(s.home), old.join(''))
@@ -213,12 +245,12 @@ describe('runs', () => {
       calls: [{ tool: 'mcp__demo__get_pull_request', decision: 'unapproved', ms: 0, ok: false, error: 'unapproved' }],
     }),
   )
-  // Newer than the others, but none is a run: not JSON, a wrong ending, and a control character in a tool name.
-  const malformed = [
-    'not json\n',
-    `${JSON.stringify({ ...JSON.parse(done), time: '2026-01-01T00:00:09.000Z', ending: 'weird' })}\n`,
-    `${JSON.stringify({ ...JSON.parse(done), time: '2026-01-01T00:00:09.000Z', calls: [{ ...JSON.parse(done).calls[0], tool: 'mcp__demo__x\u001b[2J' }] })}\n`,
-  ]
+  /** A line of the log as another program can write it. */
+  const forged = (o: Record<string, unknown>) => `${JSON.stringify({ ...JSON.parse(done), ...o })}\n`
+  // None is a run: not JSON, and a wrong ending.
+  const malformed = ['not json\n', forged({ time: '2026-01-01T00:00:09.000Z', ending: 'weird' })]
+  const SKIPPED_NEWER =
+    'An unreadable line is newer than the newest run shown, so runs does not confirm that run. Run the task again.'
 
   test('with no log, says no run yet and exits 1', async () => {
     const s = setup({ mcpServers: {} })
@@ -226,8 +258,8 @@ describe('runs', () => {
     assert.deepEqual(s.printed, ['no run yet'])
   })
 
-  test('shows the newest run of the server and the next step for each problem, and skips malformed lines', async () => {
-    const s = setupLog([denied, noServer, unapproved, ...malformed], [done])
+  test('shows the newest run of the server and the next step for each problem', async () => {
+    const s = setupLog([denied, noServer, unapproved], [done])
     assert.equal(await s.runs('--server', 'demo'), 1)
     assert.deepEqual(s.printed, [
       '2026-01-01T00:00:04.000Z refused 0 ms',
@@ -238,7 +270,7 @@ describe('runs', () => {
   })
 
   test('--last shows more runs, newest first, with one line for each distinct problem', async () => {
-    const s = setupLog([denied, noServer, unapproved, ...malformed], [done])
+    const s = setupLog([denied, noServer, unapproved], [done])
     assert.equal(await s.runs('--server', 'demo', '--last', '5'), 1)
     assert.deepEqual(s.printed, [
       '2026-01-01T00:00:04.000Z refused 0 ms',
@@ -262,6 +294,97 @@ describe('runs', () => {
       'no-server: the server did not connect. Run `npx -y toolscript-mcp tools other` to see the connection or login problem.',
       'error: the program threw an error. Read it in the run_code result.',
     ])
+  })
+
+  test('with --config, the tools command names the same config', async () => {
+    const s = setupLog([done, noServer])
+    assert.equal(await s.runs('--server', 'other', '--config', s.config), 1)
+    assert.match(
+      s.printed.join('\n'),
+      /^no-server: the server did not connect\. Run `npx -y toolscript-mcp tools other --config \S+config\.json` to see/m,
+    )
+  })
+
+  test('make it fail: a server name that is not a key never reaches a printed command', async () => {
+    const tool = "mcp__x$';echo PWNED >&2;'y__ping"
+    const s = setupLog([
+      forged({ ending: 'error', calls: [{ tool, decision: 'allow', ms: 1, ok: false, error: 'no-server' }] }),
+    ])
+    assert.equal(await s.runs(), 1)
+    assert.deepEqual(s.printed, [
+      '2026-01-01T00:00:01.000Z error 100 ms',
+      `  ${JSON.stringify(tool)} allow no-server`,
+      'no-server: the server did not connect. Run toolscript-mcp tools with its key to see the connection or login problem.',
+      'error: the program threw an error. Read it in the run_code result.',
+    ])
+  })
+
+  test('make it fail: escapes C1 control and bidi characters in each printed field', async () => {
+    const s = setupLog([
+      forged({
+        time: '2026-01-01T00:00:02\u009b2J‮Z',
+        calls: [{ tool: 'mcp__demo__x\u001b[2J', decision: 'allow', ms: 1, ok: true }],
+      }),
+    ])
+    assert.equal(await s.runs('--server', 'demo'), 0, s.printed.join('\n'))
+    assert.deepEqual(s.printed, [
+      '"2026-01-01T00:00:02\\u009b2J\\u202eZ" done 100 ms',
+      '  "mcp__demo__x\\u001b[2J" allow ok',
+    ])
+    assert.ok(printableOnly(s.printed))
+  })
+
+  test('make it fail: a call that it cannot read keeps its run, shows as unreadable and never counts as ok', async () => {
+    const calls = [{ tool: 'mcp__demo__a', decision: 'weird', ms: 1, ok: true }, 42]
+    const s = setupLog([done, forged({ time: '2026-01-01T00:00:05.000Z', calls })])
+    assert.equal(await s.runs('--server', 'demo'), 1)
+    assert.deepEqual(s.printed, [
+      '2026-01-01T00:00:05.000Z done 100 ms',
+      '  mcp__demo__a unreadable',
+      '  - unreadable',
+      'unreadable: this toolscript-mcp cannot read the call. Another version or another program wrote it.',
+    ])
+    assert.equal(await s.runs('--server', 'other'), 1, 'a call without a server can be a call of any server')
+  })
+
+  test('make it fail: an unreadable line newer than the newest run never lets an older run pass', async () => {
+    const s = setupLog([done, ...malformed])
+    assert.equal(await s.runs('--server', 'demo'), 1)
+    assert.deepEqual(s.printed, [
+      '2026-01-01T00:00:01.000Z done 100 ms',
+      '  mcp__demo__list_pull_requests allow ok',
+      'skipped unreadable lines of the run log: 2',
+      SKIPPED_NEWER,
+    ])
+  })
+
+  test('an unreadable line older than the newest run is counted and does not change the exit code', async () => {
+    const s = setupLog([...malformed, done])
+    assert.equal(await s.runs('--server', 'demo'), 0)
+    assert.deepEqual(s.printed, [
+      '2026-01-01T00:00:01.000Z done 100 ms',
+      '  mcp__demo__list_pull_requests allow ok',
+      'skipped unreadable lines of the run log: 2',
+    ])
+  })
+
+  test('says so when the config turns the log off, and exits 1', async () => {
+    const s = setupLog([done], [], { mcpServers: {}, log: false })
+    assert.equal(await s.runs('--server', 'demo', '--config', s.config), 1)
+    assert.deepEqual(s.printed, [
+      `the config ${s.config} sets "log": false, so toolscript-mcp writes no run log with it. Remove the key to check runs.`,
+      '2026-01-01T00:00:01.000Z done 100 ms',
+      '  mcp__demo__list_pull_requests allow ok',
+    ])
+  })
+
+  test('a --config that cannot be read exits 1, and the default config is not needed', async () => {
+    const s = setupLog([done])
+    const missing = path.join(path.dirname(s.config), 'missing.json')
+    assert.equal(await s.runs('--config', missing), 1)
+    assert.match(s.printed[0]!, /^cannot read the config /)
+    s.printed.length = 0
+    assert.equal(await s.runs(), 0, 'no config at the default path')
   })
 
   test('exits 0 when the newest run of the server ended done and each of its calls worked', async () => {
