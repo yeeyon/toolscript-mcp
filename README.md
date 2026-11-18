@@ -365,7 +365,8 @@ checks come in this order:
 4. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
    [Claude Code bridge](#claude-code-as-a-downstream-server), and the tools that require a person.
 5. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
-6. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run.
+6. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run. As in `runs`, it
+   skips a run with a time more than 5 minutes after now, and counts these runs.
 7. `files`: doctor can write to `~/.toolscript-mcp`. An `info` line names the OAuth tokens that no server of the config
    uses. They can belong to another config.
 

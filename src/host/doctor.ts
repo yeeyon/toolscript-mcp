@@ -28,6 +28,7 @@ import {
 import { appPath, oauthFolder, runLogFile } from '../core/paths.ts'
 import { shownName } from '../core/policy.ts'
 import { errorText, takeMessages, type RunnerDone, type RunnerError } from '../core/protocol.ts'
+import { futureLine, isFuture } from '../core/runlog.ts'
 import { connectStates, readRunLog, type CheckIo } from './diagnose.ts'
 import { LAYERS, RUNNER, launch, makeExchangeDir, removeExchangeDir } from './launch.ts'
 import { storeFile } from './oauth.ts'
@@ -238,13 +239,18 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
     const head = ok(`${loaded.ok ? 'on' : 'on, unless the config sets "log": false'}: ${log}`)
     const entries = await readRunLog(io.home).catch((err: unknown) => errorText(err))
     if (typeof entries === 'string') return [head, warn(`cannot read the run log: ${entries}`)]
-    const newest = entries.findLast(e => e !== 'unreadable')
-    if (newest === undefined) return [head, info('no run yet')]
+    // The rule of runs, so that both show the same newest run.
+    const now = new Date()
+    const readable = entries.filter(e => e !== 'unreadable')
+    const future = readable.filter(e => isFuture(e, now)).length
+    const skipped = future === 0 ? [] : [info(futureLine(future))]
+    const newest = readable.findLast(e => !isFuture(e, now))
+    if (newest === undefined) return [head, info('no run yet'), ...skipped]
     // The ending is a fact about the last task, not about the setup: only a run that did not end done is a problem.
     const text = `newest run: ${shownName(newest.time)} ${newest.ending} ${newest.ms} ms`
     if (newest.ending !== 'done')
-      return [head, warn(`${text}. Run \`${command(c, 'runs')}\` to see its calls and the next step`)]
-    return [head, newest.calls.length === 0 ? info(`${text}. It called no tool`) : ok(text)]
+      return [head, warn(`${text}. Run \`${command(c, 'runs')}\` to see its calls and the next step`), ...skipped]
+    return [head, newest.calls.length === 0 ? info(`${text}. It called no tool`) : ok(text), ...skipped]
   },
 
   files: async ({ io, loaded }) => [await writable(appPath(io.home)), ...(await staleStores(io.home, loaded))],

@@ -227,6 +227,13 @@ export type RunsReport = { readonly lines: readonly string[]; readonly ok: boole
 /** How far the time of a run can pass the time of the check before `runs` skips the run, for clocks a little apart. */
 export const CLOCK_SLACK_MS = 5 * 60_000
 
+/** True for a run dated more than CLOCK_SLACK_MS after `now`. A time that does not parse is never after it. */
+export const isFuture = (run: ReadRun, now: Date): boolean => Date.parse(run.time) > now.getTime() + CLOCK_SLACK_MS
+
+/** The line that counts the runs that `isFuture` skips. */
+export const futureLine = (count: number): string =>
+  `skipped runs dated more than ${CLOCK_SLACK_MS / 60_000} minutes after now: ${count}`
+
 /**
  * The newest `last` runs with a call of `server` (any run without one) at or after `since`, newest first, then the
  * next step for each distinct problem, then the count of skipped lines. `ok`: the newest ended done, called a tool of
@@ -247,18 +254,15 @@ export const runsReport = (
   const runs = entries.flatMap((run, at) =>
     run === 'unreadable' || (server !== undefined && !run.calls.some(counts)) ? [] : [{ run, at }],
   )
-  // A time that does not parse is never after `late`, and never at or after `since`.
-  const late = now.getTime() + CLOCK_SLACK_MS
-  const future = runs.filter(({ run }) => Date.parse(run.time) > late)
+  const future = runs.filter(({ run }) => isFuture(run, now))
   const timely = runs.filter(r => !future.includes(r))
+  // A time that does not parse is never at or after `since`.
   const recent = since === undefined ? timely : timely.filter(({ run }) => Date.parse(run.time) >= since.getTime())
   const shown = recent.slice(-last).reverse()
   const unreadable = entries.filter(e => e === 'unreadable').length
   const skipped = [
     ...(unreadable === 0 ? [] : [`skipped unreadable lines of the run log: ${unreadable}`]),
-    ...(future.length === 0
-      ? []
-      : [`skipped runs dated more than ${CLOCK_SLACK_MS / 60_000} minutes after now: ${future.length}`]),
+    ...(future.length === 0 ? [] : [futureLine(future.length)]),
   ]
   const cutoff = since?.toISOString()
   const newest = shown[0]

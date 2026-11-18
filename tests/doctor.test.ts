@@ -356,6 +356,37 @@ describe('doctor', () => {
     )
   })
 
+  test('the newest run is the one that runs shows: a run dated more than 5 minutes ahead is skipped and counted', async () => {
+    const run = (time: string, ending: RunRecord['ending']): string =>
+      runLine({ time, id: 'r', ms: 12, ending, chars: 1, calls: [] })
+    const s = setup({ mcpServers: {} })
+    fs.mkdirSync(appPath(s.home), { recursive: true })
+    const soon = new Date(Date.now() + 60_000).toISOString()
+    fs.writeFileSync(
+      runLogFile(s.home),
+      run('2026-01-02T03:04:05.000Z', 'done') + run('2999-01-01T00:00:00.000Z', 'error'),
+    )
+    await s.doctor()
+    assert.deepEqual(s.of('run-log').slice(1), [
+      'info  run-log  newest run: 2026-01-02T03:04:05.000Z done 12 ms. It called no tool',
+      'info  run-log  skipped runs dated more than 5 minutes after now: 1',
+    ])
+
+    // A clock a little ahead is no reason to skip a run.
+    fs.appendFileSync(runLogFile(s.home), run(soon, 'done'))
+    s.printed.length = 0
+    await s.doctor()
+    assert.equal(s.of('run-log')[1], `info  run-log  newest run: ${soon} done 12 ms. It called no tool`)
+
+    fs.writeFileSync(runLogFile(s.home), run('2999-01-01T00:00:00.000Z', 'error'))
+    s.printed.length = 0
+    await s.doctor()
+    assert.deepEqual(s.of('run-log').slice(1), [
+      'info  run-log  no run yet',
+      'info  run-log  skipped runs dated more than 5 minutes after now: 1',
+    ])
+  })
+
   test('a file where the folder of toolscript-mcp or HOME goes fails as not a folder', async () => {
     const s = setup({ mcpServers: {} })
     fs.writeFileSync(appPath(s.home), '')
