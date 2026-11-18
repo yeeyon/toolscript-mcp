@@ -70,15 +70,24 @@ export const decide = (policy: Policy, bridges: Bridges, tool: string): Verdict 
   return rule === undefined ? { action: 'ask' } : { action: rule.action, rule }
 }
 
+const escape = (c: string): string => {
+  const hex = c.codePointAt(0)!.toString(16)
+  return hex.length <= 4 ? `\\u${hex.padStart(4, '0')}` : `\\u{${hex}}`
+}
+
 /**
  * `s` with every character outside printable ASCII as a `\u` escape: printed, the text never breaks a line, moves
  * the cursor, turns around the text after it, or hides a blank or look-alike character.
  */
-export const printable = (s: string): string =>
-  s.replace(/[^\x20-\x7e]/gu, c => {
-    const hex = c.codePointAt(0)!.toString(16)
-    return hex.length <= 4 ? `\\u${hex.padStart(4, '0')}` : `\\u{${hex}}`
-  })
+export const printable = (s: string): string => s.replace(/[^\x20-\x7e]/gu, escape)
+
+/**
+ * `s` with each control, format (such as a bidi control), line or paragraph separator and lone surrogate as a `\u`
+ * escape, so printed, the text never breaks a line, moves the cursor or turns around the text after it. For free text
+ * such as an error: it keeps the letters of each script, such as a user folder name. Show a name with `printable`,
+ * which also shows a look-alike.
+ */
+export const printableText = (s: string): string => s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu, escape)
 
 /** A string from the config file as JSON, printable. */
 const quoted = (s: string): string => printable(JSON.stringify(s))

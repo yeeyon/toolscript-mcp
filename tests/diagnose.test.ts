@@ -129,6 +129,20 @@ describe('tools', () => {
     assert.ok(printableOnly(s.printed))
   })
 
+  test('keeps the letters of a user folder name in the reason, and escapes a bidi control', async () => {
+    const s = setup({
+      mcpServers: {
+        broken: {
+          command: process.execPath,
+          args: ['-e', 'console.error("cannot open C:\\\\Users\\\\홍길동 \\u202eevil"); process.exit(3)'],
+        },
+      },
+    })
+    assert.equal(await s.tools('broken'), 1)
+    assert.match(s.printed.join('\n'), /cannot open C:\\Users\\홍길동 \\u202eevil/)
+    assert.equal(s.printed.length, 1)
+  })
+
   test('make it fail: the reason of an untrusted server holds no text of its child, and names no log that tools lacks', async () => {
     const s = setup({
       mcpServers: {

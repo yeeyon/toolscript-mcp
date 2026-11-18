@@ -307,7 +307,7 @@ line is `<server>: connected, <n> tools`. Each next line shows one tool:
   your approval at each run. See [Tools that require a person](#tools-that-require-a-person).
 
 If the server needs an OAuth login, `tools` prints the login command. If the server cannot connect, `tools` prints
-the reason. For a server with `"untrusted": true`, the reason does not show the error text of the server. The output
+the reason, with each control and format character as a `\u` escape. For a server with `"untrusted": true`, the reason does not show the error text of the server. The output
 never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 on a failure and 2 on a
 usage error.
 

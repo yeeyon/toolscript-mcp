@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util'
 import { toolLines, toolLineText } from '../core/catalog.ts'
 import { configPath, loginReason, serverKey, toolsCommand, type Env, type Launch } from '../core/config.ts'
 import { oldRunLogFile, runLogFile } from '../core/paths.ts'
-import { printable } from '../core/policy.ts'
+import { printableText } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { parseRunLine, parseSince, runsReport } from '../core/runlog.ts'
 import { connectAll } from './downstream.ts'
@@ -93,7 +93,7 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     io.print(
       state.reason.startsWith(loginReason(command))
         ? `${key}: needs an OAuth login. Run this command in a terminal, then run tools again: ${command}`
-        : `${key}: cannot connect: ${printable(state.reason)}`,
+        : `${key}: cannot connect: ${printableText(state.reason)}`,
     )
     return 1
   }
