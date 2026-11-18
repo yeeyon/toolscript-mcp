@@ -307,19 +307,31 @@ line is `<server>: connected, <n> tools`. Each next line shows one tool:
   your approval at each run. See [Tools that require a person](#tools-that-require-a-person).
 
 If the server needs an OAuth login, `tools` prints the login command. If the server cannot connect, `tools` prints
-the reason. The output never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1
-on a failure and 2 on a usage error.
+the reason. For a server with `"untrusted": true`, the reason does not show the error text of the server. The output
+never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 on a failure and 2 on a
+usage error.
 
-`toolscript-mcp runs [--server <key>] [--last <n>]` reads the [run log](#run-log). It shows the newest `n` runs that
-call a tool of the server, newest first. The default of `n` is 1. Without `--server`, it shows the newest runs of all
-servers.
+`toolscript-mcp runs [--server <key>] [--last <n>] [--config <path>]` reads the [run log](#run-log). It shows the
+newest `n` runs that call a tool of the server, newest first. The default of `n` is 1. Without `--server`, it shows the
+newest runs of all servers.
 
 - For each run, it shows the time, the ending and the duration.
-- For each call, it shows the tool, the policy decision, and `ok` or the error code.
+- For each call, it shows the tool, the policy decision, and `ok` or the error code. A call that `runs` cannot read
+  shows as `unreadable`.
 - After the runs, it gives one next step for each problem.
+- It counts the lines of the log that are not runs, and skips them.
 
-The exit code is 0 only when the newest run ended `done` and each call of the server worked. With no run, `runs`
-prints `no run yet` and the exit code is 1.
+A name or time with a character outside printable ASCII shows in double quotes, with that character as a `\u` escape.
+If your server uses a config at another path, give the same `--config`. Then the `tools` command in a next step names
+that config.
+
+The exit code is 0 only when the newest run ended `done` and each call of the server worked. These cases also give
+the exit code 1:
+
+- The log has no run. `runs` prints `no run yet`.
+- An unreadable line is newer than the newest run shown. That line can be a newer run.
+- The config sets `"log": false`. `runs` says so in its first line.
+- `runs` cannot read the config of `--config`.
 
 #### Demo server
 
