@@ -233,6 +233,36 @@ describe('plugin config helper', () => {
     assert.deepEqual(JSON.parse(read(file)), { mcpServers: { fake: { command: 'node' } }, policy: [] })
   })
 
+  it('sets and removes "untrusted": true on a server, shows it, and keeps the rest', () => {
+    const file = makeConfig()
+    for (const [args, value, line] of [
+      [['remote'], true, 'remote  http  https://mcp.example.com  untrusted'],
+      [['remote', 'true'], true, 'remote  http  https://mcp.example.com  untrusted'],
+      [['remote', 'false'], undefined, 'remote  http  https://mcp.example.com'],
+      [['local', 'true'], true, 'local  stdio  fake-server  untrusted'],
+    ] as const) {
+      const { code, out } = run(file, 'untrusted', ...args)
+      assert.equal(code, 0)
+      assert.ok(out.split('\n').includes(line), out)
+      for (const secret of SECRETS) assert.ok(!out.includes(secret), secret)
+      const saved = JSON.parse(read(file))
+      assert.equal(saved.mcpServers[args[0]].untrusted, value)
+      const { untrusted: _, ...rest } = saved.mcpServers[args[0]]
+      assert.deepEqual(rest, FIXTURE.mcpServers[args[0]])
+      assert.deepEqual(saved.policy, FIXTURE.policy)
+    }
+  })
+
+  it('refuses untrusted for a missing server or a bad value and leaves the file as it was', () => {
+    const file = makeConfig()
+    const before = read(file)
+    assert.equal(run(file, 'untrusted', 'missing').code, 1)
+    assert.equal(run(file, 'untrusted', 'remote', 'yes').code, 2)
+    assert.equal(run(file, 'untrusted').code, 2)
+    assert.equal(run(file, 'untrusted', 'remote', 'true', 'more').code, 2)
+    assert.equal(read(file), before)
+  })
+
   // The review of #47: step 7 runs prepend before add, and prepend failed with ENOENT on a new config.
   it('makes the config when policy or prepend finds no config, as step 7 runs them before add', () => {
     for (const command of ['policy', 'prepend']) {
@@ -251,8 +281,13 @@ describe('plugin config helper', () => {
 
   it('fails on a config that it cannot read for another reason than a missing file', () => {
     const folder = fs.mkdtempSync(path.join(dir, 'folder-'))
-    for (const command of ['policy', 'prepend', 'add']) {
-      const args = command === 'add' ? ['fake', makeEntry({ command: 'node' })] : ['allow', 'mcp__fake__*']
+    for (const command of ['policy', 'prepend', 'add', 'untrusted']) {
+      const args =
+        command === 'add'
+          ? ['fake', makeEntry({ command: 'node' })]
+          : command === 'untrusted'
+            ? ['fake']
+            : ['allow', 'mcp__fake__*']
       const { code, err } = run(folder, command, ...args)
       assert.equal(code, 1, command)
       assert.match(err, /^Cannot read the config /, command)
@@ -293,6 +328,9 @@ describe('plugin config helper', () => {
 
   it('exits 1 for a missing config and 2 for a usage error', () => {
     assert.equal(run(path.join(dir, 'missing.json')).code, 1)
+    const absent = path.join(dir, 'absent', 'config.json')
+    assert.equal(run(absent, 'untrusted', 'remote').code, 1)
+    assert.equal(fs.existsSync(absent), false)
     assert.equal(run(makeConfig(), 'policy', 'allow').code, 2)
     assert.equal(run(makeConfig(), 'unknown').code, 2)
   })

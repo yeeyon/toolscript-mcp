@@ -161,12 +161,22 @@ const minus = (a: Policy, b: Policy): Rule[] => {
 
 const SHOWN_RULES = 10
 
-/** The rules on one line. Unless `whole`, at most SHOWN_RULES of them, each match cut. */
-const ruleList = (rules: readonly Rule[], whole = false): string => {
-  if (whole) return rules.map(r => shownRule(r, true)).join(', ')
+/**
+ * Where policyChange shows the change: the log, the prompt to the person, or
+ * a note to the model. A note names a rule only by its place and action: a
+ * program can write the config through a tool, and the note follows the
+ * wrapper of an untrusted run.
+ */
+export type ChangeFor = 'log' | 'prompt' | 'note'
+
+const ruleName = (r: Rule): string => `policy[${r.index}] (${r.action})`
+
+/** The rules on one line. Except in the prompt, at most SHOWN_RULES of them, each match cut. */
+const ruleList = (rules: readonly Rule[], form: ChangeFor): string => {
+  if (form === 'prompt') return rules.map(r => shownRule(r, true)).join(', ')
   const shown = rules
     .slice(0, SHOWN_RULES)
-    .map(r => shownRule(r))
+    .map(r => (form === 'note' ? ruleName(r) : shownRule(r)))
     .join(', ')
   return rules.length <= SHOWN_RULES ? shown : `${shown} and ${rules.length - SHOWN_RULES} more`
 }
@@ -197,17 +207,18 @@ const keepsOrder = (current: Policy, next: Policy, common: number): boolean => {
 }
 
 /**
- * The rules added and removed, and whether the others changed order, for the
- * log, the note of a run and the prompt, on one line. Empty when the rules are
- * the same. The lists put first the rules whose change loosens: an added allow,
- * a removed deny. Only `whole`, for the prompt, lists every rule uncut.
+ * The rules added and removed, and whether the others changed order, on one
+ * line. Empty when the rules are the same. The lists put first the rules whose
+ * change loosens: an added allow, a removed deny. Only the prompt lists every
+ * rule uncut. A removed rule has its place in `current`.
  */
-export const policyChange = (current: Policy, next: Policy, whole = false): string => {
+export const policyChange = (current: Policy, next: Policy, form: ChangeFor = 'log'): string => {
   if (samePolicy(current, next)) return ''
-  const list = (rules: readonly Rule[]) => ruleList(rules, whole)
+  const list = (rules: readonly Rule[]) => ruleList(rules, form)
   const added = minus(next, current)
   const removed = minus(current, next)
-  if (added.length + removed.length === 0) return `the order of the rules changed to ${list(next)}`
+  if (added.length + removed.length === 0)
+    return form === 'note' ? 'the order of the rules changed' : `the order of the rules changed to ${list(next)}`
   return [
     ...(added.length > 0 ? [`added ${list(loosestFirst(added))}`] : []),
     ...(removed.length > 0 ? [`removed ${list(tightestFirst(removed))}`] : []),
@@ -237,7 +248,7 @@ export const loosenText = (file: string, change: string, next: Policy): string =
     'Apply the new policy?',
   ].join('\n')
 
-/** The note after a run that kept the policy in force, because the person did not approve a looser one. */
+/** The note after a run that kept the policy in force, because the person did not approve a looser one. `change`: policyChange for a note. */
 export const keptPolicyNote = (file: string, change: string, why: Refusal): string => {
   const kept =
     why === 'decline'
@@ -364,7 +375,7 @@ export const askText = ({ ask, interactive }: Asks, code: string, bridges: Bridg
   ].join('\n')
 }
 
-/** The note after a run whose fresh read of the policy failed, so the run used the last good policy. */
+/** The note after a run whose fresh read of the policy failed, so the run used the last good policy. The errors hold no text of the file. */
 export const stalePolicyNote = (errors: readonly string[]): string =>
   [
     '## Policy not reloaded',

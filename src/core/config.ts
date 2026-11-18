@@ -12,7 +12,13 @@ declare const btoa: (data: string) => string
 /** A server key that makes `mcp__<key>__<tool>` split back into the key and the tool. */
 export type ServerKey = string & { readonly __brand: 'ServerKey' }
 
-export type StdioServer = {
+/**
+ * `"untrusted": true` in a server entry: each result, error and attachment of the server is untrusted from its first
+ * call. Without it, the results of a server are untrusted only after its first result in an untrusted wrapper.
+ */
+type Trust = { readonly untrusted?: true }
+
+export type StdioServer = Trust & {
   readonly kind: 'stdio'
   readonly command: string
   readonly args: readonly string[]
@@ -32,7 +38,7 @@ export type OAuth = {
   readonly callbackPort?: number
 }
 
-export type HttpServer = {
+export type HttpServer = Trust & {
   readonly kind: 'http'
   readonly url: string
   readonly headers: Readonly<Record<string, string>>
@@ -287,6 +293,12 @@ const parseCwd = (raw: unknown, path: string, env: Env, platform: string, errors
   return undefined
 }
 
+const parseTrust = (raw: unknown, path: string, errors: string[]): Trust => {
+  if (raw === true) return { untrusted: true }
+  if (raw !== undefined && raw !== false) errors.push(`${path}: must be true or false`)
+  return {}
+}
+
 const parseServer = (
   raw: unknown,
   path: string,
@@ -300,7 +312,7 @@ const parseServer = (
   }
   const type = raw.type ?? 'stdio'
   if (type === 'stdio') {
-    unknownKeys(raw, ['type', 'command', 'args', 'env', 'cwd'], path, errors)
+    unknownKeys(raw, ['type', 'command', 'args', 'env', 'cwd', 'untrusted'], path, errors)
     const command = nonEmpty(raw.command, `${path}.command`, errors)
     let args: string[] = []
     if (raw.args !== undefined) {
@@ -313,10 +325,17 @@ const parseServer = (
       else errors.push(`${path}.args: must be an array of strings`)
     }
     const cwd = parseCwd(raw.cwd, `${path}.cwd`, env, platform, errors)
-    return { kind: 'stdio', command, args, env: stringMap(raw.env, `${path}.env`, env, errors), ...(cwd && { cwd }) }
+    return {
+      kind: 'stdio',
+      command,
+      args,
+      env: stringMap(raw.env, `${path}.env`, env, errors),
+      ...(cwd && { cwd }),
+      ...parseTrust(raw.untrusted, `${path}.untrusted`, errors),
+    }
   }
   if (type === 'http') {
-    unknownKeys(raw, ['type', 'url', 'headers', 'oauth'], path, errors)
+    unknownKeys(raw, ['type', 'url', 'headers', 'oauth', 'untrusted'], path, errors)
     const found = errors.length
     const url = expand(nonEmpty(raw.url, `${path}.url`, errors), env, `${path}.url`, errors)
     // An empty or unexpanded url has its error already. The text names only the
@@ -327,7 +346,13 @@ const parseServer = (
     }
     const headers = stringMap(raw.headers, `${path}.headers`, env, errors)
     const oauth = parseOAuth(raw.oauth, headers, `${path}.oauth`, env, errors)
-    return { kind: 'http', url, headers, ...(oauth && { oauth }) }
+    return {
+      kind: 'http',
+      url,
+      headers,
+      ...(oauth && { oauth }),
+      ...parseTrust(raw.untrusted, `${path}.untrusted`, errors),
+    }
   }
   errors.push(`${path}.type: must be "stdio" or "http", not ${JSON.stringify(type)}`)
   return undefined
@@ -376,6 +401,8 @@ const parseSandbox = (raw: unknown, execPath: string, platform: string, errors: 
 
 const MATCH = 'a glob over mcp__<server>__<tool>, such as "mcp__github__*"'
 
+// The errors name places and hold no text of the file: a program can write the config through a tool, and the note
+// of the next run shows them to the model.
 const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
   if (raw === undefined) return []
   if (!Array.isArray(raw)) {
@@ -388,12 +415,13 @@ const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
       errors.push(`${path}: must be an object with "match" and "action"`)
       return []
     }
-    unknownKeys(entry, ['match', 'action'], path, errors)
+    const unknown = Object.keys(entry).filter(key => key !== 'match' && key !== 'action').length
+    if (unknown > 0) errors.push(`${path}: ${unknown} unknown key${unknown === 1 ? '' : 's'} (known: match, action)`)
     const { match, action } = entry
     const okMatch = typeof match === 'string' && /^(mcp__|\*)/.test(match)
-    if (!okMatch) errors.push(`${path}.match: must be ${MATCH}, not ${JSON.stringify(match)}`)
+    if (!okMatch) errors.push(`${path}.match: must be ${MATCH}`)
     const okAction = typeof action === 'string' && (ACTIONS as readonly string[]).includes(action)
-    if (!okAction) errors.push(`${path}.action: must be "allow", "deny" or "ask", not ${JSON.stringify(action)}`)
+    if (!okAction) errors.push(`${path}.action: must be "allow", "deny" or "ask"`)
     return okMatch && okAction ? [{ match: match as string, action: action as Action, index }] : []
   })
 }

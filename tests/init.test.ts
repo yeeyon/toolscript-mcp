@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { loginCommand, NPX_LAUNCH, parseConfig, pathWord, shellWord, type Launch } from '../src/core/config.ts'
-import { clientFiles, importServers, initReport } from '../src/core/init.ts'
+import { clientFiles, configText, importServers, initReport } from '../src/core/init.ts'
 import { runInit } from '../src/host/init.ts'
 import { detectLaunch } from '../src/host/start.ts'
 
@@ -726,6 +726,53 @@ describe('the OAuth login in the report', () => {
 
   test('says nothing about a login without such a server', () => {
     assert.doesNotMatch(report({ files: { command: 'fake' } }), /login/)
+  })
+
+  test('make it fail: each server that names Azure DevOps gets "untrusted": true, and no other server does', () => {
+    const ado = {
+      npx: { command: 'npx', args: ['-y', '@azure-devops/mcp', 'fake-org'] },
+      cmd: { command: 'cmd', args: ['/c', 'npx', '-y', '@azure-devops/mcp@latest', 'fake-org', '-d', 'core'] },
+      bin: { command: 'C:\\npm\\mcp-server-azuredevops.cmd', args: ['fake-org'] },
+      path: { command: 'node', args: ['C:\\npm\\node_modules\\@azure-devops\\mcp\\dist\\index.js', 'fake-org'] },
+      remote: { type: 'http', url: 'https://mcp.dev.azure.com/fake-org' },
+      'mcp-remote': { command: 'npx', args: ['-y', 'mcp-remote', 'https://mcp.dev.azure.com/fake-org'] },
+      'url-flag': { command: 'npx', args: ['-y', 'mcp-remote', '--url=https://MCP.DEV.AZURE.COM:443/fake-org'] },
+      'cmd-string': { command: 'cmd', args: ['/c', 'npx -y @azure-devops/mcp fake-org'] },
+      ps1: { command: 'C:\\npm\\mcp-server-azuredevops.ps1', args: ['fake-org'] },
+      'package-flag': { command: 'npx', args: ['-y', '--package=@azure-devops/mcp', 'mcp-server-azuredevops', 'o'] },
+      pnpm: { command: 'pnpm', args: ['dlx', '@azure-devops/mcp@next', 'fake-org'] },
+      wsl: { command: 'wsl', args: ['npx', '-y', '@azure-devops/mcp', 'fake-org'] },
+      clone: { command: 'node', args: ['/src/Azure-DevOps-MCP/dist/index.js', 'fake-org'] },
+      community: { command: 'npx', args: ['-y', '@fake/mcp-server-azure-devops'] },
+      bridge: { type: 'http', url: 'http://127.0.0.1:60742/mcp/azure-devops' },
+      'azure-devops': { type: 'http', url: 'http://127.0.0.1:60742/mcp/one' },
+      azure_devops: { command: 'node', args: ['bridge.js'] },
+    }
+    const others = {
+      github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] },
+      azure: { command: 'npx', args: ['-y', '@azure/mcp@latest', 'server', 'start'] },
+      boards: { type: 'http', url: 'https://dev.azure.com/fake-org' },
+    }
+    const imp = importServers([
+      {
+        client: 'claude-code',
+        path: '/c/.claude.json',
+        kind: 'text',
+        text: JSON.stringify({ mcpServers: { ...ado, ...others } }),
+      },
+    ])
+    const parsed = parseConfig(configText(imp.servers, false), {}, '/usr/bin/node', 'linux')
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
+    const marked = [...parsed.config.servers].flatMap(([key, e]) => (e.kind !== 'invalid' && e.untrusted ? [key] : []))
+    assert.deepEqual(marked, Object.keys(ado))
+    const out = initReport(imp, '/c/config.json', 'linux', NPX_LAUNCH)
+    assert.ok(
+      out.includes(
+        `The config sets "untrusted": true on the servers that name Azure DevOps: ${Object.keys(ado).join(', ')}. Each of their results reaches the model as untrusted text.`,
+      ),
+      out,
+    )
+    assert.doesNotMatch(report(others), /untrusted/)
   })
 })
 

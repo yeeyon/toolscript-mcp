@@ -38,6 +38,7 @@ const writerFile = path.join(dir, 'writer.json')
 const consentFile = path.join(dir, 'consent.json')
 const bridgeFile = path.join(dir, 'bridge.json')
 const picFile = path.join(dir, 'pic.json')
+const waryFile = path.join(dir, 'wary.json')
 // The image that a probe in --image mode answers: a PNG of 1 by 1 pixel.
 const PIC_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const configFile = path.join(dir, 'config.json')
@@ -77,6 +78,7 @@ fs.writeFileSync(
       { match: 'mcp__x__probe', action: 'allow' },
       { match: 'mcp__consent__probe', action: 'allow' },
       { match: 'mcp__pic__probe', action: 'allow' },
+      { match: 'mcp__wary__probe', action: 'allow' },
       // It matches the tools of the bridge claude-code, but does not name that server, so it does not allow them.
       { match: 'mcp__claude-code*', action: 'allow' },
     ],
@@ -109,6 +111,8 @@ fs.writeFileSync(
       consent: { command: process.execPath, args: [PROBE, consentFile, '--requires-person'] },
       // Its tool answers a text block and an image block.
       pic: { command: process.execPath, args: [PROBE, picFile, '--image'] },
+      // Its tool answers JSON in an untrusted wrapper.
+      wary: { command: process.execPath, args: [PROBE, waryFile, '--untrusted'] },
       // A variable that is not set: this entry fails alone, and the server still starts.
       broken: { command: process.execPath, env: { TOKEN: '${TOOLSCRIPT_E2E_UNSET}' } },
       // An HTTP URL that does not parse, as text and from a variable: each entry fails alone.
@@ -547,6 +551,24 @@ test('run (s) an allow rule that does not name the bridge asks for its tool, and
   asking.answer = 'accept'
 })
 
+// With no bridge, an allow lowered to ask applies at once. Here the rule skips the bridge, and as ask it decides it.
+test('run (s2) an allow over the bridge lowered to ask waits for a restart, and the note names it by place only', async () => {
+  const lowered = JSON.parse(CONFIG_TEXT)
+  const index = lowered.policy.findIndex(r => r.match === 'mcp__claude-code*')
+  lowered.policy[index].action = 'ask'
+  try {
+    fs.writeFileSync(configFile, JSON.stringify(lowered))
+    const kept = await run('return 1')
+    assert.ok(kept.text.includes('## Policy not reloaded'), kept.text)
+    assert.ok(kept.text.includes(`added policy[${index}] (ask); removed policy[${index}] (allow).`), kept.text)
+    assert.ok(!kept.text.includes('mcp__claude-code*'), kept.text)
+  } finally {
+    fs.writeFileSync(configFile, CONFIG_TEXT)
+  }
+  const restored = await run('return 1')
+  assert.ok(!restored.text.includes('## Policy'), restored.text)
+})
+
 test('run (f) a busy loop ends at the limit, and the server stays usable', async () => {
   const started = performance.now()
   const r = await run('while (true) {}')
@@ -620,7 +642,8 @@ test('run (m) a looser policy waits for a restart when the client cannot ask, an
     const kept = await run(TICKET)
     assert.equal(kept.isError, true, kept.text)
     assert.ok(kept.text.includes('is denied by policy[0]'), kept.text)
-    const looser = `the change can let a tool run with less approval: added ${ALLOW_TICKET}; removed ${DENY_TICKET}.`
+    const looser =
+      'the change can let a tool run with less approval: added policy[0] (allow); removed policy[0] (deny).'
     assert.ok(kept.text.includes(`The toolscript-mcp policy in ${configFile} changed, and ${looser}`), kept.text)
     assert.ok(kept.text.includes('restart toolscript-mcp'), kept.text)
     assert.equal(benchCalls('create_ticket'), 0)
@@ -645,9 +668,12 @@ test('run (m) a looser policy waits for a restart when the client cannot ask, an
     const deploys = await run('return await call("mcp__bench__get_deploys", { date: "2026-10-09" })')
     assert.equal(deploys.isError, true, deploys.text)
     assert.ok(deploys.text.includes('is denied by policy[3]'), deploys.text)
+    assert.ok(
+      deploys.text.endsWith('The policy changed: added policy[3] (deny); removed policy[3] (ask).'),
+      deploys.text,
+    )
     const change =
       'added {"match": "mcp__bench__get_deploys", "action": "deny"}; removed {"match": "mcp__bench__get_deploys", "action": "ask"}'
-    assert.ok(deploys.text.endsWith(`The policy changed: ${change}.`), deploys.text)
     assert.ok(transport.stderr.includes(`the policy changed: ${change}\n`), transport.stderr)
   } finally {
     fs.writeFileSync(configFile, CONFIG_TEXT)
@@ -693,7 +719,7 @@ test('run (n) a looser policy asks the person: decline keeps the policy in force
     const accepted = await run(TICKET, askingClient)
     assert.equal(accepted.isError, false, accepted.text)
     assert.ok(
-      accepted.text.endsWith(`The policy changed: added ${ALLOW_TICKET}; removed ${DENY_TICKET}.`),
+      accepted.text.endsWith('The policy changed: added policy[0] (allow); removed policy[0] (deny).'),
       accepted.text,
     )
     assert.equal(asking.prompts.length, prompts + 2)
@@ -703,7 +729,10 @@ test('run (n) a looser policy asks the person: decline keeps the policy in force
   }
   const tighter = await run(TICKET, askingClient)
   assert.ok(tighter.text.includes('is denied by policy[0]'), tighter.text)
-  assert.ok(tighter.text.endsWith(`The policy changed: added ${DENY_TICKET}; removed ${ALLOW_TICKET}.`), tighter.text)
+  assert.ok(
+    tighter.text.endsWith('The policy changed: added policy[0] (deny); removed policy[0] (allow).'),
+    tighter.text,
+  )
   assert.equal(asking.prompts.length, prompts + 2, 'a tighter policy applies with no prompt')
   assert.equal(benchCalls('create_ticket'), 1)
 })
@@ -857,6 +886,62 @@ test('run (s) an image of a call is a file reference, and a returned reference i
   assert.equal(path.dirname(path.dirname(ref.file)), path.join(HOME, '.toolscript-mcp', 'files'))
   assert.deepEqual(r.content.slice(1), [{ type: 'image', data: PIC_BASE64, mimeType: 'image/png' }])
   assert.equal(r.content[0].text.includes(PIC_BASE64), false, 'no base64 in the text')
+})
+
+test('run (t) the program gets the JSON in an untrusted wrapper, and the model gets it in a wrapper of the server', async () => {
+  const r = await client.callTool({
+    name: 'run_code',
+    arguments: { code: 'return (await call("mcp__wary__probe", {})).pid' },
+  })
+  const text = r.content[0].text
+  assert.equal(r.isError, false, text)
+  // The notes of the run come after the value in the wrapper. Only the policy note of an earlier case follows it.
+  const mark =
+    /^<<([0-9a-f]{32})>> \[UNTRUSTED TOOL CONTENT: [^\]\n]*\] <<\1>>\n(\d+)(\n\n[^]*)?\n<<\/\1>>\n\n--- 1 MCP call/.exec(
+      text,
+    )
+  assert.ok(mark !== null, text)
+  const after = text.slice(text.indexOf(`<</${mark[1]}>>`))
+  assert.deepEqual(
+    after.match(/\n## .*/g) ?? [],
+    after.includes('\n## Policy') ? ['\n## Policy not reloaded'] : [],
+    text,
+  )
+  assert.deepEqual(
+    probeEvents(waryFile, 'call').map(e => e.pid),
+    [Number(mark[2])],
+    'the value is the pid of the probe that answered the call',
+  )
+  assert.equal(text.includes('PROBE CONTENT'), false, 'the wrapper of the tool does not reach the model')
+})
+
+test('run (u) a policy that an untrusted run writes into the config reaches the next note with no text of the file', async () => {
+  // The program puts the untrusted value in a rule, through a tool that the policy allows.
+  const writes = rules =>
+    `const w = await call("mcp__wary__probe", {})\nconst config = JSON.parse(${JSON.stringify(CONFIG_TEXT)})\nconfig.policy = ${rules}\nawait call("mcp__x__probe", { path: ${JSON.stringify(configFile)}, text: JSON.stringify(config) })\nreturn "written"`
+  const said = /UNTRUSTED_\d+_SAYS/
+  try {
+    const denied = await run(writes('[{ match: `mcp__UNTRUSTED_${w.pid}_SAYS`, action: "deny" }, ...config.policy]'))
+    assert.equal(denied.isError, false, denied.text)
+    assert.match(fs.readFileSync(configFile, 'utf8'), said)
+    const next = await run('return 2')
+    assert.ok(next.text.includes('policy[0] (deny)'), next.text)
+    assert.doesNotMatch(next.text, said)
+
+    const broken = await run(
+      writes(
+        '[{ match: `UNTRUSTED_${w.pid}_SAYS`, action: `UNTRUSTED_${w.pid}_SAYS`, [`UNTRUSTED_${w.pid}_SAYS`]: 1 }]',
+      ),
+    )
+    assert.equal(broken.isError, false, broken.text)
+    const stale = await run('return 3')
+    assert.ok(stale.text.includes('## Policy not reloaded'), stale.text)
+    assert.ok(stale.text.includes('- policy[0].action: must be "allow", "deny" or "ask"'), stale.text)
+    assert.ok(stale.text.endsWith('Ask the person to fix the config. Do not change the config yourself.'), stale.text)
+    assert.doesNotMatch(stale.text, said)
+  } finally {
+    fs.writeFileSync(configFile, CONFIG_TEXT)
+  }
 })
 
 test('(f) stdout holds only JSON-RPC, and (h) the server and its children end when stdin closes', async () => {
