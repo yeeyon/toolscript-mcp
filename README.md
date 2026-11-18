@@ -152,9 +152,19 @@ something:
 1. It checks Node and git, then clones the `beta` branch, or updates a clone that exists.
 2. It runs `init` when you agree, and shows the servers that init imported.
 3. It adds toolscript-mcp to Claude Code with `claude mcp add`.
-4. It helps you choose a policy and add servers. It never reads the config, because the config holds your secrets.
-5. It gives you the `login` command for each server that needs OAuth. You run the command.
-6. It adds Claude Code as a server when you agree, with the policy of [Claude Code as a downstream server](#claude-code-as-a-downstream-server).
+4. It guides a first run. See the list below.
+5. It helps you choose a policy and add servers. It never reads the config, because the config holds your secrets.
+6. It gives you the `login` command for each server that needs OAuth. You run the command.
+7. It adds Claude Code as a server when you agree, with the policy of [Claude Code as a downstream server](#claude-code-as-a-downstream-server).
+
+The first run ends after one `run_code` task works. Run `/toolscript:setup first-run` to start it again:
+
+1. You pick one server from `init --list`, which shows the servers of your clients with their scope. With no server, you can pick the demo server. It needs no account.
+2. The skill runs `tools` on that server. It shows each tool with its hint and its policy action, or the login command when the server needs OAuth.
+3. The skill proposes a small read task. For the demo, the task is "Count the open pull requests per author".
+4. You pick the starter policy. With "Ask when needed", Claude Code asks you before each program. "Allow this workflow" adds an allow rule for each exact tool name of the task. It keeps each deny rule that matches one of these tools.
+5. You start a new session and give the task. Then `/toolscript:setup verify` runs `runs --server <server>`. It confirms the run, or it names the step that fixes it.
+6. After a run works, the skill offers to remove the direct copy of the server from Claude Code. It shows the scope of the copy first.
 
 The skill does not edit the config files of your clients. It shows the lines to change. To update or uninstall
 toolscript-mcp, ask Claude again.

@@ -1,6 +1,6 @@
 {
   "name": "toolscript",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Install, update and set up toolscript-mcp from its GitHub beta branch: config, Claude Code registration, policy and OAuth login.",
   "author": {
     "name": "yeeyon",
