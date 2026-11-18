@@ -1,6 +1,7 @@
 // `toolscript-mcp doctor` checks a whole setup in one pass: Node, the config, the servers, the policy, the sandbox,
 // the run log and the files in HOME. It prints one line for each finding to stderr, with the next step for a problem.
-// Like tools and runs, it prints no description, argument, env or header value, or token. It changes no file.
+// Like tools and runs, it prints no description, argument, env or header value, or token. It changes no setting: it
+// writes and removes one temp file, and a connect can refresh OAuth tokens, which the token store then holds.
 
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'

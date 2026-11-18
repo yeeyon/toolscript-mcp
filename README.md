@@ -166,8 +166,8 @@ something:
 5. You start a new session and give the task. Then `/toolscript:start verify` runs `runs --server <server> --since 2h`. It confirms a recent run that called the server, or it names the step that fixes it.
 6. After a run works, the skill offers to remove the direct copy of the server from Claude Code. It shows the scope of the copy first.
 
-`/toolscript:doctor` checks the whole setup and changes nothing. It runs [doctor](#doctor), then checks the Claude Code
-registration, the direct copies of your servers and the clone. For each problem, it names the step that fixes it.
+`/toolscript:doctor` checks the whole setup and changes no setting. It runs [doctor](#doctor), then checks the Claude
+Code registration, the direct copies of your servers and the clone. For each problem, it names the step that fixes it.
 
 The skills do not edit the config files of your clients. They show the lines to change. To update or uninstall
 toolscript-mcp, ask Claude again.
@@ -362,8 +362,11 @@ checks come in this order:
    uses. They can belong to another config.
 
 doctor skips the check for allow rules that match no tool when a server does not connect. The output never shows
-tool descriptions, arguments, `env` or header values, or tokens. doctor changes no file. The exit code is 1 when a
-check fails, and 2 on a usage error.
+tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 when a check fails, and 2 on a
+usage error.
+
+doctor changes no setting. It writes one temp file to check a folder, then removes it. If the server check refreshes
+the OAuth tokens of a server, it writes the new tokens to the token store, as the running server does.
 
 ### Check a server and a run
 

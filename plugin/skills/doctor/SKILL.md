@@ -1,14 +1,17 @@
 ---
 name: doctor
-description: Check a whole toolscript-mcp setup in Claude Code and name the fix for each problem. Runs toolscript-mcp doctor (Node, config, servers, policy, sandbox, run log, files), then checks the Claude Code registration, the servers that a client still calls directly, and the clone against the beta branch. Changes nothing. Use when the person asks to check, diagnose or troubleshoot toolscript-mcp, or asks why it does not work.
+description: Check a whole toolscript-mcp setup in Claude Code and name the fix for each problem. Runs toolscript-mcp doctor (Node, config, servers, policy, sandbox, run log, files), then checks the Claude Code registration, the servers that a client still calls directly, and the clone against the beta branch. Changes no setting. Use when the person asks to check, diagnose or troubleshoot toolscript-mcp, or asks why it does not work.
 argument-hint: "[<config>]"
 ---
 
 # toolscript-mcp doctor
 
-This skill checks a setup and explains each problem. It changes nothing by itself. Each fix is a step of
-`/toolscript:setup` or `/toolscript:start`, and the person decides when to do it. Each command here prints no secret
+This skill checks a setup and explains each problem. It changes no setting, no config and no clone. Each fix is a step
+of `/toolscript:setup` or `/toolscript:start`, and the person decides when to do it. Each command here prints no secret
 value.
+
+doctor writes one temp file to check a folder, then removes it. If doctor refreshes the OAuth tokens of a server, the
+token store gets the new tokens, as with the running server.
 
 ## Rules
 
@@ -77,15 +80,17 @@ Then check the clone. Run these commands:
 
 ```sh
 git -C "<folder>" status -sb
-git -C "<folder>" fetch -q origin beta
-git -C "<folder>" rev-list --count HEAD..origin/beta
+git -C "<folder>" rev-parse HEAD
+git -C "<folder>" ls-remote origin refs/heads/beta
 ```
+
+`ls-remote` reads the newest commit of `beta` from GitHub, and it changes nothing in the clone.
 
 - The first line of `status -sb` names the branch. If it is not `beta`, tell the person. `/toolscript:setup` updates
   only the `beta` branch.
 - More lines after the first line are local changes. Tell the person. An update with `pull --ff-only` can fail on them.
-- If `rev-list` prints a number above 0, the clone is that many commits behind `origin/beta`. Do `/toolscript:setup`
-  step 3 to update it.
+- If the hash of `ls-remote` is not the hash of `rev-parse`, the clone is not at the newest `beta`. Do
+  `/toolscript:setup` step 3 to update it.
 
 ## 5. Explain each problem
 
@@ -99,7 +104,7 @@ For each `warn` and `fail`, give the cause and the step that fixes it:
 | `config` | errors | Each error names a key. The person fixes the key in `<config>` in an editor. |
 | `servers` | needs an OAuth login | `/toolscript:setup` step 10. The person runs the login command. |
 | `servers` | cannot connect | Show the reason. `/toolscript:start` step 3 checks one server. `/toolscript:setup` step 9 shows the form of an entry. |
-| `policy` | never decides a tool | An earlier rule matches each tool of this rule. `/toolscript:setup` step 7 changes the order or removes the rule. |
+| `policy` | never decides a tool | An earlier rule matches each tool of this rule. `/toolscript:setup` step 7 writes the rules again in a new order. Put a hidden deny rule above the earlier rule, and do not remove it. A hidden allow or ask rule can move up, or the person can remove it. |
 | `policy` | matches no tool | A wrong name, or a tool that the server removed. `/toolscript:setup` step 7. |
 | `policy` | does not allow the tools of the Claude Code bridge | Only a rule that starts with `mcp__<bridge>__` allows them. `/toolscript:setup` step 8. |
 | `sandbox` | no network block, no CPU limit | Windows has neither layer. `<folder>/SECURITY.md` describes the sandbox. No fix. |
