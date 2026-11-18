@@ -266,7 +266,7 @@ Then use [Client setup](#client-setup) with the path of this clone.
 ### init
 
 - `node /absolute/path/to/toolscript-mcp/dist/host/main.js init` imports the user-scope servers of Claude Code. It does not import the servers of a
-  project.
+  project. To add them, use `--list` and `--add` below.
 - If two clients have a server with the same name, init keeps the first one. The order is Claude Code, Claude
   Desktop, Cursor.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
@@ -303,6 +303,41 @@ Then use [Client setup](#client-setup) with the path of this clone.
   replaces.
 - `--config <path>` writes the config to a different path.
 - The config from init has an empty `policy`, so each tool is `ask`.
+
+To pick servers one at a time, use `--list` and `--add`. They also read the Claude Code servers of a project:
+
+- `init --list` shows one line for each server of the client files: its name, client, scope, kind, status and folder. It writes nothing.
+- The Claude Code scopes are `local`, `project` and `user`. Claude Code keeps the local servers in `~/.claude.json`, under the path of the project.
+- Claude Code reads the project servers from the `.mcp.json` of the project folder and of each folder above it.
+- If more than one scope has a server with the same name, Claude Code runs only one of them. The order is local,
+  then the closest `.mcp.json`, then user. The status of each other server ends with `hidden by` and the scope that
+  hides it.
+- The folder is the project folder of a local server, or the folder of the `.mcp.json` file of a project server.
+- `--project <dir>` names the project folder. The default is the current folder. Use the folder where you start Claude Code.
+  In a git checkout, init reads the local servers of the main checkout, as Claude Code does. This also applies in a subfolder or a git worktree.
+- The kind is `stdio` with the file name of the command, or `http` with the origin of the URL. The list shows no argument, env
+  value, header value, URL path or query.
+- A name with a blank or a character outside printable ASCII shows in double quotes. Such a character shows as a `\u`
+  escape in each column and in the output of `--add`.
+- The status is `in config`, `not in config`, `name taken by a different entry`, `toolscript itself`, or `skipped` with the reason.
+- Claude Code runs a server of a `.mcp.json` file only after you approve it. The status of a project server that Claude
+  Code has not approved ends with `not approved in Claude Code`. If you disabled it, the status ends with `disabled in Claude Code`.
+- init reads these choices from `~/.claude/settings.json`, from `.claude/settings.json` and `.claude/settings.local.json`
+  of the `--project` folder, and from `~/.claude.json`. The project files count only in a folder that you trust in
+  Claude Code. init does not read managed settings, so a server that they approve shows as not approved.
+- `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
+- Claude Code starts a stdio server of the local or project scope in the folder where the session starts. It does not
+  read the `cwd` of the entry. So `--add` sets the `cwd` of such a server to the `--project` folder, and leaves out
+  the `cwd` of the entry.
+- `--add` keeps the other servers, the policy and the other keys of the config. It keeps the old file as `<config>.bak`.
+- For a name in more than one Claude Code scope, `--add` takes the server that Claude Code runs. It names that scope and
+  the scopes that it hides.
+- `--add` changes nothing when a name is in the config already, in no client file, or in two clients with different
+  entries. It also changes nothing for a project server that is not approved or disabled in Claude Code.
+- `--unapproved` adds such a server. Use it only for a server that you trust: toolscript-mcp starts it without a question.
+- `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:user` or `--from cursor`.
+- `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
+  through toolscript-mcp works.
 
 ### Check a server and a run
 

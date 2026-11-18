@@ -9,17 +9,34 @@ import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { configPath, SECRET_NAMES, SECRET_PARTS, SECRET_WORD_LENGTH, type Env, type Launch } from '../core/config.ts'
 import {
+  addedConfigText,
+  addReport,
+  approvals,
   clientFiles,
   configText,
   importServers,
   initReport,
+  listReport,
+  mainCheckoutOf,
+  NO_CONFIG,
   oldConfigReport,
+  parseOldConfig,
+  planAdd,
+  scopedFiles,
+  scopedServers,
+  settingsFiles,
+  sourceName,
   type ClientFile,
   type ClientRead,
+  type ProjectFolders,
 } from '../core/init.ts'
 import { errorText } from '../core/protocol.ts'
 
-export const INIT_USAGE = 'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run] [--help]'
+export const INIT_USAGE = [
+  'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run] [--help]',
+  '       toolscript-mcp init --list [--project <dir>] [--config <path>]',
+  '       toolscript-mcp init --add <name>[,<name>...] [--from <client>[:<scope>]] [--unapproved] [--project <dir>] [--config <path>]',
+].join('\n')
 
 const list = (words: readonly string[]) => `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`
 
@@ -39,14 +56,35 @@ const HIDDEN = [
   'Other arguments show as they are. If one of them holds a secret, do not share this output.',
 ]
 
-const readClient = async (file: ClientFile): Promise<ClientRead> => {
-  const at = { client: file.client, path: path.resolve(file.path) }
+type FileRead = { kind: 'text'; text: string } | { kind: 'missing' } | { kind: 'unreadable'; error: string }
+
+/**
+ * A file of a client, read only when it is a regular file. `.mcp.json` comes from each folder up to the root, and a
+ * FIFO there blocks a plain read: the open does not wait, and the check runs on the open file.
+ */
+const readRegular = async (file: string): Promise<FileRead> => {
+  let handle: fs.promises.FileHandle | undefined
   try {
-    return { ...at, kind: 'text', text: await fs.promises.readFile(at.path, 'utf8') }
+    handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0))
+    if (!(await handle.stat()).isFile()) return { kind: 'unreadable', error: 'not a regular file' }
+    return { kind: 'text', text: await handle.readFile('utf8') }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...at, kind: 'missing' }
-    return { ...at, kind: 'unreadable', error: errorText(err) }
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' }
+    return { kind: 'unreadable', error: errorText(err) }
+  } finally {
+    await handle?.close()
   }
+}
+
+const readClient = async (file: ClientFile): Promise<ClientRead> => {
+  const at = { ...file, path: path.resolve(file.path) }
+  return { ...at, ...(await readRegular(at.path)) }
+}
+
+/** The text of a settings file, or undefined when init cannot read it. */
+const settingsText = async (file: string): Promise<string | undefined> => {
+  const read = await readRegular(path.resolve(file))
+  return read.kind === 'text' ? read.text : undefined
 }
 
 /** The bytes of `file`, or undefined when there is no such file. */
@@ -74,6 +112,128 @@ const writeConfig = async (file: string, text: string | Uint8Array, replace: boo
   }
 }
 
+type Options = {
+  config?: string
+  force?: boolean
+  'dry-run'?: boolean
+  list?: boolean
+  add?: string[]
+  from?: string
+  unapproved?: boolean
+  project?: string
+  help?: boolean
+}
+
+const misuseOf = (o: Options): string | undefined => {
+  const pick = o.list === true || o.add !== undefined
+  if (o.list && o.add) return '--list and --add do not go together.'
+  if (pick && (o.force || o['dry-run'])) return '--force and --dry-run do not go with --list or --add.'
+  if (o.from !== undefined && !o.add) return '--from goes only with --add.'
+  if (o.unapproved && !o.add) return '--unapproved goes only with --add.'
+  if (o.project !== undefined && !pick) return '--project goes only with --list or --add.'
+  return undefined
+}
+
+/** `start` and each parent folder up to the root. */
+const upFrom = (start: string): string[] =>
+  path.dirname(start) === start ? [start] : [start, ...upFrom(path.dirname(start))]
+
+/**
+ * The folders of Claude Code for a session started in `start`. The nearest folder up with `.git` decides the local
+ * scope, and Claude Code 2.1 reads the `.mcp.json` of every folder up from `start`.
+ */
+const projectFolders = async (start: string): Promise<ProjectFolders> => {
+  const shared = upFrom(start)
+  for (const dir of shared) {
+    const dotGit = path.join(dir, '.git')
+    const stat = await fs.promises.stat(dotGit).catch(() => undefined)
+    if (stat?.isDirectory()) return { start, local: dir, shared }
+    if (stat?.isFile()) {
+      const main = mainCheckoutOf(await fs.promises.readFile(dotGit, 'utf8').catch(() => ''))
+      return { start, local: main === undefined ? dir : path.resolve(dir, main), shared }
+    }
+  }
+  return { start, local: start, shared }
+}
+
+/** `--list` and `--add`: the servers of every client file and Claude Code scope against the config in `file`. */
+const pick = async (
+  options: Options,
+  file: string,
+  env: Env,
+  platform: string,
+  home: string,
+  print: (text: string) => void,
+  launch: Launch,
+): Promise<number> => {
+  const project = await projectFolders(path.resolve(options.project ?? process.cwd()))
+  const reads = await Promise.all(scopedFiles(env, platform, home, project).map(readClient))
+  const settings = settingsFiles(env, home, project.start)
+  const local = reads.find(r => r.scope === 'local')
+  const approval = approvals(
+    {
+      claudeJson: local?.kind === 'text' ? local.text : undefined,
+      user: await settingsText(settings.user),
+      start: await Promise.all(settings.start.map(settingsText)),
+    },
+    project,
+    platform,
+  )
+  const files = scopedServers(reads, platform, project.start, approval)
+  const sources = [...new Set(files.flatMap(f => [f.file.client, sourceName(f.file)]))]
+  if (options.from !== undefined && !sources.includes(options.from)) {
+    print(`--from takes one of ${list(sources)}.\n${INIT_USAGE}`)
+    return 2
+  }
+  let old: Buffer | undefined
+  try {
+    old = await readIfAny(file)
+  } catch (err) {
+    print(`cannot read ${file}: ${errorText(err)}`)
+    return 1
+  }
+  const parsed = old === undefined ? undefined : parseOldConfig(old.toString('utf8'))
+  if (parsed !== undefined && !parsed.ok) {
+    print(`${file} is not a valid config: ${parsed.why}. init did not change it.`)
+    return 1
+  }
+  const config = parsed?.config
+  if (options.list) {
+    print(listReport(files, config ?? NO_CONFIG))
+    return 0
+  }
+  const names = (options.add ?? []).flatMap(a => a.split(',')).map(n => n.trim())
+  if (names.some(n => n === '')) {
+    print(`--add takes server names, separated by commas.\n${INIT_USAGE}`)
+    return 2
+  }
+  const plan = planAdd(files, names, config ?? NO_CONFIG, {
+    from: options.from,
+    unapproved: options.unapproved === true,
+  })
+  if (!plan.ok) {
+    print([...plan.errors, `init did not change ${file}.`].join('\n'))
+    return 1
+  }
+  const bak = `${file}.bak`
+  try {
+    await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
+    if (old !== undefined) await writeConfig(bak, old, true)
+    await writeConfig(file, addedConfigText(config, plan.added), old !== undefined)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      print(`${file} appeared while init ran. init did not change it. Run init --add again.`)
+      return 1
+    }
+    print(`cannot write ${file}: ${errorText(err)}`)
+    return 1
+  }
+  const mode = platform === 'win32' ? '' : ' (mode 0600)'
+  const kept = old === undefined ? [] : [`${bak} holds the old config${mode}.`]
+  print([`Wrote ${file}.`, ...kept, '', ...addReport(plan.added, file, platform, launch)].join('\n'))
+  return 0
+}
+
 /** Runs init with these arguments and returns the exit code. `home` and `env` name every file it reads. */
 export const runInit = async (
   args: readonly string[],
@@ -83,7 +243,7 @@ export const runInit = async (
   print: (text: string) => void,
   launch: Launch,
 ): Promise<number> => {
-  let options: { config?: string; force?: boolean; 'dry-run'?: boolean; help?: boolean }
+  let options: Options
   try {
     options = parseArgs({
       args: [...args],
@@ -91,6 +251,11 @@ export const runInit = async (
         config: { type: 'string' },
         force: { type: 'boolean' },
         'dry-run': { type: 'boolean' },
+        list: { type: 'boolean' },
+        add: { type: 'string', multiple: true },
+        from: { type: 'string' },
+        unapproved: { type: 'boolean' },
+        project: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
       },
     }).values
@@ -102,8 +267,14 @@ export const runInit = async (
     print(INIT_USAGE)
     return 0
   }
+  const misuse = misuseOf(options)
+  if (misuse !== undefined) {
+    print(`${misuse}\n${INIT_USAGE}`)
+    return 2
+  }
   const file = path.resolve(configPath(options.config, env, platform, home))
-  const imported = importServers(await Promise.all(clientFiles(env, platform, home).map(readClient)))
+  if (options.list || options.add) return pick(options, file, env, platform, home, print, launch)
+  const imported = importServers(await Promise.all(clientFiles(env, platform, home).map(readClient)), platform)
   const report = initReport(imported, file, platform, launch)
   if (imported.servers.size === 0) {
     print(report)
