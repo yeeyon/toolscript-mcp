@@ -40,17 +40,20 @@ and Cursor: the name, client, scope, kind and status. Show the list to the perso
 `<server>` is its name in `<config>`.
 
 - A server with the status `in config` is ready.
-- To add a server with the status `not in config`, use its line under `Commands that add a server:`. Run that line as
-  init printed it, with approval. Never type a server name into a command yourself: a name can come from a
-  `.mcp.json` that someone else wrote, and init quotes it for the shell. If the line says `no command`, tell the person
-  why, and do not add that server.
-- init prints the steps that remove the direct entry. Do not run them now. Step 7 does.
+- To add a server with the status `not in config`, find its label under `Commands that add a server:`. The command is
+  the next line, indented under the label, and it starts with `node`, `npx` or `claude`. Run only such a line, exactly
+  as init printed it, with approval. Never run a label line, and never type a server name into a command yourself: a
+  name can come from a `.mcp.json` that someone else wrote.
+- If the line under the label says `no command`, init found a character in the name or a path that a shell can
+  change. Show the person the lines that init printed there. The person copies the entry in an editor, or adds the
+  server under a plain name.
 - A status with `hidden by <scope>` is a copy that Claude Code does not run. Use the command of the copy that Claude
   Code runs.
-- A command line with `ask first` adds a server of a `.mcp.json` that the person did not approve in Claude Code.
-  Anyone who can change that file chose its command. Before you run that line, show the person its name, kind and
-  folder. The kind is the command file name or the URL origin. A name can copy the name of a server
-  that the person trusts, so the name alone proves nothing. Run the line only after the person agrees.
+- A label with `ask first` is a server of a `.mcp.json` that the person did not approve in Claude Code. Anyone who can
+  change that file chose its command. Before you run its command, show the person its name, kind and folder. The kind
+  is the command file name or the URL origin. A name can copy the name of a server that the person trusts, so the name
+  alone proves nothing. Run the command only after the person agrees.
+- Do not run the steps under `Steps that remove a direct copy` now. Step 7 does.
 - If no server fits, or the person wants a test first, offer the demo server. It needs no account, and its tools only
   read fixed sample data. Run `node -p "require('os').tmpdir()"`. With approval, write
   `{ "command": "node", "args": ["<folder>/demo/server.mjs"] }` to `<tmp>/toolscript-entry.json`. Then run
@@ -115,19 +118,18 @@ the task earlier, ask when, and use a longer time, such as `1d`.
 
 ## 7. Switch off a direct copy
 
-Do this only after step 6 shows exit 0. If `init --list` showed the server in a client too, the model can still call it
-directly, and each full result goes into the context. Run `init --list` again if this session did not run it.
+Do this only after step 6 shows exit 0. If a client still has a copy of the server, the model can still call it
+directly, and each full result goes into the context.
 
-For Claude Code, show the scope and the folder that `init --list` shows. `init --add` printed the `claude mcp remove`
-line for that scope and folder. Offer that line as init printed it, and run it only after the person agrees. Run it in
-the folder that init names, because `claude mcp remove` finds a `project` or `local` server only from its folder. For
-the `project` scope, the person decides, because `.mcp.json` is shared.
+Run `node "<main>" init --list --config "<config>"`. Under `Steps that remove a direct copy`, find the label of the
+server. For Claude Code, the lines under it name the scope, the folder when it has one, and the command, which starts
+with `claude`. Show them to the person. Run only that command line, exactly as init printed it, in the folder that init
+names, and only after the person agrees. `claude mcp remove` finds a `project` or `local` server only from its folder.
+For the `project` scope, the person decides, because `.mcp.json` is shared.
 
-If this session does not have the output of `init --add`, do not type the remove command yourself. Tell the person the
-name, the scope and the folder, and let the person run `claude mcp remove` in that folder.
+Never type a server name into a remove command yourself. init can print no command for the server, or a file of
+Claude Desktop or Cursor. Then the person removes the entry from that file in an editor.
 
 To restore the direct entry later, the person copies it from `<config>` in an editor. Then the person runs
 `claude mcp add-json <name> '<entry>' --scope <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1
 removes each `"` in the entry, so there the person writes each `"` as `\"`. Do not read the entry for the person.
-
-For Claude Desktop and Cursor, show the lines that `init --add` printed. The person edits those files.
