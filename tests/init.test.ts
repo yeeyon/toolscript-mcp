@@ -858,7 +858,7 @@ describe('init --list and --add', () => {
         },
       },
       '.config/Claude/claude_desktop_config.json': {
-        mcpServers: { 'my notes': { command: 'node', args: ['notes.js'] } },
+        mcpServers: { 'my notes': { command: 'node', args: ['notes.js'] }, gh: { command: 'desktop-gh' } },
       },
       '.cursor/mcp.json': '{ not json',
       ...(config === undefined ? {} : { '.config/toolscript-mcp/config.json': config }),
@@ -885,9 +885,10 @@ describe('init --list and --add', () => {
     assert.match(out, row('notes', 'claude-code', 'local', 'http https://notes.example.com', 'not in config'))
     assert.match(out, row('shared', 'claude-code', 'project', 'http https://shared.example.com', 'not in config'))
     assert.match(out, row('events', 'claude-code', 'project', '-', 'skipped: type "sse":'), out)
-    assert.match(out, row('gh', 'claude-code', 'user', 'stdio npx', 'not in config'))
+    assert.match(out, row('gh', 'claude-code', 'user', 'stdio npx', 'not in config, hidden by local'))
     assert.match(out, row('toolscript', 'claude-code', 'user', '-', 'toolscript itself'))
     assert.match(out, row('"my notes"', 'claude-desktop', '-', 'stdio node', 'not in config'))
+    assert.match(out, row('gh', 'claude-desktop', '-', 'stdio desktop-gh', 'not in config'))
     assert.match(out, /^Cannot read cursor, .*: not valid JSON/m)
     assert.doesNotMatch(out, /elsewhere/)
   })
@@ -958,7 +959,7 @@ describe('init --list and --add', () => {
   })
 
   // Claude Code 2.1 reads the .mcp.json of the start folder and of each parent, and the closer file wins.
-  test('--list and --add read the .mcp.json of each folder up from the project, and a closer file wins', async () => {
+  test('--list and --add read the .mcp.json of each folder up from the project, and the closer file hides the farther', async () => {
     const top = homeWith({
       '.mcp.json': {
         mcpServers: {
@@ -976,10 +977,21 @@ describe('init --list and --add', () => {
     assert.equal(listed.code, 0, listed.out)
     assert.match(listed.out, row('dup', 'claude-code', 'project', 'stdio node', 'not in config', near), listed.out)
     assert.match(listed.out, row('far', 'claude-code', 'project', 'http https://far.example.com', 'not in config', top))
-    assert.equal(listed.out.match(/^dup /gm)?.length, 1, listed.out)
+    assert.match(
+      listed.out,
+      row('dup', 'claude-code', 'project', 'stdio node', 'not in config, hidden by project', top),
+    )
 
     const added = await run(home, start, ['--add', 'dup,far', '--from', 'claude-code:project'])
     assert.equal(added.code, 0, added.out)
+    assert.ok(
+      added.out
+        .split('\n')
+        .includes(
+          `  Claude Code (project scope) in ${path.join(top, '.mcp.json')} also has dup, which the project one hides.`,
+        ),
+      added.out,
+    )
     assert.deepEqual(JSON.parse(fs.readFileSync(added.file, 'utf8')).mcpServers, {
       dup: { command: 'node', args: ['near.mjs'], cwd: start },
       far: { type: 'http', url: 'https://far.example.com/mcp' },
@@ -1029,7 +1041,7 @@ describe('init --list and --add', () => {
     const { code, out } = await run(home, project, ['--list'])
     assert.equal(code, 0, out)
     assert.match(out, row('gh', 'claude-code', 'local', 'stdio gh-mcp', 'in config'))
-    assert.match(out, row('gh', 'claude-code', 'user', 'stdio npx', 'name taken by a different entry'))
+    assert.match(out, row('gh', 'claude-code', 'user', 'stdio npx', 'name taken by a different entry, hidden by local'))
     assert.match(
       out,
       row('shared', 'claude-code', 'project', 'http https://shared.example.com', 'name taken by a different entry'),
@@ -1149,6 +1161,49 @@ describe('init --list and --add', () => {
     assert.match(out, /Remove from "mcpServers": "my notes"/)
   })
 
+  // Claude Code runs a name of several of its scopes from the first of local, project and user.
+  test('--add takes a name of several Claude Code scopes from the scope that Claude Code runs, and says so', async () => {
+    const project = homeWith({
+      '.mcp.json': { mcpServers: { all: { command: 'all-project' }, pu: { command: 'pu-project' } } },
+    })
+    const home = homeWith({
+      '.claude.json': {
+        mcpServers: { all: { command: 'all-user' }, pu: { command: 'pu-user' }, lu: { command: 'lu-user' } },
+        projects: { [project]: { mcpServers: { all: { command: 'all-local' }, lu: { command: 'lu-local' } } } },
+      },
+    })
+    const listed = await run(home, project, ['--list'])
+    for (const [name, scope, status] of [
+      ['all', 'local', 'not in config'],
+      ['all', 'project', 'not in config, hidden by local'],
+      ['all', 'user', 'not in config, hidden by local'],
+      ['pu', 'project', 'not in config'],
+      ['pu', 'user', 'not in config, hidden by project'],
+      ['lu', 'user', 'not in config, hidden by local'],
+    ] as const)
+      assert.match(listed.out, row(name, 'claude-code', scope, `stdio ${name}-${scope}`, status), listed.out)
+
+    const { code, out, file } = await run(home, project, ['--add', 'all,pu,lu'])
+    assert.equal(code, 0, out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers, {
+      all: { command: 'all-local', cwd: project },
+      pu: { command: 'pu-project', cwd: project },
+      lu: { command: 'lu-local', cwd: project },
+    })
+    const lines = out.split('\n')
+    for (const line of [
+      '- all, from Claude Code (local scope)',
+      `  Claude Code (project scope) in ${path.join(project, '.mcp.json')} also has all, which the local one hides.`,
+      '  Claude Code (user scope) also has all, which the local one hides.',
+      '- pu, from Claude Code (project scope)',
+      '  Claude Code (user scope) also has pu, which the project one hides.',
+      '- lu, from Claude Code (local scope)',
+      '  Claude Code (user scope) also has lu, which the local one hides.',
+    ])
+      assert.ok(lines.includes(line), `missing line: ${line}\n\n${out}`)
+    assert.ok(!lines.includes('  claude mcp remove all --scope user'), out)
+  })
+
   test('--from picks one of the different entries of a name', async () => {
     const { home, project } = setup()
     const { code, out, file } = await run(home, project, ['--add', 'gh', '--from', 'claude-code:user'])
@@ -1173,10 +1228,10 @@ describe('init --list and --add', () => {
       ],
       ['a name in no client file', ['--add', 'nope'], OLD, /^nope is in no client file/m],
       [
-        'a name with different entries',
+        'a name with different entries in two clients',
         ['--add', 'gh'],
         OLD,
-        /^gh has different entries in claude-code:local, claude-code:user\. Pick one with --from/m,
+        /^gh has different entries in claude-code:local, claude-desktop\. Pick one with --from/m,
       ],
       [
         'a name not in the --from client',

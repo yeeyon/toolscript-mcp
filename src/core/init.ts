@@ -263,8 +263,16 @@ const parseServer = (name: string, raw: unknown, start: string | undefined): Par
   return { kind: 'entry', key, entry, dropped }
 }
 
-/** A server that init found in a client file: where, its name there, and its entry. */
-export type Candidate = { readonly file: ClientFile; readonly name: string; readonly parsed: Parsed }
+/**
+ * A server that init found in a client file: where, its name there, and its entry. `hiddenBy`: the Claude Code scope
+ * whose server of the same name Claude Code runs instead of this one.
+ */
+export type Candidate = {
+  readonly file: ClientFile
+  readonly name: string
+  readonly parsed: Parsed
+  readonly hiddenBy?: Scope
+}
 
 /** The servers of one client file, or why init read none. */
 export type FileServers = {
@@ -285,16 +293,20 @@ const fileServers = (read: ClientRead, platform: string, start?: string): FileSe
 }
 
 /**
- * The servers of the files of `scopedFiles` for a session started in `start`. A name in two `.mcp.json` files is
- * the server of the closer one, as in Claude Code, so the farther file drops it.
+ * The servers of the files of `scopedFiles` for a session started in `start`. Claude Code runs the server of a name
+ * from the first of its files in that order, so each later server of the name is hidden by that scope.
  */
 export const scopedServers = (reads: readonly ClientRead[], platform: string, start: string): FileServers[] => {
-  const closer = new Set<string>()
+  const runs = new Map<string, Scope>()
   return reads.map(read => {
     const servers = fileServers(read, platform, start)
-    if (read.scope !== 'project') return servers
-    const candidates = servers.candidates.filter(c => !closer.has(c.name))
-    for (const c of servers.candidates) closer.add(c.name)
+    const { scope } = read
+    if (read.client !== 'claude-code' || scope === undefined) return servers
+    const candidates = servers.candidates.map(c => {
+      const hiddenBy = runs.get(c.name)
+      if (hiddenBy === undefined) runs.set(c.name, scope)
+      return hiddenBy === undefined ? c : { ...c, hiddenBy }
+    })
     return { ...servers, candidates }
   })
 }
@@ -502,12 +514,15 @@ const canonical = (value: unknown): string =>
 
 const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => (a < b ? -1 : a > b ? 1 : 0)
 
-const statusOf = ({ parsed }: Candidate, servers: OldConfig['servers']): string => {
+const configStatus = (parsed: Parsed, servers: OldConfig['servers']): string => {
   if (parsed.kind === 'self') return 'toolscript itself'
   if (parsed.kind === 'skipped') return `skipped: ${parsed.why}`
   if (!Object.hasOwn(servers, parsed.key)) return 'not in config'
   return canonical(servers[parsed.key]) === canonical(parsed.entry) ? 'in config' : 'name taken by a different entry'
 }
+
+const statusOf = ({ parsed, hiddenBy }: Candidate, servers: OldConfig['servers']): string =>
+  `${configStatus(parsed, servers)}${hiddenBy ? `, hidden by ${hiddenBy}` : ''}`
 
 /** `stdio <executable>` or `http <origin>`: no argument, path, query or login. */
 const kindOf = ({ parsed }: Candidate): string => {
@@ -551,12 +566,21 @@ export const listReport = (files: readonly FileServers[], config: OldConfig): st
   return [...list, ...problems].join('\n')
 }
 
-/** A server that `--add` copies into the config, and the client files that hold the same entry. */
-export type Added = { readonly key: ServerKey; readonly entry: Entry; readonly from: readonly Candidate[] }
+/**
+ * A server that `--add` copies into the config, the client files that hold the same entry, and the Claude Code
+ * servers of the same name that the one in `from` hides.
+ */
+export type Added = {
+  readonly key: ServerKey
+  readonly entry: Entry
+  readonly from: readonly Candidate[]
+  readonly hides: readonly Candidate[]
+}
 
 /**
  * The servers `names` of the client files, or every reason to add none. `from` keeps only the files of one client,
- * as `cursor`, or of one scope, as `claude-code:local`.
+ * as `cursor`, or of one scope, as `claude-code:local`. Of a name in several Claude Code scopes, `--add` takes the
+ * one that Claude Code runs: the first in the order of `scopedFiles`. Different entries in two clients need `from`.
  */
 export const planAdd = (
   files: readonly FileServers[],
@@ -572,12 +596,13 @@ export const planAdd = (
   for (const name of names) {
     const quoted = shownName(name)
     const found = pool.filter(c => c.name === name)
-    const usable = found.flatMap(c => (c.parsed.kind === 'entry' ? [{ c, parsed: c.parsed }] : []))
+    const picked = found.filter((c, i) => found.findIndex(o => o.file.client === c.file.client) === i)
+    const usable = picked.flatMap(c => (c.parsed.kind === 'entry' ? [{ c, parsed: c.parsed }] : []))
     const first = usable[0]
     if (found.length === 0) errors.push(`${quoted} is in no client file${from ? ` of ${printable(from)}` : ''}.`)
     else if (first === undefined)
       errors.push(
-        `${quoted} cannot be added: ${found.map(c => `${sourceName(c.file)}: ${printable(statusOf(c, {}))}`).join(', ')}.`,
+        `${quoted} cannot be added: ${picked.map(c => `${sourceName(c.file)}: ${printable(statusOf(c, {}))}`).join(', ')}.`,
       )
     else if (usable.some(u => canonical(u.parsed.entry) !== canonical(first.parsed.entry)))
       errors.push(
@@ -587,7 +612,11 @@ export const planAdd = (
       errors.push(`${quoted} is in the config already, as ${first.parsed.key}.`)
     else if (added.some(a => a.key === first.parsed.key))
       errors.push(`${quoted} makes the server key ${first.parsed.key}, which another name in --add makes too.`)
-    else added.push({ key: first.parsed.key, entry: first.parsed.entry, from: usable.map(u => u.c) })
+    else {
+      const runs = usable.some(u => u.c.file.client === 'claude-code')
+      const hides = runs ? found.filter(c => !picked.includes(c)) : []
+      added.push({ key: first.parsed.key, entry: first.parsed.entry, from: usable.map(u => u.c), hides })
+    }
   }
   return errors.length > 0 ? { ok: false, errors } : { ok: true, added }
 }
@@ -606,10 +635,15 @@ export const addedConfigText = (old: OldConfig | undefined, added: readonly Adde
 export const addReport = (added: readonly Added[], configFile: string, platform: string, launch: Launch): string[] => {
   const out = [`Added ${plural(added.length, 'server')}:`]
   const remove = new Map<string, { file: ClientFile; names: string[] }>()
-  for (const { key, from } of added) {
+  for (const { key, from, hides } of added) {
     const sources = from.map(c => `${sourceLabel(c.file)}${c.name === key ? '' : ` ${shownName(c.name)}`}`)
     const dropped = [...new Set(from.flatMap(c => (c.parsed.kind === 'entry' ? c.parsed.dropped : [])))]
     out.push(`- ${key}, from ${sources.join(', ')}${dropped.length > 0 ? `. Left out: ${dropped.join(', ')}` : ''}`)
+    const runs = from.find(c => c.file.client === 'claude-code')?.file.scope
+    for (const h of hides)
+      out.push(
+        `  ${sourceLabel(h.file)}${h.file.scope === 'project' ? ` in ${h.file.path}` : ''} also has ${shownName(h.name)}, which the ${runs} one hides.`,
+      )
     for (const c of from) {
       // The local and user scopes share a file, and the project scope has a file in each folder.
       const where = `${sourceName(c.file)} ${c.file.path}`

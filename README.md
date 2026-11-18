@@ -298,8 +298,10 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 
 - `init --list` shows one line for each server of the client files: its name, client, scope, kind, status and folder. It writes nothing.
 - The Claude Code scopes are `local`, `project` and `user`. Claude Code keeps the local servers in `~/.claude.json`, under the path of the project.
-- Claude Code reads the project servers from the `.mcp.json` of the project folder and of each folder above it. If two
-  of these files have a server with the same name, the closer file wins. init lists and adds only that server.
+- Claude Code reads the project servers from the `.mcp.json` of the project folder and of each folder above it.
+- If more than one scope has a server with the same name, Claude Code runs only one of them. The order is local,
+  then the closest `.mcp.json`, then user. The status of each other server ends with `hidden by` and the scope that
+  hides it.
 - The folder is the project folder of a local server, or the folder of the `.mcp.json` file of a project server.
 - `--project <dir>` names the project folder. The default is the current folder. Use the folder where you start Claude Code.
   In a git checkout, init reads the local servers of the main checkout, as Claude Code does. This also applies in a subfolder or a git worktree.
@@ -313,8 +315,11 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
   read the `cwd` of the entry. So `--add` sets the `cwd` of such a server to the `--project` folder, and leaves out
   the `cwd` of the entry.
 - `--add` keeps the other servers, the policy and the other keys of the config. It keeps the old file as `<config>.bak`.
-- `--add` changes nothing when a name is in the config already, in no client file, or in two files with different entries.
-- `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:local` or `--from cursor`.
+- For a name in more than one Claude Code scope, `--add` takes the server that Claude Code runs. It names that scope and
+  the scopes that it hides.
+- `--add` changes nothing when a name is in the config already, in no client file, or in two clients with different
+  entries.
+- `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:user` or `--from cursor`.
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
   through toolscript-mcp works.
 
