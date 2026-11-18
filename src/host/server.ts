@@ -73,7 +73,7 @@ export const createServer = (
 ): Served => {
   const mcp = new McpServer(
     { name: 'toolscript-mcp', version },
-    { capabilities: { tools: {} }, instructions: serverInstructions([...config.servers.keys()]) },
+    { capabilities: { tools: {} }, instructions: serverInstructions([...config.servers.keys()], config.bridges) },
   )
   // One server process serves one client session: its kept results and its saveFile folder.
   const kept = newKept()
@@ -125,7 +125,7 @@ export const createServer = (
     const change = policyChange(policy, read.policy)
     if (change === '') return { policy, note: '' }
     const note = policyChange(policy, read.policy, 'note')
-    if (!onlyTightens(policy, read.policy)) {
+    if (!onlyTightens(policy, read.policy, config.bridges)) {
       // The prompt names every changed rule uncut. The log keeps the short form, and the note no text of the file.
       const answer = await prompt(
         extra,
@@ -169,7 +169,7 @@ export const createServer = (
       shapes,
       filesDir,
       policyNote: fresh.note,
-      ask: (needed, code) => elicit(extra, askText(needed, code)),
+      ask: (needed, code) => elicit(extra, askText(needed, code, config.bridges)),
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
       log,

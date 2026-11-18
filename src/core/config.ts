@@ -3,7 +3,7 @@
 // Parsed here, at the boundary, so the host trusts a Config. Also where the
 // file is and the self-loop guard.
 
-import { ACTIONS, type Action, type Policy, type Rule } from './policy.ts'
+import { ACTIONS, type Action, type Bridges, type Policy, type Rule } from './policy.ts'
 
 // The WHATWG URL and btoa of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
 declare const URL: { canParse(url: string): boolean; new (url: string): { readonly href: string } }
@@ -126,6 +126,8 @@ export type Sandbox = {
 
 export type Config = {
   readonly servers: ReadonlyMap<ServerKey, ServerEntry>
+  /** The servers that are Claude Code itself (isBridge). Only an allow rule that names one allows its tools. */
+  readonly bridges: Bridges
   readonly sandbox: Sandbox
   readonly policy: Policy
   /** False when the config says `"log": false`: no run log. */
@@ -424,6 +426,42 @@ const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
   })
 }
 
+/** The key of the Claude Code bridge in the README and the setup skill. */
+const BRIDGE_KEY = 'claude-code'
+
+// Claude Code, in any case: `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path; the
+// package `@anthropic-ai/claude-code`, also with `@<version>` (a range such as `@>=2` splits at `>`); or a path that
+// ends in `claude-code/cli.js` or `claude-code/cli.mjs`.
+const CLAUDE =
+  /^(?:(?:.*[\\/])?claude(?:\.exe|\.cmd|\.ps1)?|@anthropic-ai\/claude-code(?:@[^\\/]*)?|.*[\\/]claude-code[\\/]cli\.m?js)$/i
+// What the stage of a bridge match waits for: the Claude Code word, then `mcp`, then `serve`.
+const BRIDGE_WORDS = [
+  (word: string) => CLAUDE.test(word),
+  (word: string) => word === 'mcp',
+  (word: string) => word === 'serve',
+]
+
+/**
+ * True for Claude Code serving its own tools, such as Bash and Write: the key
+ * BRIDGE_KEY, or a stdio entry whose words hold the Claude Code word, then
+ * `mcp`, then `serve`, with any words between. A word ends at white space or
+ * a shell operator, and quotes and the `^` of cmd do not count, so
+ * `cmd /c "cd /d C:\w&&claude mcp serve"` and `claude --model opus mcp serve`
+ * count. A launch that is no bridge but has the three words counts too, which
+ * only asks more. A program that calls these tools skips the permission rules
+ * and hooks of Claude Code, so only the policy guards them. One pass over the
+ * words: a config can hold a long hostile command line.
+ */
+const isBridge = (key: ServerKey, server: ServerEntry): boolean => {
+  if (key === BRIDGE_KEY) return true
+  if (server.kind !== 'stdio') return false
+  let stage = 0
+  for (const arg of [server.command, ...server.args])
+    for (const word of arg.replace(/["'^]/g, '').split(/[\s;&|()<>`$,]+/))
+      if (word !== '' && BRIDGE_WORDS[stage]!(word) && ++stage === BRIDGE_WORDS.length) return true
+  return false
+}
+
 /** The JSON in `text`, or where it breaks. V8 quotes the text near the error, which can hold a token: only the place is kept. */
 export const parseJson = (text: string): { ok: true; value: unknown } | { ok: false; where: string } => {
   try {
@@ -470,8 +508,9 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
   if (raw.log !== undefined && typeof raw.log !== 'boolean')
     errors.push(`log: must be true or false, not ${JSON.stringify(raw.log)}`)
   const log = raw.log !== false
+  const bridges = new Set([...servers].flatMap(([key, server]) => (isBridge(key, server) ? [key] : [])))
 
-  return errors.length > 0 ? { ok: false, errors } : { ok: true, config: { servers, sandbox, policy, log } }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, config: { servers, bridges, sandbox, policy, log } }
 }
 
 /**

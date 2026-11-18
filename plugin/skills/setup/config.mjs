@@ -8,8 +8,9 @@
 //   node config.mjs <config> add <name> <entry.json>
 //   node config.mjs <config> untrusted <name> [true|false]
 // path prints the default config path, as toolscript-mcp finds it without --config.
-// prepend puts its rules first and drops the old rules with the same match, so a second run changes nothing.
-// add makes the config when it does not exist.
+// policy writes the rules in order. prepend puts its rules first and drops the old rules with the same match, so a
+// second run changes nothing.
+// policy, prepend and add make the config when it does not exist.
 // untrusted sets "untrusted": true on a server, so each of its results reaches the model as untrusted text. false
 // removes the key.
 // Exit 1 is a failure of the config or the entry. Exit 2 is a usage error.
@@ -32,11 +33,13 @@ class Fail extends Error {
 
 const isObject = value => typeof value === 'object' && value !== null && !Array.isArray(value)
 
-function readJson(file, what) {
+// `missing`: the value when the file does not exist. Any other read error fails.
+function readJson(file, what, missing) {
   let text
   try {
     text = fs.readFileSync(file, 'utf8')
   } catch (error) {
+    if (error.code === 'ENOENT' && missing !== undefined) return missing
     throw new Fail(`Cannot read ${what} ${file}: ${error.code ?? 'error'}.`)
   }
   try {
@@ -46,8 +49,8 @@ function readJson(file, what) {
   }
 }
 
-function readConfig(file) {
-  const config = readJson(file, 'the config')
+function readConfig(file, missing) {
+  const config = readJson(file, 'the config', missing)
   if (!isObject(config)) throw new Fail('The config must be a JSON object.')
   if (config.mcpServers !== undefined && !isObject(config.mcpServers)) {
     throw new Fail('The key mcpServers must be an object.')
@@ -132,6 +135,30 @@ function usage() {
   )
 }
 
+const newConfig = () => ({ mcpServers: {}, policy: [] })
+
+const isRule = rule =>
+  isObject(rule) &&
+  Object.keys(rule).every(key => key === 'match' || key === 'action') &&
+  typeof rule.match === 'string' &&
+  MATCH.test(rule.match) &&
+  ACTIONS.includes(rule.action)
+
+// The old rules that prepend keeps. parsePolicy in src/core/config.ts refuses any other entry, and the server then
+// does not start, so a bad entry fails here.
+function oldRules(config) {
+  if (config.policy === undefined) return []
+  if (!Array.isArray(config.policy))
+    throw new Fail('The key policy must be an array of rules. config.mjs wrote nothing.')
+  const bad = config.policy.findIndex(rule => !isRule(rule))
+  if (bad >= 0) {
+    throw new Fail(
+      `policy[${bad}] is not a rule such as {"match": "mcp__github__*", "action": "allow"}. config.mjs wrote nothing.`,
+    )
+  }
+  return config.policy
+}
+
 function parseRules(args) {
   if (args.length % 2 !== 0) usage()
   const rules = []
@@ -154,7 +181,7 @@ const COMMANDS = {
   },
   policy(file, args) {
     const rules = parseRules(args)
-    const config = readConfig(file)
+    const config = readConfig(file, newConfig())
     config.policy = rules
     writeConfig(file, config)
     return show(config)
@@ -162,10 +189,9 @@ const COMMANDS = {
   prepend(file, args) {
     if (args.length === 0) usage()
     const rules = parseRules(args)
-    const config = readConfig(file)
+    const config = readConfig(file, newConfig())
     const matches = new Set(rules.map(rule => rule.match))
-    const old = Array.isArray(config.policy) ? config.policy : []
-    config.policy = [...rules, ...old.filter(rule => !matches.has(rule?.match))]
+    config.policy = [...rules, ...oldRules(config).filter(rule => !matches.has(rule.match))]
     writeConfig(file, config)
     return show(config)
   },
@@ -175,7 +201,7 @@ const COMMANDS = {
     if (!NAME.test(name)) {
       throw new Fail(`The name "${name}" is not valid. Use letters, digits, - and _ between parts.`)
     }
-    const config = fs.existsSync(file) ? readConfig(file) : { mcpServers: {}, policy: [] }
+    const config = readConfig(file, newConfig())
     if (Object.hasOwn(config.mcpServers ?? {}, name)) {
       throw new Fail(`The server "${name}" exists already. config.mjs wrote nothing.`)
     }

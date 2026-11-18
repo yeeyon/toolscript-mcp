@@ -231,6 +231,7 @@ const rules = (...list: [string, Rule['action']][]): Rule[] =>
 
 type Options = {
   policy?: Rule[]
+  bridges?: ServerKey[]
   timeoutSeconds?: number
   answer?: Approval
   canAsk?: boolean
@@ -254,6 +255,7 @@ const setup = (o: Options = {}) => {
   const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
   const config: Config = {
     servers: o.servers ?? new Map(),
+    bridges: new Set(o.bridges),
     sandbox: {
       node: process.execPath,
       timeoutSeconds: o.timeoutSeconds ?? 20,
@@ -1230,6 +1232,102 @@ describe('approval', () => {
     const r = await run('try { await call("mcp__f__fail", {}) } catch (e) { return e.message }')
     assert.ok(r.text.includes('"server error"'), r.text)
     assert.ok(!r.text.includes('## No allow rule'), r.text)
+  })
+})
+
+// The fake server f stands for Claude Code with `claude mcp serve`: its tools skip the client's own checks.
+describe('a tool of a bridge', () => {
+  const all = rules(['*', 'allow'])
+
+  test('an allow rule for every server asks the person, and a decline makes no call', async () => {
+    const declined = setup({ policy: all, bridges: ['f' as ServerKey], answer: 'decline' })
+    const d = await declined.run('return await call("mcp__f__echo", { n: 1 })')
+    assert.ok(d.text.includes('the person did not approve'), d.text)
+    assert.deepEqual(declined.asked, [['mcp__f__echo']])
+    assert.deepEqual(declined.called, [])
+    assert.equal(declined.lines().at(-1)?.calls[0]?.decision, 'unapproved')
+    const unasked = setup({ policy: all, bridges: ['f' as ServerKey], canAsk: false })
+    const u = await unasked.run('return await call("mcp__f__echo", { n: 1 })')
+    assert.ok(u.text.includes('add {"match": "mcp__f__echo", "action": "allow"} to "policy"'), u.text)
+    assert.deepEqual(unasked.called, [])
+  })
+
+  test('a name built at run time is refused under an allow rule for every server', async () => {
+    const { run, called, asked } = setup({ policy: all, bridges: ['f' as ServerKey] })
+    const r = await run('try { await call("mcp__f__" + "echo", {}) } catch (e) { return e.message }')
+    assert.deepEqual(asked, [])
+    assert.ok(
+      r.text.includes('not approved: an allow rule for a tool of the Claude Code bridge f must start with mcp__f__'),
+      r.text,
+    )
+    assert.deepEqual(called, [])
+  })
+
+  test('an allow rule that names the server runs the call with no prompt', async () => {
+    for (const match of ['mcp__f__*', 'mcp__f__echo']) {
+      const { run, called, asked } = setup({
+        policy: rules([match, 'allow'], ['*', 'deny']),
+        bridges: ['f' as ServerKey],
+      })
+      const r = await run('return await call("mcp__f__" + "echo", { n: 1 })')
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(asked, [], match)
+      assert.deepEqual(called, ['echo'], match)
+    }
+  })
+
+  test('in a trusted run, the refusal names the rule that allows the tool, and the note follows the footer', async () => {
+    const { run, called } = setup({ policy: all, bridges: ['f' as ServerKey] })
+    const r = await run('try { await call("mcp__f__" + "echo", {}) } catch (e) { console.log(e.message) }\nreturn 1')
+    assert.equal(hostMark(r.text), undefined, r.text)
+    const rule = '{"match": "mcp__f__echo", "action": "allow"}'
+    assert.ok(
+      r.text.includes(
+        `not approved: an allow rule for a tool of the Claude Code bridge f must start with mcp__f__, such as ${rule}, and the person did not approve it for this run`,
+      ),
+      r.text,
+    )
+    assert.match(r.text, /\n---[^]*\n\n## No allow rule\n\nNo policy rule allows mcp__f__echo\.[^]*add \{"match"/)
+    assert.ok(
+      r.text.endsWith(`add ${rule} to "policy" in the toolscript-mcp config. Do not change the config yourself.`),
+      r.text,
+    )
+    assert.deepEqual(called, [])
+  })
+
+  test('make it fail: in an untrusted run, the refusal of a bridge tool and its rule are only in the wrapper', async () => {
+    // The tool name comes from untrusted text. The allow rule for every server does not allow it on the bridge f.
+    const { run, called, asked } = setup({
+      policy: rules(['mcp__f__next', 'allow'], ['*', 'allow']),
+      bridges: ['f' as ServerKey],
+    })
+    const r = await run(
+      'const w = await call("mcp__f__next", {})\ntry { await call(w.next, {}) } catch (e) { console.log(e.message) }\nreturn 1',
+    )
+    const mark = hostMark(r.text)
+    assert.ok(mark !== undefined, r.text)
+    const rule = '{"match": "mcp__f__writeit", "action": "allow"}'
+    for (const text of ['the Claude Code bridge f must start with mcp__f__', rule, '## No allow rule']) {
+      assert.ok(mark.inside.includes(text), `${text} in the wrapper: ${r.text}`)
+      assert.ok(!outside(r.text).includes(text), `${text} outside: ${r.text}`)
+    }
+    // Outside the wrapper, only the footer names the tool: a name that its server lists.
+    assert.deepEqual(
+      outside(r.text)
+        .split('\n')
+        .filter(l => l.includes('writeit')),
+      ['- mcp__f__writeit failed'],
+    )
+    assert.deepEqual(asked, [])
+    assert.deepEqual(called, ['next'])
+  })
+
+  test('the same allow rule for every server runs a call of a server that is not a bridge', async () => {
+    const { run, called, asked } = setup({ policy: all })
+    const r = await run('return await call("mcp__f__echo", { n: 1 })')
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [])
+    assert.deepEqual(called, ['echo'])
   })
 })
 

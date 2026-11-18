@@ -1379,6 +1379,9 @@ const words = (text: string): string[] =>
     .split(/[^a-z0-9]+/)
     .filter(w => w.length > 1)
 
+/** True when the query has no word to rank by, so rankTools lists every tool. */
+export const listsAll = (query: string): boolean => words(query).length === 0
+
 /** Ranks tools by how many query words their name and description hold. */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const wanted = words(query)
@@ -1434,7 +1437,7 @@ const dedent = (block: string): string => {
   return [lines[0], ...lines.slice(1).map(l => l.slice(Math.min(cut, l.length - l.trimStart().length)))].join('\n')
 }
 
-export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, and get back only what it returns. Use it instead of direct MCP tool calls, for one call or many: intermediate data stays out of the context.
+export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, and get back only what it returns. Use it in place of direct MCP tool calls: intermediate data stays out of the context.
 
 The program is the body of an async function. Available:
 - await call("mcp__<server>__<tool>", args) -> the tool result (parsed JSON when the tool returns JSON, else text)
@@ -1453,28 +1456,41 @@ Write each tool name as a string in call("…"): a name built at run time is ref
 
 Find tools and their argument types with search_tools first.
 
-Example:
-const issues = await call("mcp__linear__list_issues", { assignee: "me" })
-const open = issues.filter(i => i.state !== "Done")
-return open.map(i => ({ id: i.id, title: i.title }))`
+Examples:
+// several reads, slimmed
+const issues = await Promise.all(["A-1", "A-2"].map(key => call("mcp__tracker__get_issue", { key })))
+return issues.map(i => ({ key: i.key, status: i.status }))
+// a write and its check
+await call("mcp__tracker__add_comment", { key: "A-1", body: "Fixed" })
+return (await call("mcp__tracker__list_comments", { key: "A-1" })).some(c => c.body === "Fixed")
+// a part of a large result
+const log = await call("mcp__ci__get_log", { run: 42 })
+return log.split("\\n").filter(l => /error/i.test(l))`
 
-export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools.`
+export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools. After a reconnect, use an empty query with limit 1: "Not connected" lists the servers still down.`
 
 // Claude Code cuts the instructions of a server at this length.
 const INSTRUCTIONS_MAX = 4096
-const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back.`
+// A session that also had the servers as direct tools never called run_code (#47), so the text names when to prefer it.
+const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.`
+// The tools of a bridge are the client's own: a program that calls them skips the client's permission rules and hooks.
+const instructionsBridge = (names: string) =>
+  `For Read, Bash, Edit and the other tools of ${names}, use your own built-in tools directly. Call ${names} from a program only for data that stays in the program.`
 
 /**
  * The server's instructions, read by the model at the start of a session. They
  * name the servers of the config, so a task that names only a product finds
  * toolscript. Names that do not fit in INSTRUCTIONS_MAX become "and N more".
+ * `bridges`: the servers that serve the client's own tools (config.ts).
  */
-export const serverInstructions = (servers: readonly string[]): string => {
+export const serverInstructions = (servers: readonly string[], bridges: ReadonlySet<string>): string => {
+  const bridged = servers.filter(key => bridges.has(key))
+  const use = bridged.length > 0 ? `${INSTRUCTIONS_USE} ${instructionsBridge(bridged.join(' and '))}` : INSTRUCTIONS_USE
   const text = (shown: number) => {
     const more = servers.length - shown
-    if (shown === 0) return `toolscript connects to other MCP servers. ${INSTRUCTIONS_USE}`
+    if (shown === 0) return `toolscript connects to other MCP servers. ${use}`
     const names = `${servers.slice(0, shown).join(', ')}${more > 0 ? `, and ${more} more` : ''}`
-    return `toolscript connects to these MCP servers: ${names}. ${INSTRUCTIONS_USE}`
+    return `toolscript connects to these MCP servers: ${names}. ${use}`
   }
   let shown = servers.length
   while (shown > 0 && text(shown).length > INSTRUCTIONS_MAX) shown--

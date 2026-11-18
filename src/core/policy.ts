@@ -1,9 +1,11 @@
 // The policy of the config: ordered rules over full tool names
 // (mcp__<server>__<tool>). The first rule that matches decides. A tool that no
-// rule matches needs the person's approval, as an `ask` rule does.
+// rule matches needs the person's approval, as an `ask` rule does. An allow
+// rule decides a tool of a bridge only when its match names that server.
 // parseConfig reads the rules; this file decides with them.
 
-import type { LiteralCall } from './protocol.ts'
+import type { ServerKey } from './config.ts'
+import { splitToolName, type LiteralCall } from './protocol.ts'
 
 export type Action = 'allow' | 'deny' | 'ask'
 
@@ -40,8 +42,31 @@ export const matches = (glob: string, tool: string): boolean => {
   return true
 }
 
-export const decide = (policy: Policy, tool: string): Verdict => {
-  const rule = policy.find(r => matches(r.match, tool))
+/**
+ * The keys of the servers that serve the client's own tools, such as Claude
+ * Code with `claude mcp serve`: `bridges` in config.ts. A program that calls
+ * such a tool skips the client's permission rules and hooks.
+ */
+export type Bridges = ReadonlySet<ServerKey>
+
+/** The bridge that serves `tool`, or undefined for a tool of any other server. */
+const bridgeOf = (tool: string, bridges: Bridges): string | undefined => {
+  const server = splitToolName(tool)?.server
+  return server !== undefined && (bridges as ReadonlySet<string>).has(server) ? server : undefined
+}
+
+/**
+ * False for an allow rule over a tool of `bridge` whose match does not start
+ * with `mcp__<bridge>__`. So `*` or `mcp__*__Bash` never allows a tool of a
+ * bridge, also one that the bridge adds later: only a rule that names the
+ * server does. The next rule that matches decides. Deny and ask rules count.
+ */
+const counts = (rule: Rule, bridge: string | undefined): boolean =>
+  rule.action !== 'allow' || bridge === undefined || rule.match.startsWith(`mcp__${bridge}__`)
+
+export const decide = (policy: Policy, bridges: Bridges, tool: string): Verdict => {
+  const bridge = bridgeOf(tool, bridges)
+  const rule = policy.find(r => matches(r.match, tool) && counts(r, bridge))
   return rule === undefined ? { action: 'ask' } : { action: rule.action, rule }
 }
 
@@ -84,12 +109,21 @@ const MAX_PAIRS = 10_000_000
  * No step raises the decision of any name, so `next` lets no tool run with
  * less approval. It reads the rules alone, never a tool name.
  *
+ * An allow rule that a tool of a bridge skips (`counts`) can stand before a
+ * deny of that tool. Lowered to ask, it would then decide that tool. So that
+ * step counts only for an allow rule that no tool skips.
+ *
  * The loop reads `current` from its last rule back. `fits[j]`: the rules of
  * `next` from j on come by the steps from the rules of `current` read so far.
  * The same match can repeat, so a rule of `next` does not simply pair with
  * the first rule that has its match.
  */
-export const onlyTightens = (current: Policy, next: Policy): boolean => {
+export const onlyTightens = (current: Policy, next: Policy, bridges: Bridges): boolean => {
+  // A match whose server part has no `*` matches only the tools of that server, so no tool skips it.
+  const skippable = (rule: Rule) =>
+    rule.action === 'allow' && bridges.size > 0 && (splitToolName(rule.match)?.server.includes('*') ?? true)
+  const lowers = (now: Rule, was: Rule) =>
+    LOOSENESS[now.action] <= LOOSENESS[was.action] && !(now.action === 'ask' && skippable(was))
   if ((current.length + 1) * (next.length + 1) > MAX_PAIRS) return false
   let fits = next.map(r => r.action === 'deny').concat(true)
   for (let j = next.length - 1; j >= 0; j--) fits[j] = fits[j]! && fits[j + 1]!
@@ -100,7 +134,7 @@ export const onlyTightens = (current: Policy, next: Policy): boolean => {
       row[j] =
         row[j]! ||
         (now.action === 'deny' && row[j + 1]!) ||
-        (now.match === was.match && LOOSENESS[now.action] <= LOOSENESS[was.action] && fits[j + 1]!)
+        (now.match === was.match && lowers(now, was) && fits[j + 1]!)
     }
     fits = row
   }
@@ -244,16 +278,21 @@ export type Plan =
   | { readonly kind: 'refused'; readonly denied: readonly { readonly call: LiteralCall; readonly rule: Rule }[] }
   | ({ readonly kind: 'run' } & Asks)
 
-export const planRun = (policy: Policy, calls: readonly LiteralCall[], interactive: ReadonlySet<string>): Plan => {
+export const planRun = (
+  policy: Policy,
+  bridges: Bridges,
+  calls: readonly LiteralCall[],
+  interactive: ReadonlySet<string>,
+): Plan => {
   const denied = calls.flatMap(call => {
-    const { action, rule } = decide(policy, call.tool)
+    const { action, rule } = decide(policy, bridges, call.tool)
     return action === 'deny' && rule !== undefined ? [{ call, rule }] : []
   })
   if (denied.length > 0) return { kind: 'refused', denied }
   const tools = [...new Set(calls.map(c => c.tool))]
   return {
     kind: 'run',
-    ask: tools.filter(tool => !interactive.has(tool) && decide(policy, tool).action === 'ask'),
+    ask: tools.filter(tool => !interactive.has(tool) && decide(policy, bridges, tool).action === 'ask'),
     interactive: tools.filter(tool => interactive.has(tool)),
   }
 }
@@ -279,11 +318,12 @@ export type CallCheck =
 
 export const checkCall = (
   policy: Policy,
+  bridges: Bridges,
   approved: ReadonlySet<string>,
   tool: string,
   interactive: ReadonlySet<string>,
 ): CallCheck => {
-  const { action, rule } = decide(policy, tool)
+  const { action, rule } = decide(policy, bridges, tool)
   if (action === 'deny' && rule !== undefined) return { ok: false, error: `denied by ${ruleText(rule)}` }
   if (approved.has(tool) || (action === 'allow' && !interactive.has(tool))) return { ok: true }
   if (interactive.has(tool))
@@ -292,12 +332,15 @@ export const checkCall = (
       error: `not approved: ${tool} needs the person's approval at each run, and an allow rule does not replace it`,
       needs: 'person',
     }
-  return {
-    ok: false,
-    error: `not approved: no policy rule allows ${tool}, and the person did not approve it for this run`,
-    needs: 'rule',
-  }
+  const bridge = bridgeOf(tool, bridges)
+  const missing =
+    bridge === undefined ? `no policy rule allows ${tool}` : `an ${bridgeRule(bridge)}, such as ${allowRule(tool)}`
+  return { ok: false, error: `not approved: ${missing}, and the person did not approve it for this run`, needs: 'rule' }
 }
+
+// Why `*` or `mcp__*__Bash` does not allow a tool of the bridge `bridge`.
+const bridgeRule = (bridge: string): string =>
+  `allow rule for a tool of the Claude Code bridge ${bridge} must start with mcp__${bridge}__`
 
 /** Why the tools that need approval did not get it. */
 export type Refusal = 'decline' | 'unsupported'
@@ -305,14 +348,16 @@ export type Refusal = 'decline' | 'unsupported'
 const these = (tools: readonly unknown[]): string => (tools.length === 1 ? 'this tool' : 'these tools')
 
 /** The message of the approval prompt: the tools, and the program they run in. */
-export const askText = ({ ask, interactive }: Asks, code: string): string => {
+export const askText = ({ ask, interactive }: Asks, code: string, bridges: Bridges): string => {
   const program = code.length <= 4000 ? code : `${code.slice(0, 4000)}\n… [${code.length - 4000} more characters]`
   const one = interactive.length === 1
+  const bridged = [...new Set(ask.flatMap(t => bridgeOf(t, bridges) ?? []))]
   return [
     ...(ask.length > 0
       ? [
           `A toolscript program wants to call ${these(ask)}, which no policy rule allows:`,
           ...ask.map(t => `- ${t}`),
+          ...bridged.map(b => `An ${bridgeRule(b)}.`),
           '',
         ]
       : []),

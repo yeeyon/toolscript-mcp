@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, describe, it } from 'node:test'
+import { parseConfig } from '../src/core/config.ts'
 
 const SCRIPT = fileURLToPath(new URL('../plugin/skills/setup/config.mjs', import.meta.url))
 const SECRETS = [
@@ -115,7 +116,7 @@ describe('plugin config helper', () => {
         policy: [
           { match: 'mcp__fake__*', action: 'allow' },
           { match: 'mcp__cc__Bash', action: 'allow' },
-          { match: '*', action: 'deny' },
+          { match: '*', action: 'allow' },
         ],
       }),
     )
@@ -125,7 +126,7 @@ describe('plugin config helper', () => {
       { match: 'mcp__cc__Bash', action: 'ask' },
       { match: 'mcp__cc__*', action: 'deny' },
       { match: 'mcp__fake__*', action: 'allow' },
-      { match: '*', action: 'deny' },
+      { match: '*', action: 'allow' },
     ]
     for (let round = 0; round < 2; round++) {
       const { code, out } = run(file, 'prepend', ...rules)
@@ -260,6 +261,61 @@ describe('plugin config helper', () => {
     assert.equal(run(file, 'untrusted').code, 2)
     assert.equal(run(file, 'untrusted', 'remote', 'true', 'more').code, 2)
     assert.equal(read(file), before)
+  })
+
+  // The review of #47: step 7 runs prepend before add, and prepend failed with ENOENT on a new config.
+  it('makes the config when policy or prepend finds no config, as step 7 runs them before add', () => {
+    for (const command of ['policy', 'prepend']) {
+      const file = path.join(dir, `new-${n++}`, 'config.json')
+      assert.equal(run(file, command, 'allow', 'mcp__cc__Read', 'deny', 'mcp__cc__*').code, 0)
+      const policy = [
+        { match: 'mcp__cc__Read', action: 'allow' },
+        { match: 'mcp__cc__*', action: 'deny' },
+      ]
+      assert.deepEqual(JSON.parse(read(file)), { mcpServers: {}, policy })
+      assert.equal(run(file, 'add', 'cc', makeEntry({ command: 'claude', args: ['mcp', 'serve'] })).code, 0)
+      const parsed = parseConfig(read(file), {}, process.execPath, process.platform)
+      assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
+    }
+  })
+
+  it('fails on a config that it cannot read for another reason than a missing file', () => {
+    const folder = fs.mkdtempSync(path.join(dir, 'folder-'))
+    for (const command of ['policy', 'prepend', 'add', 'untrusted']) {
+      const args =
+        command === 'add'
+          ? ['fake', makeEntry({ command: 'node' })]
+          : command === 'untrusted'
+            ? ['fake']
+            : ['allow', 'mcp__fake__*']
+      const { code, err } = run(folder, command, ...args)
+      assert.equal(code, 1, command)
+      assert.match(err, /^Cannot read the config /, command)
+    }
+    assert.deepEqual(fs.readdirSync(folder), [])
+  })
+
+  // The review of #47: prepend kept an old entry that the server refuses, and the server then did not start.
+  it('refuses prepend over an old policy that the server refuses, and leaves the file as it was', () => {
+    const bad = [
+      [{ match: 'fake__*', action: 'allow' }],
+      [{ match: 'mcp__fake__*', action: 'permit' }],
+      [{ match: 'mcp__fake__*', action: 'allow', why: 'x' }],
+      [{ match: 'mcp__fake__*', action: 'allow' }, 'mcp__fake__x'],
+      [null],
+      { 'mcp__fake__*': 'allow' },
+    ]
+    for (const policy of bad) {
+      const file = makeConfig(JSON.stringify({ ...FIXTURE, policy }))
+      assert.equal(parseConfig(read(file), {}, process.execPath, process.platform).ok, false)
+      const before = read(file)
+      const { code, err } = run(file, 'prepend', 'deny', 'mcp__cc__*')
+      assert.equal(code, 1, JSON.stringify(policy))
+      assert.match(err, /config\.mjs wrote nothing\.$/m, JSON.stringify(policy))
+      assert.equal(read(file), before)
+      assert.equal(run(file, 'policy', 'deny', 'mcp__cc__*').code, 0, 'the policy command replaces a bad policy')
+      assert.deepEqual(JSON.parse(read(file)).policy, [{ match: 'mcp__cc__*', action: 'deny' }])
+    }
   })
 
   it('prints the default config path', () => {

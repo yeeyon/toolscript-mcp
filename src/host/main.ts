@@ -70,6 +70,8 @@ try {
 const parsed = parseConfig(text, process.env, process.execPath, process.platform)
 if (!parsed.ok) fail([`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)])
 const { config } = parsed
+// A launch of Claude Code that parseConfig does not see is not a bridge: this line lets the person see the miss.
+log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 
 // The person runs login in a terminal, without the flag or the TOOLSCRIPT_CONFIG of this server.
 const usual = configPath(undefined, { ...process.env, TOOLSCRIPT_CONFIG: undefined }, process.platform, os.homedir())

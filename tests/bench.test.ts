@@ -8,6 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { TOOL } from '../src/core/tools.ts'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const ROOT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-bench-test-')))
@@ -163,6 +164,45 @@ test('run.mjs answers --help and an unknown flag with the usage, and starts no r
   assert.match(typo.stderr, /--rep/)
   assert.match(typo.stderr, /usage:/)
   assert.equal(fs.existsSync(out), false, 'a refused start made the out dir')
+})
+
+// npm ci builds dist/host/main.js, which the probe of the toolscript arms starts.
+test('run.mjs --dry-run lists the direct tools and toolscript-mcp together in the arm both, and starts no run', () => {
+  const out = path.join(ROOT, 'dry')
+  const run = node([path.join(REPO, 'bench', 'run.mjs'), '--dry-run', '--arms', 'both', '--out', out], { env: NO_PATH })
+  assert.equal(run.status, 0, run.stdout + run.stderr)
+  const allows = run.stdout.match(/^both allows: (.*)$/m)?.[1]?.split(',') ?? []
+  assert.ok(allows.includes('mcp__bench__query_logs'), run.stdout)
+  assert.ok(allows.includes(TOOL.run_code), run.stdout)
+  const defs = JSON.parse(fs.readFileSync(path.join(out, 'definitions.json'), 'utf8'))
+  assert.ok(defs.both.instructionChars > 0, 'toolscript-mcp sent no instructions')
+  assert.deepEqual(fs.readdirSync(out).sort(), ['definitions.json', 'probe'])
+})
+
+test('run.mjs --report counts the runs of the arm both that picked run_code or the direct tools', () => {
+  const out = path.join(ROOT, 'picks')
+  const runs = [
+    { rep: 1, tools: [TOOL.search_tools, TOOL.run_code] },
+    { rep: 2, tools: ['mcp__bench__query_logs', 'mcp__bench__query_logs'] },
+    { rep: 3, tools: ['mcp__bench__query_logs', TOOL.run_code] },
+  ]
+  for (const { rep, tools } of runs) {
+    const dir = path.join(out, `logs-both-${rep}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const content = tools.map((name, i) => ({ type: 'tool_use', id: `t${i}`, name, input: {} }))
+    const events = [
+      { type: 'assistant', message: { id: 'm1', content, usage: { input_tokens: 100 } } },
+      { type: 'result', result: 'no answer', usage: { input_tokens: 100 }, total_cost_usd: 0.01, num_turns: 2 },
+    ]
+    fs.writeFileSync(path.join(dir, 'stream.jsonl'), events.map(e => JSON.stringify(e)).join('\n'))
+  }
+  const rows = runs.map(({ rep }) => JSON.stringify({ task: 'logs', arm: 'both', rep, seconds: 1 }))
+  fs.writeFileSync(path.join(out, 'results.jsonl'), `${rows.join('\n')}\n`)
+
+  const run = node([path.join(REPO, 'bench', 'run.mjs'), '--report', out], { env: NO_PATH })
+  assert.equal(run.status, 0, run.stdout + run.stderr)
+  assert.match(run.stdout, /^\| logs \| 2\/3 \| 2\/3 \| 2 \| 3 \|$/m)
+  assert.match(run.stdout, /^\| all \| 2\/3 \| 2\/3 \| 2 \| 3 \|$/m)
 })
 
 test('forget.mjs removes the project folder of a run when given a relative out dir', () => {
