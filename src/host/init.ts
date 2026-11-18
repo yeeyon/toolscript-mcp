@@ -54,13 +54,22 @@ const HIDDEN = [
   'Other arguments show as they are. If one of them holds a secret, do not share this output.',
 ]
 
+/**
+ * A client file, read only when it is a regular file. `.mcp.json` comes from each folder up to the root, and a FIFO
+ * there blocks a plain read: the open does not wait, and the check runs on the open file.
+ */
 const readClient = async (file: ClientFile): Promise<ClientRead> => {
   const at = { ...file, path: path.resolve(file.path) }
+  let handle: fs.promises.FileHandle | undefined
   try {
-    return { ...at, kind: 'text', text: await fs.promises.readFile(at.path, 'utf8') }
+    handle = await fs.promises.open(at.path, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0))
+    if (!(await handle.stat()).isFile()) return { ...at, kind: 'unreadable', error: 'not a regular file' }
+    return { ...at, kind: 'text', text: await handle.readFile('utf8') }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...at, kind: 'missing' }
     return { ...at, kind: 'unreadable', error: errorText(err) }
+  } finally {
+    await handle?.close()
   }
 }
 

@@ -969,6 +969,22 @@ describe('init --list and --add', () => {
     }
   })
 
+  test('--list reads only a regular .mcp.json, so a FIFO in a parent folder does not block it', async () => {
+    const top = homeWith({
+      'dir/.mcp.json/x': '',
+      'dir/fifo/start/.mcp.json': { mcpServers: { near: { command: 'node' } } },
+    })
+    const fifo = path.join(top, 'dir', 'fifo', '.mcp.json')
+    const made = process.platform !== 'win32' && spawnSync('mkfifo', [fifo]).status === 0
+    const home = homeWith({})
+    const { code, out } = await run(home, path.join(top, 'dir', 'fifo', 'start'), ['--list'])
+    assert.equal(code, 0, out)
+    assert.match(out, row('"near"', 'claude-code', 'project'), out)
+    const problem = (file: string) => `Cannot read claude-code:project, ${file}: cannot read it: not a regular file`
+    assert.ok(out.split('\n').includes(problem(path.join(top, 'dir', '.mcp.json'))), out)
+    if (made) assert.ok(out.split('\n').includes(problem(fifo)), out)
+  })
+
   test('mainCheckoutOf reads the main checkout of a worktree only', () => {
     assert.equal(mainCheckoutOf('gitdir: C:/r/main/.git/worktrees/wt\n'), 'C:/r/main')
     assert.equal(mainCheckoutOf('gitdir: C:\\r\\main\\.git\\worktrees\\wt\r\n'), 'C:/r/main')
