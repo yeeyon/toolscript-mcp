@@ -88,6 +88,11 @@ quotes and the `^` of cmd dropped, hold the
   there and to the README list, and keep the docs saying to use the key `claude-code` for any other. An allow rule allows a tool of a bridge only when its match starts with
   `mcp__<key>__` (`counts` in `src/core/policy.ts`). Never keep a list of the tools of a bridge: a later version adds
   tools. `[test: policy.test.ts and run.test.ts]`
+- A command that init prints holds a name from a client file only when it fits `PLAIN_NAME`, and a path only when it
+  fits `PLAIN_PATH` (`src/core/init.ts`). Any other name or path gets no command, and the text names the file to edit.
+  Never quote a hostile word for the shells instead: a person pastes a command into any shell, and two rounds of
+  quoting rules each failed a review. Each command is alone on its line, with no text from a file.
+  `[test: init.test.ts, the printed commands in each shell]`
 - Every run removes its exchange dir, also after a timeout, a kill or a shutdown.
   `[test: run.test.ts and server.e2e.mjs check the temp dir after the runs]`
 - Never weaken a sandbox layer, the policy check, the guard of hint and function files or the approval of proposals
