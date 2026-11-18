@@ -278,7 +278,8 @@ describe('doctor', () => {
     assert.equal(await s.doctor(), 1)
     const servers = s.of('servers')
     assert.equal(servers[0], 'ok    servers  demo: connected, 2 tools')
-    assert.match(servers[1]!, /^fail {2}servers {2}broken: cannot connect: .*bad token \*\*\*/)
+    assert.match(servers[1]!, /^fail {2}servers {2}broken: cannot connect: .*Its stderr is not shown here/)
+    assert.ok(!servers[1]!.includes('bad token'), servers[1])
     assert.equal(
       servers[2],
       'fail  servers  sealed (untrusted): cannot connect: the connect failed. doctor does not show its error text, because the text of this server is untrusted. When the client starts toolscript-mcp, its log holds the text',
