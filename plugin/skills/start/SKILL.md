@@ -84,15 +84,18 @@ tool. Tell the person. The other tools keep their rules, and a tool that no rule
 Tell the person to start a new Claude Code session, because toolscript-mcp reads its servers only at its start. In
 that session, the person gives the task and names toolscript, then runs `/toolscript:start verify`.
 
-For `verify`, do step 1, then run `node "<main>" runs --server <server>`. If this session does not know `<server>`, run
-`node "<main>" runs`. It judges the newest run of any server.
+For `verify`, do step 1, then run `node "<main>" runs --server <server> --config "<config>"`. If this session does not
+know `<server>`, leave out `--server <server>`. Then `runs` judges the newest run of any server.
 
 - Exit 0: the run worked. Compare the answer with the expected answer of step 4, if it has one. Go to step 7.
 - Exit 1: show the lines that it prints. Each code has a line with the step to take. `no-server` is a connection or
   login problem: do step 3 again. `denied` is a deny rule: the policy decides, and this skill does not change it.
   `unapproved` is a declined prompt or an `ask` with no prompt: do step 5 again.
 - `no run yet`: the model did not call `run_code` with this server. Ask the person to give the task again and to name
-  toolscript. If the config has `"log": false`, there is no run log, so this check cannot work.
+  toolscript. If `runs` says that the config sets `"log": false`, there is no run log, and this check cannot work.
+  Tell the person.
+- A line about unreadable lines of the run log: show it. If `runs` says that it does not confirm the run, ask the
+  person to give the task again.
 
 ## 7. Switch off a direct copy
 
