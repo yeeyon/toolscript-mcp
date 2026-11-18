@@ -356,6 +356,23 @@ describe('doctor', () => {
     )
   })
 
+  test('a file where the folder of toolscript-mcp or HOME goes fails as not a folder', async () => {
+    const s = setup({ mcpServers: {} })
+    fs.writeFileSync(appPath(s.home), '')
+    assert.equal(await s.doctor(), 1)
+    assert.deepEqual(s.of('files'), [
+      `fail  files    ${appPath(s.home)} is not a folder. Move the file, so toolscript-mcp can make the folder`,
+    ])
+
+    const home = path.join(s.dir, 'home-file')
+    fs.writeFileSync(home, '')
+    s.printed.length = 0
+    await runDoctor(['--config', s.config], { ...s.io, home })
+    assert.deepEqual(s.of('files'), [
+      `fail  files    ${home} is not a folder, so toolscript-mcp cannot make ${appPath(home)}. Move the file`,
+    ])
+  })
+
   test('a HOME without the folder of toolscript-mcp passes, and doctor leaves no folder or file behind', async () => {
     const s = setup({ mcpServers: {} })
     const home = path.join(s.dir, 'new-home')

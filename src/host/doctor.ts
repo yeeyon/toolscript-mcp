@@ -121,12 +121,11 @@ const layerFindings = (): Finding[] => [
   ok(`environment of the sandbox: ${LAYERS.env}`),
 ]
 
-/** `dir`, or its deepest parent that exists. */
-const deepestExisting = async (dir: string): Promise<string> => {
+/** `dir`, or its deepest parent that exists, and whether it is a folder. */
+const deepestExisting = async (dir: string): Promise<{ path: string; folder: boolean }> => {
   for (let d = path.resolve(dir); ; d = path.dirname(d)) {
     try {
-      await fs.promises.stat(d)
-      return d
+      return { path: d, folder: (await fs.promises.stat(d)).isDirectory() }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
       if ((code !== 'ENOENT' && code !== 'ENOTDIR') || path.dirname(d) === d) throw err
@@ -140,7 +139,13 @@ const deepestExisting = async (dir: string): Promise<string> => {
  */
 const writable = async (dir: string): Promise<Finding> => {
   try {
-    const base = await deepestExisting(dir)
+    const { path: base, folder } = await deepestExisting(dir)
+    if (!folder)
+      return fail(
+        base === path.resolve(dir)
+          ? `${dir} is not a folder. Move the file, so toolscript-mcp can make the folder`
+          : `${base} is not a folder, so toolscript-mcp cannot make ${dir}. Move the file`,
+      )
     const probe = path.join(base, `.doctor-${randomUUID()}.tmp`)
     await fs.promises.writeFile(probe, '', { flag: 'wx', mode: 0o600 })
     await fs.promises.rm(probe, { force: true })
