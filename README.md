@@ -300,6 +300,7 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - The Claude Code scopes are `local`, `project` and `user`. Claude Code keeps the local servers in `~/.claude.json`, under the path of the project.
   The project servers are in `.mcp.json` in the project folder.
 - `--project <dir>` names the project folder. The default is the current folder. Use the folder where you start Claude Code.
+  In a git checkout, init reads the local servers of the main checkout, as Claude Code does. This also applies in a subfolder or a git worktree.
 - The kind is `stdio` with the file name of the command, or `http` with the origin of the URL. The list shows no argument, env
   value, header value, URL path or query.
 - The status is `in config`, `not in config`, `name taken by a different entry`, `toolscript itself`, or `skipped` with the reason.

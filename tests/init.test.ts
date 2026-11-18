@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { loginCommand, NPX_LAUNCH, parseConfig, pathWord, shellWord, type Launch } from '../src/core/config.ts'
-import { clientFiles, configText, importServers, initReport, sameFolder } from '../src/core/init.ts'
+import { clientFiles, configText, importServers, initReport, mainCheckoutOf, sameFolder } from '../src/core/init.ts'
 import { runInit } from '../src/host/init.ts'
 import { detectLaunch } from '../src/host/start.ts'
 
@@ -890,6 +890,33 @@ describe('init --list and --add', () => {
     assert.match(out, row('"my notes"', 'claude-desktop', '-', 'stdio node', 'not in config'))
     assert.match(out, /^Cannot read cursor, .*: not valid JSON/m)
     assert.doesNotMatch(out, /elsewhere/)
+  })
+
+  // Claude Code keys the local scope on the root of the main checkout, also from a subfolder or a git worktree
+  // (checked with claude mcp add --scope local in a temp CLAUDE_CONFIG_DIR, Claude Code 2.1).
+  test('--list from a subfolder or a worktree finds the local scope of the main checkout', async () => {
+    const { home, project } = setup()
+    fs.mkdirSync(path.join(project, '.git', 'worktrees', 'wt'), { recursive: true })
+    const sub = path.join(project, 'src', 'deep')
+    fs.mkdirSync(sub, { recursive: true })
+    const fromSub = await run(home, sub, ['--list'])
+    assert.match(fromSub.out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp', 'not in config'), fromSub.out)
+    assert.match(fromSub.out, row('"shared"', 'claude-code', 'project'), fromSub.out)
+
+    const worktree = homeWith({ '.mcp.json': { mcpServers: { wtonly: { command: 'node' } } } })
+    fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${project.replaceAll('\\', '/')}/.git/worktrees/wt\n`)
+    const fromWorktree = await run(home, path.join(worktree), ['--list'])
+    assert.match(fromWorktree.out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp'), fromWorktree.out)
+    assert.match(fromWorktree.out, row('"wtonly"', 'claude-code', 'project'), fromWorktree.out)
+    assert.doesNotMatch(fromWorktree.out, /"shared"/)
+  })
+
+  test('mainCheckoutOf reads the main checkout of a worktree only', () => {
+    assert.equal(mainCheckoutOf('gitdir: C:/r/main/.git/worktrees/wt\n'), 'C:/r/main')
+    assert.equal(mainCheckoutOf('gitdir: C:\\r\\main\\.git\\worktrees\\wt\r\n'), 'C:/r/main')
+    assert.equal(mainCheckoutOf('gitdir: ../main/.git/worktrees/wt'), '../main')
+    assert.equal(mainCheckoutOf('gitdir: ../.git/modules/sub'), undefined)
+    assert.equal(mainCheckoutOf(''), undefined)
   })
 
   test('--list compares each server with the config', async () => {

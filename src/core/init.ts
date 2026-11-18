@@ -63,11 +63,28 @@ const claudeJson = (env: Env, home: string) => `${env.CLAUDE_CONFIG_DIR || home}
  * The files of `clientFiles` after the Claude Code scopes of the folder `project`, in the order in which Claude Code
  * picks a server that two scopes define: local, project, user.
  */
-export const scopedFiles = (env: Env, platform: string, home: string, project: string): ClientFile[] => [
-  { client: 'claude-code', scope: 'local', path: claudeJson(env, home), project },
-  { client: 'claude-code', scope: 'project', path: `${project}/.mcp.json`, project },
+export const scopedFiles = (env: Env, platform: string, home: string, project: ProjectFolders): ClientFile[] => [
+  { client: 'claude-code', scope: 'local', path: claudeJson(env, home), project: project.local },
+  { client: 'claude-code', scope: 'project', path: `${project.shared}/.mcp.json`, project: project.shared },
   ...clientFiles(env, platform, home),
 ]
+
+/**
+ * The folders that Claude Code reads for a session started in a folder. `local`: the key of the local scope in
+ * `.claude.json`, the root of the main checkout (also for a subfolder or a git worktree). `shared`: the folder of
+ * `.mcp.json`, the top of the checkout. Outside git, both are the folder itself.
+ */
+export type ProjectFolders = { readonly local: string; readonly shared: string }
+
+/**
+ * The root of the main checkout for a worktree whose `.git` file holds `gitdir: <main>/.git/worktrees/<name>`, or
+ * undefined for another `.git` file, such as the one of a submodule.
+ */
+export const mainCheckoutOf = (dotGitFile: string): string | undefined => {
+  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(dotGitFile)?.[1]?.replace(/\\/g, '/')
+  const at = gitdir?.lastIndexOf('/.git/worktrees/') ?? -1
+  return at > 0 ? gitdir!.slice(0, at) : undefined
+}
 
 /** True when `key` names the folder `project`. Windows paths match with `/` and `\` as one, in any case. */
 export const sameFolder = (key: string, project: string, platform: string): boolean => {

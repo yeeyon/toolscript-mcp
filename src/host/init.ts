@@ -17,6 +17,7 @@ import {
   importServers,
   initReport,
   listReport,
+  mainCheckoutOf,
   NO_CONFIG,
   oldConfigReport,
   parseOldConfig,
@@ -25,6 +26,7 @@ import {
   sourceName,
   type ClientFile,
   type ClientRead,
+  type ProjectFolders,
 } from '../core/init.ts'
 import { errorText } from '../core/protocol.ts'
 
@@ -107,6 +109,20 @@ const misuseOf = (o: Options): string | undefined => {
   return undefined
 }
 
+/** The folders of Claude Code for a session started in `start`: the nearest folder up with `.git` decides. */
+const projectFolders = async (start: string): Promise<ProjectFolders> => {
+  for (let dir = start; ; dir = path.dirname(dir)) {
+    const dotGit = path.join(dir, '.git')
+    const stat = await fs.promises.stat(dotGit).catch(() => undefined)
+    if (stat?.isDirectory()) return { local: dir, shared: dir }
+    if (stat?.isFile()) {
+      const main = mainCheckoutOf(await fs.promises.readFile(dotGit, 'utf8').catch(() => ''))
+      return { local: main === undefined ? dir : path.resolve(dir, main), shared: dir }
+    }
+    if (path.dirname(dir) === dir) return { local: start, shared: start }
+  }
+}
+
 /** `--list` and `--add`: the servers of every client file and Claude Code scope against the config in `file`. */
 const pick = async (
   options: Options,
@@ -117,7 +133,7 @@ const pick = async (
   print: (text: string) => void,
   launch: Launch,
 ): Promise<number> => {
-  const project = path.resolve(options.project ?? process.cwd())
+  const project = await projectFolders(path.resolve(options.project ?? process.cwd()))
   const reads = await Promise.all(scopedFiles(env, platform, home, project).map(readClient))
   const files = reads.map(read => fileServers(read, platform))
   const sources = [...new Set(files.flatMap(f => [f.file.client, sourceName(f.file)]))]
