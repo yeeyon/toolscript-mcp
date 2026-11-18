@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install, update or uninstall toolscript-mcp from its GitHub beta branch and connect it to Claude Code. Use when the person asks to set up, install, update or remove toolscript-mcp. For a guided first run or a check of the last run, use the start skill (/toolscript:start). Also use this skill to add an MCP server to toolscript-mcp, let programs use the tools of Claude Code, log in to an OAuth server through it, or change its policy.
+description: Install, update or uninstall toolscript-mcp from its GitHub beta branch and connect it to Claude Code. Use when the person asks to set up, install, update or remove toolscript-mcp. For a guided first run or a check of the last run, use the start skill (/toolscript:start). For a check of the whole setup, use the doctor skill (/toolscript:doctor). Also use this skill to add an MCP server to toolscript-mcp, let programs use the tools of Claude Code, log in to an OAuth server through it, or change its policy.
 argument-hint: "[install|update|add|login|policy|native|uninstall]"
 ---
 
