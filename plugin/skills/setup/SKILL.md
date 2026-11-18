@@ -171,7 +171,8 @@ This step ends when one `run_code` task works through toolscript-mcp. Each comma
    with `a person each run` still asks. A client that cannot show a prompt runs the task only with the second choice.
 5. Run and check. Tell the person to start a new Claude Code session, because toolscript-mcp reads its servers only
    at its start. In that session, the person gives the task and names toolscript, then runs `/toolscript:setup
-   verify`. For `verify`, run `node "<main>" runs --server <server>`.
+   verify`. For `verify`, run `node "<main>" runs --server <server>`. If this session does not know `<server>`, run
+   `node "<main>" runs`. It judges the newest run of any server.
    - Exit 0: the run worked. Compare the answer with the expected answer of item 3, if it has one.
    - Exit 1: show the lines that it prints. Each code has a line with the step to take. `no-server` is a connection
      or login problem: do item 2 again. `denied` is a deny rule: the policy decides, and this skill does not change
@@ -183,7 +184,8 @@ This step ends when one `run_code` task works through toolscript-mcp. Each comma
    scope that `init --list` showed, and offer `claude mcp remove <name> --scope <scope>`. Run it only after the person
    agrees. For the `project` scope, the person decides, because `.mcp.json` is shared. To restore the direct entry
    later, the person copies it from `<config>` in an editor and runs `claude mcp add-json <name> '<entry>' --scope
-   <scope>`. Do not read the entry for the person.
+   <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1 removes each `"` in the entry, so there
+   the person writes each `"` as `\"`. Do not read the entry for the person.
 
 ## 7. Choose the policy
 

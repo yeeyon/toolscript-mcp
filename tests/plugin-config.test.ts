@@ -362,6 +362,24 @@ describe('plugin config helper', () => {
     }
   })
 
+  it('moves an exact allow rule first when an earlier rule hides it', () => {
+    const policy = [
+      { match: 'mcp__gh__*', action: 'ask' },
+      { match: 'mcp__gh__list', action: 'allow' },
+      { match: 'mcp__gh__del*', action: 'deny' },
+    ]
+    const file = makeConfig(JSON.stringify({ ...FIXTURE, policy }))
+    const { code, out } = run(file, 'allow-tools', 'mcp__gh__list', 'mcp__gh__delete')
+    assert.equal(code, 0)
+    assert.ok(out.split('\n').includes('add allow mcp__gh__list'), out)
+    assert.ok(out.split('\n').includes('keep mcp__gh__delete: the deny rule "mcp__gh__del*" stays'), out)
+    assert.deepEqual(JSON.parse(read(file)).policy, [
+      { match: 'mcp__gh__list', action: 'allow' },
+      { match: 'mcp__gh__*', action: 'ask' },
+      { match: 'mcp__gh__del*', action: 'deny' },
+    ])
+  })
+
   it('refuses allow-tools with no tool or a glob, and leaves the file as it was', () => {
     const file = makeConfig()
     const before = read(file)

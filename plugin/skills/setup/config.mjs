@@ -197,13 +197,16 @@ function matches(glob, tool) {
 }
 
 // Why allow-tools adds no rule for the tool, or undefined. A deny rule anywhere in the policy stays in force, also
-// one that an earlier rule hides today, and so does an ask rule that names the tool.
+// one that an earlier rule hides today, and so does an ask rule that names the tool. An allow rule that names the
+// tool counts only when no earlier rule matches the tool.
 function keptRule(rules, tool) {
   const deny = rules.find(rule => rule.action === 'deny' && matches(rule.match, tool))
   if (deny) return `the deny rule ${JSON.stringify(deny.match)} stays`
-  const own = rules.find(rule => rule.match === tool)
-  if (own?.action === 'ask') return `the ask rule ${JSON.stringify(tool)} stays`
-  if (own?.action === 'allow') return `allowed already by ${JSON.stringify(tool)}`
+  if (rules.some(rule => rule.match === tool && rule.action === 'ask')) {
+    return `the ask rule ${JSON.stringify(tool)} stays`
+  }
+  const first = rules.find(rule => matches(rule.match, tool))
+  if (first?.match === tool) return `allowed already by ${JSON.stringify(tool)}`
   return undefined
 }
 
@@ -269,7 +272,8 @@ const COMMANDS = {
         lines.push(`keep ${tool}: ${keep}`)
       }
     }
-    config.policy = [...added, ...old]
+    const moved = new Set(added.map(rule => rule.match))
+    config.policy = [...added, ...old.filter(rule => !moved.has(rule.match))]
     if (dry) return [...lines, 'Dry run: config.mjs wrote nothing. The policy would be:', show(config)].join('\n')
     if (added.length > 0) writeConfig(file, config)
     return [...lines, show(config)].join('\n')
