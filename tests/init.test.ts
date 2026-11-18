@@ -937,8 +937,10 @@ describe('init --list and --add', () => {
   })
 
   test('--list compares each server with the config', async () => {
-    const config = { mcpServers: { gh: LOCAL.gh, shared: { command: 'fake' } }, policy: [] }
-    const { home, project } = setup(undefined, config)
+    const { home, project } = setup()
+    const config = { mcpServers: { gh: { ...LOCAL.gh, cwd: project }, shared: { command: 'fake' } }, policy: [] }
+    fs.mkdirSync(path.join(home, '.config', 'toolscript-mcp'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.config', 'toolscript-mcp', 'config.json'), JSON.stringify(config))
     const { code, out } = await run(home, project, ['--list'])
     assert.equal(code, 0, out)
     assert.match(out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp', 'in config'))
@@ -981,10 +983,10 @@ describe('init --list and --add', () => {
         ...OLD.mcpServers,
         notes: LOCAL.notes,
         shared: PROJECT.shared,
-        'azure-devops': { ...PROJECT['azure-devops'], untrusted: true },
+        'azure-devops': { ...PROJECT['azure-devops'], cwd: project, untrusted: true },
       },
     })
-    const parsed = parseConfig(fs.readFileSync(file, 'utf8'), {}, '/usr/bin/node', 'linux')
+    const parsed = parseConfig(fs.readFileSync(file, 'utf8'), {}, process.execPath, process.platform)
     assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
     const lines = out.split('\n').map(l => l.trim())
     for (const line of [
@@ -998,6 +1000,48 @@ describe('init --list and --add', () => {
     assert.match(out, /\.mcp\.json is shared with everyone who uses the project/)
     assert.match(out, /"untrusted": true .*azure-devops/)
     if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  })
+
+  // Claude Code starts a local or project server in the project folder. toolscript-mcp starts in the folder of its
+  // client, so a relative path in the entry needs that folder as the cwd.
+  test('--add gives a local or project stdio server the project folder as its cwd, and --list sees it in config', async () => {
+    const abs = path.join(os.tmpdir(), 'fake-abs')
+    const project = homeWith({
+      '.mcp.json': {
+        mcpServers: {
+          bare: { command: 'node', args: ['./srv.mjs'] },
+          sub: { command: 'node', args: ['./srv.mjs'], cwd: './sub' },
+          up: { command: 'node', cwd: '../up' },
+          abs: { command: 'node', cwd: abs },
+          variable: { command: 'node', cwd: '${HOME}/srv' },
+          web: { type: 'http', url: 'https://web.example.com/mcp' },
+        },
+      },
+    })
+    const home = homeWith({
+      '.claude.json': { projects: { [project]: { mcpServers: { local: { command: 'node', args: ['./srv.mjs'] } } } } },
+    })
+    const sep = process.platform === 'win32' ? '\\' : '/'
+    const names = 'bare,sub,up,abs,variable,web,local'
+    const added = await run(home, project, ['--add', names], process.platform)
+    assert.equal(added.code, 0, added.out)
+    const text = fs.readFileSync(added.file, 'utf8')
+    const { mcpServers } = JSON.parse(text)
+    assert.deepEqual(Object.fromEntries(Object.entries(mcpServers).map(([k, v]) => [k, (v as { cwd?: string }).cwd])), {
+      bare: project,
+      sub: `${project}${sep}sub`,
+      up: `${project}${sep}../up`,
+      abs,
+      variable: '${HOME}/srv',
+      web: undefined,
+      local: project,
+    })
+    const parsed = parseConfig(text, { HOME: abs }, process.execPath, process.platform)
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
+
+    const listed = await run(home, project, ['--list'], process.platform)
+    for (const name of names.split(',')) assert.match(listed.out, row(`"${name}"`, 'claude-code'), listed.out)
+    assert.equal(listed.out.match(/ in config$/gm)?.length, 7, listed.out)
   })
 
   test('--add makes the config when there is none', async () => {

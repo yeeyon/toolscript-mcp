@@ -305,6 +305,8 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
   value, header value, URL path or query.
 - The status is `in config`, `not in config`, `name taken by a different entry`, `toolscript itself`, or `skipped` with the reason.
 - `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
+- Claude Code starts a stdio server of the local or project scope in the project folder. So `--add` sets the `cwd` of
+  such a server to that folder. A relative `cwd` becomes a path in that folder.
 - `--add` keeps the other servers, the policy and the other keys of the config. It keeps the old file as `<config>.bak`.
 - `--add` changes nothing when a name is in the config already, in no client file, or in two files with different entries.
 - `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:local` or `--from cursor`.

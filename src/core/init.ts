@@ -7,6 +7,7 @@
 import {
   hideArgSecrets,
   hideUrlSecrets,
+  isAbsolutePath,
   launchArgv,
   launchText,
   parseJson,
@@ -238,13 +239,32 @@ type Parsed =
   | { readonly kind: 'self' }
   | { readonly kind: 'skipped'; readonly why: string }
 
-const parseServer = (name: string, raw: unknown): Parsed => {
+/** `cwd` against `folder`: as it is when it is absolute or starts with a variable. */
+const resolveIn = (folder: string, cwd: string, platform: string): string => {
+  if (cwd.startsWith('${') || isAbsolutePath(cwd, platform)) return cwd
+  const drive = platform === 'win32' ? /^[A-Za-z]:/.exec(folder)?.[0] : undefined
+  if (drive !== undefined && /^[\\/]/.test(cwd)) return `${drive}${cwd}`
+  const rest = cwd.replace(/^(?:\.(?:[\\/]+|$))+/, '')
+  return rest === '' ? folder : `${folder.replace(/[\\/]+$/, '')}${platform === 'win32' ? '\\' : '/'}${rest}`
+}
+
+/**
+ * Claude Code starts a stdio server of the local or project scope in the project folder. toolscript-mcp starts in
+ * the folder of its client, so the entry gets that folder as its `cwd`.
+ */
+const inFolder = (entry: Entry, folder: string | undefined, platform: string): Entry =>
+  folder === undefined || 'type' in entry
+    ? entry
+    : { ...entry, cwd: entry.cwd === undefined ? folder : resolveIn(folder, entry.cwd, platform) }
+
+const parseServer = (name: string, raw: unknown, folder: string | undefined, platform: string): Parsed => {
   if (isSelf(name, raw)) return { kind: 'self' }
   const parsed = toEntry(raw)
   if ('why' in parsed) return { kind: 'skipped', why: parsed.why }
   const key = keyOf(name)
   if (key === undefined) return { kind: 'skipped', why: 'no letter or digit to make a server key of' }
-  const entry: Entry = namesAzureDevOps(key, parsed.entry) ? { ...parsed.entry, untrusted: true } : parsed.entry
+  const anchored = inFolder(parsed.entry, folder, platform)
+  const entry: Entry = namesAzureDevOps(key, anchored) ? { ...anchored, untrusted: true } : anchored
   return { kind: 'entry', key, entry, dropped: parsed.dropped }
 }
 
@@ -263,7 +283,8 @@ export const fileServers = (read: ClientRead, platform: string): FileServers => 
   const file: ClientFile = { client, path, ...(scope && { scope }), ...(project !== undefined && { project }) }
   const found = serversOf(read, platform)
   if ('problem' in found) return { file, problem: found.problem, candidates: [] }
-  return { file, candidates: found.servers.map(([name, raw]) => ({ file, name, parsed: parseServer(name, raw) })) }
+  const parse = ([name, raw]: [string, unknown]) => ({ file, name, parsed: parseServer(name, raw, project, platform) })
+  return { file, candidates: found.servers.map(parse) }
 }
 
 /** The servers of every client file, merged by key: the first client wins, and a different entry with the same key is a conflict. */
