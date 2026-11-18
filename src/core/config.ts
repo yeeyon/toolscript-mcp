@@ -6,7 +6,10 @@
 import { ACTIONS, type Action, type Bridges, type Policy, type Rule } from './policy.ts'
 
 // The WHATWG URL and btoa of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
-declare const URL: { canParse(url: string): boolean; new (url: string): { readonly href: string } }
+declare const URL: {
+  canParse(url: string): boolean
+  new (url: string): { readonly href: string; readonly origin: string }
+}
 declare const btoa: (data: string) => string
 
 /** A server key that makes `mcp__<key>__<tool>` split back into the key and the tool. */
@@ -633,6 +636,9 @@ export const hideUrlSecrets = (url: string): { url: string; secrets: string[] } 
   const { hide, secrets } = collector()
   return { url: hideUrl(url, hide), secrets: secrets() }
 }
+
+/** The scheme, host and port of a URL, with no login, path, query or fragment. */
+export const urlOrigin = (url: string): string | undefined => (URL.canParse(url) ? new URL(url).origin : undefined)
 
 /**
  * `user:password` with the password hidden, or undefined for a value with no password. A number on either side, or
