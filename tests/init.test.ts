@@ -4,8 +4,10 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { loginCommand, NPX_LAUNCH, parseConfig, pathWord, shellWord, type Launch } from '../src/core/config.ts'
 import { clientFiles, configText, importServers, initReport, mainCheckoutOf, sameFolder } from '../src/core/init.ts'
+import { shownName } from '../src/core/policy.ts'
 import { runInit } from '../src/host/init.ts'
 import { detectLaunch } from '../src/host/start.ts'
 
@@ -640,8 +642,12 @@ describe('detectLaunch', () => {
 
 describe('the printed Claude Code commands', () => {
   // Each one expands in a shell when it is not quoted as a literal.
-  const NAME = `x $(echo pwned) \`echo pwned\` $HOME 'q' "d" ’ ; & | -a:b`
-  const report = (configFile: string, platform: string) =>
+  const NAME = `x $(echo pwned) \`echo pwned\` $HOME 'q' "d" ; & | -a:b`
+  // The Windows form passes no " to cmd.exe, and no ' with $ to Git Bash.
+  const WINDOWS_NAME = `x $(echo pwned) \`echo pwned\` $HOME ; -a:b`
+  // Claude Code reads a name that starts with - as an option, unless it comes after --.
+  const DASH = '-dash'
+  const report = (configFile: string, platform: string, names: readonly string[]) =>
     initReport(
       importServers(
         [
@@ -649,7 +655,7 @@ describe('the printed Claude Code commands', () => {
             client: 'claude-code',
             path: '/c/.claude.json',
             kind: 'text',
-            text: JSON.stringify({ mcpServers: { [NAME]: { command: 'fake' } } }),
+            text: JSON.stringify({ mcpServers: Object.fromEntries(names.map(n => [n, { command: 'fake' }])) }),
           },
         ],
         'linux',
@@ -697,9 +703,10 @@ describe('the printed Claude Code commands', () => {
 
   test('a POSIX shell passes the server name and the config path as they are', { skip: !has('sh') && 'no sh' }, () => {
     const config = `/home/u/$HOME/it's $(echo pwned) \`x\`/config.json`
-    const argv = argvInShell('sh', 'claude() { "$NODE" "$ARGV" "$@"; }', report(config, 'linux'))
+    const argv = argvInShell('sh', 'claude() { "$NODE" "$ARGV" "$@"; }', report(config, 'linux', [NAME, DASH]))
     assert.deepEqual(argv, [
       ['mcp', 'remove', NAME, '--scope', 'user'],
+      ['mcp', 'remove', '--scope', 'user', '--', DASH],
       ['mcp', 'add', '--scope', 'user', 'toolscript', '--', 'npx', '-y', 'toolscript-mcp', '--config', config],
     ])
   })
@@ -707,16 +714,145 @@ describe('the printed Claude Code commands', () => {
   // A function, as the npm shim claude.ps1 is a script: PowerShell drops a bare -- before both.
   test('PowerShell passes the server name and the config path as they are', { skip: !has('pwsh') && 'no pwsh' }, () => {
     const config = `C:\\Users\\u\\$env:USERNAME\\it’s $(echo pwned) \`x\\config.json`
-    const text = report(config, 'win32')
+    const text = report(config, 'win32', [WINDOWS_NAME, DASH])
     const argv = argvInShell('pwsh', 'function claude { & $env:NODE $env:ARGV @args }', text)
     const run = ['-y', 'toolscript-mcp', '--config', config.replaceAll('\\', '/')]
     assert.deepEqual(argv, [
-      ['mcp', 'remove', NAME, '--scope', 'user'],
+      ['mcp', 'remove', WINDOWS_NAME, '--scope', 'user'],
+      ['mcp', 'remove', '--scope', 'user', '--', DASH],
       ['mcp', 'add', '--scope', 'user', 'toolscript', '--', 'cmd', '/c', 'npx', ...run],
     ])
     assert.match(text, /Claude Code, in PowerShell:/)
   })
+
+  test('a name that no quoting passes as it is gets no command, and the step says to remove it by hand', () => {
+    const steps = (platform: string) =>
+      report('/c/config.json', platform, [NAME, 'caf\u00e9'])
+        .split('\n')
+        .filter(l => l.includes('by hand'))
+    assert.deepEqual(steps('linux'), [
+      '  "caf\\u00e9": init prints no command, because the name holds a character outside printable ASCII. Remove it from /c/.claude.json by hand.',
+    ])
+    assert.deepEqual(steps('win32'), [
+      `  ${JSON.stringify(NAME)}: init prints no command, because the name holds ", which cmd.exe cannot quote. Remove it from /c/.claude.json by hand.`,
+      '  "caf\\u00e9": init prints no command, because the name holds a character outside printable ASCII. Remove it from /c/.claude.json by hand.',
+    ])
+  })
 })
+
+// A name in a cloned repo's .mcp.json reaches the commands of init --list. Each payload writes a file into the cwd of
+// the shell, a temp folder, if the shell runs it.
+describe('the printed init --add commands', () => {
+  const PAYLOADS = [
+    '$(touch p1)',
+    '`touch p2`',
+    'x;touch p3;New-Item p4',
+    'x&touch p5&echo>p6',
+    'x|touch p7|echo>p8',
+    '$(New-Item p9)',
+    "%ComSpec% it's",
+    'x$(touch${IFS}p10)',
+  ]
+  // The Windows form cannot pass these as they are in each of cmd.exe, PowerShell and Git Bash.
+  const REFUSED_ON_WINDOWS = [
+    "it's $(touch p11)",
+    'q"x;touch p12',
+    '$(touch p13)&echo>p14',
+    '/x;touch p15',
+    'x=/y;touch p16',
+    'a\\b;touch p17',
+  ]
+  const main = fileURLToPath(new URL('../src/host/main.ts', import.meta.url))
+  const hidden = { encoding: 'utf8', windowsHide: true } as const
+
+  /** A project whose .mcp.json has each name, in a temp folder with its own home, and the commands of init --list. */
+  const listed = async () => {
+    const names = [...PAYLOADS, ...REFUSED_ON_WINDOWS]
+    const dir = homeWith({
+      'proj/.mcp.json': { mcpServers: Object.fromEntries(names.map(n => [n, { command: 'fake' }])) },
+      'home/.claude/settings.json': { enableAllProjectMcpServers: true },
+    })
+    const [home, project, config] = [path.join(dir, 'home'), path.join(dir, 'proj'), path.join(dir, 'config.json')]
+    const env = { APPDATA: path.join(home, 'AppData'), XDG_CONFIG_HOME: path.join(home, '.config') }
+    let out = ''
+    const args = ['--list', '--project', project, '--config', config]
+    assert.equal(await runInit(args, env, process.platform, home, t => (out += `${t}\n`), { kind: 'node', main }), 0)
+    const lines = new Map(
+      names.map(n => [n, out.split('\n').find(l => l.startsWith(`- ${shownName(n)} (claude-code:project`))]),
+    )
+    const refused = names.filter(n => lines.get(n)?.includes('): no command, because the name '))
+    assert.deepEqual(refused, process.platform === 'win32' ? REFUSED_ON_WINDOWS : [], out)
+    const commands = names.flatMap(n => (refused.includes(n) ? [] : [lines.get(n)!.replace(/^.*?\): /, '')]))
+    // The child reads only the temp home. NODE_OPTIONS lets Node 22.13 run main.ts.
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...env,
+      HOME: home,
+      USERPROFILE: home,
+      NODE_OPTIONS: '--experimental-strip-types --no-warnings',
+    }
+    delete childEnv.CLAUDE_CONFIG_DIR
+    return { dir, config, names: names.filter(n => !refused.includes(n)), commands, childEnv }
+  }
+
+  const SHELLS: Record<string, { present: () => boolean; run: (lines: string[], opts: object) => string }> = {
+    sh: {
+      present: () => process.platform !== 'win32' && spawnSync('sh', ['-c', 'exit 0']).error === undefined,
+      run: (lines, opts) => out(spawnSync('sh', ['-c', lines.join('\n')], { ...hidden, ...opts })),
+    },
+    'git bash': {
+      present: () =>
+        process.platform === 'win32' && spawnSync('bash', ['-c', 'uname -o'], hidden).stdout?.trim() === 'Msys',
+      run: (lines, opts) => out(spawnSync('bash', ['-c', lines.join('\n')], { ...hidden, ...opts })),
+    },
+    pwsh: {
+      present: () => process.platform === 'win32' && spawnSync('pwsh.exe', ['-v'], hidden).error === undefined,
+      run: (lines, opts) =>
+        out(
+          spawnSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', lines.join('\n')], {
+            ...hidden,
+            ...opts,
+          }),
+        ),
+    },
+  }
+  const out = (run: ReturnType<typeof spawnSync<string>>) => `${run.stdout}${run.stderr}`
+
+  for (const [shell, { present, run }] of Object.entries(SHELLS))
+    test(
+      `${shell} runs no payload, and init adds the server of the exact name`,
+      { skip: !present() && `no ${shell}` },
+      async () => {
+        const { dir, config, names, commands, childEnv } = await listed()
+        const text = run(commands, { cwd: dir, env: childEnv })
+        assert.deepEqual(fs.readdirSync(dir).sort(), ['config.json', 'config.json.bak', 'home', 'proj'], text)
+        for (const name of names)
+          assert.match(
+            text,
+            new RegExp(`^- \\S+, from Claude Code \\(project scope\\) ${escape(shownName(name))}$`, 'm'),
+          )
+        assert.equal(Object.keys(JSON.parse(fs.readFileSync(config, 'utf8')).mcpServers).length, names.length, text)
+      },
+    )
+
+  // cmd.exe passes a single-quoted word with its quotes, so init refuses it, but it must run nothing else.
+  test('cmd.exe runs no payload', { skip: process.platform !== 'win32' && 'not Windows' }, async () => {
+    const { dir, commands, childEnv } = await listed()
+    for (const line of commands)
+      spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+        ...hidden,
+        cwd: dir,
+        env: childEnv,
+        windowsVerbatimArguments: true,
+      })
+    assert.deepEqual(
+      fs.readdirSync(dir).filter(f => /^p\d+$/.test(f)),
+      [],
+    )
+  })
+})
+
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 describe('the OAuth login in the report', () => {
   const report = (servers: Record<string, unknown>) =>
@@ -889,8 +1025,8 @@ describe('init --list and --add', () => {
     })
     return { home, project }
   }
-  const run = (home: string, project: string, args: string[], platform = 'linux') =>
-    init(home, [...args, '--project', project], platform)
+  const run = (home: string, project: string, args: string[], platform = 'linux', launch: Launch = NPX_LAUNCH) =>
+    init(home, [...args, '--project', project], platform, launch)
   const row = (...cells: string[]) =>
     new RegExp(`^${cells.map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' +')}(?= |$)`, 'm')
   const unchanged = (file: string, before: string | undefined) => {
@@ -1537,6 +1673,55 @@ describe('init --list and --add', () => {
     const joined = await run(home, home, ['--add=-dash'])
     assert.equal(joined.code, 0, joined.out)
     assert.deepEqual(JSON.parse(fs.readFileSync(joined.file, 'utf8')).mcpServers, { '-dash': { command: 'node' } })
+  })
+
+  test('--list ends with the command that adds each server that --add can take', async () => {
+    const { home, project } = setup()
+    const { code, out, file } = await run(home, project, ['--list'])
+    assert.equal(code, 0, out)
+    const [p, c] = [pathWord(project, 'linux'), pathWord(file, 'linux')]
+    const npx = 'npx -y toolscript-mcp init'
+    assert.deepEqual(out.split('\n').slice(out.split('\n').indexOf('Commands that add a server:')), [
+      'Commands that add a server:',
+      `- gh (claude-code:local): ${npx} --add=gh --from claude-code:local --project ${p} --config ${c}`,
+      `- notes (claude-code:local): ${npx} --add=notes --project ${p} --config ${c}`,
+      `- shared (claude-code:project): ${npx} --add=shared --project ${p} --config ${c}`,
+      `- azure-devops (claude-code:project): ${npx} --add=azure-devops --project ${p} --config ${c}`,
+      `- gh (claude-code:user): ${npx} --add=gh --from claude-code:user --project ${p} --config ${c}`,
+      `- "my notes" (claude-desktop): ${npx} '--add=my notes' --config ${c}`,
+      `- gh (claude-desktop): ${npx} --add=gh --from claude-desktop --project ${p} --config ${c}`,
+      '',
+    ])
+  })
+
+  test('--list marks a command with --unapproved to ask first, and says why a server gets no command', async () => {
+    const top = homeWith({
+      '.git/HEAD': '',
+      '.mcp.json': { mcpServers: { dup: { command: 'far' } } },
+      'near/.mcp.json': {
+        mcpServers: {
+          alpha: { command: 'node' },
+          beta: { command: 'node' },
+          'co,ma': { command: 'node' },
+          dup: { command: 'near' },
+        },
+      },
+    })
+    const near = path.join(top, 'near')
+    const home = homeWith({ '.claude/settings.json': { disabledMcpjsonServers: ['beta'] } })
+    const { code, out, file } = await run(home, near, ['--list'], 'win32', { kind: 'node', main: 'C:\\t s\\main.js' })
+    assert.equal(code, 0, out)
+    const tail = `--project ${pathWord(near, 'win32')} --config ${pathWord(file, 'win32')}`
+    const clone = 'node "C:/t s/main.js" init'
+    assert.deepEqual(out.split('\n').slice(out.split('\n').indexOf('Commands that add a server:')), [
+      'Commands that add a server:',
+      `- alpha (claude-code:project, ask first: not approved in Claude Code): ${clone} --add=alpha --unapproved ${tail}`,
+      `- beta (claude-code:project, ask first: disabled in Claude Code): ${clone} --add=beta --unapproved ${tail}`,
+      '- co,ma (claude-code:project): no command, because --add splits a name at a comma and drops the spaces at its ends.',
+      `- dup (claude-code:project, ask first: not approved in Claude Code): ${clone} --add=dup --unapproved ${tail}`,
+      '- dup (claude-code:project): no command, because --add takes another copy of this name.',
+      '',
+    ])
   })
 
   test('--add refuses, exits 1 and writes nothing', async () => {

@@ -488,10 +488,58 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 /** "Claude Code (local scope)", or the client name alone. */
 const sourceLabel = (file: ClientFile) => `${CLIENT_NAME[file.client]}${file.scope ? ` (${file.scope} scope)` : ''}`
 
-/** The lines that remove the servers `names` from one client file. */
+/** One word of a command that init prints, or why init prints no command with it. */
+type Word = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly why: string }
+
+/**
+ * The words that the `shellWord` form of Windows does not pass as they are: a test of the word and of the form, single
+ * quotes or not, and the reason. The command runs in PowerShell or Git Bash, and cmd.exe must run nothing else from
+ * it. cmd.exe reads no single quotes, and a `"` turns its quoting on and off. It can expand a `%NAME%` that is set.
+ * Git Bash reads `''` as two quotes and `\` as an escape. It rewrites a `/` as a Windows path at the start of the word
+ * or of a part after `=`, after only signs (checked in Git for Windows 2.x).
+ */
+const WINDOWS_REFUSALS: readonly [(word: string, single: boolean) => boolean, string][] = [
+  [w => w.includes('"'), 'holds ", which cmd.exe cannot quote'],
+  [w => w.includes('\\'), 'holds \\, which Git Bash reads as an escape'],
+  [
+    (w, single) => single && w.includes("'"),
+    "holds ' and also $ or `, which no quoting passes to both PowerShell and Git Bash",
+  ],
+  [
+    (w, single) => single && /[&|<>^]/.test(w),
+    'needs single quotes, which cmd.exe does not read, and holds & | < > or ^',
+  ],
+  [w => w.split('=').some(part => /^[^A-Za-z0-9]*\//.test(part)), 'holds a / that Git Bash rewrites as a Windows path'],
+]
+
+/**
+ * `word` quoted by `shellWord`, or why no quoting passes it as it is. A name in a client file can come from a cloned
+ * repo, so it is hostile, and a person or an agent runs the command. The command stays printable ASCII. On other
+ * systems than Windows, single quotes pass any such word.
+ */
+export const commandWord = (word: string, platform: string): Word => {
+  const text = shellWord(word, platform)
+  if (/[^\x20-\x7e]/.test(word)) return { ok: false, why: 'holds a character outside printable ASCII' }
+  const refusal = platform === 'win32' ? WINDOWS_REFUSALS.find(([test]) => test(word, text.startsWith("'"))) : undefined
+  return refusal === undefined ? { ok: true, text } : { ok: false, why: refusal[1] }
+}
+
+/**
+ * The lines that remove the servers `names` from one client file. Claude Code reads a name that starts with `-` as an
+ * option, so such a name comes last, after `--`.
+ */
 const removeLines = (file: ClientFile, names: readonly string[], platform: string): string[] => {
-  if (file.client === 'claude-code')
-    return names.map(name => `  claude mcp remove ${shellWord(name, platform)} --scope ${file.scope ?? 'user'}`)
+  if (file.client === 'claude-code') {
+    const scope = `--scope ${file.scope ?? 'user'}`
+    return names.map(name => {
+      const word = commandWord(name, platform)
+      if (!word.ok)
+        return `  ${shownName(name)}: init prints no command, because the name ${word.why}. Remove it from ${file.path} by hand.`
+      return name.startsWith('-')
+        ? `  claude mcp remove ${scope} ${shellWord('--', platform)} ${word.text}`
+        : `  claude mcp remove ${word.text} ${scope}`
+    })
+  }
   return names.length > 0 ? [`  Remove from "mcpServers": ${names.map(n => JSON.stringify(n)).join(', ')}`] : []
 }
 
@@ -657,10 +705,11 @@ const table = (rows: readonly (readonly string[])[]): string[] => {
 }
 
 /**
- * One line for each server of the client files, with its status in the config. Names only, no value. Each text
- * from a file is printable, so a name or path never moves the cursor or turns the text around.
+ * One line for each server of the client files, with its status in the config, then the command that adds each one
+ * that `--add` can take. Names only, no value. Each text from a file is printable, so a name or path never moves the
+ * cursor or turns the text around.
  */
-export const listReport = (files: readonly FileServers[], config: OldConfig): string => {
+export const listReport = (files: readonly FileServers[], config: OldConfig, at: AddAt): string => {
   const rows = files.flatMap(f =>
     f.candidates.map(c => [
       shownName(c.name),
@@ -680,7 +729,7 @@ export const listReport = (files: readonly FileServers[], config: OldConfig): st
     rows.length > 0
       ? table([['name', 'client', 'scope', 'kind', 'status', 'folder'], ...rows])
       : ['No MCP server in the client files.']
-  return [...list, ...problems].join('\n')
+  return [...list, ...problems, ...addCommands(files, config, at)].join('\n')
 }
 
 /**
@@ -747,6 +796,82 @@ export const planAdd = (
     }
   }
   return errors.length > 0 ? { ok: false, errors } : { ok: true, added }
+}
+
+/** The names in the values of `--add`: each value split at its commas, each name without the spaces at its ends. */
+export const addNames = (values: readonly string[]): string[] => values.flatMap(v => v.split(',')).map(n => n.trim())
+
+/** What a printed `--add` command holds: the folder of `--list`, the config file, the system and the launch form. */
+export type AddAt = {
+  readonly start: string
+  readonly configFile: string
+  readonly platform: string
+  readonly launch: Launch
+}
+
+/**
+ * The options with which `--add` takes the server `c` and no other copy of its name, found with `planAdd` itself, or
+ * undefined when no options do. `gate`: the approval that `--unapproved` passes over.
+ */
+const addOptions = (
+  files: readonly FileServers[],
+  c: Candidate,
+  config: OldConfig,
+): { from?: string; gate?: Exclude<Approval, 'approved'> } | undefined => {
+  for (const from of [undefined, sourceName(c.file)])
+    for (const unapproved of [false, true]) {
+      const plan = planAdd(files, [c.name], config, { from, unapproved })
+      const taken = plan.ok ? plan.added[0]?.from : undefined
+      if (taken?.includes(c))
+        return { from, ...(unapproved && { gate: taken.map(gateOf).find(g => g !== undefined) ?? 'not approved' }) }
+    }
+  return undefined
+}
+
+/**
+ * For each server with the status `not in config`, the command that adds it, or why init prints none. The command
+ * names the config, the folder when a local or project scope has the name, `--from` when `--add` would take another
+ * copy of the name, and `--unapproved` when Claude Code does not run the server. Such a line says to ask first.
+ */
+const addCommands = (files: readonly FileServers[], config: OldConfig, at: AddAt): string[] => {
+  const { start, configFile, platform, launch } = at
+  const bare = (text: string): Word => ({ ok: true, text })
+  const quoted = (label: string, word: string): Word => {
+    const quoting = commandWord(word, platform)
+    return quoting.ok ? quoting : { ok: false, why: `${label} ${quoting.why}` }
+  }
+  const file = (label: string, p: string) => quoted(label, platform === 'win32' ? p.replaceAll('\\', '/') : p)
+  const launchWords =
+    launch.kind === 'npx'
+      ? launchArgv(launch).map(bare)
+      : [bare('node'), file('the path of toolscript-mcp', launch.main)]
+  const all = files.flatMap(f => f.candidates)
+  const lines = all.flatMap(c => {
+    if (configStatus(c.parsed, config.servers) !== 'not in config') return []
+    const head = `- ${shownName(c.name)} (${sourceName(c.file)}`
+    const none = (why: string) => [`${head}): no command, because ${why}.`]
+    const [parsed, ...more] = addNames([c.name])
+    if (parsed !== c.name || more.length > 0)
+      return none('--add splits a name at a comma and drops the spaces at its ends')
+    const options = addOptions(files, c, config)
+    if (options === undefined) return none('--add takes another copy of this name')
+    const scoped = all.some(o => o.name === c.name && (o.file.scope === 'local' || o.file.scope === 'project'))
+    const words = [
+      ...launchWords,
+      bare('init'),
+      /^[\w.-]+$/.test(c.name) ? bare(`--add=${c.name}`) : quoted('the name', `--add=${c.name}`),
+      ...(options.from ? [bare('--from'), quoted('the source', options.from)] : []),
+      ...(options.gate ? [bare('--unapproved')] : []),
+      ...(scoped ? [bare('--project'), file('the folder', start)] : []),
+      bare('--config'),
+      file('the config path', configFile),
+    ]
+    const refused = words.find((w): w is Extract<Word, { ok: false }> => !w.ok)
+    if (refused !== undefined) return none(refused.why)
+    const gate = options.gate ? `, ask first: ${options.gate} in Claude Code` : ''
+    return [`${head}${gate}): ${words.map(w => (w.ok ? w.text : '')).join(' ')}`]
+  })
+  return lines.length > 0 ? ['', 'Commands that add a server:', ...lines] : []
 }
 
 /** The config with the added servers: the old config with its other keys and policy, or a new one. */
