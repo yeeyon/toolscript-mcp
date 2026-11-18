@@ -10,6 +10,7 @@ import { parseArgs } from 'node:util'
 import { configPath, SECRET_NAMES, SECRET_PARTS, SECRET_WORD_LENGTH, type Env, type Launch } from '../core/config.ts'
 import {
   addedConfigText,
+  addNames,
   addReport,
   approvals,
   clientFiles,
@@ -200,10 +201,10 @@ const pick = async (
   }
   const config = parsed?.config
   if (options.list) {
-    print(listReport(files, config ?? NO_CONFIG))
+    print(listReport(files, config ?? NO_CONFIG, { start: project.start, configFile: file, platform, launch }))
     return 0
   }
-  const names = (options.add ?? []).flatMap(a => a.split(',')).map(n => n.trim())
+  const names = addNames(options.add ?? [])
   if (names.some(n => n === '')) {
     print(`--add takes server names, separated by commas.\n${INIT_USAGE}`)
     return 2

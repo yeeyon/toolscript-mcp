@@ -337,6 +337,21 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
   through toolscript-mcp works.
 
+After the list, `init --list` prints a command for each server with the status `not in config`:
+
+```
+Commands that add a server:
+- notes (claude-code:local): npx -y toolscript-mcp init --add=notes --project /home/me/app --config /home/me/.config/toolscript-mcp/config.json
+- alpha (claude-code:project, ask first: not approved in Claude Code): npx -y toolscript-mcp init --add=alpha --unapproved --project /home/me/app --config /home/me/.config/toolscript-mcp/config.json
+```
+
+- The command has the options that pick the server of its line: `--from`, `--unapproved`, `--project` and `--config`.
+- A line with `ask first` has `--unapproved` in its command. Run it only after you check the entry of the server in its file.
+- A name in a `.mcp.json` file comes from anyone who can change the project. So init quotes each name as one word for the shell.
+- On Windows, a command passes each word as it is in PowerShell and Git Bash. cmd.exe runs no other command from it.
+- If init cannot quote a name or a path in this way, the line has no command and gives the reason.
+- The same rule applies to the steps that remove a server. If a step has no command, remove the entry from the client file by hand.
+
 ## Configuration
 
 ### The policy
