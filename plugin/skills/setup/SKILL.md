@@ -183,8 +183,8 @@ This step ends when one `run_code` task works through toolscript-mcp. Each comma
    too, the model can still call it directly, and each full result goes into the context. For Claude Code, show the
    scope that `init --list` showed, and offer `claude mcp remove <name> --scope <scope>`. Run it only after the person
    agrees. For the `project` scope, the person decides, because `.mcp.json` is shared. To restore the direct entry
-   later, the person copies it from `<config>` in an editor and runs `claude mcp add-json <name> '<entry>' --scope
-   <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1 removes each `"` in the entry, so there
+   later, the person copies it from `<config>` in an editor. Then the person runs
+   `claude mcp add-json <name> '<entry>' --scope <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1 removes each `"` in the entry, so there
    the person writes each `"` as `\"`. Do not read the entry for the person.
 
 ## 7. Choose the policy
