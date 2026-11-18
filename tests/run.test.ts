@@ -31,12 +31,37 @@ for (const name of ['TMPDIR', 'TEMP', 'TMP']) process.env[name] = TMP
 after(() => fs.rmSync(ROOT, { recursive: true, force: true, maxRetries: 5 }))
 const leftDirs = () => fs.readdirSync(TMP).filter(f => f.startsWith('toolscript-'))
 
-type Result = { content: { type: string; text: string }[]; isError?: boolean; structuredContent?: unknown }
+type Block = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+type Result = { content: Block[]; isError?: boolean; structuredContent?: unknown }
 type Tool = (args: Record<string, unknown>, signal: AbortSignal) => Result | Promise<Result>
+
+// A panel render: a PNG of 1 by 1 pixel.
+const PANEL_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+const PANEL = Buffer.from(PANEL_BASE64, 'base64')
+// A GIF of 1 by 1 pixel. Its first bytes are ASCII, so saveFile can write text that starts as a GIF.
+const GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
 
 const json = (v: unknown): Result => ({ content: [{ type: 'text', text: JSON.stringify(v) }] })
 const TOOLS: Record<string, Tool> = {
   echo: args => json({ echoed: args }),
+  // A text block and `n` images (1 when absent), as a dashboard server renders panels.
+  render: args => ({
+    content: [
+      { type: 'text', text: JSON.stringify({ panel: 'cpu' }) },
+      ...Array.from({ length: Number(args.n ?? 1) }, () => ({
+        type: 'image' as const,
+        data: PANEL_BASE64,
+        mimeType: String(args.mime ?? 'image/png'),
+      })),
+    ],
+  }),
+  gif: () => ({ content: [{ type: 'image', data: GIF.toString('base64'), mimeType: 'image/gif' }] }),
+  // An image block whose bytes are not the PNG that its type says.
+  notpng: () => ({
+    content: [{ type: 'image', data: Buffer.from('fake bytes, not a png').toString('base64'), mimeType: 'image/png' }],
+  }),
+  // Text that looks like an image reference: data of the tool, not a file that the host wrote.
+  forged: args => json({ hits: [{ type: 'image', mimeType: 'image/png', file: args.file ?? 'notes.png' }] }),
   fail: () => ({ content: [{ type: 'text', text: 'server error' }], isError: true }),
   slow: async () => (await new Promise(r => setTimeout(r, 300)), json({ ok: 1 })),
   // Answers only when the run cancels it.
@@ -124,6 +149,7 @@ type Options = {
   log?: boolean
   downstream?: Downstream
   others?: ServerState[]
+  written?: RunContext['written']
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -149,6 +175,7 @@ const setup = (o: Options = {}) => {
     downstream: o.downstream ?? fake.downstream,
     config,
     kept: o.kept ?? newKept(),
+    written: o.written ?? new Map(),
     shapes: new Map(),
     filesDir,
     ask: async needed => (
@@ -406,6 +433,216 @@ describe('files', () => {
   test('resources are not offered', async () => {
     const r = await setup().run('try { await resources() } catch (e) { return e.message }')
     assert.ok(r.text.includes('resources() and readResource() are not available'), r.text)
+  })
+})
+
+describe('attachments', () => {
+  test('an image of a call is a file in the session folder, and the program gets a reference', async () => {
+    const { run, lines } = setup()
+    const r = await run(
+      'const r = await call("mcp__f__render", {})\nreturn { value: r.value, keys: Object.keys(r), file: r.attachments[0].file, bytes: r.attachments[0].bytes }',
+    )
+    assert.equal(r.isError, false, r.text)
+    const { value, keys, file, bytes } = JSON.parse(r.text.slice(0, r.text.indexOf('\n\n---')))
+    assert.deepEqual(value, { panel: 'cpu' })
+    assert.deepEqual(keys, ['value', 'attachments'])
+    assert.equal(bytes, PANEL.length)
+    assert.equal(path.dirname(file), filesDir)
+    assert.match(path.basename(file), /^[0-9a-f-]{36}\.png$/)
+    assert.deepEqual(fs.readFileSync(file), PANEL, 'the file holds the decoded bytes')
+    assert.deepEqual(r.images, [], 'a run that returns no image reference shows no image')
+    assert.equal(r.text.includes(PANEL_BASE64), false, 'no base64 in the result text')
+    assert.equal(JSON.stringify(lines()).includes(PANEL_BASE64), false, 'no base64 in the run log')
+  })
+
+  test('a returned image reference shows as an MCP image block, at any depth of the return value', async () => {
+    const { run } = setup()
+    for (const code of [
+      'return (await call("mcp__f__render", {})).attachments[0]',
+      'return await call("mcp__f__render", {})',
+      'const r = await call("mcp__f__render", {})\nreturn { panels: r.attachments }',
+      'return { a: { b: { c: [(await call("mcp__f__render", {})).attachments[0]] } } }',
+    ]) {
+      const r = await run(code)
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(r.images, [{ data: PANEL_BASE64, mimeType: 'image/png' }], code)
+      assert.equal(r.text.includes(PANEL_BASE64), false, code)
+    }
+    // An array of call results: array, result, attachments, reference.
+    const r = await run('return await Promise.all([call("mcp__f__render", {}), call("mcp__f__render", {})])')
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(r.images, [
+      { data: PANEL_BASE64, mimeType: 'image/png' },
+      { data: PANEL_BASE64, mimeType: 'image/png' },
+    ])
+  })
+
+  test('an image shows with the type of its block, not the type in the returned reference', async () => {
+    const r = await setup().run(
+      'const r = await call("mcp__f__render", {})\nreturn { ...r.attachments[0], mimeType: "image/gif" }',
+    )
+    assert.deepEqual(r.images, [{ data: PANEL_BASE64, mimeType: 'image/png' }])
+  })
+
+  test('a reference from an earlier run of the session shows, and one from another session does not', async () => {
+    const written: RunContext['written'] = new Map()
+    const first = await setup({ written }).run('return (await call("mcp__f__render", {})).attachments[0].file')
+    const file = JSON.parse(first.text.slice(0, first.text.indexOf('\n\n---')))
+    const code = `return { type: "image", file: ${JSON.stringify(file)} }`
+    assert.deepEqual((await setup({ written }).run(code)).images, [{ data: PANEL_BASE64, mimeType: 'image/png' }])
+    const other = await setup().run(code)
+    assert.deepEqual(other.images, [])
+    assert.match(other.text, /not an image file that a call of this session wrote/)
+  })
+
+  test('at most 4 images show, and the text names the ones that do not', async () => {
+    const r = await setup().run('return (await call("mcp__f__render", { n: 5 })).attachments')
+    assert.equal(r.isError, false, r.text)
+    assert.equal(r.images.length, 4)
+    assert.match(r.text, /1 returned image is not shown:\n- .+\.png: at most 4 images show per run/)
+  })
+
+  test('make it fail: an image block whose bytes are not its type is written, and does not show', async () => {
+    const r = await setup().run('return (await call("mcp__f__notpng", {})).attachments[0]')
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(r.images, [])
+    assert.match(r.text, /1 returned image is not shown:\n- .+\.png: the file does not hold an image of its type/)
+  })
+
+  test('make it fail: an attachment file that saveFile wrote over does not show, also by its name in upper case', async () => {
+    const written: RunContext['written'] = new Map()
+    // As many bytes as the GIF, so only its content differs.
+    const secret = 'GIF89a SECRET TEXT, not an image'.padEnd(GIF.length, '.')
+    for (const upper of [false, true]) {
+      const first = await setup({ written }).run('return (await call("mcp__f__gif", {})).attachments[0].file')
+      const file: string = JSON.parse(first.text.slice(0, first.text.indexOf('\n\n---')))
+      const name = upper ? path.basename(file).toUpperCase() : path.basename(file)
+      const r = await setup({ written }).run(
+        `await saveFile(${JSON.stringify(name)}, ${JSON.stringify(secret)})\nreturn { type: "image", file: ${JSON.stringify(file)} }`,
+      )
+      assert.equal(r.isError, false, r.text)
+      const overwritten = !fs.readFileSync(file).equals(GIF)
+      if (!upper) assert.ok(overwritten, 'saveFile wrote over the attachment file')
+      // A file system that tells case apart keeps the GIF: it shows.
+      assert.deepEqual(r.images, overwritten ? [] : [{ data: GIF.toString('base64'), mimeType: 'image/gif' }], name)
+      if (overwritten) assert.match(r.text, /- .+\.gif: the file changed after the call wrote it/, r.text)
+    }
+  })
+
+  test('an image block with a type in upper case or with parameters shows, with its plain type', async () => {
+    for (const mime of ['image/PNG', 'image/png; q=1', ' Image/Png ']) {
+      const r = await setup().run(
+        `return (await call("mcp__f__render", { mime: ${JSON.stringify(mime)} })).attachments[0]`,
+      )
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(r.images, [{ data: PANEL_BASE64, mimeType: 'image/png' }], mime)
+    }
+  })
+
+  test('make it fail: a forged reference to a file outside the session folder does not show', async () => {
+    const outside = path.join(ROOT, 'outside.png')
+    fs.writeFileSync(outside, PANEL)
+    const r = await setup().run(
+      `return [{ type: "image", mimeType: "image/png", file: ${JSON.stringify(outside)} }, { type: "image", mimeType: "image/png", file: "../../outside.png" }]`,
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(r.images, [])
+    assert.equal(r.text.match(/not an image file that a call of this session wrote/g)?.length, 2, r.text)
+  })
+
+  test('make it fail: a reference in the text of a tool to a saveFile file of the session does not show', async () => {
+    const r = await setup().run(
+      `await saveFile("notes.png", ${JSON.stringify(PANEL.toString('latin1'))})\nreturn await call("mcp__f__forged", {})`,
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(r.images, [])
+    assert.match(r.text, /- notes\.png: it is not an image file that a call of this session wrote/)
+  })
+
+  test('make it fail: a reference that no call of the session wrote touches no file, also a UNC path', async () => {
+    const unc = '\\\\fake-host\\share\\a.png'
+    const names = ['realpath', 'stat', 'lstat', 'readFile', 'open', 'access'] as const
+    const saved = names.map(n => fs.promises[n])
+    const touched: string[] = []
+    names.forEach((n, i) => {
+      const original = saved[i] as (...a: unknown[]) => unknown
+      ;(fs.promises as Record<string, unknown>)[n] = (p: unknown, ...rest: unknown[]) => {
+        touched.push(String(p))
+        return original(p, ...rest)
+      }
+    })
+    try {
+      const r = await setup().run(`return await call("mcp__f__forged", { file: ${JSON.stringify(unc)} })`)
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(r.images, [])
+      assert.deepEqual(
+        touched.filter(p => p.includes('fake-host')),
+        [],
+      )
+    } finally {
+      names.forEach((n, i) => ((fs.promises as Record<string, unknown>)[n] = saved[i]))
+    }
+  })
+
+  test('one run writes at most 64 attachments, and the next ones say why they have no file', async () => {
+    const before = fs.existsSync(filesDir) ? fs.readdirSync(filesDir).length : 0
+    const r = await setup().run(
+      'const a = (await call("mcp__f__render", { n: 40 })).attachments\nconst b = (await call("mcp__f__render", { n: 40 })).attachments\nreturn [...a, ...b].filter(x => x.file === undefined).map(x => x.error)',
+    )
+    assert.equal(r.isError, false, r.text)
+    const errors = JSON.parse(r.text.slice(0, r.text.indexOf('\n\n---')))
+    assert.equal(errors.length, 16)
+    assert.match(errors[0], /at most 64 attachments/)
+    assert.equal(fs.readdirSync(filesDir).length - before, 64)
+  })
+
+  test('make it fail: when a later file of a result cannot be written, no file of that result stays', async () => {
+    const write = fs.promises.writeFile
+    let writes = 0
+    fs.promises.writeFile = (async (file: fs.PathLike, ...rest: unknown[]) => {
+      if (String(file).endsWith('.png') && ++writes === 3) throw new Error('ENOSPC: fake full disk')
+      return (write as (...a: unknown[]) => Promise<void>)(file, ...rest)
+    }) as typeof write
+    try {
+      const before = fs.existsSync(filesDir) ? fs.readdirSync(filesDir) : []
+      const r = await setup().run(
+        'try { await call("mcp__f__render", { n: 4 }) } catch (e) { return e.message }\nreturn "no error"',
+      )
+      assert.match(r.text, /could not write an attachment of mcp__f__render: ENOSPC: fake full disk/)
+      assert.deepEqual(fs.readdirSync(filesDir), before)
+    } finally {
+      fs.promises.writeFile = write
+    }
+  })
+
+  test('make it fail: a file that a failed write made is removed, and a file that was there stays', async () => {
+    const write = fs.promises.writeFile
+    const failWith = (code: string) => {
+      let writes = 0
+      let made = ''
+      fs.promises.writeFile = (async (file: fs.PathLike, ...rest: unknown[]) => {
+        if (!String(file).endsWith('.png') || ++writes !== 2)
+          return (write as (...a: unknown[]) => Promise<void>)(file, ...rest)
+        // Half of the bytes, then the error, as a full disk does. EEXIST: the file was there before the write.
+        made = String(file)
+        fs.writeFileSync(made, PANEL.subarray(0, 8))
+        throw Object.assign(new Error(`${code}: fake`), { code })
+      }) as typeof write
+      return () => made
+    }
+    try {
+      const before = fs.existsSync(filesDir) ? fs.readdirSync(filesDir) : []
+      const code = 'try { await call("mcp__f__render", { n: 3 }) } catch (e) { return e.message }\nreturn "no error"'
+      failWith('ENOSPC')
+      assert.match((await setup().run(code)).text, /ENOSPC: fake/)
+      assert.deepEqual(fs.readdirSync(filesDir), before)
+      const made = failWith('EEXIST')
+      assert.match((await setup().run(code)).text, /EEXIST: fake/)
+      assert.deepEqual(fs.readdirSync(filesDir).sort(), [...before, path.basename(made())].sort())
+      fs.rmSync(made())
+    } finally {
+      fs.promises.writeFile = write
+    }
   })
 })
 

@@ -43,6 +43,11 @@ import { parseConfig, type ServerKey } from '../src/core/config.ts'
 const NO_BRIDGES = new Set<ServerKey>()
 const has = (text: string | undefined, part: string) => typeof text === 'string' && text.includes(part)
 
+// A result with no attachment writes no file, so it never asks for a path.
+const noFile = (): never => assert.fail('no file expected')
+const replyOf = (r: Parameters<typeof mcpReply>[0]) => mcpReply(r, noFile).reply
+const savedOf = (format: Parameters<typeof savedReply>[0], text: string) => savedReply(format, text, noFile).reply
+
 describe('protocol', () => {
   test('takeMessages keeps partial lines and skips foreign output', () => {
     const line = `${MARK}${JSON.stringify({ t: 'call', id: 1, tool: 'mcp__a__b', args: {} })}\n`
@@ -156,9 +161,9 @@ describe('protocol', () => {
     const raw = ['{9007199254740993:1}', '[1234567890123456789,]']
     for (const text of raw) {
       assert.equal(toValue(undefined, text), text)
-      assert.deepEqual(savedReply('text', text), { ok: true, value: text })
-      assert.deepEqual(savedReply('unknown', text), { ok: true, value: text })
-      assert.deepEqual(savedReply('json', text), { ok: false, error: 'the saved result is not whole' })
+      assert.deepEqual(savedOf('text', text), { ok: true, value: text })
+      assert.deepEqual(savedOf('unknown', text), { ok: true, value: text })
+      assert.deepEqual(savedOf('json', text), { ok: false, error: 'the saved result is not whole' })
     }
   })
 
@@ -173,15 +178,15 @@ describe('protocol', () => {
   })
 
   test('mcpReply joins text blocks and parses JSON', () => {
-    assert.deepEqual(mcpReply({ content: [{ type: 'text', text: '{"a":1}' }], isError: false }), {
+    assert.deepEqual(replyOf({ content: [{ type: 'text', text: '{"a":1}' }], isError: false }), {
       ok: true,
       value: { a: 1 },
     })
-    assert.deepEqual(
-      mcpReply({ content: [{ type: 'text', text: 'x' }], isError: false, structuredContent: { b: 2 } }),
-      { ok: true, value: { b: 2 } },
-    )
-    assert.deepEqual(mcpReply({ content: [{ type: 'text', text: 'bad' }], isError: true }), {
+    assert.deepEqual(replyOf({ content: [{ type: 'text', text: 'x' }], isError: false, structuredContent: { b: 2 } }), {
+      ok: true,
+      value: { b: 2 },
+    })
+    assert.deepEqual(replyOf({ content: [{ type: 'text', text: 'bad' }], isError: true }), {
       ok: false,
       error: 'bad',
     })
@@ -237,11 +242,11 @@ describe('protocol', () => {
 
   test('savedReply parses the file as its format says', () => {
     const value = (v: unknown) => ({ ok: true, value: v })
-    assert.deepEqual(savedReply('text', '[1,2]'), value([1, 2]))
-    assert.deepEqual(savedReply('text', 'plain'), value('plain'))
-    assert.deepEqual(savedReply('json', '{"a":1}'), value({ a: 1 }))
+    assert.deepEqual(savedOf('text', '[1,2]'), value([1, 2]))
+    assert.deepEqual(savedOf('text', 'plain'), value('plain'))
+    assert.deepEqual(savedOf('json', '{"a":1}'), value({ a: 1 }))
     assert.deepEqual(
-      savedReply(
+      savedOf(
         'blocks',
         JSON.stringify([
           { type: 'text', text: 'one' },
@@ -250,20 +255,20 @@ describe('protocol', () => {
       ),
       value('one\ntwo'),
     )
-    assert.deepEqual(savedReply('unknown', JSON.stringify([{ type: 'text', text: '[3]' }])), value([3]))
-    assert.deepEqual(savedReply('unknown', '[INFO] plain text'), value('[INFO] plain text'))
+    assert.deepEqual(savedOf('unknown', JSON.stringify([{ type: 'text', text: '[3]' }])), value([3]))
+    assert.deepEqual(savedOf('unknown', '[INFO] plain text'), value('[INFO] plain text'))
     // Data with a `type` field of its own is not content blocks.
     const messages = [{ type: 'message', text: 'hi' }]
-    assert.deepEqual(savedReply('blocks', JSON.stringify(messages)), value(messages))
-    assert.deepEqual(savedReply('unknown', JSON.stringify(messages)), value(messages))
+    assert.deepEqual(savedOf('blocks', JSON.stringify(messages)), value(messages))
+    assert.deepEqual(savedOf('unknown', JSON.stringify(messages)), value(messages))
     // JSON that does not parse was cut.
-    assert.deepEqual(savedReply('json', '{"cut": '), { ok: false, error: 'the saved result is not whole' })
+    assert.deepEqual(savedOf('json', '{"cut": '), { ok: false, error: 'the saved result is not whole' })
     // A saved JSON file is the same text as a live result, so a large id keeps its digits.
-    assert.deepEqual(savedReply('json', '{"id":1234567890123456789}'), {
+    assert.deepEqual(savedOf('json', '{"id":1234567890123456789}'), {
       ok: true,
       value: { id: '1234567890123456789' },
     })
-    assert.deepEqual(savedReply('json', '[9007199254740993]'), { ok: true, value: ['9007199254740993'] })
+    assert.deepEqual(savedOf('json', '[9007199254740993]'), { ok: true, value: ['9007199254740993'] })
   })
 
   test('hintNudge names the servers that work now and the searches that missed', () => {
@@ -709,12 +714,13 @@ describe('the tool table', () => {
   // every session. Raise the limit only for text that changes what the model does.
   // M4: run_code 1542, search_tools 550 (it names run_code). v0.1: + alwaysLoad 41 on each.
   // + 68 for the recall(n) line, which the bench showed second programs needed.
+  // + 170 for the attachments line: without it, a program cannot find a non-text result or show an image.
   // + 365 (#47): the three examples of when to prefer run_code, and the empty search after a reconnect.
   // + 76 (#47): limit 1 and the "Not connected" section. The check after a reconnect shows one summary line: with
   // fake servers, 86 to 820 characters, against 1,039 to 8,512 for an empty query with the default limit.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
-    assert.ok(size <= 2677, `size ${size} is over 2677`)
+    assert.ok(size <= 2847, `size ${size} is over 2847`)
   })
 
   test('each example of the run_code description runs and returns only the small result', async () => {
