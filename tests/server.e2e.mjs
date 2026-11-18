@@ -350,8 +350,16 @@ process.stdout.write(loginCommand(detectLaunch(process.argv[1]), process.platfor
   assert.equal(login.stdout, '')
 })
 
-test('(p2) --help and -h print the usage to stderr and exit 0, for the server, init and login', () => {
-  for (const args of [['--help'], ['-h'], ['init', '--help'], ['init', '-h'], ['login', '--help'], ['login', '-h']]) {
+test('(p2) --help and -h print the usage to stderr and exit 0, for the server, init, login and doctor', () => {
+  for (const args of [
+    ['--help'],
+    ['-h'],
+    ['init', '--help'],
+    ['init', '-h'],
+    ['login', '--help'],
+    ['login', '-h'],
+    ['doctor', '--help'],
+  ]) {
     const run = spawnSync(process.execPath, [MAIN, ...args], { env: SERVER_ENV, input: '', encoding: 'utf8' })
     assert.equal(run.status, 0, `${args.join(' ')}: ${run.stderr}`)
     assert.equal(run.stdout, '', `${args.join(' ')} wrote to stdout`)
