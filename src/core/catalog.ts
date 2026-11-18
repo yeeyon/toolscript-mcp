@@ -409,7 +409,8 @@ export const searchResult = (
   const tail = notConnectedText(states)
   if (found.length === 0) {
     const shown = query.length > ECHO_MAX ? `${query.slice(0, ECHO_MAX)}... (${query.length} characters)` : query
-    return `No MCP tool matches "${shown}". ${all.length} MCP tools are connected.${tail}`
+    const hint = all.length > 0 ? ' An empty query lists them.' : ''
+    return `No MCP tool matches "${shown}". ${all.length} MCP tools are connected.${hint}${tail}`
   }
   const blocks =
     found.length <= DETAIL_HITS && !listsAll(query)

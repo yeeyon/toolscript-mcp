@@ -20,14 +20,26 @@ describe('search_tools with no match', () => {
   const tools = [{ name: 'grant', description: 'Grant access.' }]
 
   test('a short query is echoed whole', () => {
-    assert.equal(searchResult(server(tools), 'zzzqq', 15), 'No MCP tool matches "zzzqq". 1 MCP tools are connected.')
+    assert.equal(
+      searchResult(server(tools), 'zzzqq', 15),
+      'No MCP tool matches "zzzqq". 1 MCP tools are connected. An empty query lists them.',
+    )
+  })
+
+  // #49 review: "mcp" is no longer a word of every tool name, so a model that searched it to list all needs the way out.
+  test('a search for "mcp" finds no tool and names the empty query', () => {
+    assert.match(searchResult(server(tools), 'mcp', 15), /^No MCP tool matches "mcp"\. .* An empty query lists them\.$/)
+  })
+
+  test('with no tool connected, the text names no empty query', () => {
+    assert.equal(searchResult([], 'zzzqq', 15), 'No MCP tool matches "zzzqq". 0 MCP tools are connected.')
   })
 
   test('a long query is cut to 200 characters and its length is named', () => {
     const query = 'zzz '.repeat(1250)
     assert.equal(
       searchResult(server(tools), query, 15),
-      `No MCP tool matches "${query.slice(0, 200)}... (5000 characters)". 1 MCP tools are connected.`,
+      `No MCP tool matches "${query.slice(0, 200)}... (5000 characters)". 1 MCP tools are connected. An empty query lists them.`,
     )
   })
 })

@@ -1010,7 +1010,7 @@ describe('the catalog', () => {
   test('no match says how many tools are connected, and which servers failed', () => {
     assert.equal(
       searchResult(states, 'calendar', 15),
-      'No MCP tool matches "calendar". 3 MCP tools are connected.\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
+      'No MCP tool matches "calendar". 3 MCP tools are connected. An empty query lists them.\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
     )
   })
 })
