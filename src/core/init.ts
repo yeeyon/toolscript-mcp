@@ -19,6 +19,7 @@ import {
   type Launch,
   type ServerKey,
 } from './config.ts'
+import { printable, shownName } from './policy.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor'
 
@@ -529,22 +530,25 @@ const table = (rows: readonly (readonly string[])[]): string[] => {
   return rows.map(r => r.map((cell, i) => (i === r.length - 1 ? cell : cell.padEnd(widths[i] ?? 0))).join('  '))
 }
 
-/** One line for each server of the client files, with its status in the config. Names only, no value. */
+/**
+ * One line for each server of the client files, with its status in the config. Names only, no value. Each text
+ * from a file is printable, so a name or path never moves the cursor or turns the text around.
+ */
 export const listReport = (files: readonly FileServers[], config: OldConfig): string => {
   const rows = files.flatMap(f =>
     f.candidates.map(c => [
-      JSON.stringify(c.name),
+      shownName(c.name),
       c.file.client,
       c.file.scope ?? '-',
-      kindOf(c),
-      statusOf(c, config.servers),
-      c.file.project ?? '-',
+      printable(kindOf(c)),
+      printable(statusOf(c, config.servers)),
+      printable(c.file.project ?? '-'),
     ]),
   )
   const problems = files.flatMap(f =>
     f.problem === undefined || f.problem === NO_FILE
       ? []
-      : [`Cannot read ${sourceName(f.file)}, ${f.file.path}: ${f.problem}`],
+      : [printable(`Cannot read ${sourceName(f.file)}, ${f.file.path}: ${f.problem}`)],
   )
   const list =
     rows.length > 0
@@ -572,14 +576,14 @@ export const planAdd = (
   const errors: string[] = []
   const added: Added[] = []
   for (const name of names) {
-    const quoted = JSON.stringify(name)
+    const quoted = shownName(name)
     const found = pool.filter(c => c.name === name)
     const usable = found.flatMap(c => (c.parsed.kind === 'entry' ? [{ c, parsed: c.parsed }] : []))
     const first = usable[0]
-    if (found.length === 0) errors.push(`${quoted} is in no client file${from ? ` of ${from}` : ''}.`)
+    if (found.length === 0) errors.push(`${quoted} is in no client file${from ? ` of ${printable(from)}` : ''}.`)
     else if (first === undefined)
       errors.push(
-        `${quoted} cannot be added: ${found.map(c => `${sourceName(c.file)}: ${statusOf(c, {})}`).join(', ')}.`,
+        `${quoted} cannot be added: ${found.map(c => `${sourceName(c.file)}: ${printable(statusOf(c, {}))}`).join(', ')}.`,
       )
     else if (usable.some(u => canonical(u.parsed.entry) !== canonical(first.parsed.entry)))
       errors.push(
@@ -601,12 +605,15 @@ export const addedConfigText = (old: OldConfig | undefined, added: readonly Adde
   return `${JSON.stringify({ ...old.json, mcpServers: { ...old.servers, ...Object.fromEntries(servers) } }, null, 2)}\n`
 }
 
-/** What `--add` added, with no value, and the steps that remove the direct entries from the clients. */
+/**
+ * What `--add` added, with no value, and the steps that remove the direct entries from the clients. Each line is
+ * printable: the names, paths and keys come from the client files.
+ */
 export const addReport = (added: readonly Added[], configFile: string, platform: string, launch: Launch): string[] => {
   const out = [`Added ${plural(added.length, 'server')}:`]
   const remove = new Map<string, { file: ClientFile; names: string[] }>()
   for (const { key, from } of added) {
-    const sources = from.map(c => `${sourceLabel(c.file)}${c.name === key ? '' : ` ${JSON.stringify(c.name)}`}`)
+    const sources = from.map(c => `${sourceLabel(c.file)}${c.name === key ? '' : ` ${shownName(c.name)}`}`)
     const dropped = [...new Set(from.flatMap(c => (c.parsed.kind === 'entry' ? c.parsed.dropped : [])))]
     out.push(`- ${key}, from ${sources.join(', ')}${dropped.length > 0 ? `. Left out: ${dropped.join(', ')}` : ''}`)
     for (const c of from) {
@@ -634,5 +641,5 @@ export const addReport = (added: readonly Added[], configFile: string, platform:
       )
     out.push('  Then start a new Claude Code session.')
   }
-  return out
+  return out.map(printable)
 }

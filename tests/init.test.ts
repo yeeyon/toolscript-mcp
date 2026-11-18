@@ -881,12 +881,12 @@ describe('init --list and --add', () => {
     assert.ok(!out.includes('fake-secret'), out)
     assert.ok(!fs.existsSync(file), 'no config written')
     assert.match(out, row('name', 'client', 'scope', 'kind', 'status'))
-    assert.match(out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp', 'not in config'))
-    assert.match(out, row('"notes"', 'claude-code', 'local', 'http https://notes.example.com', 'not in config'))
-    assert.match(out, row('"shared"', 'claude-code', 'project', 'http https://shared.example.com', 'not in config'))
-    assert.match(out, row('"events"', 'claude-code', 'project', '-', 'skipped: type "sse":'), out)
-    assert.match(out, row('"gh"', 'claude-code', 'user', 'stdio npx', 'not in config'))
-    assert.match(out, row('"toolscript"', 'claude-code', 'user', '-', 'toolscript itself'))
+    assert.match(out, row('gh', 'claude-code', 'local', 'stdio gh-mcp', 'not in config'))
+    assert.match(out, row('notes', 'claude-code', 'local', 'http https://notes.example.com', 'not in config'))
+    assert.match(out, row('shared', 'claude-code', 'project', 'http https://shared.example.com', 'not in config'))
+    assert.match(out, row('events', 'claude-code', 'project', '-', 'skipped: type "sse":'), out)
+    assert.match(out, row('gh', 'claude-code', 'user', 'stdio npx', 'not in config'))
+    assert.match(out, row('toolscript', 'claude-code', 'user', '-', 'toolscript itself'))
     assert.match(out, row('"my notes"', 'claude-desktop', '-', 'stdio node', 'not in config'))
     assert.match(out, /^Cannot read cursor, .*: not valid JSON/m)
     assert.doesNotMatch(out, /elsewhere/)
@@ -903,10 +903,39 @@ describe('init --list and --add', () => {
     })
     const { code, out } = await run(home, home, ['--list'])
     assert.equal(code, 0, out)
-    assert.match(out, row('"tool"', 'cursor', '-', 'stdio', 'not in config'), out)
-    assert.match(out, row('"npx"', 'cursor', '-', 'stdio', 'not in config'), out)
+    assert.match(out, row('tool', 'cursor', '-', 'stdio', 'not in config'), out)
+    assert.match(out, row('npx', 'cursor', '-', 'stdio', 'not in config'), out)
     for (const word of ['mytool', 'abc', 'fakesecretvalue123', 'fakeshortpw', '@acme', 'ghp_', 'xoxb'])
       assert.ok(!out.includes(word), `${word} is shown:\n${out}`)
+  })
+
+  test('--list and --add print the names, kinds, reasons and folders of client files as printable text', async () => {
+    const top = homeWith({})
+    const folder = path.join(top, 'f\u202eo')
+    fs.mkdirSync(folder)
+    fs.writeFileSync(
+      path.join(folder, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          'evil\u001b[31m\u202e': { command: 'C:/x/\u009b31mbad\u202e.exe' },
+          odd: { type: '\u009b2J' },
+          'a  b': { command: 'node', 'x\u001b': 1 },
+        },
+      }),
+    )
+    const home = homeWith({})
+    const listed = await run(home, folder, ['--list'])
+    const added = await run(home, folder, ['--add', 'a  b,evil\u001b[31m\u202e'])
+    for (const out of [listed.out, added.out]) assert.doesNotMatch(out, /[^\x20-\x7e\n]/, out)
+    assert.match(
+      listed.out,
+      row('"evil\\u001b[31m\\u202e"', 'claude-code', 'project', 'stdio \\u009b31mbad\\u202e.exe'),
+    )
+    assert.match(listed.out, row('odd', 'claude-code', 'project', '-', 'skipped: type "\\u009b2J" is not supported'))
+    const shown = folder.replace('‮', '\\u202e')
+    assert.match(listed.out, row('"a  b"', 'claude-code', 'project', 'stdio node', 'not in config', shown))
+    assert.equal(added.code, 0, added.out)
+    assert.match(added.out, /^- a-b, from Claude Code \(project scope\) "a {2}b"\. Left out: x\\u001b$/m)
   })
 
   // Claude Code keys the local scope on the root of the main checkout, also from a subfolder or a git worktree
@@ -917,15 +946,15 @@ describe('init --list and --add', () => {
     const sub = path.join(project, 'src', 'deep')
     fs.mkdirSync(sub, { recursive: true })
     const fromSub = await run(home, sub, ['--list'])
-    assert.match(fromSub.out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp', 'not in config'), fromSub.out)
-    assert.match(fromSub.out, row('"shared"', 'claude-code', 'project'), fromSub.out)
+    assert.match(fromSub.out, row('gh', 'claude-code', 'local', 'stdio gh-mcp', 'not in config'), fromSub.out)
+    assert.match(fromSub.out, row('shared', 'claude-code', 'project'), fromSub.out)
 
     const worktree = homeWith({ '.mcp.json': { mcpServers: { wtonly: { command: 'node' } } } })
     fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${project.replaceAll('\\', '/')}/.git/worktrees/wt\n`)
     const fromWorktree = await run(home, path.join(worktree), ['--list'])
-    assert.match(fromWorktree.out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp'), fromWorktree.out)
-    assert.match(fromWorktree.out, row('"wtonly"', 'claude-code', 'project'), fromWorktree.out)
-    assert.doesNotMatch(fromWorktree.out, /"shared"/)
+    assert.match(fromWorktree.out, row('gh', 'claude-code', 'local', 'stdio gh-mcp'), fromWorktree.out)
+    assert.match(fromWorktree.out, row('wtonly', 'claude-code', 'project'), fromWorktree.out)
+    assert.doesNotMatch(fromWorktree.out, /^shared /m)
   })
 
   // Claude Code 2.1 reads the .mcp.json of the start folder and of each parent, and the closer file wins.
@@ -945,12 +974,9 @@ describe('init --list and --add', () => {
     const home = homeWith({})
     const listed = await run(home, start, ['--list'])
     assert.equal(listed.code, 0, listed.out)
-    assert.match(listed.out, row('"dup"', 'claude-code', 'project', 'stdio node', 'not in config', near), listed.out)
-    assert.match(
-      listed.out,
-      row('"far"', 'claude-code', 'project', 'http https://far.example.com', 'not in config', top),
-    )
-    assert.equal(listed.out.match(/"dup"/g)?.length, 1, listed.out)
+    assert.match(listed.out, row('dup', 'claude-code', 'project', 'stdio node', 'not in config', near), listed.out)
+    assert.match(listed.out, row('far', 'claude-code', 'project', 'http https://far.example.com', 'not in config', top))
+    assert.equal(listed.out.match(/^dup /gm)?.length, 1, listed.out)
 
     const added = await run(home, start, ['--add', 'dup,far', '--from', 'claude-code:project'])
     assert.equal(added.code, 0, added.out)
@@ -979,7 +1005,7 @@ describe('init --list and --add', () => {
     const home = homeWith({})
     const { code, out } = await run(home, path.join(top, 'dir', 'fifo', 'start'), ['--list'])
     assert.equal(code, 0, out)
-    assert.match(out, row('"near"', 'claude-code', 'project'), out)
+    assert.match(out, row('near', 'claude-code', 'project'), out)
     const problem = (file: string) => `Cannot read claude-code:project, ${file}: cannot read it: not a regular file`
     assert.ok(out.split('\n').includes(problem(path.join(top, 'dir', '.mcp.json'))), out)
     if (made) assert.ok(out.split('\n').includes(problem(fifo)), out)
@@ -1002,11 +1028,11 @@ describe('init --list and --add', () => {
     fs.writeFileSync(path.join(home, '.config', 'toolscript-mcp', 'config.json'), JSON.stringify(config))
     const { code, out } = await run(home, project, ['--list'])
     assert.equal(code, 0, out)
-    assert.match(out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp', 'in config'))
-    assert.match(out, row('"gh"', 'claude-code', 'user', 'stdio npx', 'name taken by a different entry'))
+    assert.match(out, row('gh', 'claude-code', 'local', 'stdio gh-mcp', 'in config'))
+    assert.match(out, row('gh', 'claude-code', 'user', 'stdio npx', 'name taken by a different entry'))
     assert.match(
       out,
-      row('"shared"', 'claude-code', 'project', 'http https://shared.example.com', 'name taken by a different entry'),
+      row('shared', 'claude-code', 'project', 'http https://shared.example.com', 'name taken by a different entry'),
     )
   })
 
@@ -1020,11 +1046,11 @@ describe('init --list and --add', () => {
   test('on Windows the local scope matches a project key with / and another case', async () => {
     const key = (p: string) => p.replace(/\\/g, '/').toUpperCase()
     const { home, project } = setup(key)
-    assert.match((await run(home, project, ['--list'], 'win32')).out, row('"gh"', 'claude-code', 'local'))
+    assert.match((await run(home, project, ['--list'], 'win32')).out, row('gh', 'claude-code', 'local'))
     const backslash = setup(p => key(p).replace(/\//g, '\\'))
     assert.match(
       (await run(backslash.home, backslash.project, ['--list'], 'win32')).out,
-      row('"gh"', 'claude-code', 'local'),
+      row('gh', 'claude-code', 'local'),
     )
     assert.doesNotMatch((await run(home, project, ['--list'], 'linux')).out, /local/)
   })
@@ -1099,7 +1125,7 @@ describe('init --list and --add', () => {
     assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
 
     const listed = await run(home, project, ['--list'], process.platform)
-    for (const name of names.split(',')) assert.match(listed.out, row(`"${name}"`, 'claude-code'), listed.out)
+    for (const name of names.split(',')) assert.match(listed.out, row(name, 'claude-code'), listed.out)
     assert.equal(listed.out.match(/ {2}in config {2}/g)?.length, 7, listed.out)
   })
 
@@ -1135,26 +1161,26 @@ describe('init --list and --add', () => {
         'a name in the config',
         ['--add', 'notes'],
         { ...OLD, mcpServers: { notes: { command: 'x' } } },
-        /"notes" is in the config already/,
+        /^notes is in the config already/m,
       ],
-      ['a name in no client file', ['--add', 'nope'], OLD, /"nope" is in no client file/],
+      ['a name in no client file', ['--add', 'nope'], OLD, /^nope is in no client file/m],
       [
         'a name with different entries',
         ['--add', 'gh'],
         OLD,
-        /"gh" has different entries in claude-code:local, claude-code:user\. Pick one with --from/,
+        /^gh has different entries in claude-code:local, claude-code:user\. Pick one with --from/m,
       ],
       [
         'a name not in the --from client',
         ['--add', 'gh', '--from', 'cursor'],
         OLD,
-        /"gh" is in no client file of cursor/,
+        /^gh is in no client file of cursor/m,
       ],
       [
         'toolscript itself',
         ['--add', 'toolscript'],
         OLD,
-        /"toolscript" cannot be added: claude-code:user: toolscript itself/,
+        /^toolscript cannot be added: claude-code:user: toolscript itself/m,
       ],
       [
         'a config that is not valid',

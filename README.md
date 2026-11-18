@@ -305,6 +305,8 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
   In a git checkout, init reads the local servers of the main checkout, as Claude Code does. This also applies in a subfolder or a git worktree.
 - The kind is `stdio` with the file name of the command, or `http` with the origin of the URL. The list shows no argument, env
   value, header value, URL path or query.
+- A name with a blank or a character outside printable ASCII shows in double quotes. Such a character shows as a `\u`
+  escape in each column and in the output of `--add`.
 - The status is `in config`, `not in config`, `name taken by a different entry`, `toolscript itself`, or `skipped` with the reason.
 - `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
 - Claude Code starts a stdio server of the local or project scope in the project folder. So `--add` sets the `cwd` of
