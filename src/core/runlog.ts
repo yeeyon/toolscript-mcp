@@ -133,6 +133,9 @@ const readCall = (v: unknown): ReadCall => {
   if (!oneOf(CALL_DECISIONS, decision) || !isCount(ms) || typeof ok !== 'boolean')
     return { unreadable: true, ok: false, tool }
   if (error !== undefined && !oneOf(CALL_ERRORS, error)) return { unreadable: true, ok: false, tool }
+  // runLine writes an ok call only when the policy let it run, and never with an error code.
+  if (ok && (error !== undefined || (decision !== 'allow' && decision !== 'ask-approved')))
+    return { unreadable: true, ok: false, tool }
   return { tool, decision, ms, ok, ...(error === undefined ? {} : { error }) }
 }
 
@@ -207,22 +210,34 @@ export const parseSince = (text: string, now: Date): Date | undefined => {
   return fits && n(4) <= 23 && n(5) <= 59 && n(6) <= 59 && n(7) <= 23 && n(8) <= 59 ? new Date(text) : undefined
 }
 
-/** What `toolscript-mcp runs` asks for: the runs of `server` (of all servers when undefined), at or after `since`. */
-export type RunsQuery = { readonly server?: ServerKey; readonly last: number; readonly since?: Date }
+/**
+ * What `toolscript-mcp runs` asks for: the runs of `server` (of all servers when undefined), at or after `since`.
+ * `now` is the time of the check.
+ */
+export type RunsQuery = {
+  readonly server?: ServerKey
+  readonly last: number
+  readonly since?: Date
+  readonly now: Date
+}
 
 /** What `toolscript-mcp runs` prints, and true when the newest run that it shows worked. */
 export type RunsReport = { readonly lines: readonly string[]; readonly ok: boolean }
 
+/** How far the time of a run can pass the time of the check before `runs` skips the run, for clocks a little apart. */
+export const CLOCK_SLACK_MS = 5 * 60_000
+
 /**
  * The newest `last` runs with a call of `server` (any run without one) at or after `since`, newest first, then the
- * next step for each distinct problem, then the count of unreadable lines. `ok`: the newest ended done, called a tool
- * of `server` (of any server without one), each of its calls of `server` worked, and no unreadable line is newer.
- * Such a line can be a newer run of `server`, so it never lets an older run confirm the route. A run without a call
- * confirms no route. `tools` is the command that checks one server.
+ * next step for each distinct problem, then the count of skipped lines. `ok`: the newest ended done, called a tool of
+ * `server` (of any server without one), each of its calls of `server` worked, the log holds all its calls, and no
+ * skipped line is newer. A skipped line is an unreadable line, or a run of `server` dated more than CLOCK_SLACK_MS
+ * after `now`. Such a line can be a newer run of `server`, so it never lets an older run confirm the route. A run
+ * without a call confirms no route. `tools` is the command that checks one server.
  */
 export const runsReport = (
   entries: readonly LogEntry[],
-  { server, last, since }: RunsQuery,
+  { server, last, since, now }: RunsQuery,
   tools: (server: ServerKey) => string,
 ): RunsReport => {
   const serverOf = (call: ReadCall) => (call.tool === undefined ? undefined : splitToolName(call.tool)?.server)
@@ -232,16 +247,24 @@ export const runsReport = (
   const runs = entries.flatMap((run, at) =>
     run === 'unreadable' || (server !== undefined && !run.calls.some(counts)) ? [] : [{ run, at }],
   )
-  // A time that does not parse is never at or after `since`.
-  const recent = since === undefined ? runs : runs.filter(({ run }) => Date.parse(run.time) >= since.getTime())
+  // A time that does not parse is never after `late`, and never at or after `since`.
+  const late = now.getTime() + CLOCK_SLACK_MS
+  const future = runs.filter(({ run }) => Date.parse(run.time) > late)
+  const timely = runs.filter(r => !future.includes(r))
+  const recent = since === undefined ? timely : timely.filter(({ run }) => Date.parse(run.time) >= since.getTime())
   const shown = recent.slice(-last).reverse()
   const unreadable = entries.filter(e => e === 'unreadable').length
-  const skipped = unreadable === 0 ? [] : [`skipped unreadable lines of the run log: ${unreadable}`]
+  const skipped = [
+    ...(unreadable === 0 ? [] : [`skipped unreadable lines of the run log: ${unreadable}`]),
+    ...(future.length === 0
+      ? []
+      : [`skipped runs dated more than ${CLOCK_SLACK_MS / 60_000} minutes after now: ${future.length}`]),
+  ]
   const cutoff = since?.toISOString()
   const newest = shown[0]
   if (newest === undefined)
-    return { lines: [runs.length === 0 ? 'no run yet' : `no run since ${cutoff}`, ...skipped], ok: false }
-  const newer = entries.slice(newest.at + 1).includes('unreadable')
+    return { lines: [timely.length === 0 ? 'no run yet' : `no run since ${cutoff}`, ...skipped], ok: false }
+  const newer = entries.slice(newest.at + 1).includes('unreadable') || future.some(({ at }) => at > newest.at)
   const callText = (c: ReadCall) =>
     'unreadable' in c
       ? `  ${c.tool === undefined ? '-' : shownName(c.tool)} unreadable`
@@ -261,8 +284,15 @@ export const runsReport = (
     [...run.calls.map(fixOf), ENDING_FIXES[run.ending]].filter(f => f !== undefined),
   )
   const warning = newer
-    ? ['An unreadable line is newer than the newest run shown, so runs does not confirm that run. Run the task again.']
+    ? ['A skipped line is newer than the newest run shown, so runs does not confirm that run. Run the task again.']
     : []
+  const unlogged = newest.run.omitted ?? 0
+  const partial =
+    unlogged === 0
+      ? []
+      : [
+          `${unlogged} calls of the newest run were not logged, so runs does not confirm that run. Run a task with at most ${MAX_CALLS} calls.`,
+        ]
   const mine = newest.run.calls.filter(counts)
   const called = mine.some(c => !('unreadable' in c) && serverOf(c) !== undefined)
   // A failed call already says why the run does not count.
@@ -270,7 +300,7 @@ export const runsReport = (
     called || !mine.every(c => c.ok)
       ? []
       : [`the newest run called no tool${server === undefined ? '' : ` of ${server}`}. Run a task that calls one.`]
-  const ok = !newer && called && newest.run.ending === 'done' && mine.every(c => c.ok)
+  const ok = !newer && unlogged === 0 && called && newest.run.ending === 'done' && mine.every(c => c.ok)
   const header = cutoff === undefined ? [] : [`runs since ${cutoff}`]
-  return { lines: [...header, ...lines, ...new Set(fixes), ...idle, ...skipped, ...warning], ok }
+  return { lines: [...header, ...lines, ...new Set(fixes), ...idle, ...partial, ...skipped, ...warning], ok }
 }

@@ -321,9 +321,10 @@ is 1. Without `--server`, it shows the newest runs of all servers.
 
 - For each run, it shows the time, the ending and the duration.
 - For each call, it shows the tool, the policy decision, and `ok` or the error code. A call that `runs` cannot read
-  shows as `unreadable`.
+  shows as `unreadable`. A call with `ok` is also `unreadable` when it has an error code, or the decision `denied`, `unapproved` or `invalid`.
 - After the runs, it gives one next step for each problem.
 - It counts the lines of the log that are not runs, and skips them.
+- It skips a run with a time more than 5 minutes after now, and counts these runs.
 
 With `--since`, `runs` counts only the runs at or after that time. The time is an ISO 8601 time with a zone, such as
 `2026-11-18T09:30:00Z`, or a duration back from now: `30m`, `2h` or `1d`. The first line shows the time in UTC. To
@@ -338,7 +339,8 @@ worked. Without `--server`, the run must call a tool of any server. These cases 
 
 - The log has no run. `runs` prints `no run yet`.
 - No run is at or after the time of `--since`. `runs` prints `no run since <time>`.
-- An unreadable line is newer than the newest run shown. That line can be a newer run.
+- An unreadable line or a skipped run is newer than the newest run shown. That line can be a newer run.
+- The log does not hold all calls of the newest run. The log holds at most 200 calls of a run.
 - The config sets `"log": false`. `runs` says so in its first line.
 - `runs` cannot read the config of `--config`.
 

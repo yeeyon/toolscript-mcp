@@ -139,7 +139,8 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
   }
   const last = values.last === undefined ? 1 : Number(values.last)
   const server = values.server === undefined ? undefined : serverKey(values.server)
-  const since = values.since === undefined ? undefined : parseSince(values.since, new Date())
+  const now = new Date()
+  const since = values.since === undefined ? undefined : parseSince(values.since, now)
   if (
     !Number.isSafeInteger(last) ||
     last < 1 ||
@@ -172,7 +173,9 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
     .filter(line => line.trim() !== '')
     .map(parseRunLine)
   const other = otherConfig(file, io.env, io.platform, io.home)
-  const report = runsReport(entries, { server, last, since }, key => toolsCommand(io.launch, io.platform, key, other))
+  const report = runsReport(entries, { server, last, since, now }, key =>
+    toolsCommand(io.launch, io.platform, key, other),
+  )
   // With the log off, the newest run in the file is not a run of this config.
   const note = off
     ? [

@@ -278,7 +278,7 @@ describe('runs', () => {
   // None is a run: not JSON, and a wrong ending.
   const malformed = ['not json\n', forged({ time: '2026-01-01T00:00:09.000Z', ending: 'weird' })]
   const SKIPPED_NEWER =
-    'An unreadable line is newer than the newest run shown, so runs does not confirm that run. Run the task again.'
+    'A skipped line is newer than the newest run shown, so runs does not confirm that run. Run the task again.'
 
   test('with no log, says no run yet and exits 1', async () => {
     const s = setup({ mcpServers: {} })
@@ -411,6 +411,61 @@ describe('runs', () => {
       'skipped unreadable lines of the run log: 2',
       SKIPPED_NEWER,
     ])
+  })
+
+  test('make it fail: an ok call that the policy did not let run, or with an error code, is unreadable', async () => {
+    for (const call of [
+      { decision: 'denied', ok: true },
+      { decision: 'unapproved', ok: true },
+      { decision: 'invalid', ok: true },
+      { decision: 'allow', ok: true, error: 'tool-error' },
+    ]) {
+      const s = setupLog([forged({ calls: [{ tool: 'mcp__demo__a', ms: 1, ...call }] })])
+      assert.equal(await s.runs('--server', 'demo'), 1, JSON.stringify(call))
+      assert.deepEqual(s.printed, [
+        '2026-01-01T00:00:01.000Z done 100 ms',
+        '  mcp__demo__a unreadable',
+        'unreadable: this toolscript-mcp cannot read the call. Another version or another program wrote it.',
+      ])
+    }
+    const approved = setupLog([
+      forged({ calls: [{ tool: 'mcp__demo__a', decision: 'ask-approved', ms: 1, ok: true }] }),
+    ])
+    assert.equal(await approved.runs('--server', 'demo'), 0, 'an approved call that worked still counts')
+  })
+
+  test('make it fail: a run with calls that were not logged confirms nothing', async () => {
+    const s = setupLog([forged({ omitted: 3 })])
+    assert.equal(await s.runs('--server', 'demo'), 1)
+    assert.deepEqual(s.printed, [
+      '2026-01-01T00:00:01.000Z done 100 ms',
+      '  mcp__demo__list_pull_requests allow ok',
+      '  3 more calls',
+      '3 calls of the newest run were not logged, so runs does not confirm that run. Run a task with at most 200 calls.',
+    ])
+  })
+
+  test('make it fail: a run dated more than 5 minutes after now never passes --since, nor confirms an older run', async () => {
+    const soon = new Date(Date.now() + 60_000).toISOString()
+    const future = forged({ time: '2099-01-01T00:00:00.000Z' })
+    const s = setupLog([future])
+    assert.equal(await s.runs('--server', 'demo', '--since', '1h'), 1)
+    assert.deepEqual(s.printed, ['no run yet', 'skipped runs dated more than 5 minutes after now: 1'])
+    s.printed.length = 0
+    const t = setupLog([done, future])
+    assert.equal(await t.runs('--server', 'demo'), 1)
+    assert.deepEqual(t.printed, [
+      '2026-01-01T00:00:01.000Z done 100 ms',
+      '  mcp__demo__list_pull_requests allow ok',
+      'skipped runs dated more than 5 minutes after now: 1',
+      SKIPPED_NEWER,
+    ])
+    const u = setupLog([future, done, forged({ time: soon })])
+    assert.equal(await u.runs('--server', 'demo', '--since', '1h'), 0, 'a run a minute ahead still counts')
+    assert.equal(u.printed[1], `${soon} done 100 ms`)
+    u.printed.length = 0
+    assert.equal(await u.runs('--server', 'other'), 1)
+    assert.deepEqual(u.printed, ['no run yet'], 'a future run of another server is not counted')
   })
 
   test('an unreadable line older than the newest run is counted and does not change the exit code', async () => {
