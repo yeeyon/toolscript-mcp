@@ -6,7 +6,6 @@
 
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
@@ -23,7 +22,6 @@ import {
   configPath,
   hideClientSecret,
   invalidReason,
-  parseConfig,
   redact,
   serverKey,
   type Env,
@@ -35,6 +33,7 @@ import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { errorText } from '../core/protocol.ts'
 import { CONNECT_TIMEOUT_MS, listAll, serverFetch } from './downstream.ts'
 import { isLoopbackHttp, oauthProvider, readStore, storeFile, type Stored } from './oauth.ts'
+import { loadConfig } from './start.ts'
 
 export const LOGIN_USAGE = 'usage: toolscript-mcp login <server> [--config <path>] [--help]'
 
@@ -244,16 +243,10 @@ type Found = { readonly key: ServerKey; readonly server: HttpServer; readonly oa
 
 /** The HTTP server `name` of the config and its OAuth entry, or why it cannot log in. */
 const serverOf = (name: string, file: string, io: LoginIo): Found | string => {
-  let text: string
-  try {
-    text = fs.readFileSync(file, 'utf8')
-  } catch (err) {
-    return `cannot read the config ${file}: ${errorText(err)}`
-  }
-  const parsed = parseConfig(text, io.env, process.execPath, io.platform)
-  if (!parsed.ok) return [`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)].join('\n')
+  const loaded = loadConfig(file, io.env, io.platform)
+  if (!loaded.ok) return loaded.lines.join('\n')
   const key = serverKey(name)
-  const entry = key === undefined ? undefined : parsed.config.servers.get(key)
+  const entry = key === undefined ? undefined : loaded.config.servers.get(key)
   if (key === undefined || entry === undefined) return `the config ${file} has no server "${name}"`
   if (entry.kind === 'invalid') return `${name}: ${invalidReason(entry.errors)}`
   if (entry.kind === 'stdio') return `${name} is a stdio server. Only an HTTP server logs in with OAuth.`
