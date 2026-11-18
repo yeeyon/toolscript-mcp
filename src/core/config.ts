@@ -6,7 +6,10 @@
 import { ACTIONS, type Action, type Bridges, type Policy, type Rule } from './policy.ts'
 
 // The WHATWG URL and btoa of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
-declare const URL: { canParse(url: string): boolean; new (url: string): { readonly href: string } }
+declare const URL: {
+  canParse(url: string): boolean
+  new (url: string): { readonly href: string; readonly origin: string }
+}
 declare const btoa: (data: string) => string
 
 /** A server key that makes `mcp__<key>__<tool>` split back into the key and the tool. */
@@ -284,18 +287,21 @@ const parseOAuth = (
   }
 }
 
+/** On Windows a path needs a drive letter or a share: `/srv` is on the drive of the moment. */
+export const isAbsolutePath = (path: string, platform: string): boolean =>
+  platform === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(path) : path.startsWith('/')
+
 /**
  * An absolute folder. The config file can live anywhere, and toolscript-mcp starts in the folder of its client, so
- * a relative path has no base that a person can predict. On Windows a path needs a drive letter or a share: `/srv`
- * is on the drive of the moment.
+ * a relative path has no base that a person can predict.
  */
 const parseCwd = (raw: unknown, path: string, env: Env, platform: string, errors: string[]): string | undefined => {
   if (raw === undefined) return undefined
   const found = errors.length
   const cwd = expand(nonEmpty(raw, path, errors), env, path, errors)
   if (errors.length > found) return undefined
+  if (isAbsolutePath(cwd, platform)) return cwd
   const windows = platform === 'win32'
-  if (windows ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(cwd) : cwd.startsWith('/')) return cwd
   const example = windows ? ' with a drive letter or a share, such as "C:/work/app"' : ', such as "/home/me/app"'
   errors.push(`${path}: must be an absolute path${example}, not ${JSON.stringify(raw)}`)
   return undefined
@@ -641,6 +647,9 @@ export const hideUrlSecrets = (url: string): { url: string; secrets: string[] } 
   const { hide, secrets } = collector()
   return { url: hideUrl(url, hide), secrets: secrets() }
 }
+
+/** The scheme, host and port of a URL, with no login, path, query or fragment. */
+export const urlOrigin = (url: string): string | undefined => (URL.canParse(url) ? new URL(url).origin : undefined)
 
 /**
  * `user:password` with the password hidden, or undefined for a value with no password. A number on either side, or

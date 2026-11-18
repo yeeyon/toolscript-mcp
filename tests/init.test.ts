@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { loginCommand, NPX_LAUNCH, parseConfig, pathWord, shellWord, type Launch } from '../src/core/config.ts'
-import { clientFiles, configText, importServers, initReport } from '../src/core/init.ts'
+import { clientFiles, configText, importServers, initReport, mainCheckoutOf, sameFolder } from '../src/core/init.ts'
 import { runInit } from '../src/host/init.ts'
 import { detectLaunch } from '../src/host/start.ts'
 
@@ -478,14 +478,17 @@ describe('toolscript-mcp init', () => {
 
     test('the OAuth login line names the same start and the config file', () => {
       const out = initReport(
-        importServers([
-          {
-            client: 'claude-code',
-            path: '/c/.claude.json',
-            kind: 'text',
-            text: JSON.stringify({ mcpServers: { jira: { type: 'http', url: 'https://mcp.example.com/mcp' } } }),
-          },
-        ]),
+        importServers(
+          [
+            {
+              client: 'claude-code',
+              path: '/c/.claude.json',
+              kind: 'text',
+              text: JSON.stringify({ mcpServers: { jira: { type: 'http', url: 'https://mcp.example.com/mcp' } } }),
+            },
+          ],
+          'linux',
+        ),
         '/c/config.json',
         'linux',
         { kind: 'node', main: '/opt/tool/main.js' },
@@ -626,14 +629,17 @@ describe('the printed Claude Code commands', () => {
   const NAME = `x $(echo pwned) \`echo pwned\` $HOME 'q' "d" ’ ; & | -a:b`
   const report = (configFile: string, platform: string) =>
     initReport(
-      importServers([
-        {
-          client: 'claude-code',
-          path: '/c/.claude.json',
-          kind: 'text',
-          text: JSON.stringify({ mcpServers: { [NAME]: { command: 'fake' } } }),
-        },
-      ]),
+      importServers(
+        [
+          {
+            client: 'claude-code',
+            path: '/c/.claude.json',
+            kind: 'text',
+            text: JSON.stringify({ mcpServers: { [NAME]: { command: 'fake' } } }),
+          },
+        ],
+        'linux',
+      ),
       configFile,
       platform,
       NPX_LAUNCH,
@@ -701,9 +707,17 @@ describe('the printed Claude Code commands', () => {
 describe('the OAuth login in the report', () => {
   const report = (servers: Record<string, unknown>) =>
     initReport(
-      importServers([
-        { client: 'claude-code', path: '/c/.claude.json', kind: 'text', text: JSON.stringify({ mcpServers: servers }) },
-      ]),
+      importServers(
+        [
+          {
+            client: 'claude-code',
+            path: '/c/.claude.json',
+            kind: 'text',
+            text: JSON.stringify({ mcpServers: servers }),
+          },
+        ],
+        'linux',
+      ),
       '/c/config.json',
       'linux',
       NPX_LAUNCH,
@@ -753,14 +767,17 @@ describe('the OAuth login in the report', () => {
       azure: { command: 'npx', args: ['-y', '@azure/mcp@latest', 'server', 'start'] },
       boards: { type: 'http', url: 'https://dev.azure.com/fake-org' },
     }
-    const imp = importServers([
-      {
-        client: 'claude-code',
-        path: '/c/.claude.json',
-        kind: 'text',
-        text: JSON.stringify({ mcpServers: { ...ado, ...others } }),
-      },
-    ])
+    const imp = importServers(
+      [
+        {
+          client: 'claude-code',
+          path: '/c/.claude.json',
+          kind: 'text',
+          text: JSON.stringify({ mcpServers: { ...ado, ...others } }),
+        },
+      ],
+      'linux',
+    )
     const parsed = parseConfig(configText(imp.servers, false), {}, '/usr/bin/node', 'linux')
     assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
     const marked = [...parsed.config.servers].flatMap(([key, e]) => (e.kind !== 'invalid' && e.untrusted ? [key] : []))
@@ -795,5 +812,366 @@ describe('the client files', () => {
       'claude-desktop': '/home/u/.config/Claude/claude_desktop_config.json',
       cursor: '/home/u/.cursor/mcp.json',
     })
+  })
+
+  test('a Claude Code project key matches its folder, on Windows with either slash and in any case', () => {
+    assert.ok(sameFolder('C:/Users/u/proj', 'c:\\users\\U\\proj\\', 'win32'))
+    assert.ok(!sameFolder('C:/Users/u/proj', 'C:/Users/u/proj2', 'win32'))
+    assert.ok(sameFolder('/home/u/proj/', '/home/u/proj', 'linux'))
+    assert.ok(!sameFolder('/home/u/Proj', '/home/u/proj', 'linux'))
+  })
+})
+
+describe('init --list and --add', () => {
+  const LOCAL = {
+    gh: { command: '/opt/bin/gh-mcp', args: ['--token', 'fake-secret-arg'], env: { TOKEN: 'fake-secret-env' } },
+    notes: {
+      type: 'http',
+      url: 'https://user:fake-secret-pass@notes.example.com/mcp?key=fake-secret-query',
+      headers: { Authorization: 'Bearer fake-secret-header' },
+    },
+  }
+  const PROJECT = {
+    shared: { type: 'http', url: 'https://shared.example.com/mcp' },
+    'azure-devops': { command: 'npx', args: ['-y', '@azure-devops/mcp', 'fake-org'] },
+    events: { type: 'sse', url: 'https://mcp.example.com/sse' },
+  }
+  const USER = {
+    gh: { command: 'npx', args: ['-y', 'fake-gh'], env: { TOKEN: 'fake-secret-env' } },
+    toolscript: { command: 'npx', args: ['-y', 'toolscript-mcp'] },
+  }
+  const OLD = {
+    mcpServers: { other: { command: 'fake-other' } },
+    policy: [{ match: 'mcp__other__*', action: 'allow' }],
+    sandbox: { timeoutSeconds: 60 },
+  }
+
+  /** A temp home and project. `key` is the name of the project in `projects` of `.claude.json`. */
+  const setup = (key: (project: string) => string = p => p, config?: unknown) => {
+    const project = homeWith({ '.mcp.json': { mcpServers: PROJECT } })
+    const home = homeWith({
+      '.claude.json': {
+        mcpServers: USER,
+        projects: {
+          [key(project)]: { mcpServers: LOCAL },
+          '/elsewhere': { mcpServers: { elsewhere: { command: 'x' } } },
+        },
+      },
+      '.config/Claude/claude_desktop_config.json': {
+        mcpServers: { 'my notes': { command: 'node', args: ['notes.js'] } },
+      },
+      '.cursor/mcp.json': '{ not json',
+      ...(config === undefined ? {} : { '.config/toolscript-mcp/config.json': config }),
+    })
+    return { home, project }
+  }
+  const run = (home: string, project: string, args: string[], platform = 'linux') =>
+    init(home, [...args, '--project', project], platform)
+  const row = (...cells: string[]) =>
+    new RegExp(`^${cells.map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' +')}(?= |$)`, 'm')
+  const unchanged = (file: string, before: string | undefined) => {
+    assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : undefined, before)
+    assert.ok(!fs.existsSync(`${file}.bak`), 'no .bak')
+  }
+
+  test('--list shows each server of each scope and client with its status, writes nothing and shows no secret', async () => {
+    const { home, project } = setup()
+    const { code, out, file } = await run(home, project, ['--list'])
+    assert.equal(code, 0, out)
+    assert.ok(!out.includes('fake-secret'), out)
+    assert.ok(!fs.existsSync(file), 'no config written')
+    assert.match(out, row('name', 'client', 'scope', 'kind', 'status'))
+    assert.match(out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp', 'not in config'))
+    assert.match(out, row('"notes"', 'claude-code', 'local', 'http https://notes.example.com', 'not in config'))
+    assert.match(out, row('"shared"', 'claude-code', 'project', 'http https://shared.example.com', 'not in config'))
+    assert.match(out, row('"events"', 'claude-code', 'project', '-', 'skipped: type "sse":'), out)
+    assert.match(out, row('"gh"', 'claude-code', 'user', 'stdio npx', 'not in config'))
+    assert.match(out, row('"toolscript"', 'claude-code', 'user', '-', 'toolscript itself'))
+    assert.match(out, row('"my notes"', 'claude-desktop', '-', 'stdio node', 'not in config'))
+    assert.match(out, /^Cannot read cursor, .*: not valid JSON/m)
+    assert.doesNotMatch(out, /elsewhere/)
+  })
+
+  test('--list shows only stdio for a command with a space, which can hold arguments and secrets', async () => {
+    const home = homeWith({
+      '.cursor/mcp.json': {
+        mcpServers: {
+          tool: { command: 'C:/tools/mytool.exe --tokenfile=abc fakesecretvalue123 fakeshortpw' },
+          npx: { command: 'npx -y @acme/mcp ghp_fakefakefakefakefake xoxb-12-fake' },
+        },
+      },
+    })
+    const { code, out } = await run(home, home, ['--list'])
+    assert.equal(code, 0, out)
+    assert.match(out, row('"tool"', 'cursor', '-', 'stdio', 'not in config'), out)
+    assert.match(out, row('"npx"', 'cursor', '-', 'stdio', 'not in config'), out)
+    for (const word of ['mytool', 'abc', 'fakesecretvalue123', 'fakeshortpw', '@acme', 'ghp_', 'xoxb'])
+      assert.ok(!out.includes(word), `${word} is shown:\n${out}`)
+  })
+
+  // Claude Code keys the local scope on the root of the main checkout, also from a subfolder or a git worktree
+  // (checked with claude mcp add --scope local in a temp CLAUDE_CONFIG_DIR, Claude Code 2.1).
+  test('--list from a subfolder or a worktree finds the local scope of the main checkout', async () => {
+    const { home, project } = setup()
+    fs.mkdirSync(path.join(project, '.git', 'worktrees', 'wt'), { recursive: true })
+    const sub = path.join(project, 'src', 'deep')
+    fs.mkdirSync(sub, { recursive: true })
+    const fromSub = await run(home, sub, ['--list'])
+    assert.match(fromSub.out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp', 'not in config'), fromSub.out)
+    assert.match(fromSub.out, row('"shared"', 'claude-code', 'project'), fromSub.out)
+
+    const worktree = homeWith({ '.mcp.json': { mcpServers: { wtonly: { command: 'node' } } } })
+    fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${project.replaceAll('\\', '/')}/.git/worktrees/wt\n`)
+    const fromWorktree = await run(home, path.join(worktree), ['--list'])
+    assert.match(fromWorktree.out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp'), fromWorktree.out)
+    assert.match(fromWorktree.out, row('"wtonly"', 'claude-code', 'project'), fromWorktree.out)
+    assert.doesNotMatch(fromWorktree.out, /"shared"/)
+  })
+
+  // Claude Code 2.1 reads the .mcp.json of the start folder and of each parent, and the closer file wins.
+  test('--list and --add read the .mcp.json of each folder up from the project, and a closer file wins', async () => {
+    const top = homeWith({
+      '.mcp.json': {
+        mcpServers: {
+          dup: { command: 'node', args: ['far.mjs'] },
+          far: { type: 'http', url: 'https://far.example.com/mcp' },
+        },
+      },
+      'near/.mcp.json': { mcpServers: { dup: { command: 'node', args: ['near.mjs'] } } },
+    })
+    const near = path.join(top, 'near')
+    const start = path.join(near, 'deeper')
+    fs.mkdirSync(start)
+    const home = homeWith({})
+    const listed = await run(home, start, ['--list'])
+    assert.equal(listed.code, 0, listed.out)
+    assert.match(listed.out, row('"dup"', 'claude-code', 'project', 'stdio node', 'not in config', near), listed.out)
+    assert.match(
+      listed.out,
+      row('"far"', 'claude-code', 'project', 'http https://far.example.com', 'not in config', top),
+    )
+    assert.equal(listed.out.match(/"dup"/g)?.length, 1, listed.out)
+
+    const added = await run(home, start, ['--add', 'dup,far', '--from', 'claude-code:project'])
+    assert.equal(added.code, 0, added.out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(added.file, 'utf8')).mcpServers, {
+      dup: { command: 'node', args: ['near.mjs'], cwd: near },
+      far: { type: 'http', url: 'https://far.example.com/mcp' },
+    })
+    const steps = added.out.split('\n').map(l => l.trim())
+    for (const [folder, name] of [
+      [near, 'dup'],
+      [top, 'far'],
+    ]) {
+      const at = steps.indexOf(`Claude Code, in the folder ${folder}:`)
+      assert.ok(at >= 0 && steps[at + 1] === `claude mcp remove ${name} --scope project`, added.out)
+      assert.ok(steps[at + 2]?.startsWith(path.join(folder, '.mcp.json')), added.out)
+    }
+  })
+
+  test('mainCheckoutOf reads the main checkout of a worktree only', () => {
+    assert.equal(mainCheckoutOf('gitdir: C:/r/main/.git/worktrees/wt\n'), 'C:/r/main')
+    assert.equal(mainCheckoutOf('gitdir: C:\\r\\main\\.git\\worktrees\\wt\r\n'), 'C:/r/main')
+    assert.equal(mainCheckoutOf('gitdir: ../main/.git/worktrees/wt'), '../main')
+    assert.equal(mainCheckoutOf('gitdir: ../.git/modules/sub'), undefined)
+    assert.equal(mainCheckoutOf(''), undefined)
+  })
+
+  test('--list compares each server with the config', async () => {
+    const { home, project } = setup()
+    const config = { mcpServers: { gh: { ...LOCAL.gh, cwd: project }, shared: { command: 'fake' } }, policy: [] }
+    fs.mkdirSync(path.join(home, '.config', 'toolscript-mcp'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.config', 'toolscript-mcp', 'config.json'), JSON.stringify(config))
+    const { code, out } = await run(home, project, ['--list'])
+    assert.equal(code, 0, out)
+    assert.match(out, row('"gh"', 'claude-code', 'local', 'stdio gh-mcp', 'in config'))
+    assert.match(out, row('"gh"', 'claude-code', 'user', 'stdio npx', 'name taken by a different entry'))
+    assert.match(
+      out,
+      row('"shared"', 'claude-code', 'project', 'http https://shared.example.com', 'name taken by a different entry'),
+    )
+  })
+
+  test('--list with no client file prints one line and exits 0', async () => {
+    const home = homeWith({})
+    const { code, out } = await run(home, home, ['--list'])
+    assert.equal(code, 0, out)
+    assert.equal(out, 'No MCP server in the client files.\n')
+  })
+
+  test('on Windows the local scope matches a project key with / and another case', async () => {
+    const key = (p: string) => p.replace(/\\/g, '/').toUpperCase()
+    const { home, project } = setup(key)
+    assert.match((await run(home, project, ['--list'], 'win32')).out, row('"gh"', 'claude-code', 'local'))
+    const backslash = setup(p => key(p).replace(/\//g, '\\'))
+    assert.match(
+      (await run(backslash.home, backslash.project, ['--list'], 'win32')).out,
+      row('"gh"', 'claude-code', 'local'),
+    )
+    assert.doesNotMatch((await run(home, project, ['--list'], 'linux')).out, /local/)
+  })
+
+  test('--add copies servers into an existing config, keeps its other keys and policy, and keeps the old file', async () => {
+    const { home, project } = setup(undefined, OLD)
+    const { code, out, file } = await run(home, project, ['--add', 'notes,shared', '--add', 'azure-devops'])
+    assert.equal(code, 0, out)
+    assert.ok(!out.includes('fake-secret'), out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(`${file}.bak`, 'utf8')), OLD)
+    const written = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.deepEqual(written, {
+      ...OLD,
+      mcpServers: {
+        ...OLD.mcpServers,
+        notes: LOCAL.notes,
+        shared: PROJECT.shared,
+        'azure-devops': { ...PROJECT['azure-devops'], cwd: project, untrusted: true },
+      },
+    })
+    const parsed = parseConfig(fs.readFileSync(file, 'utf8'), {}, process.execPath, process.platform)
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
+    const lines = out.split('\n').map(l => l.trim())
+    for (const line of [
+      '- notes, from Claude Code (local scope)',
+      '- shared, from Claude Code (project scope)',
+      'claude mcp remove notes --scope local',
+      'claude mcp remove shared --scope project',
+      'claude mcp remove azure-devops --scope project',
+    ])
+      assert.ok(lines.includes(line), `missing line: ${line}\n\n${out}`)
+    assert.match(out, /\.mcp\.json is shared with everyone who uses the project/)
+    assert.match(out, /"untrusted": true .*azure-devops/)
+    if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  })
+
+  // Claude Code starts a local or project server in the project folder. toolscript-mcp starts in the folder of its
+  // client, so a relative path in the entry needs that folder as the cwd.
+  test('--add gives a local or project stdio server the project folder as its cwd, and --list sees it in config', async () => {
+    const abs = path.join(os.tmpdir(), 'fake-abs')
+    const project = homeWith({
+      '.mcp.json': {
+        mcpServers: {
+          bare: { command: 'node', args: ['./srv.mjs'] },
+          sub: { command: 'node', args: ['./srv.mjs'], cwd: './sub' },
+          up: { command: 'node', cwd: '../up' },
+          abs: { command: 'node', cwd: abs },
+          variable: { command: 'node', cwd: '${HOME}/srv' },
+          web: { type: 'http', url: 'https://web.example.com/mcp' },
+        },
+      },
+    })
+    const home = homeWith({
+      '.claude.json': { projects: { [project]: { mcpServers: { local: { command: 'node', args: ['./srv.mjs'] } } } } },
+    })
+    const sep = process.platform === 'win32' ? '\\' : '/'
+    const names = 'bare,sub,up,abs,variable,web,local'
+    const added = await run(home, project, ['--add', names], process.platform)
+    assert.equal(added.code, 0, added.out)
+    const text = fs.readFileSync(added.file, 'utf8')
+    const { mcpServers } = JSON.parse(text)
+    assert.deepEqual(Object.fromEntries(Object.entries(mcpServers).map(([k, v]) => [k, (v as { cwd?: string }).cwd])), {
+      bare: project,
+      sub: `${project}${sep}sub`,
+      up: `${project}${sep}../up`,
+      abs,
+      variable: '${HOME}/srv',
+      web: undefined,
+      local: project,
+    })
+    const parsed = parseConfig(text, { HOME: abs }, process.execPath, process.platform)
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
+
+    const listed = await run(home, project, ['--list'], process.platform)
+    for (const name of names.split(',')) assert.match(listed.out, row(`"${name}"`, 'claude-code'), listed.out)
+    assert.equal(listed.out.match(/ {2}in config {2}/g)?.length, 7, listed.out)
+  })
+
+  test('--add makes the config when there is none', async () => {
+    const { home, project } = setup()
+    const { code, out, file } = await run(home, project, ['--add', 'my notes'])
+    assert.equal(code, 0, out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {
+      mcpServers: { 'my-notes': { command: 'node', args: ['notes.js'] } },
+      policy: [],
+    })
+    assert.ok(!fs.existsSync(`${file}.bak`))
+    assert.match(out, /Remove from "mcpServers": "my notes"/)
+  })
+
+  test('--from picks one of the different entries of a name', async () => {
+    const { home, project } = setup()
+    const { code, out, file } = await run(home, project, ['--add', 'gh', '--from', 'claude-code:user'])
+    assert.equal(code, 0, out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers, { gh: { ...USER.gh } })
+    assert.ok(
+      out
+        .split('\n')
+        .map(l => l.trim())
+        .includes('claude mcp remove gh --scope user'),
+      out,
+    )
+  })
+
+  test('--add refuses, exits 1 and writes nothing', async () => {
+    const cases: [string, string[], unknown, RegExp][] = [
+      [
+        'a name in the config',
+        ['--add', 'notes'],
+        { ...OLD, mcpServers: { notes: { command: 'x' } } },
+        /"notes" is in the config already/,
+      ],
+      ['a name in no client file', ['--add', 'nope'], OLD, /"nope" is in no client file/],
+      [
+        'a name with different entries',
+        ['--add', 'gh'],
+        OLD,
+        /"gh" has different entries in claude-code:local, claude-code:user\. Pick one with --from/,
+      ],
+      [
+        'a name not in the --from client',
+        ['--add', 'gh', '--from', 'cursor'],
+        OLD,
+        /"gh" is in no client file of cursor/,
+      ],
+      [
+        'toolscript itself',
+        ['--add', 'toolscript'],
+        OLD,
+        /"toolscript" cannot be added: claude-code:user: toolscript itself/,
+      ],
+      [
+        'a config that is not valid',
+        ['--add', 'shared'],
+        '{ "mcpServers": [] }',
+        /is not a valid config: "mcpServers" is not an object/,
+      ],
+      ['a config that is not JSON', ['--add', 'shared'], '{ nope', /is not a valid config: not valid JSON/],
+    ]
+    for (const [label, args, config, error] of cases) {
+      const { home, project } = setup(undefined, config)
+      const file = path.join(home, '.config', 'toolscript-mcp', 'config.json')
+      const before = fs.readFileSync(file, 'utf8')
+      const { code, out } = await run(home, project, args)
+      assert.equal(code, 1, `${label}: ${out}`)
+      assert.match(out, error, label)
+      unchanged(file, before)
+    }
+  })
+
+  test('--list and --add refuse the options of an import', async () => {
+    const { home, project } = setup()
+    for (const args of [
+      ['--list', '--force'],
+      ['--add', 'gh', '--dry-run'],
+      ['--list', '--add', 'gh'],
+      ['--list', '--from', 'cursor'],
+      ['--add', 'gh', '--from', 'vscode'],
+    ]) {
+      const { code, out, file } = await run(home, project, args)
+      assert.equal(code, 2, `${args.join(' ')}: ${out}`)
+      assert.match(out, /usage: toolscript-mcp init/)
+      unchanged(file, undefined)
+    }
+    const { code } = await init(home, ['--project', project])
+    assert.equal(code, 2)
   })
 })
