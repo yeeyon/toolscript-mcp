@@ -249,6 +249,8 @@ describe('attachments', () => {
     )
     // The reference needs no mimeType: the host has the type of the file it wrote.
     assert.deepEqual(returnedImages(JSON.stringify({ type: 'image', file: '/f/6.png' })), want(6))
+    // An object typed image that holds attachments: the search goes on inside it.
+    assert.deepEqual(returnedImages(JSON.stringify({ type: 'image', attachments: [ref(7)] })), want(7))
     // No file (not written), another type, or not JSON: nothing to show.
     assert.deepEqual(returnedImages(JSON.stringify({ type: 'image', mimeType: 'image/png', error: 'x' })), want())
     assert.deepEqual(returnedImages(JSON.stringify({ type: 'audio', mimeType: 'audio/wav', file: '/f/a.wav' })), want())

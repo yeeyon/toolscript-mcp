@@ -19,7 +19,14 @@ import {
   type OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { basicCredentials, parseJson, refreshReason, type OAuth, type ServerKey } from '../core/config.ts'
+import {
+  basicCredentials,
+  parseJson,
+  refreshReason,
+  type ClientSecret,
+  type OAuth,
+  type ServerKey,
+} from '../core/config.ts'
 import { oauthFile } from '../core/paths.ts'
 import { errorText } from '../core/protocol.ts'
 
@@ -167,11 +174,13 @@ export type ServeMode = { readonly kind: 'serve'; readonly reason: string; reado
 export const REFRESH_TIMEOUT_MS = 20_000
 
 /**
- * The SDK's provider, the secrets that it handed out so far, for `redact`: a server can echo one in an error, and
- * `fetch`, which gives the fetch of the transport. The running server answers each refresh in it.
+ * The SDK's provider, the secrets that it handed out so far, for `redact`: a server can echo one in an error, the
+ * last client with a secret, for `hideClientSecret`, and `fetch`, which gives the fetch of the transport. The running
+ * server answers each refresh in it.
  */
 export type Provider = OAuthClientProvider & {
   readonly secrets: () => readonly string[]
+  readonly clientSecret: () => ClientSecret | undefined
   readonly fetch: (base: FetchLike) => FetchLike
 }
 
@@ -196,13 +205,16 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   // with the old client, so a login that ends early leaves both.
   let own: OAuthClientInformationMixed | undefined
   const known = new Set<string>(login ? [login.state] : [])
-  // A server could make a common word a token, to blank it in each reason.
   const add = (...values: (string | undefined)[]) => {
-    for (const value of values) if (value !== undefined && value.length >= 8) known.add(value)
+    for (const value of values) if (value !== undefined) known.add(value)
   }
   const keepTokens = (tokens: OAuthTokens | undefined) => (add(tokens?.access_token, tokens?.refresh_token), tokens)
+  let secretClient: ClientSecret | undefined
   const keepClient = (info: OAuthClientInformationMixed | undefined) => {
-    if (info?.client_secret) add(info.client_secret, basicCredentials(info.client_id, info.client_secret))
+    if (info?.client_secret) {
+      add(info.client_secret, basicCredentials(info.client_id, info.client_secret))
+      secretClient = { id: info.client_id, secret: info.client_secret, registered: !fixed }
+    }
     return info
   }
   const client = async (): Promise<OAuthClientInformationMixed | undefined> => {
@@ -289,6 +301,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   }
   return {
     secrets: () => [...known],
+    clientSecret: () => secretClient,
     fetch: base =>
       mode.kind === 'login'
         ? base

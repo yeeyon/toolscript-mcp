@@ -130,9 +130,11 @@ npm ci
 Then start a new session of your client. Do not start the server with `npx github:…` in a client.
 In a measured start, the GitHub check of npx added about 12 seconds.
 
-Some CLI messages still print `npx -y toolscript-mcp`. Replace that prefix with
-`node /absolute/path/to/toolscript-mcp/dist/host/main.js`. This text defect is tracked in
-[#42](https://github.com/yeeyon/toolscript-mcp/issues/42).
+The commands that toolscript-mcp prints, such as the login command and the steps of `init`, use the start of the
+running process. From a clone, they start with `node /absolute/path/to/toolscript-mcp/dist/host/main.js`. From npm,
+they start with `npx -y toolscript-mcp`. On Windows, each path in them has forward slashes. So the login command
+works in cmd.exe, PowerShell and Git Bash. The Claude Code step of an npm install is for PowerShell. Run
+`node dist/host/main.js --help` to see the usage.
 
 #### With the Claude Code plugin
 
@@ -557,7 +559,13 @@ toolscript-mcp logs in to a remote HTTP server with OAuth. You do not need a pro
 2. Run `node /absolute/path/to/toolscript-mcp/dist/host/main.js login <server>`. If your config uses another path, add `--config <path>`.
 3. Log in and approve the access in the browser. If the browser does not open, open the URL that login prints.
 
-login waits 5 minutes for the browser. Then it connects to the server and prints the number of tools.
+login waits 5 minutes for the browser and 30 s for the token exchange. Then it connects to the server and prints the
+number of tools.
+
+Some servers, such as the Google Workspace MCP servers, list their tools without a token and ask for one only on a
+call. If such a server publishes protected-resource metadata, login starts the browser login all the same. A server
+that answers without a token and has no such metadata needs no login. If its authorization server has no dynamic
+client registration, give a client ID in `oauth`, as the next section shows.
 
 - An HTTP server without `headers` logs in with OAuth. To log in to a server with other headers, add `"oauth": true`.
 - `"oauth": false` turns the login off. An entry with an `Authorization` header and `oauth` is an error.
@@ -581,6 +589,8 @@ ID in `oauth`:
 ```
 
 - `clientSecret` takes `${VAR}`, as other values do. Use a variable, so the secret stays out of the config.
+- The token requests send the secret as `client_secret_basic` if the authorization server lists it, else as
+  `client_secret_post`. Box, for example, lists both.
 - `scopes` sets the scopes to ask for when the server names none.
 - `callbackPort` sets the port of the login callback on `127.0.0.1`. Register `http://127.0.0.1:<port>/callback` as
   the redirect URI of your client.
