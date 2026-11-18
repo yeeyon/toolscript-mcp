@@ -7,7 +7,6 @@
 import {
   hideArgSecrets,
   hideUrlSecrets,
-  isAbsolutePath,
   launchArgv,
   launchText,
   parseJson,
@@ -19,6 +18,7 @@ import {
   type Launch,
   type ServerKey,
 } from './config.ts'
+import { printable, shownName } from './policy.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor'
 
@@ -73,20 +73,20 @@ export const scopedFiles = (env: Env, platform: string, home: string, project: P
 ]
 
 /**
- * The folders that Claude Code reads for a session started in a folder. `local`: the key of the local scope in
- * `.claude.json`, the root of the main checkout (also for a subfolder or a git worktree), or the folder itself
- * outside git. `shared`: the folders whose `.mcp.json` it reads, the start folder and each parent up to the root.
+ * The folders that Claude Code reads for a session started in the folder `start`. `local`: the key of the local
+ * scope in `.claude.json`, the root of the main checkout (also for a subfolder or a git worktree), or the folder
+ * itself outside git. `shared`: the folders whose `.mcp.json` it reads, `start` and each parent up to the root.
  */
-export type ProjectFolders = { readonly local: string; readonly shared: readonly string[] }
+export type ProjectFolders = { readonly start: string; readonly local: string; readonly shared: readonly string[] }
 
 /**
  * The root of the main checkout for a worktree whose `.git` file holds `gitdir: <main>/.git/worktrees/<name>`, or
- * undefined for another `.git` file, such as the one of a submodule.
+ * undefined for another `.git` file, such as the one of a submodule, also of a submodule in a worktree.
  */
 export const mainCheckoutOf = (dotGitFile: string): string | undefined => {
-  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(dotGitFile)?.[1]?.replace(/\\/g, '/')
-  const at = gitdir?.lastIndexOf('/.git/worktrees/') ?? -1
-  return at > 0 ? gitdir!.slice(0, at) : undefined
+  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(dotGitFile)?.[1]?.replace(/\\/g, '/').replace(/\/+$/, '')
+  const at = gitdir === undefined ? undefined : /\/\.git\/worktrees\/[^/]+$/.exec(gitdir)?.index
+  return at ? gitdir!.slice(0, at) : undefined
 }
 
 /** True when `key` names the folder `project`. Windows paths match with `/` and `\` as one, in any case. */
@@ -213,6 +213,14 @@ const toEntry = (raw: unknown): { entry: Entry; dropped: string[] } | { why: str
 
 const NO_FILE = 'no file'
 
+/** The entry of the folder `folder` in `projects` of `.claude.json`. */
+const projectOf = (claudeJson: Record<string, unknown>, folder: string, platform: string): unknown => {
+  const { projects } = claudeJson
+  if (!isObject(projects)) return undefined
+  const key = Object.keys(projects).find(k => sameFolder(k, folder, platform))
+  return key === undefined ? undefined : projects[key]
+}
+
 /** The `mcpServers` of one client file, or why there are none. Local scope: the entry of its folder in `projects`. */
 const serversOf = (read: ClientRead, platform: string): { problem: string } | { servers: [string, unknown][] } => {
   if (read.kind === 'missing') return { problem: NO_FILE }
@@ -222,11 +230,9 @@ const serversOf = (read: ClientRead, platform: string): { problem: string } | { 
   if (!isObject(json.value)) return { problem: 'not a JSON object' }
   let holder = json.value
   if (read.scope === 'local') {
-    const { projects } = json.value
     const project = read.project ?? ''
-    const key = isObject(projects) ? Object.keys(projects).find(k => sameFolder(k, project, platform)) : undefined
-    if (key === undefined || !isObject(projects)) return { servers: [] }
-    const entry = projects[key]
+    const entry = projectOf(json.value, project, platform)
+    if (entry === undefined) return { servers: [] }
     if (!isObject(entry)) return { problem: `the entry of ${project} in "projects" is not an object` }
     holder = entry
   }
@@ -241,37 +247,101 @@ type Parsed =
   | { readonly kind: 'self' }
   | { readonly kind: 'skipped'; readonly why: string }
 
-/** `cwd` against `folder`: as it is when it is absolute or starts with a variable. */
-const resolveIn = (folder: string, cwd: string, platform: string): string => {
-  if (cwd.startsWith('${') || isAbsolutePath(cwd, platform)) return cwd
-  const drive = platform === 'win32' ? /^[A-Za-z]:/.exec(folder)?.[0] : undefined
-  if (drive !== undefined && /^[\\/]/.test(cwd)) return `${drive}${cwd}`
-  const rest = cwd.replace(/^(?:\.(?:[\\/]+|$))+/, '')
-  return rest === '' ? folder : `${folder.replace(/[\\/]+$/, '')}${platform === 'win32' ? '\\' : '/'}${rest}`
+/**
+ * Claude Code 2.1 starts each stdio server of the local or project scope in the folder `start` of the session, and
+ * does not read the `cwd` of the entry. toolscript-mcp starts in the folder of its client, so the entry gets `start`
+ * as its `cwd`, and its own `cwd` is left out.
+ */
+const startIn = (parsed: { entry: Entry; dropped: string[] }, start: string | undefined) => {
+  const { entry, dropped } = parsed
+  if (start === undefined || 'type' in entry) return parsed
+  return { entry: { ...entry, cwd: start }, dropped: entry.cwd === undefined ? dropped : [...dropped, 'cwd'] }
 }
 
-/**
- * Claude Code starts a stdio server of the local or project scope in the project folder. toolscript-mcp starts in
- * the folder of its client, so the entry gets that folder as its `cwd`.
- */
-const inFolder = (entry: Entry, folder: string | undefined, platform: string): Entry =>
-  folder === undefined || 'type' in entry
-    ? entry
-    : { ...entry, cwd: entry.cwd === undefined ? folder : resolveIn(folder, entry.cwd, platform) }
-
-const parseServer = (name: string, raw: unknown, folder: string | undefined, platform: string): Parsed => {
+const parseServer = (name: string, raw: unknown, start: string | undefined): Parsed => {
   if (isSelf(name, raw)) return { kind: 'self' }
   const parsed = toEntry(raw)
   if ('why' in parsed) return { kind: 'skipped', why: parsed.why }
   const key = keyOf(name)
   if (key === undefined) return { kind: 'skipped', why: 'no letter or digit to make a server key of' }
-  const anchored = inFolder(parsed.entry, folder, platform)
-  const entry: Entry = namesAzureDevOps(key, anchored) ? { ...anchored, untrusted: true } : anchored
-  return { kind: 'entry', key, entry, dropped: parsed.dropped }
+  const { entry: started, dropped } = startIn(parsed, start)
+  const entry: Entry = namesAzureDevOps(key, started) ? { ...started, untrusted: true } : started
+  return { kind: 'entry', key, entry, dropped }
 }
 
-/** A server that init found in a client file: where, its name there, and its entry. */
-export type Candidate = { readonly file: ClientFile; readonly name: string; readonly parsed: Parsed }
+/** What Claude Code decided about a server of a `.mcp.json` file. It runs only an approved one. */
+export type Approval = 'approved' | 'not approved' | 'disabled'
+
+/**
+ * The text of the files that hold the choices of Claude Code 2.1 on the servers of `.mcp.json` files, or undefined
+ * for no file. Checked with `claude mcp list` in a temp CLAUDE_CONFIG_DIR.
+ */
+export type ApprovalFiles = {
+  /** `.claude.json`: the choices in the entry of the local-scope project, and the trusted folders. */
+  readonly claudeJson: string | undefined
+  /** The user settings. They count in any folder. */
+  readonly user: string | undefined
+  /** `.claude/settings.json` and `.claude/settings.local.json` of the start folder, not of a parent. */
+  readonly start: readonly (string | undefined)[]
+}
+
+/** The paths of the settings files of `ApprovalFiles`. */
+export const settingsFiles = (env: Env, home: string, start: string) => ({
+  user: `${env.CLAUDE_CONFIG_DIR || `${home}/.claude`}/settings.json`,
+  start: [`${start}/.claude/settings.json`, `${start}/.claude/settings.local.json`],
+})
+
+const objectOf = (text: string | undefined): Record<string, unknown> | undefined => {
+  const json = text === undefined ? undefined : parseJson(text)
+  return json?.ok && isObject(json.value) ? json.value : undefined
+}
+
+const lists = (holder: unknown, key: string, name: string): boolean =>
+  isObject(holder) && Array.isArray(holder[key]) && holder[key].includes(name)
+
+const enables = (holder: unknown, name: string): boolean =>
+  isObject(holder) && (holder.enableAllProjectMcpServers === true || lists(holder, 'enabledMcpjsonServers', name))
+
+/**
+ * The approval of each `.mcp.json` server for a session started in `folders.start`. A list of disabled servers in any
+ * of the files disables it. Else the user settings approve it, or, in a trusted folder only, the settings of the
+ * start folder or the project entry in `.claude.json`. A folder is trusted when it or a parent up to the project root
+ * has `hasTrustDialogAccepted`. Claude Code can also approve a server in a way that init does not read, such as
+ * managed settings: init then shows it as not approved, and `--unapproved` adds it.
+ */
+export const approvals = (
+  files: ApprovalFiles,
+  folders: ProjectFolders,
+  platform: string,
+): ((name: string) => Approval) => {
+  const claude = objectOf(files.claudeJson)
+  const entry = (dir: string) => (claude === undefined ? undefined : projectOf(claude, dir, platform))
+  const project = entry(folders.local)
+  const user = objectOf(files.user)
+  const start = files.start.map(objectOf)
+  const root = folders.shared.findIndex(dir => sameFolder(dir, folders.local, platform))
+  const trusted = folders.shared.slice(0, root === -1 ? 1 : root + 1).some(dir => {
+    const e = entry(dir)
+    return isObject(e) && e.hasTrustDialogAccepted === true
+  })
+  return name => {
+    if ([project, user, ...start].some(h => lists(h, 'disabledMcpjsonServers', name))) return 'disabled'
+    if (enables(user, name) || (trusted && [project, ...start].some(h => enables(h, name)))) return 'approved'
+    return 'not approved'
+  }
+}
+
+/**
+ * A server that init found in a client file: where, its name there, and its entry. `hiddenBy`: the Claude Code scope
+ * whose server of the same name Claude Code runs instead of this one. `approval`: of a project-scope server only.
+ */
+export type Candidate = {
+  readonly file: ClientFile
+  readonly name: string
+  readonly parsed: Parsed
+  readonly hiddenBy?: Scope
+  readonly approval?: Approval
+}
 
 /** The servers of one client file, or why init read none. */
 export type FileServers = {
@@ -280,26 +350,41 @@ export type FileServers = {
   readonly candidates: readonly Candidate[]
 }
 
-const fileServers = (read: ClientRead, platform: string): FileServers => {
+/** The servers of one client file. A stdio server of the local or project scope starts in `start`. */
+const fileServers = (read: ClientRead, platform: string, start?: string): FileServers => {
   const { client, path, scope, project } = read
   const file: ClientFile = { client, path, ...(scope && { scope }), ...(project !== undefined && { project }) }
   const found = serversOf(read, platform)
   if ('problem' in found) return { file, problem: found.problem, candidates: [] }
-  const parse = ([name, raw]: [string, unknown]) => ({ file, name, parsed: parseServer(name, raw, project, platform) })
+  const folder = scope === 'local' || scope === 'project' ? start : undefined
+  const parse = ([name, raw]: [string, unknown]) => ({ file, name, parsed: parseServer(name, raw, folder) })
   return { file, candidates: found.servers.map(parse) }
 }
 
 /**
- * The servers of the files of `scopedFiles`. A name in two `.mcp.json` files is the server of the closer one, as in
- * Claude Code, so the farther file drops it.
+ * The servers of the files of `scopedFiles` for a session started in `start`. Claude Code runs the server of a name
+ * from the first of its files in that order, so each later server of the name is hidden by that scope.
  */
-export const scopedServers = (reads: readonly ClientRead[], platform: string): FileServers[] => {
-  const closer = new Set<string>()
+export const scopedServers = (
+  reads: readonly ClientRead[],
+  platform: string,
+  start: string,
+  approval: (name: string) => Approval,
+): FileServers[] => {
+  const runs = new Map<string, Scope>()
   return reads.map(read => {
-    const servers = fileServers(read, platform)
-    if (read.scope !== 'project') return servers
-    const candidates = servers.candidates.filter(c => !closer.has(c.name))
-    for (const c of servers.candidates) closer.add(c.name)
+    const servers = fileServers(read, platform, start)
+    const { scope } = read
+    if (read.client !== 'claude-code' || scope === undefined) return servers
+    const candidates = servers.candidates.map(c => {
+      const hiddenBy = runs.get(c.name)
+      if (hiddenBy === undefined) runs.set(c.name, scope)
+      return {
+        ...c,
+        ...(hiddenBy && { hiddenBy }),
+        ...(scope === 'project' && { approval: approval(c.name) }),
+      }
+    })
     return { ...servers, candidates }
   })
 }
@@ -507,12 +592,19 @@ const canonical = (value: unknown): string =>
 
 const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => (a < b ? -1 : a > b ? 1 : 0)
 
-const statusOf = ({ parsed }: Candidate, servers: OldConfig['servers']): string => {
+const configStatus = (parsed: Parsed, servers: OldConfig['servers']): string => {
   if (parsed.kind === 'self') return 'toolscript itself'
   if (parsed.kind === 'skipped') return `skipped: ${parsed.why}`
   if (!Object.hasOwn(servers, parsed.key)) return 'not in config'
   return canonical(servers[parsed.key]) === canonical(parsed.entry) ? 'in config' : 'name taken by a different entry'
 }
+
+const statusOf = ({ parsed, hiddenBy, approval }: Candidate, servers: OldConfig['servers']): string =>
+  [
+    configStatus(parsed, servers),
+    ...(approval === undefined || approval === 'approved' ? [] : [`${approval} in Claude Code`]),
+    ...(hiddenBy ? [`hidden by ${hiddenBy}`] : []),
+  ].join(', ')
 
 /** `stdio <executable>` or `http <origin>`: no argument, path, query or login. */
 const kindOf = ({ parsed }: Candidate): string => {
@@ -529,22 +621,25 @@ const table = (rows: readonly (readonly string[])[]): string[] => {
   return rows.map(r => r.map((cell, i) => (i === r.length - 1 ? cell : cell.padEnd(widths[i] ?? 0))).join('  '))
 }
 
-/** One line for each server of the client files, with its status in the config. Names only, no value. */
+/**
+ * One line for each server of the client files, with its status in the config. Names only, no value. Each text
+ * from a file is printable, so a name or path never moves the cursor or turns the text around.
+ */
 export const listReport = (files: readonly FileServers[], config: OldConfig): string => {
   const rows = files.flatMap(f =>
     f.candidates.map(c => [
-      JSON.stringify(c.name),
+      shownName(c.name),
       c.file.client,
       c.file.scope ?? '-',
-      kindOf(c),
-      statusOf(c, config.servers),
-      c.file.project ?? '-',
+      printable(kindOf(c)),
+      printable(statusOf(c, config.servers)),
+      printable(c.file.project ?? '-'),
     ]),
   )
   const problems = files.flatMap(f =>
     f.problem === undefined || f.problem === NO_FILE
       ? []
-      : [`Cannot read ${sourceName(f.file)}, ${f.file.path}: ${f.problem}`],
+      : [printable(`Cannot read ${sourceName(f.file)}, ${f.file.path}: ${f.problem}`)],
   )
   const list =
     rows.length > 0
@@ -553,18 +648,28 @@ export const listReport = (files: readonly FileServers[], config: OldConfig): st
   return [...list, ...problems].join('\n')
 }
 
-/** A server that `--add` copies into the config, and the client files that hold the same entry. */
-export type Added = { readonly key: ServerKey; readonly entry: Entry; readonly from: readonly Candidate[] }
+/**
+ * A server that `--add` copies into the config, the client files that hold the same entry, and the Claude Code
+ * servers of the same name that the one in `from` hides.
+ */
+export type Added = {
+  readonly key: ServerKey
+  readonly entry: Entry
+  readonly from: readonly Candidate[]
+  readonly hides: readonly Candidate[]
+}
 
 /**
  * The servers `names` of the client files, or every reason to add none. `from` keeps only the files of one client,
- * as `cursor`, or of one scope, as `claude-code:local`.
+ * as `cursor`, or of one scope, as `claude-code:local`. Of a name in several Claude Code scopes, `--add` takes the
+ * one that Claude Code runs: the first in the order of `scopedFiles`. Different entries in two clients need `from`.
+ * A project server that Claude Code does not run without an approval needs `unapproved`.
  */
 export const planAdd = (
   files: readonly FileServers[],
   names: readonly string[],
-  from: string | undefined,
   config: OldConfig,
+  { from, unapproved }: { readonly from: string | undefined; readonly unapproved: boolean },
 ): { ok: true; added: Added[] } | { ok: false; errors: string[] } => {
   const pool = files
     .flatMap(f => f.candidates)
@@ -572,24 +677,34 @@ export const planAdd = (
   const errors: string[] = []
   const added: Added[] = []
   for (const name of names) {
-    const quoted = JSON.stringify(name)
+    const quoted = shownName(name)
     const found = pool.filter(c => c.name === name)
-    const usable = found.flatMap(c => (c.parsed.kind === 'entry' ? [{ c, parsed: c.parsed }] : []))
+    const picked = found.filter((c, i) => found.findIndex(o => o.file.client === c.file.client) === i)
+    const usable = picked.flatMap(c => (c.parsed.kind === 'entry' ? [{ c, parsed: c.parsed }] : []))
     const first = usable[0]
-    if (found.length === 0) errors.push(`${quoted} is in no client file${from ? ` of ${from}` : ''}.`)
+    const gated = usable.find(u => u.c.approval !== undefined && u.c.approval !== 'approved')?.c
+    if (found.length === 0) errors.push(`${quoted} is in no client file${from ? ` of ${printable(from)}` : ''}.`)
     else if (first === undefined)
       errors.push(
-        `${quoted} cannot be added: ${found.map(c => `${sourceName(c.file)}: ${statusOf(c, {})}`).join(', ')}.`,
+        `${quoted} cannot be added: ${picked.map(c => `${sourceName(c.file)}: ${printable(statusOf(c, {}))}`).join(', ')}.`,
       )
     else if (usable.some(u => canonical(u.parsed.entry) !== canonical(first.parsed.entry)))
       errors.push(
         `${quoted} has different entries in ${usable.map(u => sourceName(u.c.file)).join(', ')}. Pick one with --from.`,
       )
+    else if (gated !== undefined && !unapproved)
+      errors.push(
+        `${quoted} of ${printable(gated.file.path)} is ${gated.approval} in Claude Code for this folder. To add it anyway, add --unapproved.`,
+      )
     else if (Object.hasOwn(config.servers, first.parsed.key))
       errors.push(`${quoted} is in the config already, as ${first.parsed.key}.`)
     else if (added.some(a => a.key === first.parsed.key))
       errors.push(`${quoted} makes the server key ${first.parsed.key}, which another name in --add makes too.`)
-    else added.push({ key: first.parsed.key, entry: first.parsed.entry, from: usable.map(u => u.c) })
+    else {
+      const runs = usable.some(u => u.c.file.client === 'claude-code')
+      const hides = runs ? found.filter(c => !picked.includes(c)) : []
+      added.push({ key: first.parsed.key, entry: first.parsed.entry, from: usable.map(u => u.c), hides })
+    }
   }
   return errors.length > 0 ? { ok: false, errors } : { ok: true, added }
 }
@@ -601,14 +716,22 @@ export const addedConfigText = (old: OldConfig | undefined, added: readonly Adde
   return `${JSON.stringify({ ...old.json, mcpServers: { ...old.servers, ...Object.fromEntries(servers) } }, null, 2)}\n`
 }
 
-/** What `--add` added, with no value, and the steps that remove the direct entries from the clients. */
+/**
+ * What `--add` added, with no value, and the steps that remove the direct entries from the clients. Each line is
+ * printable: the names, paths and keys come from the client files.
+ */
 export const addReport = (added: readonly Added[], configFile: string, platform: string, launch: Launch): string[] => {
   const out = [`Added ${plural(added.length, 'server')}:`]
   const remove = new Map<string, { file: ClientFile; names: string[] }>()
-  for (const { key, from } of added) {
-    const sources = from.map(c => `${sourceLabel(c.file)}${c.name === key ? '' : ` ${JSON.stringify(c.name)}`}`)
+  for (const { key, from, hides } of added) {
+    const sources = from.map(c => `${sourceLabel(c.file)}${c.name === key ? '' : ` ${shownName(c.name)}`}`)
     const dropped = [...new Set(from.flatMap(c => (c.parsed.kind === 'entry' ? c.parsed.dropped : [])))]
     out.push(`- ${key}, from ${sources.join(', ')}${dropped.length > 0 ? `. Left out: ${dropped.join(', ')}` : ''}`)
+    const runs = from.find(c => c.file.client === 'claude-code')?.file.scope
+    for (const h of hides)
+      out.push(
+        `  ${sourceLabel(h.file)}${h.file.scope === 'project' ? ` in ${h.file.path}` : ''} also has ${shownName(h.name)}, which the ${runs} one hides.`,
+      )
     for (const c of from) {
       // The local and user scopes share a file, and the project scope has a file in each folder.
       const where = `${sourceName(c.file)} ${c.file.path}`
@@ -634,5 +757,5 @@ export const addReport = (added: readonly Added[], configFile: string, platform:
       )
     out.push('  Then start a new Claude Code session.')
   }
-  return out
+  return out.map(printable)
 }

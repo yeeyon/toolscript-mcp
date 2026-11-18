@@ -11,6 +11,7 @@ import { configPath, SECRET_NAMES, SECRET_PARTS, SECRET_WORD_LENGTH, type Env, t
 import {
   addedConfigText,
   addReport,
+  approvals,
   clientFiles,
   configText,
   importServers,
@@ -23,6 +24,7 @@ import {
   planAdd,
   scopedFiles,
   scopedServers,
+  settingsFiles,
   sourceName,
   type ClientFile,
   type ClientRead,
@@ -33,7 +35,7 @@ import { errorText } from '../core/protocol.ts'
 export const INIT_USAGE = [
   'usage: toolscript-mcp init [--config <path>] [--force] [--dry-run] [--help]',
   '       toolscript-mcp init --list [--project <dir>] [--config <path>]',
-  '       toolscript-mcp init --add <name>[,<name>...] [--from <client>[:<scope>]] [--project <dir>] [--config <path>]',
+  '       toolscript-mcp init --add <name>[,<name>...] [--from <client>[:<scope>]] [--unapproved] [--project <dir>] [--config <path>]',
 ].join('\n')
 
 const list = (words: readonly string[]) => `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`
@@ -54,14 +56,35 @@ const HIDDEN = [
   'Other arguments show as they are. If one of them holds a secret, do not share this output.',
 ]
 
+type FileRead = { kind: 'text'; text: string } | { kind: 'missing' } | { kind: 'unreadable'; error: string }
+
+/**
+ * A file of a client, read only when it is a regular file. `.mcp.json` comes from each folder up to the root, and a
+ * FIFO there blocks a plain read: the open does not wait, and the check runs on the open file.
+ */
+const readRegular = async (file: string): Promise<FileRead> => {
+  let handle: fs.promises.FileHandle | undefined
+  try {
+    handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0))
+    if (!(await handle.stat()).isFile()) return { kind: 'unreadable', error: 'not a regular file' }
+    return { kind: 'text', text: await handle.readFile('utf8') }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' }
+    return { kind: 'unreadable', error: errorText(err) }
+  } finally {
+    await handle?.close()
+  }
+}
+
 const readClient = async (file: ClientFile): Promise<ClientRead> => {
   const at = { ...file, path: path.resolve(file.path) }
-  try {
-    return { ...at, kind: 'text', text: await fs.promises.readFile(at.path, 'utf8') }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...at, kind: 'missing' }
-    return { ...at, kind: 'unreadable', error: errorText(err) }
-  }
+  return { ...at, ...(await readRegular(at.path)) }
+}
+
+/** The text of a settings file, or undefined when init cannot read it. */
+const settingsText = async (file: string): Promise<string | undefined> => {
+  const read = await readRegular(path.resolve(file))
+  return read.kind === 'text' ? read.text : undefined
 }
 
 /** The bytes of `file`, or undefined when there is no such file. */
@@ -96,6 +119,7 @@ type Options = {
   list?: boolean
   add?: string[]
   from?: string
+  unapproved?: boolean
   project?: string
   help?: boolean
 }
@@ -105,6 +129,7 @@ const misuseOf = (o: Options): string | undefined => {
   if (o.list && o.add) return '--list and --add do not go together.'
   if (pick && (o.force || o['dry-run'])) return '--force and --dry-run do not go with --list or --add.'
   if (o.from !== undefined && !o.add) return '--from goes only with --add.'
+  if (o.unapproved && !o.add) return '--unapproved goes only with --add.'
   if (o.project !== undefined && !pick) return '--project goes only with --list or --add.'
   return undefined
 }
@@ -122,13 +147,13 @@ const projectFolders = async (start: string): Promise<ProjectFolders> => {
   for (const dir of shared) {
     const dotGit = path.join(dir, '.git')
     const stat = await fs.promises.stat(dotGit).catch(() => undefined)
-    if (stat?.isDirectory()) return { local: dir, shared }
+    if (stat?.isDirectory()) return { start, local: dir, shared }
     if (stat?.isFile()) {
       const main = mainCheckoutOf(await fs.promises.readFile(dotGit, 'utf8').catch(() => ''))
-      return { local: main === undefined ? dir : path.resolve(dir, main), shared }
+      return { start, local: main === undefined ? dir : path.resolve(dir, main), shared }
     }
   }
-  return { local: start, shared }
+  return { start, local: start, shared }
 }
 
 /** `--list` and `--add`: the servers of every client file and Claude Code scope against the config in `file`. */
@@ -143,7 +168,18 @@ const pick = async (
 ): Promise<number> => {
   const project = await projectFolders(path.resolve(options.project ?? process.cwd()))
   const reads = await Promise.all(scopedFiles(env, platform, home, project).map(readClient))
-  const files = scopedServers(reads, platform)
+  const settings = settingsFiles(env, home, project.start)
+  const local = reads.find(r => r.scope === 'local')
+  const approval = approvals(
+    {
+      claudeJson: local?.kind === 'text' ? local.text : undefined,
+      user: await settingsText(settings.user),
+      start: await Promise.all(settings.start.map(settingsText)),
+    },
+    project,
+    platform,
+  )
+  const files = scopedServers(reads, platform, project.start, approval)
   const sources = [...new Set(files.flatMap(f => [f.file.client, sourceName(f.file)]))]
   if (options.from !== undefined && !sources.includes(options.from)) {
     print(`--from takes one of ${list(sources)}.\n${INIT_USAGE}`)
@@ -171,7 +207,10 @@ const pick = async (
     print(`--add takes server names, separated by commas.\n${INIT_USAGE}`)
     return 2
   }
-  const plan = planAdd(files, names, options.from, config ?? NO_CONFIG)
+  const plan = planAdd(files, names, config ?? NO_CONFIG, {
+    from: options.from,
+    unapproved: options.unapproved === true,
+  })
   if (!plan.ok) {
     print([...plan.errors, `init did not change ${file}.`].join('\n'))
     return 1
@@ -215,6 +254,7 @@ export const runInit = async (
         list: { type: 'boolean' },
         add: { type: 'string', multiple: true },
         from: { type: 'string' },
+        unapproved: { type: 'boolean' },
         project: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
       },

@@ -103,9 +103,17 @@ export const launchArgv = (launch: Launch): readonly string[] =>
 export const launchText = (launch: Launch, platform: string): string =>
   launch.kind === 'npx' ? launchArgv(launch).join(' ') : `node ${pathWord(launch.main, platform)}`
 
-/** A command of the CLI for one server. `config` is the config file, when it is not the default one. */
-const serverCommand = (command: string, launch: Launch, platform: string, key: ServerKey, config?: string): string =>
-  `${launchText(launch, platform)} ${command} ${shellWord(key, platform)}${config === undefined ? '' : ` --config ${pathWord(config, platform)}`}`
+/**
+ * A command of the CLI for one server. `config` is the config file, when it is not the default one. A key can start
+ * with `-`, so it then comes last, after `--`: the CLI would read it as an option.
+ */
+const serverCommand = (command: string, launch: Launch, platform: string, key: ServerKey, config?: string): string => {
+  const option = config === undefined ? [] : ['--config', pathWord(config, platform)]
+  const words = key.startsWith('-')
+    ? [...option, shellWord('--', platform), shellWord(key, platform)]
+    : [shellWord(key, platform), ...option]
+  return [launchText(launch, platform), command, ...words].join(' ')
+}
 
 /** The command that logs in to a server. */
 export const loginCommand = (launch: Launch, platform: string, key: ServerKey, config?: string): string =>
@@ -287,21 +295,18 @@ const parseOAuth = (
   }
 }
 
-/** On Windows a path needs a drive letter or a share: `/srv` is on the drive of the moment. */
-export const isAbsolutePath = (path: string, platform: string): boolean =>
-  platform === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(path) : path.startsWith('/')
-
 /**
  * An absolute folder. The config file can live anywhere, and toolscript-mcp starts in the folder of its client, so
- * a relative path has no base that a person can predict.
+ * a relative path has no base that a person can predict. On Windows a path needs a drive letter or a share: `/srv`
+ * is on the drive of the moment.
  */
 const parseCwd = (raw: unknown, path: string, env: Env, platform: string, errors: string[]): string | undefined => {
   if (raw === undefined) return undefined
   const found = errors.length
   const cwd = expand(nonEmpty(raw, path, errors), env, path, errors)
   if (errors.length > found) return undefined
-  if (isAbsolutePath(cwd, platform)) return cwd
   const windows = platform === 'win32'
+  if (windows ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(cwd) : cwd.startsWith('/')) return cwd
   const example = windows ? ' with a drive letter or a share, such as "C:/work/app"' : ', such as "/home/me/app"'
   errors.push(`${path}: must be an absolute path${example}, not ${JSON.stringify(raw)}`)
   return undefined

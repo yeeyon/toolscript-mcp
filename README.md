@@ -163,7 +163,7 @@ something:
 2. The skill runs `tools` on that server. It shows each tool with its hint and its policy action, or the login command when the server needs OAuth.
 3. The skill proposes a small read task. For the demo, the task is "Count the open pull requests per author".
 4. You pick the starter policy. With "Ask when needed", Claude Code asks you before each program. "Allow this workflow" adds an allow rule for each exact tool name of the task. It keeps each deny rule that matches one of these tools.
-5. You start a new session and give the task. Then `/toolscript:start verify` runs `runs --server <server>`. It confirms the run, or it names the step that fixes it.
+5. You start a new session and give the task. Then `/toolscript:start verify` runs `runs --server <server> --since 2h`. It confirms a recent run that called the server, or it names the step that fixes it.
 6. After a run works, the skill offers to remove the direct copy of the server from Claude Code. It shows the scope of the copy first.
 
 `/toolscript:doctor` checks the whole setup and changes nothing. It runs [doctor](#doctor), then checks the Claude Code
@@ -311,20 +311,34 @@ To pick servers one at a time, use `--list` and `--add`. They also read the Clau
 
 - `init --list` shows one line for each server of the client files: its name, client, scope, kind, status and folder. It writes nothing.
 - The Claude Code scopes are `local`, `project` and `user`. Claude Code keeps the local servers in `~/.claude.json`, under the path of the project.
-- Claude Code reads the project servers from the `.mcp.json` of the project folder and of each folder above it. If two
-  of these files have a server with the same name, the closer file wins. init lists and adds only that server.
+- Claude Code reads the project servers from the `.mcp.json` of the project folder and of each folder above it.
+- If more than one scope has a server with the same name, Claude Code runs only one of them. The order is local,
+  then the closest `.mcp.json`, then user. The status of each other server ends with `hidden by` and the scope that
+  hides it.
 - The folder is the project folder of a local server, or the folder of the `.mcp.json` file of a project server.
 - `--project <dir>` names the project folder. The default is the current folder. Use the folder where you start Claude Code.
   In a git checkout, init reads the local servers of the main checkout, as Claude Code does. This also applies in a subfolder or a git worktree.
 - The kind is `stdio` with the file name of the command, or `http` with the origin of the URL. The list shows no argument, env
   value, header value, URL path or query.
+- A name with a blank or a character outside printable ASCII shows in double quotes. Such a character shows as a `\u`
+  escape in each column and in the output of `--add`.
 - The status is `in config`, `not in config`, `name taken by a different entry`, `toolscript itself`, or `skipped` with the reason.
+- Claude Code runs a server of a `.mcp.json` file only after you approve it. The status of a project server that Claude
+  Code has not approved ends with `not approved in Claude Code`. If you disabled it, the status ends with `disabled in Claude Code`.
+- init reads these choices from `~/.claude/settings.json`, from `.claude/settings.json` and `.claude/settings.local.json`
+  of the `--project` folder, and from `~/.claude.json`. The project files count only in a folder that you trust in
+  Claude Code. init does not read managed settings, so a server that they approve shows as not approved.
 - `init --add <name>[,<name>...]` copies these servers into the config, with the same rules as the import. If there is no config, it makes one.
-- Claude Code starts a stdio server of the local or project scope in the project folder. So `--add` sets the `cwd` of
-  such a server to the folder that `--list` shows. A relative `cwd` becomes a path in that folder.
+- Claude Code starts a stdio server of the local or project scope in the folder where the session starts. It does not
+  read the `cwd` of the entry. So `--add` sets the `cwd` of such a server to the `--project` folder, and leaves out
+  the `cwd` of the entry.
 - `--add` keeps the other servers, the policy and the other keys of the config. It keeps the old file as `<config>.bak`.
-- `--add` changes nothing when a name is in the config already, in no client file, or in two files with different entries.
-- `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:local` or `--from cursor`.
+- For a name in more than one Claude Code scope, `--add` takes the server that Claude Code runs. It names that scope and
+  the scopes that it hides.
+- `--add` changes nothing when a name is in the config already, in no client file, or in two clients with different
+  entries. It also changes nothing for a project server that is not approved or disabled in Claude Code.
+- `--unapproved` adds such a server. Use it only for a server that you trust: toolscript-mcp starts it without a question.
+- `--from <client>[:<scope>]` picks the file of a name, for example `--from claude-code:user` or `--from cursor`.
 - `--add` does not change the client files. It prints the steps that remove each server from its client. Do them after a run
   through toolscript-mcp works.
 
@@ -363,13 +377,13 @@ line is `<server>: connected, <n> tools`. Each next line shows one tool:
   your approval at each run. See [Tools that require a person](#tools-that-require-a-person).
 
 If the server needs an OAuth login, `tools` prints the login command. If the server cannot connect, `tools` prints
-the reason. For a server with `"untrusted": true`, the reason does not show the error text of the server. The output
+the reason, with each control and format character as a `\u` escape. For a server with `"untrusted": true`, the reason does not show the error text of the server. The output
 never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 on a failure and 2 on a
 usage error.
 
-`toolscript-mcp runs [--server <key>] [--last <n>] [--config <path>]` reads the [run log](#run-log). It shows the
-newest `n` runs that call a tool of the server, newest first. The default of `n` is 1. Without `--server`, it shows the
-newest runs of all servers.
+`toolscript-mcp runs [--server <key>] [--last <n>] [--since <time>] [--config <path>]` reads the
+[run log](#run-log). It shows the newest `n` runs that call a tool of the server, newest first. The default of `n`
+is 1. Without `--server`, it shows the newest runs of all servers.
 
 - For each run, it shows the time, the ending and the duration.
 - For each call, it shows the tool, the policy decision, and `ok` or the error code. A call that `runs` cannot read
@@ -377,14 +391,19 @@ newest runs of all servers.
 - After the runs, it gives one next step for each problem.
 - It counts the lines of the log that are not runs, and skips them.
 
+With `--since`, `runs` counts only the runs at or after that time. The time is an ISO 8601 time with a zone, such as
+`2026-11-18T09:30:00Z`, or a duration back from now: `30m`, `2h` or `1d`. The first line shows the time in UTC. To
+check a new attempt, give a time before its task. Then an older run does not confirm the attempt.
+
 A name or time with a character outside printable ASCII shows in double quotes, with that character as a `\u` escape.
 If your server uses a config at another path, give the same `--config`. Then the `tools` command in a next step names
 that config.
 
-The exit code is 0 only when the newest run ended `done` and each call of the server worked. These cases also give
-the exit code 1:
+The exit code is 0 only when the newest run ended `done`, called a tool of the server, and each call of the server
+worked. Without `--server`, the run must call a tool of any server. These cases also give the exit code 1:
 
 - The log has no run. `runs` prints `no run yet`.
+- No run is at or after the time of `--since`. `runs` prints `no run since <time>`.
 - An unreadable line is newer than the newest run shown. That line can be a newer run.
 - The config sets `"log": false`. `runs` says so in its first line.
 - `runs` cannot read the config of `--config`.

@@ -231,7 +231,7 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
     const head = ok(`${loaded.ok ? 'on' : 'on, unless the config sets "log": false'}: ${log}`)
     const entries = await readRunLog(io.home).catch((err: unknown) => errorText(err))
     if (typeof entries === 'string') return [head, warn(`cannot read the run log: ${entries}`)]
-    const report = runsReport(entries, undefined, 1, toolsFor(io, file))
+    const report = runsReport(entries, { server: undefined, last: 1, since: undefined }, toolsFor(io, file))
     const newest = report.lines[0]!
     if (newest === 'no run yet') return [head, info(newest)]
     return [

@@ -30,6 +30,7 @@ import {
   type ServerKey,
 } from '../core/config.ts'
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { printableText } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { CONNECT_TIMEOUT_MS, listAll, serverFetch } from './downstream.ts'
 import { isLoopbackHttp, oauthProvider, readStore, storeFile, type Stored } from './oauth.ts'
@@ -119,16 +120,6 @@ const openBrowser =
 
 type Callback = { readonly ok: true; readonly code: string } | { readonly ok: false; readonly why: string }
 
-/**
- * `text` with each control character, line or paragraph separator and bidi control as `\uXXXX`, so text from the
- * browser cannot move the cursor, fake a line or turn text around.
- */
-const escapeControls = (text: string): string =>
-  text.replace(
-    /[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g,
-    c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  )
-
 /** Listens on 127.0.0.1:`port` for the one callback of the login. Rejects with EADDRINUSE when the port is taken. */
 const listen = async (port: number, state: string) => {
   let settle: (callback: Callback) => void = () => {}
@@ -151,7 +142,8 @@ const listen = async (port: number, state: string) => {
       const detail = q.get('error_description')
       settle({
         ok: false,
-        why: escapeControls(`the authorization server answered ${error ?? 'no code'}${detail ? `: ${detail}` : ''}`),
+        // Text from the browser: printed, it cannot move the cursor, fake a line or turn text around.
+        why: printableText(`the authorization server answered ${error ?? 'no code'}${detail ? `: ${detail}` : ''}`),
       })
       return reply(400, 'login failed. See the terminal.')
     }

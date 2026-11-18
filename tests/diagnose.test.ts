@@ -4,6 +4,7 @@
 
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -15,6 +16,7 @@ import { newKept } from '../src/core/protocol.ts'
 import { runLine, type RunRecord } from '../src/core/runlog.ts'
 import { runRuns, runTools, type CheckIo } from '../src/host/diagnose.ts'
 import { connectAll } from '../src/host/downstream.ts'
+import { runLogin } from '../src/host/login.ts'
 import { runCode, type RunContext } from '../src/host/run.ts'
 import { MAX_PAGE_SIZE, OPEN_BY_AUTHOR, PULL_REQUESTS } from '../demo/data.mjs'
 
@@ -125,6 +127,20 @@ describe('tools', () => {
     assert.equal(await s.tools('broken'), 1)
     assert.match(s.printed.join('\n'), /red \\u001b\[31m/)
     assert.ok(printableOnly(s.printed))
+  })
+
+  test('keeps the letters of a user folder name in the reason, and escapes a bidi control', async () => {
+    const s = setup({
+      mcpServers: {
+        broken: {
+          command: process.execPath,
+          args: ['-e', 'console.error("cannot open C:\\\\Users\\\\홍길동 \\u202eevil"); process.exit(3)'],
+        },
+      },
+    })
+    assert.equal(await s.tools('broken'), 1)
+    assert.match(s.printed.join('\n'), /cannot open C:\\Users\\홍길동 \\u202eevil/)
+    assert.equal(s.printed.length, 1)
   })
 
   test('make it fail: the reason of an untrusted server holds no text of its child, and names no log that tools lacks', async () => {
@@ -305,6 +321,33 @@ describe('runs', () => {
     )
   })
 
+  test('make it fail: the printed command of a key that starts with - runs in a shell and checks that server', async () => {
+    const tool = 'mcp__-x__ping'
+    const s = setupLog(
+      [forged({ ending: 'error', calls: [{ tool, decision: 'allow', ms: 1, ok: false, error: 'no-server' }] })],
+      [],
+      { mcpServers: { '-x': demoEntry } },
+    )
+    const argv = path.join(path.dirname(s.config), 'argv.js')
+    fs.writeFileSync(argv, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
+    assert.equal(
+      await runRuns(['--server=-x', '--config', s.config], { ...s.io, launch: { kind: 'node', main: argv } }),
+      1,
+    )
+    const line = /Run `(.+)` to see/.exec(s.printed.join('\n'))?.[1]
+    assert.ok(line !== undefined, s.printed.join('\n'))
+    const shell = spawnSync(line, { shell: true, encoding: 'utf8', windowsHide: true })
+    assert.equal(shell.status, 0, `${line}\n${shell.stderr}`)
+    const [command, ...args] = JSON.parse(shell.stdout) as string[]
+    assert.equal(command, 'tools')
+    s.printed.length = 0
+    assert.equal(await runTools(args, s.io), 0, s.printed.join('\n'))
+    assert.equal(s.printed[0], '-x: connected, 2 tools')
+    s.printed.length = 0
+    assert.equal(await runLogin(args, s.io), 1, 'login reads the same words')
+    assert.deepEqual(s.printed, ['-x is a stdio server. Only an HTTP server logs in with OAuth.'])
+  })
+
   test('make it fail: a server name that is not a key never reaches a printed command', async () => {
     const tool = "mcp__x$';echo PWNED >&2;'y__ping"
     const s = setupLog([
@@ -406,9 +449,64 @@ describe('runs', () => {
     assert.deepEqual(s.printed, ['no run yet'])
   })
 
+  test('make it fail: a run that called no tool, or no tool of the server, confirms nothing', async () => {
+    const idle = runLine(record({ time: '2026-01-01T00:00:05.000Z', ending: 'done', calls: [] }))
+    const s = setupLog([done, idle])
+    assert.equal(await s.runs(), 1)
+    assert.deepEqual(s.printed, [
+      '2026-01-01T00:00:05.000Z done 100 ms',
+      'the newest run called no tool. Run a task that calls one.',
+    ])
+    s.printed.length = 0
+    assert.equal(await s.runs('--server', 'demo'), 0, 'the newest run of demo is the one with a call')
+    s.printed.length = 0
+    const other = forged({
+      time: '2026-01-01T00:00:06.000Z',
+      calls: [{ tool: 'mcp__other__ping', decision: 'allow', ms: 1, ok: true }],
+    })
+    const t = setupLog([other])
+    assert.equal(await t.runs('--server', 'demo'), 1)
+    assert.deepEqual(t.printed, ['no run yet'])
+  })
+
+  test('make it fail: --since never lets a run before the time confirm a new attempt', async () => {
+    const s = setupLog([done])
+    assert.equal(await s.runs('--server', 'demo', '--since', '2026-01-01T00:00:02Z'), 1)
+    assert.deepEqual(s.printed, ['no run since 2026-01-01T00:00:02.000Z'])
+    s.printed.length = 0
+    assert.equal(await s.runs('--server', 'demo', '--since', '2026-01-01T09:00:01+09:00'), 0, 'at the time counts')
+    assert.deepEqual(s.printed, [
+      'runs since 2026-01-01T00:00:01.000Z',
+      '2026-01-01T00:00:01.000Z done 100 ms',
+      '  mcp__demo__list_pull_requests allow ok',
+    ])
+    s.printed.length = 0
+    assert.equal(await s.runs('--server', 'other', '--since', '1d'), 1)
+    assert.deepEqual(s.printed, ['no run yet'], 'a server without any run is still no run yet')
+  })
+
+  test('--since with a duration counts back from now, and shows the time', async () => {
+    const now = new Date().toISOString()
+    const fresh = runLine(record({ time: now, ending: 'done', calls: [JSON.parse(done).calls[0]] }))
+    const s = setupLog([done, fresh])
+    assert.equal(await s.runs('--since', '30m', '--last', '5'), 0, s.printed.join('\n'))
+    assert.match(s.printed[0]!, /^runs since \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    assert.equal(s.printed[1], `${now} done 100 ms`)
+    assert.equal(s.printed.length, 3, 'the run of 2026-01-01 is older')
+  })
+
   test('exits 2 on a usage error', async () => {
     const s = setupLog([done])
-    for (const args of [['--last', '0'], ['--last', 'x'], ['--server', 'a__b'], ['extra'], ['--nope']])
+    for (const args of [
+      ['--last', '0'],
+      ['--last', 'x'],
+      ['--server', 'a__b'],
+      ['extra'],
+      ['--nope'],
+      ['--since', 'yesterday'],
+      ['--since', '2026-01-01T00:00:00'],
+      ['--since', '0m'],
+    ])
       assert.equal(await s.runs(...args), 2, args.join(' '))
   })
 })

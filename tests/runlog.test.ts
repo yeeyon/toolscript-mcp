@@ -12,6 +12,7 @@ import {
   MAX_CALLS,
   MAX_LOG_BYTES,
   callDecision,
+  parseSince,
   rotates,
   runLine,
   runRecord,
@@ -179,5 +180,47 @@ describe('the log key of the config', () => {
   test('a value that is not a boolean is an error that names the key', () => {
     const bad = parse({ log: 'no' })
     assert.deepEqual(!bad.ok && bad.errors, ['log: must be true or false, not "no"'])
+  })
+})
+
+describe('the time of runs --since', () => {
+  const now = new Date('2026-11-18T12:00:00.000Z')
+  const since = (text: string) => parseSince(text, now)?.toISOString()
+
+  test('a duration counts back from now', () => {
+    assert.equal(since('30m'), '2026-11-18T11:30:00.000Z')
+    assert.equal(since('2h'), '2026-11-18T10:00:00.000Z')
+    assert.equal(since('1d'), '2026-11-17T12:00:00.000Z')
+  })
+
+  test('an ISO 8601 time needs a zone, and an offset moves it to UTC', () => {
+    assert.equal(since('2026-11-18T09:30Z'), '2026-11-18T09:30:00.000Z')
+    assert.equal(since('2026-11-18T18:30:15.5+09:00'), '2026-11-18T09:30:15.500Z')
+    assert.equal(since('2024-02-29T00:00:00-05:30'), '2024-02-29T05:30:00.000Z')
+  })
+
+  test('make it fail: any other text, or a day or an hour that does not exist, is no time', () => {
+    for (const text of [
+      '',
+      '0m',
+      '30',
+      '30s',
+      '1w',
+      ' 30m',
+      '-30m',
+      '1.5h',
+      '2026-11-18',
+      '2026-11-18T09:30:00',
+      '2026-11-18 09:30:00Z',
+      '2026-02-29T00:00Z',
+      '2026-04-31T00:00Z',
+      '2026-13-01T00:00Z',
+      '2026-11-18T24:00Z',
+      '2026-11-18T09:60Z',
+      '2026-11-18T09:30:60Z',
+      '2026-11-18T09:30+24:00',
+      'yesterday',
+    ])
+      assert.equal(since(text), undefined, JSON.stringify(text))
   })
 })
