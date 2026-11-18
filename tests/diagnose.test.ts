@@ -87,6 +87,10 @@ describe('tools', () => {
       'demo: connected, 2 tools',
       'mcp__demo__list_pull_requests read-only allow',
       'mcp__demo__get_pull_request read-only ask',
+      '',
+      'Commands that allow tools:',
+      '  - mcp__demo__get_pull_request',
+      `    npx -y toolscript-mcp allow --config "${s.config.replaceAll('\\', '/')}" "mcp__demo__get_pull_request"`,
     ])
   })
 

@@ -1,11 +1,14 @@
 // The checks of a first run. `toolscript-mcp tools <server>` connects to one server of the config as the running
-// server does, then prints its tools and what the policy decides for each. `toolscript-mcp runs` reads the run log and
+// server does, then prints its tools, what the policy decides for each, and a dry-run allow command for each tool that
+// the policy asks for and whose name every shell passes as it is. `toolscript-mcp runs` reads the run log and
 // says whether the newest run of a server worked, and the next step when it did not. Both print to stderr, as init and
 // login do. Neither prints a description, an argument, an env or header value, a token or the stderr of a child.
 
 import fs from 'node:fs'
+import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { toolLines, toolLineText, type SettledState } from '../core/catalog.ts'
+import { allowCommands, commandStart } from '../core/commands.ts'
 import {
   configPath,
   loginReason,
@@ -120,7 +123,14 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     return 1
   }
   const lines = toolLines(state, config.policy, config.bridges)
-  io.print([`${key}: connected, ${lines.length} tools`, ...lines.map(toolLineText)].join('\n'))
+  const start = commandStart(path.resolve(file), io.platform, io.launch, 'tools')
+  io.print(
+    [
+      `${key}: connected, ${lines.length} tools`,
+      ...lines.map(toolLineText),
+      ...allowCommands(lines, config.policy, config.bridges, start),
+    ].join('\n'),
+  )
   return 0
 }
 

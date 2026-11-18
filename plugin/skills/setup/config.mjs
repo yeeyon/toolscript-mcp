@@ -7,15 +7,13 @@
 //   node config.mjs <config> prepend <action> <match> [<action> <match>]...
 //   node config.mjs <config> add <name> <entry.json>
 //   node config.mjs <config> untrusted <name> [true|false]
-//   node config.mjs <config> allow-tools [--dry-run] <tool>...
 // path prints the default config path, as toolscript-mcp finds it without --config.
 // policy writes the rules in order. prepend puts its rules first and drops the old rules with the same match, so a
 // second run changes nothing.
 // policy, prepend and add make the config when it does not exist.
 // untrusted sets "untrusted": true on a server, so each of its results reaches the model as untrusted text. false
 // removes the key.
-// allow-tools puts an allow rule for each exact tool name first. It adds none for a tool that a deny rule matches or
-// an ask rule names. --dry-run prints the policy that it would write.
+// To allow the exact tools of a task, run the lines that `toolscript-mcp tools` prints.
 // Exit 1 is a failure of the config or the entry. Exit 2 is a usage error.
 import fs from 'node:fs'
 import os from 'node:os'
@@ -26,7 +24,6 @@ const ACTIONS = ['allow', 'deny', 'ask']
 const NAME = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/
 // The match rule of parsePolicy in src/core/config.ts. A policy error stops the server at its start.
 const MATCH = /^(mcp__|\*)/
-const TOOL = /^mcp__[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*__[^*]+$/
 
 class Fail extends Error {
   constructor(message, code = 1) {
@@ -134,7 +131,6 @@ function usage() {
       '  node config.mjs <config> prepend <action> <match> [<action> <match>]...',
       '  node config.mjs <config> add <name> <entry.json>',
       '  node config.mjs <config> untrusted <name> [true|false]',
-      '  node config.mjs <config> allow-tools [--dry-run] <tool>...',
     ].join('\n'),
     2,
   )
@@ -179,37 +175,6 @@ function parseRules(args) {
   return rules
 }
 
-// matches in src/core/policy.ts: `*` matches any characters, and a glob matches the whole name.
-function matches(glob, tool) {
-  const parts = glob.split('*')
-  if (parts.length === 1) return glob === tool
-  const first = parts[0]
-  const last = parts.at(-1)
-  if (tool.length < first.length + last.length || !tool.startsWith(first) || !tool.endsWith(last)) return false
-  const end = tool.length - last.length
-  let at = first.length
-  for (const part of parts.slice(1, -1)) {
-    const found = tool.indexOf(part, at)
-    if (found < 0 || found + part.length > end) return false
-    at = found + part.length
-  }
-  return true
-}
-
-// Why allow-tools adds no rule for the tool, or undefined. A deny rule anywhere in the policy stays in force, also
-// one that an earlier rule hides today, and so does an ask rule that names the tool. An allow rule that names the
-// tool counts only when no earlier rule matches the tool.
-function keptRule(rules, tool) {
-  const deny = rules.find(rule => rule.action === 'deny' && matches(rule.match, tool))
-  if (deny) return `the deny rule ${JSON.stringify(deny.match)} stays`
-  if (rules.some(rule => rule.match === tool && rule.action === 'ask')) {
-    return `the ask rule ${JSON.stringify(tool)} stays`
-  }
-  const first = rules.find(rule => matches(rule.match, tool))
-  if (first?.match === tool) return `allowed already by ${JSON.stringify(tool)}`
-  return undefined
-}
-
 const COMMANDS = {
   show(file, args) {
     if (args.length > 0) usage()
@@ -250,33 +215,6 @@ const COMMANDS = {
     config.mcpServers = { ...config.mcpServers, [name]: entry }
     writeConfig(file, config)
     return show(config)
-  },
-  'allow-tools'(file, args) {
-    const dry = args[0] === '--dry-run'
-    const tools = [...new Set(dry ? args.slice(1) : args)]
-    if (tools.length === 0) usage()
-    const bad = tools.find(tool => !TOOL.test(tool))
-    if (bad !== undefined) {
-      throw new Fail(`Give each tool by its exact tool name, such as mcp__github__list_pulls, not "${bad}".`, 2)
-    }
-    const config = readConfig(file, newConfig())
-    const old = oldRules(config)
-    const lines = []
-    const added = []
-    for (const tool of tools) {
-      const keep = keptRule(old, tool)
-      if (keep === undefined) {
-        added.push({ match: tool, action: 'allow' })
-        lines.push(`add allow ${tool}`)
-      } else {
-        lines.push(`keep ${tool}: ${keep}`)
-      }
-    }
-    const moved = new Set(added.map(rule => rule.match))
-    config.policy = [...added, ...old.filter(rule => !moved.has(rule.match))]
-    if (dry) return [...lines, 'Dry run: config.mjs wrote nothing. The policy would be:', show(config)].join('\n')
-    if (added.length > 0) writeConfig(file, config)
-    return [...lines, show(config)].join('\n')
   },
   untrusted(file, args) {
     const [name, value = 'true', ...more] = args

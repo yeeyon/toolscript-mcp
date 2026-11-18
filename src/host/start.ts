@@ -21,9 +21,12 @@ const FROM_NPM = /[\\/]node_modules[\\/](\.bin[\\/])?toolscript-mcp([\\/]|$)/i
 export const detectLaunch = (script: string): Launch =>
   FROM_NPM.test(script) ? NPX_LAUNCH : { kind: 'node', main: path.resolve(script) }
 
-/** The config of a file, or the lines that say why it cannot be read. `missing`: the file does not exist. */
+/**
+ * The config of a file and the text that it came from, or the lines that say why it cannot be read. `missing`: the
+ * file does not exist.
+ */
 export type Loaded =
-  | { readonly ok: true; readonly config: Config }
+  | { readonly ok: true; readonly config: Config; readonly text: string }
   | { readonly ok: false; readonly lines: readonly string[]; readonly missing: boolean }
 
 /** The config in `file`, or the lines that say why it cannot be read. */
@@ -40,7 +43,7 @@ export const loadConfig = (file: string, env: Env, platform: string): Loaded => 
   }
   const parsed = parseConfig(text, env, process.execPath, platform)
   return parsed.ok
-    ? parsed
+    ? { ...parsed, text }
     : { ok: false, lines: [`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)], missing: false }
 }
 

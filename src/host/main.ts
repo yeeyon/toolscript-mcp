@@ -4,7 +4,8 @@
 // stdout carries only MCP JSON-RPC, so every log line goes to stderr.
 // `toolscript-mcp init` writes the config from the configs of the clients.
 // `toolscript-mcp login <server>` gets the OAuth tokens of an HTTP server.
-// `toolscript-mcp tools <server>` and `toolscript-mcp runs` check a first run.
+// `toolscript-mcp tools <server>` and `toolscript-mcp runs` check a first run, and
+// `toolscript-mcp allow <tool>...` allows the tools of its task.
 // `toolscript-mcp doctor` checks the whole setup.
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -13,6 +14,7 @@ import os from 'node:os'
 import { parseArgs } from 'node:util'
 import { configPath, nestedStart } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
+import { ALLOW_USAGE, runAllow } from './allow.ts'
 import { RUNS_USAGE, runRuns, runTools, TOOLS_USAGE } from './diagnose.ts'
 import { DOCTOR_USAGE, runDoctor } from './doctor.ts'
 import { connectAll } from './downstream.ts'
@@ -38,6 +40,7 @@ const USAGE = [
   INIT_USAGE,
   LOGIN_USAGE,
   TOOLS_USAGE,
+  ALLOW_USAGE,
   RUNS_USAGE,
   DOCTOR_USAGE,
 ]
@@ -48,7 +51,7 @@ if (process.argv[2] === 'init')
   )
 
 const io = { env: process.env, platform: process.platform, home: os.homedir(), version, launch, print: console.error }
-const COMMANDS = { login: runLogin, tools: runTools, runs: runRuns, doctor: runDoctor }
+const COMMANDS = { login: runLogin, tools: runTools, allow: runAllow, runs: runRuns, doctor: runDoctor }
 const command = process.argv[2]
 if (command !== undefined && Object.hasOwn(COMMANDS, command))
   process.exit(await COMMANDS[command as keyof typeof COMMANDS](process.argv.slice(3), io))
