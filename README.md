@@ -311,8 +311,8 @@ the reason, with each control and format character as a `\u` escape. For a serve
 never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 on a failure and 2 on a
 usage error.
 
-`tools` never shows what a stdio server writes to stderr. That text can hold a secret that is not in the config. If
-the server wrote to stderr, the reason says so. To read that text, run the command of the server in a terminal. When
+`tools` and `search_tools` never show what a stdio server writes to stderr. That text can hold a secret that is not
+in the config. If the server wrote to stderr, the reason says so. To read that text, run the command of the server in a terminal. When
 your client starts toolscript-mcp, the log of the client also holds that text.
 
 `toolscript-mcp runs [--server <key>] [--last <n>] [--since <time>] [--config <path>]` reads the
@@ -570,9 +570,9 @@ because a program can write that file through a tool. It names a rule by its pla
 - After a server returns one wrapped result, each later result of that server in the session counts as untrusted.
   This includes its errors and its binary attachments, which the Azure DevOps server does not wrap.
 - If a server entry has `"untrusted": true`, each result of that server counts as untrusted from its first call.
-- If a server with untrusted results fails, the model does not get its error text. This text can be the end of
-  its stderr or an HTTP error body. `search_tools`, the check before a run and a failed call show a fixed text. The
-  log on stderr has the whole reason.
+- If a server with untrusted results fails, the model does not get its error text. This text can be an HTTP error
+  body. `search_tools`, the check before a run and a failed call show a fixed text. The log on stderr has the whole
+  reason. The model never gets the stderr of a stdio server, also for a trusted server.
 - Without `"untrusted": true`, the results of a server before its first wrapped result stay trusted. Set it for the
   Azure DevOps MCP server, because its first call can return an error or a binary attachment.
 - init sets it on each server that names Azure DevOps. If no part of the entry names it, set the key yourself.

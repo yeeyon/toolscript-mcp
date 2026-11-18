@@ -73,7 +73,7 @@ type Hide = (text: string) => string
  */
 const UNSHOWN = 'Its error text is in the toolscript-mcp log only, because the text of this server is untrusted'
 
-/** Ends the reason of a failed stdio child that wrote to stderr, when `stderrInReason` is false. */
+/** Ends the reason of a failed stdio child that wrote to stderr, in place of that text. */
 const STDERR_UNSHOWN =
   'Its stderr is not shown here. To read it, run the command of the server in a terminal. When the client starts toolscript-mcp, its log also holds it'
 
@@ -397,16 +397,10 @@ export type ConnectOptions = {
   readonly listFloorMs?: number
   /**
    * Gets what each stdio child writes to stderr. The running server passes it on to its own stderr, the log of the
-   * client. `toolscript-mcp tools` drops it, so it prints only its own lines. Only `stderrInReason` puts that text in
-   * a reason.
+   * client. `toolscript-mcp tools` drops it, so it prints only its own lines. No reason holds that text: `redact` hides
+   * only the values of the config, and a child can print a secret from anywhere.
    */
   readonly childStderr?: (chunk: Buffer) => void
-  /**
-   * True: the reason of a failed stdio child ends with the last 300 characters of its stderr, config values hidden.
-   * False, the default: the reason says only where to read that stderr. `redact` hides only the values of the config,
-   * and a child can print a secret from anywhere. The running server passes true, so search_tools shows the end.
-   */
-  readonly stderrInReason?: boolean
   /** The sentence that ends the reason of an untrusted server in place of its error text. */
   readonly unshown?: string
 }
@@ -423,10 +417,8 @@ export const connectAll = (
     listFloorMs = LIST_FLOOR_MS,
     childStderr = chunk => void process.stderr.write(chunk),
     unshown = UNSHOWN,
-    stderrInReason = false,
   }: ConnectOptions = {},
 ): Downstream => {
-  const stderrEnd = (stderr: string) => (stderrInReason ? `Its stderr ends with: ${stderr}` : STDERR_UNSHOWN)
   let closing: Promise<void> | undefined
   const links = new Map<ServerKey, Link>()
   // The start times of the attempts of each server in the last window.
@@ -514,7 +506,7 @@ export const connectAll = (
         opened.delete(client)
         const stderr = lastError()
         if (stderr === '') lost('the connection closed')
-        else lost(`the connection closed. ${stderrEnd(stderr)}`, 'the connection closed')
+        else lost(`the connection closed. ${STDERR_UNSHOWN}`, 'the connection closed')
       }
     } catch (err) {
       // A child that exits gives only "Connection closed": its stderr says
@@ -525,7 +517,7 @@ export const connectAll = (
       opened.delete(client)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
       if (isOAuthStop(err) || err instanceof OwnError) fail(errorText(err))
-      else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${stderrEnd(stderr)}`, 'the connect failed')
+      else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
     }
   }
 

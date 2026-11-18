@@ -77,8 +77,6 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     login,
     childStderr: () => {},
     unshown: TOOLS_UNSHOWN,
-    // An agent reads what tools prints, and the stderr of a child can hold a secret that is not in the config.
-    stderrInReason: false,
   })
   let state = downstream.states()[0]!
   try {

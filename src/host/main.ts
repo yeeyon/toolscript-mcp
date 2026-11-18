@@ -71,7 +71,6 @@ log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 
 const downstream = connectAll(config.servers, version, log, {
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
-  stderrInReason: true,
 })
 const { server, stopRuns } = createServer(downstream, config, file, version, log)
 
