@@ -15,6 +15,16 @@ import {
   type Launch,
   type ServerKey,
 } from './config.ts'
+import {
+  commandPath,
+  commandStart,
+  label,
+  NAME_CHANGES,
+  nameWords,
+  pathRefusal,
+  PLAIN_NAME,
+  type CommandStart,
+} from './commands.ts'
 import { printable, shownName } from './policy.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor'
@@ -485,75 +495,6 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 /** "Claude Code (local scope)", or the client name alone. */
 const sourceLabel = (file: ClientFile) => `${CLIENT_NAME[file.client]}${file.scope ? ` (${file.scope} scope)` : ''}`
 
-/**
- * The server names that a printed command holds. A name in a client file can come from a cloned repo, and a person
- * can paste a command into any shell: sh, bash, zsh, fish, tcsh, cmd.exe or PowerShell. Each of them passes these
- * characters as they are, so the command needs no quoting rule for a hostile name. Every other name gets no command.
- */
-const PLAIN_NAME = /^[A-Za-z0-9._-]+$/
-
-const NAME_CHANGES = 'no command: the name holds a character that a shell can change'
-
-/**
- * A plain name as the last words of a printed command, in double quotes: PowerShell splits a bare `-a.b` at the dot.
- * A name that starts with `-` comes after `--`, so the command does not read it as an option. The `--` is in double
- * quotes too: PowerShell drops a bare `--` before a script, such as the npm shim of claude.
- */
-const nameWords = (name: string): string => `${name.startsWith('-') ? '"--" ' : ''}"${name}"`
-
-/**
- * The paths that a printed command holds: a drive letter or none, a `/`, then letters, digits, spaces and
- * `. _ - ( ) ~ /`. Each shell above passes them as they are in double quotes. `%` and `!`, which cmd.exe and bash
- * expand in double quotes, and `$`, the backtick, `\` and `"` are out. A Windows path gets forward slashes: Git Bash
- * reads a backslash as an escape, and Node reads both.
- */
-const PLAIN_PATH = /^(?:[A-Za-z]:)?\/[\w ().~\/-]*$/
-
-const PATH_CHARACTERS = 'letters, digits, spaces, a drive letter and . _ - ( ) ~ /'
-
-/** `file` in double quotes for a printed command, or undefined when a shell can change it. */
-const commandPath = (file: string, platform: string): string | undefined => {
-  const path = platform === 'win32' ? file.replaceAll('\\', '/') : file
-  return PLAIN_PATH.test(path) ? `"${path}"` : undefined
-}
-
-/**
- * The words of a printed toolscript-mcp command: how it starts, the config file and the project folder. Or, when a
- * shell can change one of these paths, the lines that say which path and how to get the commands.
- */
-type CommandStart =
-  | { readonly ok: true; readonly run: string; readonly config: string; readonly project?: string }
-  | { readonly ok: false; readonly lines: readonly string[] }
-
-const commandStart = (configFile: string, platform: string, launch: Launch, project?: string): CommandStart => {
-  const paths: (readonly [file: string, what: string, fix: string] | undefined)[] = [
-    launch.kind === 'node'
-      ? [launch.main, 'toolscript-mcp', 'start toolscript-mcp with npx, or from a clone in such a path']
-      : undefined,
-    [configFile, 'the config file', 'run init again with --config and such a path'],
-    project === undefined
-      ? undefined
-      : [project, 'the project folder', 'run init again in a folder with such a path, or name it with --project'],
-  ]
-  const failed = paths.find(p => p !== undefined && commandPath(p[0], platform) === undefined)
-  if (failed !== undefined)
-    return {
-      ok: false,
-      lines: [
-        `  no command: a shell can change the path of ${failed[1]}. A path in a command holds only ${PATH_CHARACTERS}.`,
-        `    path: ${printable(failed[0])}`,
-        `  To get the commands, ${failed[2]}.`,
-      ],
-    }
-  const word = (file: string) => commandPath(file, platform) ?? ''
-  return {
-    ok: true,
-    run: launch.kind === 'npx' ? 'npx -y toolscript-mcp' : `node ${word(launch.main)}`,
-    config: word(configFile),
-    ...(project !== undefined && { project: word(project) }),
-  }
-}
-
 /** The lines that say where the entries of a client file are: the file, and the project of a local server in it. */
 const placeLines = (file: ClientFile): string[] => [
   `    file: ${printable(file.path)}`,
@@ -561,32 +502,42 @@ const placeLines = (file: ClientFile): string[] => [
 ]
 
 /**
- * The step that removes the direct copy `name` from its client file: the command of Claude Code, after the folder to
- * run it in, or an edit by hand.
+ * The step that removes the direct copy `name` from its client file: the command of Claude Code, after a `pushd`
+ * line to the folder of a local or project server, which `claude mcp remove` finds only from there. Or an edit by hand.
  */
-const removeStep = (file: ClientFile, name: string): string[] => {
-  const label = `  ${shownName(name)} (${sourceName(file)})`
+const removeStep = (file: ClientFile, name: string, platform: string): string[] => {
+  const head = label(`${shownName(name)} (${sourceName(file)})`)
   const byHand = 'In an editor, remove its entry from "mcpServers" of this file.'
-  if (file.client !== 'claude-code') return [label, `    ${byHand}`, ...placeLines(file)]
-  if (!PLAIN_NAME.test(name)) return [label, `    ${NAME_CHANGES}. ${byHand}`, ...placeLines(file)]
+  if (file.client !== 'claude-code') return [head, `    ${byHand}`, ...placeLines(file)]
+  if (!PLAIN_NAME.test(name)) return [head, `    ${NAME_CHANGES}. ${byHand}`, ...placeLines(file)]
   const scope = file.scope ?? 'user'
-  return [
-    label,
-    ...(scope === 'project'
+  const folder = scope === 'user' ? undefined : commandPath(file.project ?? '', platform)
+  const shared =
+    scope === 'project'
       ? ['    The file is shared with everyone who uses the project. Decide with them before you remove the entry.']
-      : []),
-    ...(scope === 'user' ? [] : [`    folder: ${printable(file.project ?? '')}`]),
+      : []
+  if (scope !== 'user' && folder === undefined)
+    return [
+      head,
+      ...shared,
+      `    no command: a shell can change the path of its folder. ${byHand}`,
+      ...placeLines(file),
+    ]
+  return [
+    head,
+    ...shared,
+    ...(folder === undefined ? [] : [`    pushd ${folder}`]),
     `    claude mcp remove --scope ${scope} ${nameWords(name)}`,
   ]
 }
 
-const REMOVE_HEAD = 'Run each command in the folder above it, when it has one.'
+const REMOVE_HEAD = 'Run the command lines of a step in order, in one shell.'
 
 /** The steps that move one client to toolscript: remove what the config now holds, then add toolscript. */
 const steps = (c: ClientResult, start: CommandStart, configFile: string, platform: string, launch: Launch) => {
   const remove = c.outcomes
     .flatMap(o => (o.kind === 'imported' || o.kind === 'same' || o.kind === 'self' ? [o.name] : []))
-    .flatMap(name => removeStep(c.file, name))
+    .flatMap(name => removeStep(c.file, name, platform))
   if (c.file.client === 'claude-code') {
     // Claude Code on Windows starts npx only through cmd /c, which Git Bash rewrites as cmd C:/. It starts node directly.
     const cmd = platform === 'win32' && launch.kind === 'npx' ? 'cmd /c ' : ''
@@ -656,7 +607,7 @@ export const initReport = (imp: Import, configFile: string, platform: string, la
     }
   if (left.length > 0) out.push('', 'Not imported:', ...left)
   if (imp.servers.size === 0) return [...out, '', 'No server to import. init wrote nothing.'].map(printable).join('\n')
-  const start = commandStart(configFile, platform, launch)
+  const start = commandStart(configFile, platform, launch, 'init')
   out.push('', `Imported ${plural(imp.servers.size, 'server')}:`, ...imported, ...serverNotes(imp.servers, start))
 
   const [first] = imp.servers.keys()
@@ -755,6 +706,7 @@ export const listReport = (files: readonly FileServers[], config: OldConfig, at:
       c.file.scope ?? '-',
       printable(kindOf(c)),
       printable(statusOf(c, config.servers)),
+      c.parsed.kind === 'entry' ? c.parsed.key : '-',
       printable(c.file.project ?? '-'),
     ]),
   )
@@ -765,7 +717,7 @@ export const listReport = (files: readonly FileServers[], config: OldConfig, at:
   )
   const list =
     rows.length > 0
-      ? table([['name', 'client', 'scope', 'kind', 'status', 'folder'], ...rows])
+      ? table([['name', 'client', 'scope', 'kind', 'status', 'key', 'folder'], ...rows])
       : ['No MCP server in the client files.']
   const copies = files.flatMap(f => f.candidates.filter(c => configStatus(c.parsed, config.servers) === 'in config'))
   const remove = copies.length > 0 ? ['', `Steps that remove a direct copy. ${REMOVE_HEAD}`] : []
@@ -774,7 +726,7 @@ export const listReport = (files: readonly FileServers[], config: OldConfig, at:
     ...problems,
     ...addCommands(files, config, at),
     ...remove,
-    ...copies.flatMap(c => removeStep(c.file, c.name)),
+    ...copies.flatMap(c => removeStep(c.file, c.name, at.platform)),
   ].join('\n')
 }
 
@@ -878,24 +830,26 @@ const addOptions = (
  * For each server with the status `not in config`, a label line, then on its own line the command that adds it, or
  * why init prints none. The command names the config, the folder when a local or project scope has the name, `--from`
  * when `--add` would take another copy of the name, and `--unapproved` when Claude Code does not run the server. The
- * label of such a server says to ask first. When a shell can change a path of the commands, init prints none of them.
+ * label of such a server says to ask first. When a shell can change the path of toolscript-mcp or the config, init
+ * prints none of them, and when it can change the folder, none with `--project`.
  */
 const addCommands = (files: readonly FileServers[], config: OldConfig, at: AddAt): string[] => {
   const all = files.flatMap(f => f.candidates)
   const missing = all.filter(c => configStatus(c.parsed, config.servers) === 'not in config')
   if (missing.length === 0) return []
-  const start = commandStart(at.configFile, at.platform, at.launch, at.start)
+  const start = commandStart(at.configFile, at.platform, at.launch, 'init')
   if (!start.ok) return ['', 'Commands that add a server:', ...start.lines]
+  const project = commandPath(at.start, at.platform)
   const lines = missing.flatMap(c => {
     const options = addOptions(files, c, config)
     const gate = options?.gate ? `, ask first: ${options.gate} in Claude Code` : ''
-    const label = `  ${shownName(c.name)} (${sourceName(c.file)}${gate})`
+    const head = label(`${shownName(c.name)} (${sourceName(c.file)}${gate})`)
     if (!PLAIN_NAME.test(c.name) && c.parsed.kind === 'entry') {
       const { key, entry } = c.parsed
       // startIn sets it: Claude Code starts a stdio server of these scopes in the start folder.
       const cwd = 'command' in entry && (c.file.scope === 'local' || c.file.scope === 'project') ? entry.cwd : undefined
       return [
-        label,
+        head,
         `    ${NAME_CHANGES}. In an editor, copy its entry from "mcpServers" of this file to "mcpServers" of the config.`,
         ...placeLines(c.file),
         `    config: ${printable(at.configFile)}`,
@@ -903,19 +857,29 @@ const addCommands = (files: readonly FileServers[], config: OldConfig, at: AddAt
         ...(cwd === undefined ? [] : [`    folder: ${printable(cwd)}`]),
       ]
     }
-    if (options === undefined) return [label, '    no command: --add takes another copy of this name.']
+    if (options === undefined) return [head, '    no command: --add takes another copy of this name.']
     const scoped = all.some(o => o.name === c.name && (o.file.scope === 'local' || o.file.scope === 'project'))
+    if (scoped && project === undefined)
+      return [
+        head,
+        ...pathRefusal(
+          '    ',
+          'the project folder',
+          at.start,
+          'run init again in a folder with such a path, or name it with --project',
+        ),
+      ]
     const words = [
       start.run,
       'init',
       `--add=${c.name}`,
       ...(options.from ? ['--from', options.from] : []),
       ...(options.gate ? ['--unapproved'] : []),
-      ...(scoped && start.project ? ['--project', start.project] : []),
+      ...(scoped ? ['--project', project] : []),
       '--config',
       start.config,
     ]
-    return [label, `    ${words.join(' ')}`]
+    return [head, `    ${words.join(' ')}`]
   })
   return ['', 'Commands that add a server:', ...lines]
 }
@@ -946,10 +910,10 @@ export const addReport = (added: readonly Added[], configFile: string, platform:
     }
   }
   out.push(
-    ...serverNotes(new Map(added.map(a => [a.key, a.entry])), commandStart(configFile, platform, launch)),
+    ...serverNotes(new Map(added.map(a => [a.key, a.entry])), commandStart(configFile, platform, launch, 'init')),
     '',
     `The clients keep their direct entries. After a run through toolscript-mcp works, remove them. ${REMOVE_HEAD}`,
-    ...added.flatMap(a => a.from.flatMap(c => removeStep(c.file, c.name))),
+    ...added.flatMap(a => a.from.flatMap(c => removeStep(c.file, c.name, platform))),
     'Then start a new Claude Code session, and restart the other clients.',
   )
   return out.map(printable)

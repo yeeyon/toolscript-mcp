@@ -127,12 +127,12 @@ describe('toolscript-mcp init', () => {
     has('claude mcp remove --scope user "github"')
     has('claude mcp remove --scope user "toolscript"')
     has(`${NPX_ADD} --config ${word(file)}`)
-    for (const label of ['github (claude-desktop)', '"my notes" (claude-desktop)', 'self (claude-desktop)'])
+    for (const label of ['- github (claude-desktop)', '- "my notes" (claude-desktop)', '- self (claude-desktop)'])
       assert.equal(
         lines[lines.indexOf(label) + 2],
         `file: ${path.join(home, '.config/Claude/claude_desktop_config.json')}`,
       )
-    for (const label of ['bench (cursor)', 'tracker (cursor)'])
+    for (const label of ['- bench (cursor)', '- tracker (cursor)'])
       assert.equal(lines[lines.indexOf(label) + 2], `file: ${path.join(home, '.cursor/mcp.json')}`)
     has(`"toolscript": {"command":"npx","args":["-y","toolscript-mcp","--config",${JSON.stringify(file)}]}`)
     assert.match(out, /- Claude Code "toolscript": .*toolscript-mcp/)
@@ -677,15 +677,15 @@ describe('the steps of the import that remove a server from Claude Code', () => 
       '    no command: the name holds a character that a shell can change. In an editor, remove its entry from "mcpServers" of this file.',
       '    file: /c/.claude.json',
     ]
-    const at = lines.indexOf('  gh (claude-code:user)')
+    const at = lines.indexOf('  - gh (claude-code:user)')
     assert.deepEqual(lines.slice(at, at + 13), [
-      '  gh (claude-code:user)',
+      '  - gh (claude-code:user)',
       '    claude mcp remove --scope user "gh"',
-      '  -dash (claude-code:user)',
+      '  - -dash (claude-code:user)',
       '    claude mcp remove --scope user "--" "-dash"',
-      "  it's (claude-code:user)",
+      "  - it's (claude-code:user)",
       ...hand,
-      '  "a b" (claude-code:user)',
+      '  - "a b" (claude-code:user)',
       ...hand,
       '  Add toolscript:',
       '    claude mcp add --scope user toolscript "--" npx -y toolscript-mcp --config "/c/config.json"',
@@ -694,13 +694,24 @@ describe('the steps of the import that remove a server from Claude Code', () => 
   })
 
   test('a config path that a shell can change gets no command, and the report says how to get one', () => {
-    const lines = report(['gh'], "/c/it's/config.json").split('\n')
+    const lines = report(['gh'], '/c/it$s/config.json').split('\n')
     const at = lines.indexOf('  Add toolscript:')
     assert.deepEqual(lines.slice(at + 1, at + 4), [
-      '  no command: a shell can change the path of the config file. A path in a command holds only letters, digits, spaces, a drive letter and . _ - ( ) ~ /.',
-      "    path: /c/it's/config.json",
-      '  To get the commands, run init again with --config and such a path.',
+      "  no command: a shell can change the path of the config file. A path in a command holds only letters, digits, spaces, a drive letter and . _ - ( ) ~ / ' @ +.",
+      '    path: /c/it$s/config.json',
+      '  To get a command, run init again with --config and such a path.',
     ])
+  })
+
+  test("a path with ' @ + gets a command, as each shell passes them in double quotes", () => {
+    const file = "/home/o'brien@corp.example.com/c++/config.json"
+    assert.ok(
+      report(['gh'], file)
+        .split('\n')
+        .includes(`    claude mcp add --scope user toolscript "--" npx -y toolscript-mcp --config "${file}"`),
+    )
+    for (const file of ['/home/é/config.json', '/c/a%b/config.json', '/c/a!b/config.json', '/c/a`b/config.json'])
+      assert.ok(!report(['gh'], file).includes('claude mcp add'), file)
   })
 })
 
@@ -801,14 +812,14 @@ describe('the printed commands in each shell', () => {
   const PLAIN = ['gh', '-dash', 'my.server_1', '-x27', '--x28', '.x83', '..x84', 'a.b95', '-x.y66', '1e3', '..']
   const main = fileURLToPath(new URL('../src/host/main.ts', import.meta.url))
   const hidden = { encoding: 'utf8', windowsHide: true } as const
-  const COMMAND = /^(?:node|npx|claude) /
+  const COMMAND = /^(?:node|npx|claude|pushd) /
   const ADD_HEAD = 'Commands that add a server:'
-  const REMOVE_HEAD = 'Steps that remove a direct copy. Run each command in the folder above it, when it has one.'
+  const REMOVE_HEAD = 'Steps that remove a direct copy. Run the command lines of a step in order, in one shell.'
 
   /** The lines under the label of `name` in the block of `head`, without their indent. */
   const under = (out: string, head: string, name: string): string[] => {
     const block = out.split('\n').slice(out.split('\n').indexOf(head) + 1)
-    const at = block.findIndex(l => l.startsWith(`  ${shownName(name)} (`))
+    const at = block.findIndex(l => l.startsWith(`  - ${shownName(name)} (`))
     if (at < 0) return []
     const end = block.findIndex((l, i) => i > at && !l.startsWith('    '))
     return block.slice(at + 1, end).map(l => l.slice(4))
@@ -846,7 +857,9 @@ describe('the printed commands in each shell', () => {
     const { project, config, list } = setup()
     const out = await list(config)
     for (const line of out.split('\n').filter(l => COMMAND.test(l.trim())))
-      assert.match(line, /^ {4}(?:node|npx|claude) [\w .=:"()~/-]+$/, 'a command holds only plain words')
+      assert.match(line, /^ {4}(?:node|npx|claude|pushd) [\w .=:"()~/'@+-]+$/, 'a command holds only plain words')
+    for (const line of out.split('\n').filter(l => /^ {2}\S/.test(l) && !l.startsWith('  no command')))
+      assert.match(line, /^ {2}- /, 'a label starts with "- "')
     for (const name of HOSTILE) {
       const lines = under(out, ADD_HEAD, name)
       assert.ok(lines[0]?.startsWith('no command: the name holds a character that a shell can change.'), name)
@@ -859,16 +872,17 @@ describe('the printed commands in each shell', () => {
       ])
   })
 
-  test('a path that a shell can change gets no command at all, and the list says which path', async () => {
+  test('a path that a shell can change gets no command, and the list says which path', async () => {
     const { dir, config, list } = setup()
     const refused = (out: string, what: string, file: string) => {
       const lines = out.split('\n')
-      const at = lines.indexOf(ADD_HEAD)
-      assert.ok(lines[at + 1]?.startsWith(`  no command: a shell can change the path of ${what}. `), out)
-      assert.equal(lines[at + 2], `    path: ${file}`)
+      const at = lines.findIndex(l => l.trim().startsWith(`no command: a shell can change the path of ${what}. `))
+      assert.ok(at > lines.indexOf(ADD_HEAD), out)
+      assert.equal(lines[at + 1]?.trim(), `path: ${file}`)
       assert.ok(!lines.some(l => COMMAND.test(l.trim())), out)
     }
-    for (const sign of ['%', '!', "'", '&', '$']) {
+    for (const sign of ['%', '!', '&', '$', '`', '"']) {
+      if (sign === '"' && process.platform === 'win32') continue
       const bad = path.join(dir, `c${sign}d`, 'config.json')
       refused(await list(bad), 'the config file', bad)
       const folder = path.join(dir, `p${sign}q`)
@@ -884,7 +898,7 @@ describe('the printed commands in each shell', () => {
     const script = path.join(dir, 'rec.mjs')
     fs.writeFileSync(
       script,
-      `import fs from 'node:fs'\nfs.appendFileSync(process.env.REC_OUT, JSON.stringify(process.argv.slice(2)) + '\\n')\n`,
+      `import fs from 'node:fs'\nfs.appendFileSync(process.env.REC_OUT, JSON.stringify([fs.realpathSync.native(process.cwd()), ...process.argv.slice(2)]) + '\\n')\n`,
     )
     return script
   }
@@ -965,7 +979,7 @@ describe('the printed commands in each shell', () => {
       `${shell} gives init and claude the exact name of each printed command, and runs no payload`,
       { skip: !present() && `no ${shell}` },
       async () => {
-        const { dir, config, list, childEnv } = setup()
+        const { dir, project, config, list, childEnv } = setup()
         const first = await list(config)
         const added = run(
           PLAIN.map(n => under(first, ADD_HEAD, n)[0] ?? ''),
@@ -975,11 +989,15 @@ describe('the printed commands in each shell', () => {
         assert.equal(keys.length, PLAIN.length, added)
 
         const listed = await list(config)
-        const removes = PLAIN.map(n => under(listed, REMOVE_HEAD, n).find(l => COMMAND.test(l)) ?? '')
+        const removes = PLAIN.flatMap(n => {
+          const lines = under(listed, REMOVE_HEAD, n)
+          assert.deepEqual(lines.slice(-2, -1), [`pushd ${word(project)}`], n)
+          return lines.filter(l => COMMAND.test(l))
+        })
         const log = path.join(dir, 'argv.jsonl')
         const env = { ...childEnv, NODE: process.execPath, REC: rec(dir), REC_OUT: log }
         const removed = run(claude ? [claude, ...removes] : removes, { cwd: dir, env })
-        const argv = fs.existsSync(log)
+        const argv: string[][] = fs.existsSync(log)
           ? fs
               .readFileSync(log, 'utf8')
               .trim()
@@ -987,10 +1005,13 @@ describe('the printed commands in each shell', () => {
               .map(l => JSON.parse(l))
           : []
         assert.deepEqual(
-          argv,
+          argv.map(a => a.slice(1)),
           PLAIN.map(n => ['mcp', 'remove', '--scope', 'project', ...(n.startsWith('-') ? ['--'] : []), n]),
           removed,
         )
+        // cmd.exe runs each line alone, so only the other shells keep the folder of pushd for the next line.
+        if (shell !== 'cmd.exe')
+          assert.deepEqual([...new Set(argv.map(a => a[0]))], [fs.realpathSync.native(project)], removed)
         assert.deepEqual(
           fs.readdirSync(dir).filter(f => f.startsWith('PWN')),
           [],
@@ -1187,14 +1208,14 @@ describe('init --list and --add', () => {
     assert.equal(code, 0, out)
     assert.ok(!out.includes('fake-secret'), out)
     assert.ok(!fs.existsSync(file), 'no config written')
-    assert.match(out, row('name', 'client', 'scope', 'kind', 'status'))
+    assert.match(out, row('name', 'client', 'scope', 'kind', 'status', 'key', 'folder'))
     assert.match(out, row('gh', 'claude-code', 'local', 'stdio gh-mcp', 'not in config'))
     assert.match(out, row('notes', 'claude-code', 'local', 'http https://notes.example.com', 'not in config'))
     assert.match(out, row('shared', 'claude-code', 'project', 'http https://shared.example.com', 'not in config'))
     assert.match(out, row('events', 'claude-code', 'project', '-', 'skipped: type "sse":'), out)
     assert.match(out, row('gh', 'claude-code', 'user', 'stdio npx', 'not in config, hidden by local'))
-    assert.match(out, row('toolscript', 'claude-code', 'user', '-', 'toolscript itself'))
-    assert.match(out, row('"my notes"', 'claude-desktop', '-', 'stdio node', 'not in config'))
+    assert.match(out, row('toolscript', 'claude-code', 'user', '-', 'toolscript itself', '-', '-'))
+    assert.match(out, row('"my notes"', 'claude-desktop', '-', 'stdio node', 'not in config', 'my-notes', '-'))
     assert.match(out, row('gh', 'claude-desktop', '-', 'stdio desktop-gh', 'not in config'))
     assert.match(out, /^Cannot read cursor, .*: not valid JSON/m)
     assert.doesNotMatch(out, /elsewhere/)
@@ -1241,7 +1262,7 @@ describe('init --list and --add', () => {
     )
     assert.match(listed.out, row('odd', 'claude-code', 'project', '-', 'skipped: type "\\u009b2J" is not supported'))
     const shown = `${top}${path.sep}f\\u202eo`
-    assert.match(listed.out, row('"a  b"', 'claude-code', 'project', 'stdio node', 'not in config', shown))
+    assert.match(listed.out, row('"a  b"', 'claude-code', 'project', 'stdio node', 'not in config', 'a-b', shown))
     assert.equal(added.code, 0, added.out)
     assert.match(added.out, /^- a-b, from Claude Code \(project scope\) "a {2}b"\. Left out: x\\u001b$/m)
   })
@@ -1282,14 +1303,21 @@ describe('init --list and --add', () => {
     const home = homeWith(APPROVE_ALL)
     const listed = await run(home, start, ['--list'])
     assert.equal(listed.code, 0, listed.out)
-    assert.match(listed.out, row('dup', 'claude-code', 'project', 'stdio node', 'not in config', near), listed.out)
-    assert.match(listed.out, row('far', 'claude-code', 'project', 'http https://far.example.com', 'not in config', top))
     assert.match(
       listed.out,
-      row('dup', 'claude-code', 'project', 'stdio node', 'not in config, hidden by project', top),
+      row('dup', 'claude-code', 'project', 'stdio node', 'not in config', 'dup', near),
+      listed.out,
+    )
+    assert.match(
+      listed.out,
+      row('far', 'claude-code', 'project', 'http https://far.example.com', 'not in config', 'far', top),
+    )
+    assert.match(
+      listed.out,
+      row('dup', 'claude-code', 'project', 'stdio node', 'not in config, hidden by project', 'dup', top),
     )
 
-    const added = await run(home, start, ['--add', 'dup,far', '--from', 'claude-code:project'])
+    const added = await run(home, start, ['--add', 'dup,far', '--from', 'claude-code:project'], process.platform)
     assert.equal(added.code, 0, added.out)
     assert.ok(
       added.out
@@ -1308,12 +1336,12 @@ describe('init --list and --add', () => {
       [near, 'dup'],
       [top, 'far'],
     ]) {
-      const at = steps.indexOf(`${name} (claude-code:project)`)
+      const at = steps.indexOf(`- ${name} (claude-code:project)`)
       assert.deepEqual(
         steps.slice(at + 1, at + 4),
         [
           'The file is shared with everyone who uses the project. Decide with them before you remove the entry.',
-          `folder: ${folder}`,
+          `pushd ${word(folder)}`,
           `claude mcp remove --scope project "${name}"`,
         ],
         added.out,
@@ -1383,7 +1411,12 @@ describe('init --list and --add', () => {
 
   test('--add copies servers into an existing config, keeps its other keys and policy, and keeps the old file', async () => {
     const { home, project } = setup(undefined, OLD)
-    const { code, out, file } = await run(home, project, ['--add', 'notes,shared', '--add', 'azure-devops'])
+    const { code, out, file } = await run(
+      home,
+      project,
+      ['--add', 'notes,shared', '--add', 'azure-devops'],
+      process.platform,
+    )
     assert.equal(code, 0, out)
     assert.ok(!out.includes('fake-secret'), out)
     assert.deepEqual(JSON.parse(fs.readFileSync(`${file}.bak`, 'utf8')), OLD)
@@ -1413,30 +1446,75 @@ describe('init --list and --add', () => {
     if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600)
 
     // A later session, which never saw this output, gets the same steps from --list.
-    const listed = await run(home, project, ['--list'])
+    const listed = await run(home, project, ['--list'], process.platform)
     const steps = listed.out.split('\n')
     const shared =
       '    The file is shared with everyone who uses the project. Decide with them before you remove the entry.'
+    const head = 'Steps that remove a direct copy. Run the command lines of a step in order, in one shell.'
     assert.deepEqual(
-      steps.slice(
-        steps.indexOf('Steps that remove a direct copy. Run each command in the folder above it, when it has one.'),
-      ),
+      steps.slice(steps.indexOf(head)),
       [
-        'Steps that remove a direct copy. Run each command in the folder above it, when it has one.',
-        '  notes (claude-code:local)',
-        `    folder: ${project}`,
+        head,
+        '  - notes (claude-code:local)',
+        `    pushd ${word(project)}`,
         '    claude mcp remove --scope local "notes"',
-        '  shared (claude-code:project)',
+        '  - shared (claude-code:project)',
         shared,
-        `    folder: ${project}`,
+        `    pushd ${word(project)}`,
         '    claude mcp remove --scope project "shared"',
-        '  azure-devops (claude-code:project)',
+        '  - azure-devops (claude-code:project)',
         shared,
-        `    folder: ${project}`,
+        `    pushd ${word(project)}`,
         '    claude mcp remove --scope project "azure-devops"',
         '',
       ],
       listed.out,
+    )
+  })
+
+  test('a remove step in a folder that a shell can change gets no pushd and no command', async () => {
+    const top = homeWith({ 'a$b/.mcp.json': { mcpServers: { gh: { command: 'node' } } } })
+    const folder = path.join(top, 'a$b')
+    const home = homeWith(APPROVE_ALL)
+    const added = await run(home, folder, ['--add', 'gh'], process.platform)
+    assert.equal(added.code, 0, added.out)
+    const listed = await run(home, folder, ['--list'], process.platform)
+    const lines = listed.out.split('\n')
+    const at = lines.indexOf(
+      '  - gh (claude-code:project)',
+      lines.findIndex(l => l.startsWith('Steps that remove a direct copy.')),
+    )
+    assert.deepEqual(
+      lines.slice(at + 2, at + 4),
+      [
+        '    no command: a shell can change the path of its folder. In an editor, remove its entry from "mcpServers" of this file.',
+        `    file: ${path.join(folder, '.mcp.json')}`,
+      ],
+      listed.out,
+    )
+    assert.ok(!lines.some(l => /^ {4}(pushd|claude) /.test(l)), listed.out)
+  })
+
+  test('a user-scope server gets its add command also when a shell can change the start folder', async () => {
+    const start = path.join(homeWith({}), 'p%q')
+    fs.mkdirSync(start)
+    fs.writeFileSync(path.join(start, '.mcp.json'), JSON.stringify({ mcpServers: { near: { command: 'node' } } }))
+    const home = homeWith({ ...APPROVE_ALL, '.claude.json': { mcpServers: { far: { command: 'node' } } } })
+    const { code, out, file } = await run(home, start, ['--list'], process.platform)
+    assert.equal(code, 0, out)
+    const lines = out.split('\n')
+    const at = lines.indexOf('Commands that add a server:')
+    assert.deepEqual(
+      lines.slice(at + 1, at + 7),
+      [
+        '  - near (claude-code:project)',
+        "    no command: a shell can change the path of the project folder. A path in a command holds only letters, digits, spaces, a drive letter and . _ - ( ) ~ / ' @ +.",
+        `      path: ${start}`,
+        '    To get a command, run init again in a folder with such a path, or name it with --project.',
+        '  - far (claude-code:user)',
+        `    npx -y toolscript-mcp init --add=far --config ${word(file)}`,
+      ],
+      out,
     )
   })
 
@@ -1642,7 +1720,7 @@ describe('init --list and --add', () => {
     })
     assert.ok(!fs.existsSync(`${file}.bak`))
     const lines = out.split('\n')
-    const at = lines.indexOf('  "my notes" (claude-desktop)')
+    const at = lines.indexOf('  - "my notes" (claude-desktop)')
     assert.deepEqual(lines.slice(at + 1, at + 3), [
       '    In an editor, remove its entry from "mcpServers" of this file.',
       `    file: ${path.join(home, '.config/Claude/claude_desktop_config.json')}`,
@@ -1672,7 +1750,7 @@ describe('init --list and --add', () => {
     ] as const)
       assert.match(listed.out, row(name, 'claude-code', scope, `stdio ${name}-${scope}`, status), listed.out)
 
-    const { code, out, file } = await run(home, project, ['--add', 'all,pu,lu'])
+    const { code, out, file } = await run(home, project, ['--add', 'all,pu,lu'], process.platform)
     assert.equal(code, 0, out)
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers, {
       all: { command: 'all-local', cwd: project },
@@ -1870,22 +1948,22 @@ describe('init --list and --add', () => {
     const npx = '    npx -y toolscript-mcp init'
     assert.deepEqual(out.split('\n').slice(out.split('\n').indexOf('Commands that add a server:')), [
       'Commands that add a server:',
-      '  gh (claude-code:local)',
+      '  - gh (claude-code:local)',
       `${npx} --add=gh --from claude-code:local --project ${p} --config ${c}`,
-      '  notes (claude-code:local)',
+      '  - notes (claude-code:local)',
       `${npx} --add=notes --project ${p} --config ${c}`,
-      '  shared (claude-code:project)',
+      '  - shared (claude-code:project)',
       `${npx} --add=shared --project ${p} --config ${c}`,
-      '  azure-devops (claude-code:project)',
+      '  - azure-devops (claude-code:project)',
       `${npx} --add=azure-devops --project ${p} --config ${c}`,
-      '  gh (claude-code:user)',
+      '  - gh (claude-code:user)',
       `${npx} --add=gh --from claude-code:user --project ${p} --config ${c}`,
-      '  "my notes" (claude-desktop)',
+      '  - "my notes" (claude-desktop)',
       '    no command: the name holds a character that a shell can change. In an editor, copy its entry from "mcpServers" of this file to "mcpServers" of the config.',
       `    file: ${path.join(home, '.config/Claude/claude_desktop_config.json')}`,
       `    config: ${file}`,
       '    Give it the key my-notes.',
-      '  gh (claude-desktop)',
+      '  - gh (claude-desktop)',
       `${npx} --add=gh --from claude-desktop --project ${p} --config ${c}`,
       '',
     ])
@@ -1912,19 +1990,19 @@ describe('init --list and --add', () => {
     const clone = '    node "C:/t s/main.js" init'
     assert.deepEqual(out.split('\n').slice(out.split('\n').indexOf('Commands that add a server:')), [
       'Commands that add a server:',
-      '  alpha (claude-code:project, ask first: not approved in Claude Code)',
+      '  - alpha (claude-code:project, ask first: not approved in Claude Code)',
       `${clone} --add=alpha --unapproved ${tail}`,
-      '  beta (claude-code:project, ask first: disabled in Claude Code)',
+      '  - beta (claude-code:project, ask first: disabled in Claude Code)',
       `${clone} --add=beta --unapproved ${tail}`,
-      '  co,ma (claude-code:project, ask first: not approved in Claude Code)',
+      '  - co,ma (claude-code:project, ask first: not approved in Claude Code)',
       '    no command: the name holds a character that a shell can change. In an editor, copy its entry from "mcpServers" of this file to "mcpServers" of the config.',
       `    file: ${path.join(near, '.mcp.json')}`,
       `    config: ${file}`,
       '    Give it the key co-ma, and set its "cwd" to the folder below, where Claude Code starts it.',
       `    folder: ${near}`,
-      '  dup (claude-code:project, ask first: not approved in Claude Code)',
+      '  - dup (claude-code:project, ask first: not approved in Claude Code)',
       `${clone} --add=dup --unapproved ${tail}`,
-      '  dup (claude-code:project)',
+      '  - dup (claude-code:project)',
       '    no command: --add takes another copy of this name.',
       '',
     ])
