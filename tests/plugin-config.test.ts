@@ -328,6 +328,9 @@ describe('plugin config helper', () => {
 
   it('exits 1 for a missing config and 2 for a usage error', () => {
     assert.equal(run(path.join(dir, 'missing.json')).code, 1)
+    const absent = path.join(dir, 'absent', 'config.json')
+    assert.equal(run(absent, 'untrusted', 'remote').code, 1)
+    assert.equal(fs.existsSync(absent), false)
     assert.equal(run(makeConfig(), 'policy', 'allow').code, 2)
     assert.equal(run(makeConfig(), 'unknown').code, 2)
   })

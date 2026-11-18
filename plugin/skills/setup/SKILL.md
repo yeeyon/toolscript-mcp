@@ -247,7 +247,7 @@ An HTTP server without `headers` logs in with OAuth. Go to step 9 for it.
 
 An Azure DevOps MCP server in `<config>` needs `"untrusted": true`. `config.mjs` shows `untrusted` at the end of the
 line of such a server. init misses a server whose name, command, arguments and URL do not name Azure DevOps, such as
-a bridge. If the line of an Azure DevOps server has no `untrusted`, run this command with approval:
+a local proxy. If the line of an Azure DevOps server has no `untrusted`, run this command with approval:
 
 ```sh
 node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" untrusted <name>
