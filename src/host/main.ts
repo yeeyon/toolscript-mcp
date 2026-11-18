@@ -4,19 +4,20 @@
 // stdout carries only MCP JSON-RPC, so every log line goes to stderr.
 // `toolscript-mcp init` writes the config from the configs of the clients.
 // `toolscript-mcp login <server>` gets the OAuth tokens of an HTTP server.
+// `toolscript-mcp tools <server>` and `toolscript-mcp runs` check a first run.
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import fs from 'node:fs'
 import os from 'node:os'
-import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { configPath, loginCommand, nestedStart, parseConfig } from '../core/config.ts'
+import { configPath, nestedStart } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
+import { RUNS_USAGE, runRuns, runTools, TOOLS_USAGE } from './diagnose.ts'
 import { connectAll } from './downstream.ts'
 import { INIT_USAGE, runInit } from './init.ts'
 import { LOGIN_USAGE, runLogin } from './login.ts'
 import { createServer } from './server.ts'
-import { detectLaunch } from './start.ts'
+import { detectLaunch, loadConfig, loginFor } from './start.ts'
 
 const log = (line: string) => console.error(`toolscript-mcp: ${line}`)
 
@@ -30,17 +31,18 @@ const { version } = JSON.parse(fs.readFileSync(new URL('../../package.json', imp
 }
 
 const launch = detectLaunch(process.argv[1] ?? '')
-const USAGE = ['usage: toolscript-mcp [--config <path>] [--help]', INIT_USAGE, LOGIN_USAGE]
+const USAGE = ['usage: toolscript-mcp [--config <path>] [--help]', INIT_USAGE, LOGIN_USAGE, TOOLS_USAGE, RUNS_USAGE]
 
 if (process.argv[2] === 'init')
   process.exit(
     await runInit(process.argv.slice(3), process.env, process.platform, os.homedir(), t => console.error(t), launch),
   )
 
-if (process.argv[2] === 'login') {
-  const io = { env: process.env, platform: process.platform, home: os.homedir(), version, print: console.error }
-  process.exit(await runLogin(process.argv.slice(3), io))
-}
+const io = { env: process.env, platform: process.platform, home: os.homedir(), version, launch, print: console.error }
+const COMMANDS = { login: runLogin, tools: runTools, runs: runRuns }
+const command = process.argv[2]
+if (command !== undefined && Object.hasOwn(COMMANDS, command))
+  process.exit(await COMMANDS[command as keyof typeof COMMANDS](process.argv.slice(3), io))
 
 const refusal = nestedStart(process.env)
 if (refusal !== undefined) {
@@ -61,23 +63,14 @@ try {
 }
 
 const file = configPath(flag, process.env, process.platform, os.homedir())
-let text = ''
-try {
-  text = fs.readFileSync(file, 'utf8')
-} catch (err) {
-  fail([`cannot read the config ${file}: ${errorText(err)}`])
-}
-const parsed = parseConfig(text, process.env, process.execPath, process.platform)
-if (!parsed.ok) fail([`the config ${file} has errors:`, ...parsed.errors.map(e => `  ${e}`)])
-const { config } = parsed
+const loaded = loadConfig(file, process.env, process.platform)
+if (!loaded.ok) fail(loaded.lines)
+const { config } = loaded
 // A launch of Claude Code that parseConfig does not see is not a bridge: this line lets the person see the miss.
 log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 
-// The person runs login in a terminal, without the flag or the TOOLSCRIPT_CONFIG of this server.
-const usual = configPath(undefined, { ...process.env, TOOLSCRIPT_CONFIG: undefined }, process.platform, os.homedir())
-const other = path.resolve(file) === path.resolve(usual) ? undefined : path.resolve(file)
 const downstream = connectAll(config.servers, version, log, {
-  login: key => loginCommand(launch, process.platform, key, other),
+  login: loginFor(launch, file, process.env, process.platform, os.homedir()),
 })
 const { server, stopRuns } = createServer(downstream, config, file, version, log)
 

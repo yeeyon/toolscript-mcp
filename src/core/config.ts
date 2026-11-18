@@ -104,6 +104,10 @@ export const launchText = (launch: Launch, platform: string): string =>
 export const loginCommand = (launch: Launch, platform: string, key: ServerKey, config?: string): string =>
   `${launchText(launch, platform)} login ${shellWord(key, platform)}${config === undefined ? '' : ` --config ${pathWord(config, platform)}`}`
 
+/** The command that connects to one server and lists its tools. */
+export const toolsCommand = (launch: Launch, platform: string, key: string): string =>
+  `${launchText(launch, platform)} tools ${shellWord(key, platform)}`
+
 /** Why a server that needs an OAuth login, or whose refresh was refused, is not connected, as search_tools shows it. */
 export const loginReason = (command: string): string =>
   `it needs an OAuth login. Ask the person to run \`${command}\` in a terminal, then try again`

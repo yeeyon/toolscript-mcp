@@ -2,6 +2,7 @@
 // entry per tool, named mcp__<server>__<tool>, and the servers that failed.
 
 import type { ServerKey } from './config.ts'
+import { decide, type Action, type Bridges, type Policy } from './policy.ts'
 import { learnedShape, listsAll, rankTools, type ArgSpec, type ToolEntry } from './protocol.ts'
 
 /** A tool as a downstream server lists it. */
@@ -10,6 +11,7 @@ export type DownstreamTool = {
   readonly description?: string
   readonly inputSchema?: unknown
   readonly outputSchema?: unknown
+  readonly annotations?: unknown
   readonly _meta?: unknown
 }
 
@@ -31,6 +33,7 @@ export type CatalogEntry = ToolEntry & {
   readonly outputSchema: unknown
   /** Its server marks it to need a person's approval on every call, so an allow rule does not let it run. */
   readonly requiresUserInteraction: boolean
+  readonly annotations: unknown
 }
 
 /** The full name of a downstream tool, as splitToolName reads it. */
@@ -59,6 +62,7 @@ export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
             inputSchema: t.inputSchema,
             outputSchema: t.outputSchema,
             requiresUserInteraction: isObject(t._meta) && t._meta[REQUIRES_USER_INTERACTION] === true,
+            annotations: t.annotations,
           }))
       : [],
   )
@@ -79,6 +83,41 @@ export const listedNames = (states: readonly ServerState[], server: string): str
   const state = states.find(s => s.key === server)
   return state?.status === 'connected' ? catalogOf([state]).map(t => t.name) : undefined
 }
+
+/** What the annotations of a tool say that it does. Only the JSON true counts, and read-only wins. */
+export type ToolHint = 'read-only' | 'destructive' | '-'
+
+/** One tool of a server as `toolscript-mcp tools` prints it: no description, because its text is the server's. */
+export type ToolLine = {
+  readonly name: string
+  readonly hint: ToolHint
+  /** What the policy of the config decides for it now. */
+  readonly action: Action
+  /** Its server marks it to need a person's approval on each run. */
+  readonly person: boolean
+}
+
+const hintOf = (annotations: unknown): ToolHint => {
+  if (!isObject(annotations)) return '-'
+  if (annotations.readOnlyHint === true) return 'read-only'
+  return annotations.destructiveHint === true ? 'destructive' : '-'
+}
+
+export const toolLines = (
+  state: Extract<ServerState, { status: 'connected' }>,
+  policy: Policy,
+  bridges: Bridges,
+): ToolLine[] =>
+  catalogOf([state]).map(t => ({
+    name: t.name,
+    hint: hintOf(t.annotations),
+    action: decide(policy, bridges, t.name).action,
+    person: t.requiresUserInteraction,
+  }))
+
+/** `mcp__demo__list_pull_requests read-only allow`. A deny rule wins over the mark, so a denied tool shows no mark. */
+export const toolLineText = ({ name, hint, action, person }: ToolLine): string =>
+  `${name} ${hint} ${action}${person && action !== 'deny' ? ', a person each run' : ''}`
 
 /** Why a call cannot reach a server now, or undefined when it is connected. */
 export const notConnected = (s: ServerState): string | undefined =>

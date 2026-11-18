@@ -322,12 +322,13 @@ export const serverFetch = (server: HttpServer): FetchLike => {
 
 /**
  * The transport of one server, and the end of what its stdio child wrote to
- * stderr, as one line. The child's stderr still goes on to ours, as with `inherit`.
+ * stderr, as one line. The child's stderr also goes to `stderr`.
  */
 const transportOf = (
   server: ServerConfig,
   onSessionEnd: (err: Error) => void,
   auth: Auth | undefined,
+  stderr: (chunk: Buffer) => void,
 ): { transport: Transport; lastError: () => string } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   const transport = new StdioClientTransport({
@@ -339,7 +340,7 @@ const transportOf = (
   })
   let tail = ''
   transport.stderr?.on('data', (chunk: Buffer) => {
-    process.stderr.write(chunk)
+    stderr(chunk)
     tail = (tail + chunk.toString('utf8')).slice(-2000)
   })
   const lastError = () => tail.replace(/\s+/g, ' ').trim().slice(-300)
@@ -387,6 +388,11 @@ export type ConnectOptions = {
   readonly refreshTimeoutMs?: number
   /** The least time in ms from the start of one list of a server to the start of its next: a test sets it. */
   readonly listFloorMs?: number
+  /**
+   * Gets what each stdio child writes to stderr. The running server passes it on to its own stderr, where only the
+   * log of the client shows it. `toolscript-mcp tools` drops it: an agent can read that output.
+   */
+  readonly childStderr?: (chunk: Buffer) => void
 }
 
 export const connectAll = (
@@ -399,6 +405,7 @@ export const connectAll = (
     now = Date.now,
     refreshTimeoutMs = REFRESH_TIMEOUT_MS,
     listFloorMs = LIST_FLOOR_MS,
+    childStderr = chunk => void process.stderr.write(chunk),
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -470,7 +477,7 @@ export const connectAll = (
       if (problem !== undefined) throw new OwnError(problem)
       // close() closes only the clients that it sees: a shutdown during the check must not start a process after it.
       if (closing) throw new OwnError('toolscript-mcp is shutting down')
-      const made = transportOf(server, sessionEnded, auth)
+      const made = transportOf(server, sessionEnded, auth, childStderr)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const first = await list()
