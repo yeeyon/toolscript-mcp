@@ -98,14 +98,15 @@ init also prints the steps for each client. They start toolscript-mcp with `node
 clone prints `npx -y toolscript-mcp` or `cmd /c npx -y toolscript-mcp` there. If you see one of them, use
 `node "<main>"` in its place.
 
-Show the person the servers to remove from each client. For Claude Code, offer to run each
-`claude mcp remove <name> --scope user` line. Run a line only after the person agrees. The person edits the files of
-the other clients.
+Show the person the servers to remove from each client. For Claude Code, offer to run each `claude mcp remove` line
+that init prints. Run a line only after the person agrees. Run each line as init prints it, and never type a server
+name into a command yourself. For a server without a command, and for the other clients, the person edits the file
+that init names.
 
 Recommend one path to each server. If a client also lists a server directly, the model calls the direct tools, and
 each full result goes into the context. MCP gives a server no list of the servers of its client. So toolscript-mcp does
-not check for a duplicate while it runs. init imports only the user-scope servers, so run `claude mcp list` to find the
-other copies.
+not check for a duplicate while it runs. To find the other copies, run `node "<main>" init --list --config "<config>"`.
+It shows the servers of every Claude Code scope, and the steps that remove a direct copy.
 
 If the person wants a new import over a config that exists, run init with `--force` after approval. init keeps the old
 file as `<config>.bak`, and it lists the servers that the new config leaves out.
@@ -242,8 +243,10 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
      `"untrusted": true`. Then each of its results reaches the model as untrusted text.
 5. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add <name> "<tmp>/toolscript-entry.json"`. It makes `<config>` if it does not exist.
    Then delete the entry file.
-   If `claude mcp list` shows the same server, run `claude mcp get <name>` to find its scope. Step 4 tells why.
-   - For the user or local scope, offer to run `claude mcp remove <name> --scope <scope>`.
+   Then run `node "<main>" init --list --config "<config>"`. If a client still has the same server, it is under
+   `Steps that remove a direct copy`. Step 4 tells why it matters.
+   - For the user or local scope, offer the `claude mcp remove` line under its label, as init printed it. Never type the
+     name into a command yourself.
    - For the project scope, tell the person that `.mcp.json` of the project holds the server. Other people can share
      that file, so the person decides.
 6. Tell the person to set each variable in the environment of the client, or to put the value in `<config>` in an
