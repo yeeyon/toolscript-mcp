@@ -7,7 +7,6 @@
 import {
   hideArgSecrets,
   hideUrlSecrets,
-  isAbsolutePath,
   launchArgv,
   launchText,
   parseJson,
@@ -74,11 +73,11 @@ export const scopedFiles = (env: Env, platform: string, home: string, project: P
 ]
 
 /**
- * The folders that Claude Code reads for a session started in a folder. `local`: the key of the local scope in
- * `.claude.json`, the root of the main checkout (also for a subfolder or a git worktree), or the folder itself
- * outside git. `shared`: the folders whose `.mcp.json` it reads, the start folder and each parent up to the root.
+ * The folders that Claude Code reads for a session started in the folder `start`. `local`: the key of the local
+ * scope in `.claude.json`, the root of the main checkout (also for a subfolder or a git worktree), or the folder
+ * itself outside git. `shared`: the folders whose `.mcp.json` it reads, `start` and each parent up to the root.
  */
-export type ProjectFolders = { readonly local: string; readonly shared: readonly string[] }
+export type ProjectFolders = { readonly start: string; readonly local: string; readonly shared: readonly string[] }
 
 /**
  * The root of the main checkout for a worktree whose `.git` file holds `gitdir: <main>/.git/worktrees/<name>`, or
@@ -242,33 +241,26 @@ type Parsed =
   | { readonly kind: 'self' }
   | { readonly kind: 'skipped'; readonly why: string }
 
-/** `cwd` against `folder`: as it is when it is absolute or starts with a variable. */
-const resolveIn = (folder: string, cwd: string, platform: string): string => {
-  if (cwd.startsWith('${') || isAbsolutePath(cwd, platform)) return cwd
-  const drive = platform === 'win32' ? /^[A-Za-z]:/.exec(folder)?.[0] : undefined
-  if (drive !== undefined && /^[\\/]/.test(cwd)) return `${drive}${cwd}`
-  const rest = cwd.replace(/^(?:\.(?:[\\/]+|$))+/, '')
-  return rest === '' ? folder : `${folder.replace(/[\\/]+$/, '')}${platform === 'win32' ? '\\' : '/'}${rest}`
+/**
+ * Claude Code 2.1 starts each stdio server of the local or project scope in the folder `start` of the session, and
+ * does not read the `cwd` of the entry. toolscript-mcp starts in the folder of its client, so the entry gets `start`
+ * as its `cwd`, and its own `cwd` is left out.
+ */
+const startIn = (parsed: { entry: Entry; dropped: string[] }, start: string | undefined) => {
+  const { entry, dropped } = parsed
+  if (start === undefined || 'type' in entry) return parsed
+  return { entry: { ...entry, cwd: start }, dropped: entry.cwd === undefined ? dropped : [...dropped, 'cwd'] }
 }
 
-/**
- * Claude Code starts a stdio server of the local or project scope in the project folder. toolscript-mcp starts in
- * the folder of its client, so the entry gets that folder as its `cwd`.
- */
-const inFolder = (entry: Entry, folder: string | undefined, platform: string): Entry =>
-  folder === undefined || 'type' in entry
-    ? entry
-    : { ...entry, cwd: entry.cwd === undefined ? folder : resolveIn(folder, entry.cwd, platform) }
-
-const parseServer = (name: string, raw: unknown, folder: string | undefined, platform: string): Parsed => {
+const parseServer = (name: string, raw: unknown, start: string | undefined): Parsed => {
   if (isSelf(name, raw)) return { kind: 'self' }
   const parsed = toEntry(raw)
   if ('why' in parsed) return { kind: 'skipped', why: parsed.why }
   const key = keyOf(name)
   if (key === undefined) return { kind: 'skipped', why: 'no letter or digit to make a server key of' }
-  const anchored = inFolder(parsed.entry, folder, platform)
-  const entry: Entry = namesAzureDevOps(key, anchored) ? { ...anchored, untrusted: true } : anchored
-  return { kind: 'entry', key, entry, dropped: parsed.dropped }
+  const { entry: started, dropped } = startIn(parsed, start)
+  const entry: Entry = namesAzureDevOps(key, started) ? { ...started, untrusted: true } : started
+  return { kind: 'entry', key, entry, dropped }
 }
 
 /** A server that init found in a client file: where, its name there, and its entry. */
@@ -281,23 +273,25 @@ export type FileServers = {
   readonly candidates: readonly Candidate[]
 }
 
-const fileServers = (read: ClientRead, platform: string): FileServers => {
+/** The servers of one client file. A stdio server of the local or project scope starts in `start`. */
+const fileServers = (read: ClientRead, platform: string, start?: string): FileServers => {
   const { client, path, scope, project } = read
   const file: ClientFile = { client, path, ...(scope && { scope }), ...(project !== undefined && { project }) }
   const found = serversOf(read, platform)
   if ('problem' in found) return { file, problem: found.problem, candidates: [] }
-  const parse = ([name, raw]: [string, unknown]) => ({ file, name, parsed: parseServer(name, raw, project, platform) })
+  const folder = scope === 'local' || scope === 'project' ? start : undefined
+  const parse = ([name, raw]: [string, unknown]) => ({ file, name, parsed: parseServer(name, raw, folder) })
   return { file, candidates: found.servers.map(parse) }
 }
 
 /**
- * The servers of the files of `scopedFiles`. A name in two `.mcp.json` files is the server of the closer one, as in
- * Claude Code, so the farther file drops it.
+ * The servers of the files of `scopedFiles` for a session started in `start`. A name in two `.mcp.json` files is
+ * the server of the closer one, as in Claude Code, so the farther file drops it.
  */
-export const scopedServers = (reads: readonly ClientRead[], platform: string): FileServers[] => {
+export const scopedServers = (reads: readonly ClientRead[], platform: string, start: string): FileServers[] => {
   const closer = new Set<string>()
   return reads.map(read => {
-    const servers = fileServers(read, platform)
+    const servers = fileServers(read, platform, start)
     if (read.scope !== 'project') return servers
     const candidates = servers.candidates.filter(c => !closer.has(c.name))
     for (const c of servers.candidates) closer.add(c.name)

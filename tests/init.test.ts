@@ -981,7 +981,7 @@ describe('init --list and --add', () => {
     const added = await run(home, start, ['--add', 'dup,far', '--from', 'claude-code:project'])
     assert.equal(added.code, 0, added.out)
     assert.deepEqual(JSON.parse(fs.readFileSync(added.file, 'utf8')).mcpServers, {
-      dup: { command: 'node', args: ['near.mjs'], cwd: near },
+      dup: { command: 'node', args: ['near.mjs'], cwd: start },
       far: { type: 'http', url: 'https://far.example.com/mcp' },
     })
     const steps = added.out.split('\n').map(l => l.trim())
@@ -1087,46 +1087,54 @@ describe('init --list and --add', () => {
     if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600)
   })
 
-  // Claude Code starts a local or project server in the project folder. toolscript-mcp starts in the folder of its
-  // client, so a relative path in the entry needs that folder as the cwd.
-  test('--add gives a local or project stdio server the project folder as its cwd, and --list sees it in config', async () => {
-    const abs = path.join(os.tmpdir(), 'fake-abs')
+  // Claude Code 2.1 starts each stdio server of the local or project scope in the start folder of the session, also a
+  // subfolder, and does not read the cwd of the entry (checked with claude mcp list in a temp CLAUDE_CONFIG_DIR).
+  // toolscript-mcp starts in the folder of its client, so the entry needs the start folder as its cwd.
+  test('--add gives a local or project stdio server the start folder as its cwd, and --list sees it in config', async () => {
     const project = homeWith({
+      '.git/HEAD': '',
       '.mcp.json': {
         mcpServers: {
           bare: { command: 'node', args: ['./srv.mjs'] },
           sub: { command: 'node', args: ['./srv.mjs'], cwd: './sub' },
-          up: { command: 'node', cwd: '../up' },
-          abs: { command: 'node', cwd: abs },
-          variable: { command: 'node', cwd: '${HOME}/srv' },
+          abs: { command: 'node', cwd: path.join(os.tmpdir(), 'fake-abs') },
           web: { type: 'http', url: 'https://web.example.com/mcp' },
         },
       },
     })
+    const start = path.join(project, 'src', 'deep')
+    fs.mkdirSync(start, { recursive: true })
+    const srv = path.resolve('/srv')
     const home = homeWith({
-      '.claude.json': { projects: { [project]: { mcpServers: { local: { command: 'node', args: ['./srv.mjs'] } } } } },
+      '.claude.json': {
+        mcpServers: { user: { command: 'node', cwd: srv } },
+        projects: { [project]: { mcpServers: { local: { command: 'node', args: ['./srv.mjs'], cwd: 'x' } } } },
+      },
     })
-    const sep = process.platform === 'win32' ? '\\' : '/'
-    const names = 'bare,sub,up,abs,variable,web,local'
-    const added = await run(home, project, ['--add', names], process.platform)
+    const names = 'bare,sub,abs,web,local,user'
+    const added = await run(home, start, ['--add', names], process.platform)
     assert.equal(added.code, 0, added.out)
     const text = fs.readFileSync(added.file, 'utf8')
     const { mcpServers } = JSON.parse(text)
     assert.deepEqual(Object.fromEntries(Object.entries(mcpServers).map(([k, v]) => [k, (v as { cwd?: string }).cwd])), {
-      bare: project,
-      sub: `${project}${sep}sub`,
-      up: `${project}${sep}../up`,
-      abs,
-      variable: '${HOME}/srv',
+      bare: start,
+      sub: start,
+      abs: start,
       web: undefined,
-      local: project,
+      local: start,
+      user: srv,
     })
-    const parsed = parseConfig(text, { HOME: abs }, process.execPath, process.platform)
+    for (const name of ['sub', 'abs', 'local'])
+      assert.match(added.out, new RegExp(`^- ${name}, from .*\\. Left out: cwd$`, 'm'), added.out)
+    assert.match(added.out, /^- bare, from Claude Code \(project scope\)$/m, added.out)
+    const parsed = parseConfig(text, {}, process.execPath, process.platform)
     assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
 
-    const listed = await run(home, project, ['--list'], process.platform)
+    const listed = await run(home, start, ['--list'], process.platform)
     for (const name of names.split(',')) assert.match(listed.out, row(name, 'claude-code'), listed.out)
-    assert.equal(listed.out.match(/ {2}in config {2}/g)?.length, 7, listed.out)
+    assert.equal(listed.out.match(/ {2}in config {2}/g)?.length, 6, listed.out)
+    const fromRoot = await run(home, project, ['--list'], process.platform)
+    assert.match(fromRoot.out, row('bare', 'claude-code', 'project', 'stdio node', 'name taken by a different entry'))
   })
 
   test('--add makes the config when there is none', async () => {

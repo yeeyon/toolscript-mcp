@@ -131,13 +131,13 @@ const projectFolders = async (start: string): Promise<ProjectFolders> => {
   for (const dir of shared) {
     const dotGit = path.join(dir, '.git')
     const stat = await fs.promises.stat(dotGit).catch(() => undefined)
-    if (stat?.isDirectory()) return { local: dir, shared }
+    if (stat?.isDirectory()) return { start, local: dir, shared }
     if (stat?.isFile()) {
       const main = mainCheckoutOf(await fs.promises.readFile(dotGit, 'utf8').catch(() => ''))
-      return { local: main === undefined ? dir : path.resolve(dir, main), shared }
+      return { start, local: main === undefined ? dir : path.resolve(dir, main), shared }
     }
   }
-  return { local: start, shared }
+  return { start, local: start, shared }
 }
 
 /** `--list` and `--add`: the servers of every client file and Claude Code scope against the config in `file`. */
@@ -152,7 +152,7 @@ const pick = async (
 ): Promise<number> => {
   const project = await projectFolders(path.resolve(options.project ?? process.cwd()))
   const reads = await Promise.all(scopedFiles(env, platform, home, project).map(readClient))
-  const files = scopedServers(reads, platform)
+  const files = scopedServers(reads, platform, project.start)
   const sources = [...new Set(files.flatMap(f => [f.file.client, sourceName(f.file)]))]
   if (options.from !== undefined && !sources.includes(options.from)) {
     print(`--from takes one of ${list(sources)}.\n${INIT_USAGE}`)
