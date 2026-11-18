@@ -30,6 +30,7 @@
     "dist",
     "runtime",
     "hints",
+    "demo",
     "LICENSE",
     "NOTICE"
   ],
