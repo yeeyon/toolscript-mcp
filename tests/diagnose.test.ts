@@ -406,9 +406,64 @@ describe('runs', () => {
     assert.deepEqual(s.printed, ['no run yet'])
   })
 
+  test('make it fail: a run that called no tool, or no tool of the server, confirms nothing', async () => {
+    const idle = runLine(record({ time: '2026-01-01T00:00:05.000Z', ending: 'done', calls: [] }))
+    const s = setupLog([done, idle])
+    assert.equal(await s.runs(), 1)
+    assert.deepEqual(s.printed, [
+      '2026-01-01T00:00:05.000Z done 100 ms',
+      'the newest run called no tool. Run a task that calls one.',
+    ])
+    s.printed.length = 0
+    assert.equal(await s.runs('--server', 'demo'), 0, 'the newest run of demo is the one with a call')
+    s.printed.length = 0
+    const other = forged({
+      time: '2026-01-01T00:00:06.000Z',
+      calls: [{ tool: 'mcp__other__ping', decision: 'allow', ms: 1, ok: true }],
+    })
+    const t = setupLog([other])
+    assert.equal(await t.runs('--server', 'demo'), 1)
+    assert.deepEqual(t.printed, ['no run yet'])
+  })
+
+  test('make it fail: --since never lets a run before the time confirm a new attempt', async () => {
+    const s = setupLog([done])
+    assert.equal(await s.runs('--server', 'demo', '--since', '2026-01-01T00:00:02Z'), 1)
+    assert.deepEqual(s.printed, ['no run since 2026-01-01T00:00:02.000Z'])
+    s.printed.length = 0
+    assert.equal(await s.runs('--server', 'demo', '--since', '2026-01-01T09:00:01+09:00'), 0, 'at the time counts')
+    assert.deepEqual(s.printed, [
+      'runs since 2026-01-01T00:00:01.000Z',
+      '2026-01-01T00:00:01.000Z done 100 ms',
+      '  mcp__demo__list_pull_requests allow ok',
+    ])
+    s.printed.length = 0
+    assert.equal(await s.runs('--server', 'other', '--since', '1d'), 1)
+    assert.deepEqual(s.printed, ['no run yet'], 'a server without any run is still no run yet')
+  })
+
+  test('--since with a duration counts back from now, and shows the time', async () => {
+    const now = new Date().toISOString()
+    const fresh = runLine(record({ time: now, ending: 'done', calls: [JSON.parse(done).calls[0]] }))
+    const s = setupLog([done, fresh])
+    assert.equal(await s.runs('--since', '30m', '--last', '5'), 0, s.printed.join('\n'))
+    assert.match(s.printed[0]!, /^runs since \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    assert.equal(s.printed[1], `${now} done 100 ms`)
+    assert.equal(s.printed.length, 3, 'the run of 2026-01-01 is older')
+  })
+
   test('exits 2 on a usage error', async () => {
     const s = setupLog([done])
-    for (const args of [['--last', '0'], ['--last', 'x'], ['--server', 'a__b'], ['extra'], ['--nope']])
+    for (const args of [
+      ['--last', '0'],
+      ['--last', 'x'],
+      ['--server', 'a__b'],
+      ['extra'],
+      ['--nope'],
+      ['--since', 'yesterday'],
+      ['--since', '2026-01-01T00:00:00'],
+      ['--since', '0m'],
+    ])
       assert.equal(await s.runs(...args), 2, args.join(' '))
   })
 })

@@ -311,9 +311,9 @@ the reason. For a server with `"untrusted": true`, the reason does not show the 
 never shows tool descriptions, arguments, `env` or header values, or tokens. The exit code is 1 on a failure and 2 on a
 usage error.
 
-`toolscript-mcp runs [--server <key>] [--last <n>] [--config <path>]` reads the [run log](#run-log). It shows the
-newest `n` runs that call a tool of the server, newest first. The default of `n` is 1. Without `--server`, it shows the
-newest runs of all servers.
+`toolscript-mcp runs [--server <key>] [--last <n>] [--since <time>] [--config <path>]` reads the
+[run log](#run-log). It shows the newest `n` runs that call a tool of the server, newest first. The default of `n`
+is 1. Without `--server`, it shows the newest runs of all servers.
 
 - For each run, it shows the time, the ending and the duration.
 - For each call, it shows the tool, the policy decision, and `ok` or the error code. A call that `runs` cannot read
@@ -321,14 +321,19 @@ newest runs of all servers.
 - After the runs, it gives one next step for each problem.
 - It counts the lines of the log that are not runs, and skips them.
 
+With `--since`, `runs` counts only the runs at or after that time. The time is an ISO 8601 time with a zone, such as
+`2026-11-18T09:30:00Z`, or a duration back from now: `30m`, `2h` or `1d`. The first line shows the time in UTC. To
+check a new attempt, give a time before its task. Then an older run does not confirm the attempt.
+
 A name or time with a character outside printable ASCII shows in double quotes, with that character as a `\u` escape.
 If your server uses a config at another path, give the same `--config`. Then the `tools` command in a next step names
 that config.
 
-The exit code is 0 only when the newest run ended `done` and each call of the server worked. These cases also give
-the exit code 1:
+The exit code is 0 only when the newest run ended `done`, called a tool of the server, and each call of the server
+worked. Without `--server`, the run must call a tool of any server. These cases also give the exit code 1:
 
 - The log has no run. `runs` prints `no run yet`.
+- No run is at or after the time of `--since`. `runs` prints `no run since <time>`.
 - An unreadable line is newer than the newest run shown. That line can be a newer run.
 - The config sets `"log": false`. `runs` says so in its first line.
 - `runs` cannot read the config of `--config`.

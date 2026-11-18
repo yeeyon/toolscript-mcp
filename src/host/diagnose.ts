@@ -10,12 +10,15 @@ import { configPath, loginReason, serverKey, toolsCommand, type Env, type Launch
 import { oldRunLogFile, runLogFile } from '../core/paths.ts'
 import { printable } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
-import { parseRunLine, runsReport } from '../core/runlog.ts'
+import { parseRunLine, parseSince, runsReport } from '../core/runlog.ts'
 import { connectAll } from './downstream.ts'
 import { loadConfig, loginFor, otherConfig } from './start.ts'
 
 export const TOOLS_USAGE = 'usage: toolscript-mcp tools <server> [--config <path>] [--help]'
-export const RUNS_USAGE = 'usage: toolscript-mcp runs [--server <key>] [--last <n>] [--config <path>] [--help]'
+export const RUNS_USAGE =
+  'usage: toolscript-mcp runs [--server <key>] [--last <n>] [--since <time>] [--config <path>] [--help]'
+const RUNS_ARGS =
+  '--last takes a whole number from 1, --server a server key, and --since a time with a zone, such as 2026-11-18T09:30:00Z, or 30m, 2h or 1d back from now'
 
 // An agent can read what tools prints, and tools logs nothing: only a running server writes the text to its log.
 const TOOLS_UNSHOWN =
@@ -118,6 +121,7 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
       options: {
         server: { type: 'string' },
         last: { type: 'string' },
+        since: { type: 'string' },
         config: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
       },
@@ -133,8 +137,14 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
   }
   const last = values.last === undefined ? 1 : Number(values.last)
   const server = values.server === undefined ? undefined : serverKey(values.server)
-  if (!Number.isSafeInteger(last) || last < 1 || (values.server !== undefined && server === undefined)) {
-    io.print(`--last takes a whole number from 1, and --server a server key\n${RUNS_USAGE}`)
+  const since = values.since === undefined ? undefined : parseSince(values.since, new Date())
+  if (
+    !Number.isSafeInteger(last) ||
+    last < 1 ||
+    (values.server !== undefined && server === undefined) ||
+    (values.since !== undefined && since === undefined)
+  ) {
+    io.print(`${RUNS_ARGS}\n${RUNS_USAGE}`)
     return 2
   }
   // The run log does not depend on the config. The config only turns the log off, and its path goes into the printed
@@ -160,7 +170,7 @@ export const runRuns = async (args: readonly string[], io: CheckIo): Promise<num
     .filter(line => line.trim() !== '')
     .map(parseRunLine)
   const other = otherConfig(file, io.env, io.platform, io.home)
-  const report = runsReport(entries, server, last, key => toolsCommand(io.launch, io.platform, key, other))
+  const report = runsReport(entries, { server, last, since }, key => toolsCommand(io.launch, io.platform, key, other))
   // With the log off, the newest run in the file is not a run of this config.
   const note = off
     ? [
