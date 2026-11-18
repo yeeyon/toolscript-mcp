@@ -394,6 +394,8 @@ describe('doctor', () => {
     assert.deepEqual(s.of('files'), [
       `fail  files    ${appPath(s.home)} is not a folder. Move the file, so toolscript-mcp can make the folder`,
     ])
+    // POSIX reads a path under the file with ENOTDIR, Windows with ENOENT: both mean no OAuth store and no run log.
+    assert.doesNotMatch(s.printed.join('\n'), /cannot read|ENOTDIR/)
 
     const home = path.join(s.dir, 'home-file')
     fs.writeFileSync(home, '')

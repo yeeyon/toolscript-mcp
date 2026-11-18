@@ -129,7 +129,9 @@ const readLog = async (file: string): Promise<string> => {
   try {
     return await fs.promises.readFile(file, 'utf8')
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
+    // POSIX gives ENOTDIR when a file is where the folder of the log goes, Windows ENOENT. No folder holds no log.
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return ''
     throw err
   }
 }

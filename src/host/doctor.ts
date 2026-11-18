@@ -166,7 +166,9 @@ const staleStores = async (home: string, loaded: Loaded): Promise<Finding[]> => 
   try {
     files = await fs.promises.readdir(folder)
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    // POSIX gives ENOTDIR when a file is where a parent folder goes, Windows ENOENT. The files check reports that file.
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return []
     return [warn(`cannot read ${folder}: ${errorText(err)}`)]
   }
   const used = new Set(
