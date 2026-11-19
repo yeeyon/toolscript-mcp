@@ -314,6 +314,29 @@ describe('search_tools with 3 or fewer hits', () => {
     )
   })
 
+  test('the short list and the detail view agree on unions, consts, long enums and refs', () => {
+    const schemas: unknown[] = [
+      { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+      { oneOf: [{ type: 'string' }, { type: 'number' }] },
+      { const: 'open' },
+      { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
+      { type: 'array', items: { anyOf: [{ type: 'array', items: { const: 1 } }, { type: 'null' }] } },
+      { enum: Array.from({ length: 40 }, (_, i) => `v${i}`) },
+      { enum: ['a', 'a', 'b'] },
+      { $ref: '#/$defs/Id' },
+      { type: 'string', nullable: true },
+    ]
+    for (const schema of schemas) {
+      const inputSchema = {
+        type: 'object',
+        $defs: { Id: { anyOf: [{ type: 'integer' }, { type: 'null' }] } },
+        properties: { n: schema },
+      }
+      const short = argsText(inputSchema).slice(2, -2)
+      assert.equal(one({ name: 'u', inputSchema }), `### mcp__x__u\ncall("mcp__x__u", {\n  ${short}\n})`, short)
+    }
+  })
+
   test('an empty enum shows never and an empty type list shows unknown', () => {
     const inputSchema = { type: 'object', properties: { a: { enum: [] }, b: { type: [] } } }
     assert.equal(one({ name: 'e', inputSchema }), '### mcp__x__e\ncall("mcp__x__e", {\n  a?: never\n  b?: unknown\n})')

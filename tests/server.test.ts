@@ -1042,6 +1042,38 @@ describe('the catalog', () => {
     assert.equal(shown({ type: 'number', minimum: 10, maximum: 1 }), '{ n?: number (min 10, max 1) }')
   })
 
+  test('argsText gives the real type of a union, a const and a long enum', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    assert.equal(shown({ anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }), '{ n?: number (min 1) | null }')
+    assert.equal(shown({ oneOf: [{ type: 'string' }, { type: 'number' }] }), '{ n?: string | number }')
+    assert.equal(shown({ const: 'open' }), '{ n?: "open" }')
+    assert.equal(
+      shown({ type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'null' }] } }),
+      '{ n?: (string | null)[] }',
+    )
+    assert.equal(
+      shown({ type: 'array', items: { anyOf: [{ type: 'array', items: { const: 1 } }, { type: 'null' }] } }),
+      '{ n?: (1[] | null)[] }',
+    )
+    // A long enum is cut as the detail view cuts it.
+    const values = Array.from({ length: 40 }, (_, i) => `v${i}`)
+    const long = shown({ enum: values })
+    assert.ok(long.includes('"v24" | …') && !long.includes('"v25"'), long)
+    // A $ref is followed as in the detail view. A loop or a miss is unknown.
+    const root = {
+      type: 'object',
+      $defs: { Id: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, Loop: { anyOf: [{ $ref: '#/$defs/Loop' }] } },
+      properties: { a: { $ref: '#/$defs/Id' }, b: { $ref: '#/$defs/Loop' }, c: { $ref: '#/$defs/Nope' } },
+    }
+    assert.equal(argsText(root), '{ a?: number | null; b?: unknown; c?: unknown }')
+    // A value that is too long is replaced by its type, so text from the server stays bounded.
+    assert.equal(shown({ const: 'x'.repeat(600) }), '{ n?: string /* long value left out */ }')
+    // A union that branches wide and deep is cut, not walked in full.
+    const wide = { anyOf: Array.from({ length: 50 }, () => ({ $ref: '#/$defs/W' })) }
+    const huge = { type: 'object', $defs: { W: wide }, properties: { n: { $ref: '#/$defs/W' } } }
+    assert.equal(argsText(huge), '{ n?: unknown }')
+  })
+
   test('a spec with bounded arguments still cuts at whole arguments', () => {
     const properties = Object.fromEntries(
       Array.from({ length: 60 }, (_, i) => [`bounded_argument_${i}`, { type: 'integer', minimum: 1, maximum: 100 }]),

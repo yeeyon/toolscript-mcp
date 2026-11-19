@@ -132,20 +132,34 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 // The members of a schema's type in the short list: more than one for a union.
 // An empty enum allows no value. An empty type list is not a valid schema.
-// Arrays nested deeper than MAX_NEST end in unknown, so a deep schema cannot overflow the stack.
-const typeParts = (schema: unknown, nest: number): string[] => {
+// A $ref is followed as in the detail view. A union is a union of its members, and a const or an enum shows its
+// values as `literal` does, so the two views agree. Arrays and unions nested deeper than MAX_NEST end in unknown, so a
+// deep schema cannot overflow the stack, and a schema that branches past MAX_STEPS is too large (see `typeOf`).
+const typeParts = (raw: unknown, root: unknown, steps: { left: number }, nest: number): string[] => {
+  if (--steps.left < 0) throw TOO_LARGE
+  const schema = resolve(raw, root)
   if (!isObject(schema) || nest > MAX_NEST) return ['unknown']
-  if (Array.isArray(schema.enum)) return schema.enum.length === 0 ? ['never'] : schema.enum.map(v => JSON.stringify(v))
+  const values = valueParts(schema)
+  if (values) return values
+  const union = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : []
+  if (union.length > 0) return union.flatMap(s => typeParts(s, root, steps, nest + 1))
   const type = schema.type
   if (Array.isArray(type))
-    return type.length === 0 ? ['unknown'] : type.flatMap(t => typeParts({ ...schema, type: t }, nest))
-  if (type === 'array') return [`${ofArray(grouped(typeParts(schema.items, nest + 1)))}[]`]
+    return type.length === 0 ? ['unknown'] : type.flatMap(t => typeParts({ ...schema, type: t }, root, steps, nest))
+  if (type === 'array') return [`${ofArray(grouped(typeParts(schema.items, root, steps, nest + 1)))}[]`]
   if (type === 'integer' || type === 'number') return [withBounds('number', schema)]
   if (typeof type === 'string') return [type]
   return ['unknown']
 }
 
-const typeOf = (schema: unknown): string => typeParts(schema, 0).join(' | ')
+const typeOf = (schema: unknown, root: unknown): string => {
+  try {
+    return typeParts(schema, root, { left: MAX_STEPS }, 0).join(' | ')
+  } catch (e) {
+    if (e === TOO_LARGE) return 'unknown'
+    throw e
+  }
+}
 
 // `number (min 1)[]` would read as a bound on the array, so a bounded item gets parentheses. A union item gets them
 // from `grouped`.
@@ -197,7 +211,7 @@ const requiredFirst = (schema: Record<string, unknown>): [name: string, schema: 
  */
 export const argsText = (inputSchema: unknown): string => {
   const parts = (isObject(inputSchema) ? requiredFirst(inputSchema) : []).map(([name, schema, required]) =>
-    oneLine(`${name}${required ? '' : '?'}: ${typeOf(schema)}`, Infinity),
+    oneLine(`${name}${required ? '' : '?'}: ${typeOf(schema, inputSchema)}`, Infinity),
   )
   if (parts.length === 0) return '{}'
   const all = `{ ${parts.join('; ')} }`
@@ -337,6 +351,15 @@ const PRIMITIVES: Record<string, string> = {
   null: 'null',
 }
 
+// The members of a const or an enum, or undefined for any other schema. An enum is cut at MAX_ENUM values.
+const valueParts = (schema: Record<string, unknown>): string[] | undefined => {
+  if ('const' in schema) return [literal(schema.const)]
+  if (!Array.isArray(schema.enum)) return undefined
+  if (schema.enum.length === 0) return ['never']
+  const shown = [...new Set(schema.enum.slice(0, MAX_ENUM).map(literal))]
+  return schema.enum.length > MAX_ENUM ? [...shown, '…'] : shown
+}
+
 const grouped = (parts: readonly string[]): string => (parts.length === 1 ? parts[0]! : `(${parts.join(' | ')})`)
 
 // The members of a schema's type: more than one for a union. `level` is the
@@ -353,12 +376,8 @@ const members = (raw: unknown, r: Render, level: number, nest: number): string[]
     const shown = parts.filter(p => p !== 'object' && p !== 'unknown')
     return [shown.length > 0 ? shown.join(' & ') : parts.includes('object') ? 'object' : 'unknown']
   }
-  if ('const' in schema) return [literal(schema.const)]
-  if (Array.isArray(schema.enum)) {
-    if (schema.enum.length === 0) return ['never']
-    const shown = [...new Set(schema.enum.slice(0, MAX_ENUM).map(literal))]
-    return schema.enum.length > MAX_ENUM ? [...shown, '…'] : shown
-  }
+  const values = valueParts(schema)
+  if (values) return values
   const union = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : []
   if (union.length > 0) return union.flatMap(s => members(s, r, level, nest + 1))
   const type = schema.type ?? (isObject(schema.properties) ? 'object' : undefined)
