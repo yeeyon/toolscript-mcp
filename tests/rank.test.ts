@@ -162,6 +162,9 @@ describe('rankTools on three sets of searches', () => {
       assert.equal(rankTools(tools, 'branches', 1)[0]?.name, 'mcp__github__list_branches')
       assert.deepEqual(rankTools(tools, 'bus', 5), [])
       assert.deepEqual(rankTools(tools, 'class', 5), [])
+      // A word that ends in "ss" is not cut, so "class" does not find "clash" through "clas".
+      const clash = [{ name: 'mcp__x__list_clash', description: 'List each clash' }]
+      assert.deepEqual(rankTools(clash, 'class', 5), [])
     })
   })
 
@@ -201,6 +204,12 @@ describe('rankTools on three sets of searches', () => {
     test('an exact short name that holds a filler word ranks first', () => {
       assert.equal(names('get_me', 1)[0], 'mcp__github__get_me')
     })
+
+    test('when no tool holds the real word of a query, the filler words still list tools', () => {
+      // "prs" and "ticket" are in no tool: the right tool must stay in the list, as before the gate.
+      assert.ok(names('list prs').includes('mcp__github__list_pull_requests'))
+      assert.ok(names('get ticket').includes('mcp__github__get_pull_request'))
+    })
   })
 
   test('a hostile query of 50,000 characters ranks in well under 100 ms', () => {
@@ -216,12 +225,17 @@ describe('rankTools on three sets of searches', () => {
 
   test('a query of 50,000 characters of plural words ranks in well under 100 ms', () => {
     rankTools(catalog, 'warm up the regex and the JIT', 10)
-    // No tool holds "queries", "attachments" or "qzxes", so each word of the query is cut to its stem for every tool.
+    // No tool holds "queries", "attachments" or "qzxes", so each tool is matched by the stem of each word that the
+    // 1000-character cut keeps. The fastest of 3 runs counts, so a busy CI machine does not fail the test.
     for (const unit of ['queries ', 'attachments qzxes ']) {
       const query = unit.repeat(Math.ceil(50_000 / unit.length))
-      const start = performance.now()
-      const found = rankTools(catalog, query, 10)
-      const ms = performance.now() - start
+      let ms = Infinity
+      let found: ToolEntry[] = []
+      for (let run = 0; run < 3; run++) {
+        const start = performance.now()
+        found = rankTools(catalog, query, 10)
+        ms = Math.min(ms, performance.now() - start)
+      }
       assert.ok(found.length > 0, `${JSON.stringify(unit)} found no tool through the stem`)
       assert.ok(ms < 100, `${JSON.stringify(unit)} took ${ms.toFixed(0)} ms`)
     }

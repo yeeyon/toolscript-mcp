@@ -1428,12 +1428,12 @@ const FILLER: ReadonlySet<string> = new Set([
 
 /**
  * The start of the singular of a plural word: "entries" -> "entr", "branches" -> "branch", "sites" -> "site". It cuts
- * "ies", "es" after s, x, z, ch or sh, else "s", from a word of 4 or more characters that does not end in "ss", and
- * keeps the word when fewer than 3 characters would stay. Cutting "es" after any other letter would leave "sit" of
+ * "ies", "es" after s, x, z, ch or sh, else "s", from a word that does not end in "ss", and keeps the word when fewer
+ * than 3 characters would stay. Cutting "es" after any other letter would leave "sit" of
  * "sites", which matches "repository".
  */
 const stem = (word: string): string => {
-  if (word.length < 4 || !word.endsWith('s') || word.endsWith('ss')) return word
+  if (!word.endsWith('s') || word.endsWith('ss')) return word
   const cut = word.endsWith('ies')
     ? word.slice(0, -3)
     : /(s|x|z|ch|sh)es$/.test(word)
@@ -1448,8 +1448,8 @@ const stem = (word: string): string => {
  * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2 as a
  * word of the server key, else 1 in the description, else 0.5 when the stem of a plural word (`stem`) is in the short
  * name or the description. A stem hit scores less than the full word, so for "builds" a tool whose description holds
- * "builds" ranks above one whose description holds "build". When the query holds a word that is not in `FILLER`, a
- * tool that matches only filler words gets no word score. Equal scores rank by name. Only the first `RANK_QUERY_MAX`
+ * "builds" ranks above one whose description holds "build". When some tool holds a query word that is not in
+ * `FILLER`, a tool that matches only filler words gets no word score. Equal scores rank by name. Only the first `RANK_QUERY_MAX`
  * characters of the query count, and a token that the cut splits is dropped.
  */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
@@ -1486,9 +1486,11 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
       if (FILLER.has(word)) filler += hit
       else real += hit
     }
-    if (real > 0 || !hasReal) score += real + filler
-    return { tool, score }
+    return { tool, score, real, filler }
   })
+  // When no tool holds a real word of the query (a synonym or an abbreviation), the filler words rank as before.
+  const gate = hasReal && scored.some(s => s.real > 0)
+  for (const s of scored) if (s.real > 0 || !gate) s.score += s.real + s.filler
   return scored
     .filter(s => wanted.length === 0 || s.score > 0)
     .sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name))
