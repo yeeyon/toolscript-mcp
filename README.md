@@ -372,6 +372,7 @@ Steps that remove a direct copy. Run the command lines of a step in order, in on
 - A server with `ask first` has `--unapproved` in its command. Run it only after you check the entry of the server in its file.
 - In a step of Claude Code, a name that starts with `-` comes after `"--"`, as in `claude mcp remove --scope user "--" "-dash"`.
 - `claude mcp remove` finds a local or project server only from its folder. So the step goes to that folder with `pushd` first.
+  Run such a step in bash, zsh, fish, tcsh, cmd.exe or PowerShell. dash, the `sh` of Debian and Ubuntu, has no `pushd`.
 - A name in a `.mcp.json` file comes from anyone who can change the project. So a command holds a name only when the
   name has only letters, digits and `. _ -`.
 - A command holds a path only when the path has only ASCII letters, digits, spaces, a drive letter and `. _ - ( ) ~ / ' @ +`.

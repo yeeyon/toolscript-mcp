@@ -987,6 +987,12 @@ describe('the printed commands in each shell', () => {
         )
         const keys = Object.keys(JSON.parse(fs.readFileSync(config, 'utf8')).mcpServers)
         assert.equal(keys.length, PLAIN.length, added)
+        assert.deepEqual(
+          fs.readdirSync(dir).filter(f => f.startsWith('PWN')),
+          [],
+        )
+        // dash, the sh of Debian and Ubuntu, has no pushd. The README names the shells of a remove step.
+        if (shell === 'sh' && spawnSync('sh', ['-c', 'command -v pushd'], hidden).status !== 0) return
 
         const listed = await list(config)
         const removes = PLAIN.flatMap(n => {
