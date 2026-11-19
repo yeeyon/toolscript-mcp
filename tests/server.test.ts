@@ -997,6 +997,63 @@ describe('the catalog', () => {
     assert.equal(argsText(undefined), '{}')
   })
 
+  test('argsText shows the numeric bounds of a number, and only finite ones', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    assert.equal(shown({ type: 'integer', maximum: 100 }), '{ n?: number (max 100) }')
+    assert.equal(shown({ type: 'number', minimum: 1, maximum: 100 }), '{ n?: number (1-100) }')
+    assert.equal(shown({ type: 'number', minimum: 0.5 }), '{ n?: number (min 0.5) }')
+    assert.equal(shown({ type: 'number', minimum: -5, maximum: 5 }), '{ n?: number (min -5, max 5) }')
+    assert.equal(shown({ type: ['number', 'string'], maximum: 9 }), '{ n?: number (max 9) | string }')
+    assert.equal(shown({ type: 'array', items: { type: 'integer', minimum: 1 } }), '{ n?: (number (min 1))[] }')
+    // Server text and non-finite values never reach the output. An exclusive bound is not shown.
+    for (const bad of ['100', null, true, Infinity, NaN, { a: 1 }, ['x\n### forged']])
+      assert.equal(shown({ type: 'number', minimum: bad, maximum: bad }), '{ n?: number }', String(bad))
+    assert.equal(shown({ type: 'number', exclusiveMinimum: 0, exclusiveMaximum: 9 }), '{ n?: number }')
+    assert.equal(shown({ type: 'string', maximum: 3 }), '{ n?: string }')
+    // The MCP SDK with zod v4 gives every integer the safe-integer range, and z.int32() the int32 range: no limit
+    // that a program meets, so neither shows. A large bound under the int32 range still shows.
+    const safe = Number.MAX_SAFE_INTEGER
+    assert.equal(shown({ type: 'integer', minimum: -safe, maximum: safe }), '{ n?: number }')
+    assert.equal(shown({ type: 'integer', exclusiveMinimum: 0, maximum: safe }), '{ n?: number }')
+    assert.equal(shown({ type: 'integer', minimum: -2147483648, maximum: 2147483647 }), '{ n?: number }')
+    assert.equal(shown({ type: 'integer', minimum: 1, maximum: safe }), '{ n?: number (min 1) }')
+    assert.equal(shown({ type: 'integer', maximum: 1000000000 }), '{ n?: number (max 1000000000) }')
+    // In draft-04 and OpenAPI 3.0, `exclusiveMinimum: true` makes `minimum` exclusive, so that bound does not show.
+    const draft4 = { type: 'number', minimum: 0, exclusiveMinimum: true, maximum: 10, exclusiveMaximum: true }
+    assert.equal(shown(draft4), '{ n?: number }')
+    assert.equal(shown({ ...draft4, exclusiveMaximum: false }), '{ n?: number (max 10) }')
+    // A numeric exclusive bound as tight as the inclusive one or tighter hides it. A looser one leaves it.
+    assert.equal(shown({ type: 'integer', minimum: 0, exclusiveMinimum: 0 }), '{ n?: number }')
+    assert.equal(shown({ type: 'integer', minimum: 1, maximum: 10, exclusiveMaximum: 3 }), '{ n?: number (min 1) }')
+    assert.equal(shown({ type: 'integer', minimum: 5, exclusiveMinimum: 0 }), '{ n?: number (min 5) }')
+    assert.equal(shown({ type: 'integer', maximum: 100, exclusiveMaximum: 1000 }), '{ n?: number (max 100) }')
+    // Nested arrays read as the detail view does, with one pair of parentheses around a union.
+    const deep = { type: 'array', items: { type: 'array', items: { enum: ['a', 'b'] } } }
+    assert.equal(shown(deep), '{ n?: ("a" | "b")[][] }')
+    assert.equal(shown({ type: 'array', items: { enum: ['a | b'] } }), '{ n?: "a | b"[] }')
+    // An array of a union holds the whole union in parentheses, so a bound never reads as a bound on the array.
+    assert.equal(
+      shown({ type: 'array', items: { type: ['null', 'integer'], minimum: 1 } }),
+      '{ n?: (null | number (min 1))[] }',
+    )
+    // The dash form holds two whole numbers in order only, so it never reads as a subtraction.
+    assert.equal(shown({ type: 'number', minimum: 1e-7, maximum: 1 }), '{ n?: number (min 1e-7, max 1) }')
+    assert.equal(shown({ type: 'number', minimum: 0.5, maximum: 2 }), '{ n?: number (min 0.5, max 2) }')
+    assert.equal(shown({ type: 'number', minimum: 10, maximum: 1 }), '{ n?: number (min 10, max 1) }')
+  })
+
+  test('a spec with bounded arguments still cuts at whole arguments', () => {
+    const properties = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`bounded_argument_${i}`, { type: 'integer', minimum: 1, maximum: 100 }]),
+    )
+    const text = argsText({ type: 'object', properties, required: ['bounded_argument_59'] })
+    assert.ok(text.length <= 500, `${text.length} characters`)
+    const parts = text.slice(2, -2).split('; ')
+    assert.match(parts.pop()!, /^… \d+ more arguments$/)
+    assert.equal(parts[0], 'bounded_argument_59: number (1-100)')
+    for (const p of parts.slice(1)) assert.match(p, /^bounded_argument_\d+\?: number \(1-100\)$/)
+  })
+
   test('an empty query lists every tool, a query ranks name hits first, and failed servers come last', () => {
     const all = searchResult(states, '', 15)
     assert.match(all, /^3 of 3 MCP tools\./)

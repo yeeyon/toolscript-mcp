@@ -286,6 +286,34 @@ describe('search_tools with 3 or fewer hits', () => {
     )
   })
 
+  test('the declaration of a tool shows the numeric bounds of a number', () => {
+    const inputSchema = {
+      type: 'object',
+      properties: {
+        maxResults: { type: 'integer', maximum: 100 },
+        page: { type: 'integer', minimum: 1, maximum: 50 },
+        floor: { type: 'number', minimum: 0.5 },
+        mixed: { type: ['number', 'null'], maximum: 9 },
+        loose: { type: 'number', maximum: '100', exclusiveMinimum: 0 },
+        ids: { type: 'array', items: { type: 'integer', minimum: 1 } },
+      },
+    }
+    assert.equal(
+      one({ name: 'b', inputSchema }),
+      [
+        '### mcp__x__b',
+        'call("mcp__x__b", {',
+        '  maxResults?: number (max 100)',
+        '  page?: number (1-50)',
+        '  floor?: number (min 0.5)',
+        '  mixed?: number (max 9) | null',
+        '  loose?: number',
+        '  ids?: (number (min 1))[]',
+        '})',
+      ].join('\n'),
+    )
+  })
+
   test('an empty enum shows never and an empty type list shows unknown', () => {
     const inputSchema = { type: 'object', properties: { a: { enum: [] }, b: { type: [] } } }
     assert.equal(one({ name: 'e', inputSchema }), '### mcp__x__e\ncall("mcp__x__e", {\n  a?: never\n  b?: unknown\n})')

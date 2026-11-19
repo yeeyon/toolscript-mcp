@@ -130,19 +130,55 @@ export const notConnected = (s: ServerState): string | undefined =>
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
+// The members of a schema's type in the short list: more than one for a union.
 // An empty enum allows no value. An empty type list is not a valid schema.
 // Arrays nested deeper than MAX_NEST end in unknown, so a deep schema cannot overflow the stack.
-const typeOf = (schema: unknown, nest = 0): string => {
-  if (!isObject(schema) || nest > MAX_NEST) return 'unknown'
-  if (Array.isArray(schema.enum))
-    return schema.enum.length === 0 ? 'never' : schema.enum.map(v => JSON.stringify(v)).join(' | ')
+const typeParts = (schema: unknown, nest: number): string[] => {
+  if (!isObject(schema) || nest > MAX_NEST) return ['unknown']
+  if (Array.isArray(schema.enum)) return schema.enum.length === 0 ? ['never'] : schema.enum.map(v => JSON.stringify(v))
   const type = schema.type
   if (Array.isArray(type))
-    return type.length === 0 ? 'unknown' : type.map(t => typeOf({ ...schema, type: t }, nest)).join(' | ')
-  if (type === 'array') return `${typeOf(schema.items, nest + 1)}[]`
-  if (type === 'integer') return 'number'
-  if (typeof type === 'string') return type
-  return 'unknown'
+    return type.length === 0 ? ['unknown'] : type.flatMap(t => typeParts({ ...schema, type: t }, nest))
+  if (type === 'array') return [`${ofArray(grouped(typeParts(schema.items, nest + 1)))}[]`]
+  if (type === 'integer' || type === 'number') return [withBounds('number', schema)]
+  if (typeof type === 'string') return [type]
+  return ['unknown']
+}
+
+const typeOf = (schema: unknown): string => typeParts(schema, 0).join(' | ')
+
+// `number (min 1)[]` would read as a bound on the array, so a bounded item gets parentheses. A union item gets them
+// from `grouped`.
+const ofArray = (item: string): string => (item.startsWith('number (') ? `(${item})` : item)
+
+// A bound at or past the int32 range is the default of a schema generator (zod v4 gives every integer the safe-integer
+// range), not a limit that a program meets.
+const INT32 = 2147483647
+
+// The inclusive bound, or undefined. In draft-04 and OpenAPI 3.0, `exclusiveMinimum: true` makes `minimum` exclusive.
+// A numeric exclusive bound hides the inclusive one when it is as tight or tighter: `tighter` says which.
+const bound = (value: unknown, exclusive: unknown, tighter: (ex: number, v: number) => boolean): number | undefined =>
+  typeof value === 'number' &&
+  Number.isFinite(value) &&
+  Math.abs(value) < INT32 &&
+  exclusive !== true &&
+  !(typeof exclusive === 'number' && tighter(exclusive, value))
+    ? value
+    : undefined
+
+// `number (max 100)`, `number (1-100)` or `number (min 1)`, so a program does not pass a value that the server
+// refuses. Only the inclusive bounds show, and only as numbers: the text comes from this code, never from the server.
+// An exclusive bound is left out: it would need a second form for each case, and the inclusive one stays true. The
+// dash form holds two whole numbers in order only, so `1e-7-1` or `0--5` never reads as a subtraction.
+const withBounds = (base: string, schema: Record<string, unknown>): string => {
+  const min = bound(schema.minimum, schema.exclusiveMinimum, (ex, v) => ex >= v)
+  const max = bound(schema.maximum, schema.exclusiveMaximum, (ex, v) => ex <= v)
+  if (min !== undefined && max !== undefined)
+    return Number.isInteger(min) && Number.isInteger(max) && 0 <= min && min <= max
+      ? `${base} (${min}-${max})`
+      : `${base} (min ${min}, max ${max})`
+  if (max !== undefined) return `${base} (max ${max})`
+  return min !== undefined ? `${base} (min ${min})` : base
 }
 
 // The properties of an object schema, the required ones first.
@@ -329,7 +365,8 @@ const members = (raw: unknown, r: Render, level: number, nest: number): string[]
   if (Array.isArray(type))
     return type.length === 0 ? ['unknown'] : type.flatMap(t => members({ ...schema, type: t }, r, level, nest + 1))
   if (type === 'object') return [objectType(schema, r, level + 1, nest + 1)]
-  if (type === 'array') return [`${grouped(members(schema.items, r, level, nest + 1))}[]`]
+  if (type === 'array') return [`${ofArray(grouped(members(schema.items, r, level, nest + 1)))}[]`]
+  if (type === 'number' || type === 'integer') return [withBounds('number', schema)]
   return [typeof type === 'string' && Object.hasOwn(PRIMITIVES, type) ? PRIMITIVES[type]! : 'unknown']
 }
 
