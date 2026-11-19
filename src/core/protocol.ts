@@ -1455,7 +1455,6 @@ const stem = (word: string): string => {
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const q = rankQuery(query)
   const wanted = words(q).map(word => ({ word, stem: stem(word) }))
-  const hasReal = wanted.some(w => !FILLER.has(w.word))
   const idents = q
     .toLowerCase()
     .split(/[^a-z0-9_.-]+/)
@@ -1488,8 +1487,9 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     }
     return { tool, score, real, filler }
   })
-  // When no tool holds a real word of the query (a synonym or an abbreviation), the filler words rank as before.
-  const gate = hasReal && scored.some(s => s.real > 0)
+  // When no tool holds a real word of the query (a synonym or an abbreviation), or the query has only filler words,
+  // the filler words rank as before.
+  const gate = scored.some(s => s.real > 0)
   for (const s of scored) if (s.real > 0 || !gate) s.score += s.real + s.filler
   return scored
     .filter(s => wanted.length === 0 || s.score > 0)
