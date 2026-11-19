@@ -214,6 +214,19 @@ describe('rankTools on three sets of searches', () => {
     }
   })
 
+  test('a query of 50,000 characters of plural words ranks in well under 100 ms', () => {
+    rankTools(catalog, 'warm up the regex and the JIT', 10)
+    // No tool holds "queries", "attachments" or "qzxes", so each word of the query is cut to its stem for every tool.
+    for (const unit of ['queries ', 'attachments qzxes ']) {
+      const query = unit.repeat(Math.ceil(50_000 / unit.length))
+      const start = performance.now()
+      const found = rankTools(catalog, query, 10)
+      const ms = performance.now() - start
+      assert.ok(found.length > 0, `${JSON.stringify(unit)} found no tool through the stem`)
+      assert.ok(ms < 100, `${JSON.stringify(unit)} took ${ms.toFixed(0)} ms`)
+    }
+  })
+
   test('a cut that splits a tool name drops the partial name', () => {
     const name = 'mcp__github__get_issue_comments'
     const prose = 'a '.repeat(489)
