@@ -690,6 +690,26 @@ describe('output projection', () => {
     )
   })
 
+  test('calls of one tool one after another: a line with counts and seconds, after the empty-result note', () => {
+    const NOTE =
+      "6 calls of one tool ran one after another (16.5 s). Start calls that do not need each other's result together with Promise.all."
+    const serial = { calls: 6, ms: 16_520, savedMs: 12_400 }
+    const get = (ref: number): CallRecord => ({ ref, tool: 'mcp__x__get', status: 'ok', chars: 10, data: true })
+    const empty = { t: 'done', value: '[]', logs: [] } as const
+    const few = projectionFooter({ calls: [1, 2, 3, 4, 5, 6].map(get), recalls: 0, recalled: [], serial }, empty)
+    assert.ok(few.endsWith(`\nThe result is empty, but the calls returned data: check the shapes.\n${NOTE}`), few)
+    const many = projectionFooter(
+      { calls: [1, 2, 3, 4, 5, 6, 7, 8, 9].map(get), recalls: 0, recalled: [], serial },
+      empty,
+    )
+    assert.ok(
+      many.endsWith(`check the shapes.\n${NOTE}\nawait recall(n) returns result #n again, with no new call.`),
+      many,
+    )
+    const none = projectionFooter({ calls: [1, 2].map(get), recalls: 0, recalled: [] }, empty)
+    assert.ok(!none.includes('one after another'), none)
+  })
+
   test('a result that fits shows as formatted JSON', () => {
     const text = formatOutcome({ t: 'done', value: '{"a":[1,2]}', logs: [] }, 0, '', 20_000, {
       calls: [],

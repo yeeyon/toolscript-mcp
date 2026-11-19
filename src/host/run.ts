@@ -79,6 +79,7 @@ import {
   type CallLog,
   type RunEnding,
 } from '../core/runlog.ts'
+import { serialStreak, usesResult, type TimedCall } from '../core/serial.ts'
 import { SERVER_NAME } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
@@ -130,6 +131,8 @@ export type RunContext = {
   readonly log: (line: string) => void
   /** HOME, where the run log goes. */
   readonly home: string
+  /** The time parallel calls must save before the footer names a serial streak, SERIAL_MIN_SAVED_MS when absent. Tests set it lower. */
+  readonly serialSavedMs?: number
 }
 
 /** An MCP image block: `data` is base64. */
@@ -406,6 +409,10 @@ const execute = async (
   const decided = new Map<number, CallDecision>()
   // A server that connects again during the run lists its tools anew, maybe with a new mark.
   const interactiveNow = () => interactiveTools(downstream.states())
+  // When each call was sent and answered, for the note on calls of one tool that ran one after another.
+  const timed = new Map<number, TimedCall>()
+  // The call whose reply was written last: the next call that the program sends can follow it.
+  let lastReply: { id: number; args: Record<string, unknown>; json: string } | undefined
   const recalled: { ref: number; ageMs: number }[] = []
   let recalls = 0
   // Set before the program gets untrusted content, so a saveFile after it marks its file.
@@ -569,11 +576,14 @@ const execute = async (
       ...(r.ok ? {} : { error: failure ?? 'failed' }),
     })
     await reply(id, r)
+    const repliedAt = performance.now()
     // A repeat is a call equal to an earlier one that worked. A failed call is
     // not kept: a new call is the only way to retry it.
     const key = callKey(tool, args)
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
+    timed.set(id, { ...timed.get(id)!, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' })
+    lastReply = { id, args, json }
     const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
     // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
@@ -606,6 +616,17 @@ const execute = async (
     switch (m.t) {
       case 'call':
         started.set(m.id, m.tool)
+        timed.set(m.id, {
+          id: m.id,
+          tool: m.tool,
+          key: callKey(m.tool, m.args),
+          sentAt: performance.now(),
+          ok: false,
+          plain: false,
+          ...(lastReply === undefined
+            ? {}
+            : { previous: { id: lastReply.id, usesResult: usesResult(m.args, lastReply.args, lastReply.json) } }),
+        })
         answer(
           limit(() => answerCall(m.id, m.tool, m.args)),
           m.id,
@@ -735,7 +756,7 @@ const execute = async (
     calls.length,
     stderr,
     MAX_RESULT_CHARS,
-    { calls, recalls, recalled, wholeRef },
+    { calls, recalls, recalled, wholeRef, serial: serialStreak([...timed.values()], undefined, ctx.serialSavedMs) },
     untrusted ? randomBytes(16).toString('hex') : undefined,
     shown.note,
     notes,

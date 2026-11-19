@@ -148,6 +148,11 @@ const TOOLS: Record<string, Tool> = {
   forged: args => json({ hits: [{ type: 'image', mimeType: 'image/png', file: args.file ?? 'notes.png' }] }),
   fail: () => ({ content: [{ type: 'text', text: 'server error' }], isError: true }),
   slow: async () => (await new Promise(r => setTimeout(r, 300)), json({ ok: 1 })),
+  // A slow page of a list and the cursor of the next page.
+  pages: async args => (
+    await new Promise(r => setTimeout(r, 300)),
+    json({ items: [1], next: `${String(args.cursor ?? 'cursor')}-next` })
+  ),
   // Answers only when the run cancels it.
   hang: (_, signal) =>
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
@@ -243,6 +248,7 @@ type Options = {
   written?: RunContext['written']
   policyNote?: string
   servers?: Config['servers']
+  serialSavedMs?: number
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -282,6 +288,7 @@ const setup = (o: Options = {}) => {
     signal: o.signal ?? new AbortController().signal,
     log: () => {},
     home,
+    ...(o.serialSavedMs === undefined ? {} : { serialSavedMs: o.serialSavedMs }),
   }
   const run = async (code: string) => runCode(ctx, code)
   const lines = (): RunRecord[] => {
@@ -1171,6 +1178,60 @@ describe('output projection', () => {
     )
     const back = await run('const r = await recall(1)\nreturn [r.length, r[799]]')
     assert.ok(back.text.startsWith('[\n  800,\n  {\n    "id": 799,\n    "ok": true'), back.text)
+  })
+})
+
+describe('calls of one tool one after another', () => {
+  // Three slow calls save about 600 ms in parallel: the footer here needs 200 ms, not 3 s.
+  const options = { serialSavedMs: 200 }
+  const NOTE =
+    /\n3 calls of one tool ran one after another \(\d+\.\d s\)\. Start calls that do not need each other's result together with Promise\.all\.$/
+  const loop = (body: string) => `for (const n of ["first", "second", "third"]) {\n  ${body}\n}\nreturn "ok"`
+  const noNote = (text: string) => assert.ok(!text.includes('one after another'), text)
+
+  test('a loop that awaits each call gets the note', async () => {
+    // Under load, the time from a reply to the next call can pass SERIAL_GAP_MS: one note in three runs is enough.
+    const { run } = setup(options)
+    let text = ''
+    for (let i = 0; i < 3 && !NOTE.test(text); i++) text = (await run(loop('await call("mcp__f__slow", { n })'))).text
+    assert.match(text, NOTE)
+  })
+
+  test('the same calls with Promise.all get no note', async () => {
+    const r = await setup(options).run(
+      'await Promise.all(["first", "second", "third"].map(n => call("mcp__f__slow", { n })))\nreturn "ok"',
+    )
+    assert.equal(r.isError, false, r.text)
+    noNote(r.text)
+  })
+
+  test('a cursor from the previous result gets no note', async () => {
+    const r = await setup(options).run(
+      'let args = {}\nfor (let i = 0; i < 3; i++) {\n  const page = await call("mcp__f__pages", args)\n  args = { cursor: page.next }\n}\nreturn "ok"',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.ok(r.text.includes('--- 3 MCP calls: '), r.text)
+    noNote(r.text)
+  })
+
+  test('the same call again gets no note', async () => {
+    const r = await setup(options).run(loop('await call("mcp__f__slow", {})'))
+    assert.equal(r.isError, false, r.text)
+    noNote(r.text)
+  })
+
+  test('calls of a tool the person approved get no note', async () => {
+    const approved = setup({ ...options, policy: rules(['mcp__f__slow', 'ask']), answer: 'accept' })
+    const r = await approved.run(loop('await call("mcp__f__slow", { n })'))
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(approved.asked, [['mcp__f__slow']])
+    noNote(r.text)
+  })
+
+  test('a sleep between the calls gets no note', async () => {
+    const r = await setup(options).run(loop('await call("mcp__f__slow", { n })\n  await sleep(600)'))
+    assert.equal(r.isError, false, r.text)
+    noNote(r.text)
   })
 })
 
