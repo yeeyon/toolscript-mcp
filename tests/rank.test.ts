@@ -47,10 +47,14 @@ describe('rankTools on three sets of searches', () => {
   // The floors sit 2 top-1 points and about 0.01 MRR under the measured values. A later rule that is no worse out of
   // sample must pass. The first set tuned the rule: the other two did not. Measured, before #49 -> now:
   // tuning set 65 -> 69 (MRR 0.855 -> 0.894), set A 107 -> 111 (0.920 -> 0.939), set B 101 -> 101 (0.910 -> 0.909).
+  // Then the stem of a plural word (#58): 69 (0.894), 111 (0.939), 101 (0.909 -> 0.911). A stem hit of 2 cost the
+  // tuning set one top-1 (68, 0.880). Then the filler gate (#64): 69 (0.894), 111 -> 112 (0.939 -> 0.947), 101 -> 103
+  // (0.911 -> 0.932). Then a stem hit of 0.5 instead of 1, below a description hit: 69 (0.894), 112 (0.947),
+  // 103 -> 104 (0.932 -> 0.938). A stem that cuts "ies", "es" only after s, x, z, ch or sh, else "s", left all three.
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
-    ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 109, 0.93],
-    ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 99, 0.9],
+    ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 110, 0.94],
+    ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 102, 0.93],
   ]
   for (const [label, tools, queries, top1Floor, mrrFloor] of sets)
     test(label, () => {
@@ -96,6 +100,118 @@ describe('rankTools on three sets of searches', () => {
     ])
   })
 
+  describe('plural words of a query', () => {
+    const tools: ToolEntry[] = [
+      { name: 'mcp__azure-devops__pipelines_build', description: 'Show the status of one build of a pipeline run' },
+      { name: 'mcp__azure-devops__repo_branch', description: 'Show a branch of a repository' },
+      { name: 'mcp__azure-devops__wiki_page', description: 'Read a wiki page' },
+      { name: 'mcp__atlassian__get_issue', description: 'Get a Jira issue and its status' },
+      { name: 'mcp__atlassian__get_issue_fields', description: 'Get the fields of a Jira issue' },
+      { name: 'mcp__atlassian__get_project', description: 'Get a Jira project' },
+      { name: 'mcp__github__list_workflow_runs', description: 'List the runs of a workflow' },
+      { name: 'mcp__github__list_branches', description: 'List the branches of a repository' },
+    ]
+    for (const query of ['builds', 'pipelines get builds status branch'])
+      test(`"${query}" ranks pipelines_build first when its description lacks "builds"`, () => {
+        assert.equal(rankTools(tools, query, 1)[0]?.name, 'mcp__azure-devops__pipelines_build')
+      })
+
+    // pipelines_build's description holds "builds", and pipelines_artifact's holds only "build" (#58).
+    const real: [string, string, readonly ToolEntry[]][] = [
+      ['builds', 'mcp__azure-devops__pipelines_build', catalog],
+      ['pipelines builds', 'mcp__azure-devops__pipelines_build', catalog],
+      ['pipelines get builds status branch', 'mcp__azure-devops__pipelines_build', catalog],
+      ['wikis', 'mcp__azure-devops__wiki', catalog],
+      ['pull request review comments', 'mcp__github__get_pull_request_comments', catalogB],
+    ]
+    for (const [query, wanted, set] of real)
+      test(`"${query}" ranks the tool that holds the full word above one that holds its stem`, () => {
+        assert.equal(rankTools(set, query, 1)[0]?.name, wanted)
+      })
+
+    test('a plural word finds a singular that ends in "y" or has 3 letters', () => {
+      const singular: ToolEntry[] = [
+        { name: 'mcp__sec__get_cve', description: 'Get one CVE record' },
+        { name: 'mcp__gh__get_repository', description: 'Get a repository' },
+        { name: 'mcp__pg__run_query', description: 'Run a SQL query' },
+        { name: 'mcp__kv__get_policy', description: 'Read an access policy' },
+      ]
+      for (const [query, wanted] of [
+        ['cves', 'mcp__sec__get_cve'],
+        ['repositories', 'mcp__gh__get_repository'],
+        ['queries', 'mcp__pg__run_query'],
+        ['policies', 'mcp__kv__get_policy'],
+      ])
+        assert.deepEqual(
+          rankTools(singular, query, 5).map(t => t.name),
+          [wanted],
+          query,
+        )
+    })
+
+    test('the stem of a plural word keeps the "e" of its singular', () => {
+      const found = (tools: readonly ToolEntry[], query: string) =>
+        rankTools(tools, query, tools.length).map(t => t.name)
+      // "sit", "fil" and "not" would match "repository", "filters" and "notifications".
+      assert.ok(!found(catalog, 'sites').includes('mcp__azure-devops__repo_branch'))
+      assert.ok(!found(catalog, 'files').includes('mcp__github__list_issues'))
+      assert.ok(!found(catalogB, 'notes').includes('mcp__github__list_notifications'))
+    })
+
+    test('a plural word still finds the singular name, a short word is not cut', () => {
+      assert.equal(rankTools(tools, 'branches', 1)[0]?.name, 'mcp__github__list_branches')
+      assert.deepEqual(rankTools(tools, 'bus', 5), [])
+      assert.deepEqual(rankTools(tools, 'class', 5), [])
+      // A word that ends in "ss" is not cut, so "class" does not find "clash" through "clas".
+      const clash = [{ name: 'mcp__x__list_clash', description: 'List each clash' }]
+      assert.deepEqual(rankTools(clash, 'class', 5), [])
+    })
+  })
+
+  describe('filler words of a query', () => {
+    const tools: ToolEntry[] = [
+      ...['local', 'sit', 'uat'].map(s => ({
+        name: `mcp__grafana-${s}__get_dashboard_by_uid`,
+        description: 'Get a dashboard by its uid',
+      })),
+      { name: 'mcp__azure-devops__repo_pull_request', description: 'Show a pull request' },
+      { name: 'mcp__github__get_pull_request', description: 'Get a pull request of a repository' },
+      { name: 'mcp__github__list_pull_requests', description: 'List the pull requests of a repository' },
+      { name: 'mcp__github__get_me', description: 'Get the signed-in user' },
+      { name: 'mcp__github__list_issues', description: 'List the issues of a repository' },
+    ]
+    const names = (query: string, limit = 10) => rankTools(tools, query, limit).map(t => t.name)
+
+    test('filler words do not lift a tool that holds no other word of the query', () => {
+      const found = rankTools(tools.slice(0, 4), 'pull request get by id', 4).map(t => t.name)
+      assert.deepEqual(found, ['mcp__azure-devops__repo_pull_request'])
+    })
+
+    test('a query of only filler words still lists the tools that hold them', () => {
+      assert.ok(names('get').some(n => n.includes('__get_')))
+      assert.deepEqual(
+        names('list by id').filter(n => n.includes('__list_')),
+        ['mcp__github__list_issues', 'mcp__github__list_pull_requests'],
+      )
+    })
+
+    test('a filler word still breaks a tie between tools that hold a real word', () => {
+      const found = names('get pull request')
+      assert.equal(found[0], 'mcp__github__get_pull_request')
+      assert.ok(found.indexOf('mcp__github__list_pull_requests') > 0)
+    })
+
+    test('an exact short name that holds a filler word ranks first', () => {
+      assert.equal(names('get_me', 1)[0], 'mcp__github__get_me')
+    })
+
+    test('when no tool holds the real word of a query, the filler words still list tools', () => {
+      // "prs" and "ticket" are in no tool: the right tool must stay in the list, as before the gate.
+      assert.ok(names('list prs').includes('mcp__github__list_pull_requests'))
+      assert.ok(names('get ticket').includes('mcp__github__get_pull_request'))
+    })
+  })
+
   test('a hostile query of 50,000 characters ranks in well under 100 ms', () => {
     rankTools(catalog, 'warm up the regex and the JIT', 10)
     for (const unit of ['-', '.', 'a-', '_.-']) {
@@ -103,6 +219,24 @@ describe('rankTools on three sets of searches', () => {
       const start = performance.now()
       rankTools(catalog, query, 10)
       const ms = performance.now() - start
+      assert.ok(ms < 100, `${JSON.stringify(unit)} took ${ms.toFixed(0)} ms`)
+    }
+  })
+
+  test('a query of 50,000 characters of plural words ranks in well under 100 ms', () => {
+    rankTools(catalog, 'warm up the regex and the JIT', 10)
+    // No tool holds "queries", "attachments" or "qzxes", so each tool is matched by the stem of each word that the
+    // 1000-character cut keeps. The fastest of 3 runs counts, so a busy CI machine does not fail the test.
+    for (const unit of ['queries ', 'attachments qzxes ']) {
+      const query = unit.repeat(Math.ceil(50_000 / unit.length))
+      let ms = Infinity
+      let found: ToolEntry[] = []
+      for (let run = 0; run < 3; run++) {
+        const start = performance.now()
+        found = rankTools(catalog, query, 10)
+        ms = Math.min(ms, performance.now() - start)
+      }
+      assert.ok(found.length > 0, `${JSON.stringify(unit)} found no tool through the stem`)
       assert.ok(ms < 100, `${JSON.stringify(unit)} took ${ms.toFixed(0)} ms`)
     }
   })
