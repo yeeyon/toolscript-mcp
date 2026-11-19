@@ -75,7 +75,7 @@ const startFake = async () => {
    * or the code exchange. `authMethods` are the client authentications that the token endpoint takes. With
    * `rejectAll`, the MCP endpoint answers 401 to every token. The token endpoint waits for `holdRefreshes` refresh
    * requests before it answers the first, so two clients use one refresh token. With `stallRefreshes`, it never answers
-   * a refresh. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
+   * a refresh. With `gate`, it answers each refresh only after the gate resolves. With `tokenDown`, the token endpoint drops each connection. `refreshAnswer` answers each refresh. `grantErrorMs` delays each refresh that gets
    * `invalid_grant`. The token endpoint answers `invalid_client` to the client `refuseClient`. A registration answer
    * gives the client `registeredSecret`, if set, and the first of `authMethods`, with the id `registeredId`, if set.
    * `anonymous` lets the MCP
@@ -107,6 +107,7 @@ const startFake = async () => {
     rejectAll: false,
     holdRefreshes: 0,
     stallRefreshes: false,
+    gate: undefined as Promise<void> | undefined,
     tokenDown: false,
     refreshAnswer: undefined as { status: number; type: string; body: string } | undefined,
     grantErrorMs: 0,
@@ -175,6 +176,7 @@ const startFake = async () => {
     const form = new URLSearchParams(text)
     seen.tokens.push(form)
     if (form.get('grant_type') === 'refresh_token' && change.stallRefreshes) return
+    if (form.get('grant_type') === 'refresh_token') await change.gate
     if (form.get('grant_type') === 'authorization_code' && change.stallExchange) return
     if (form.get('grant_type') === 'refresh_token' && change.holdRefreshes > 0)
       await new Promise<void>(resolve => {
@@ -1116,6 +1118,57 @@ describe('the running server', () => {
     await other
     assert.equal(fake.refreshRequests(), 2)
     assert.equal(fake.seen.authorizations.length, 1, 'only the login authorized')
+  })
+
+  /**
+   * A login in another process while the token endpoint holds a refresh of the running server: the login saves its
+   * tokens, then the refresh gets its answer. Gives the store as the login left it.
+   */
+  const loginDuringRefresh = async (fake: Fake, s: ReturnType<typeof setup>, downstream: Downstream) => {
+    let release = () => {}
+    fake.change.gate = new Promise<void>(resolve => (release = resolve))
+    fake.expire()
+    const call = s.ping(downstream)
+    while (fake.refreshRequests() === 0) await new Promise(resolve => setTimeout(resolve, 10))
+    const login = await s.login()
+    const stored = JSON.parse(s.storeText())
+    release()
+    assert.equal(login, 0, s.lines.join('\n'))
+    assert.equal(await call, PONG)
+    return stored
+  }
+
+  test('a login during a refresh keeps its tokens in the store, and the next refresh sends them', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    const login = await loginDuringRefresh(fake, s, downstream)
+    assert.equal(fake.seen.registrations, 1, 'the login kept the stored client')
+    assert.deepEqual(JSON.parse(s.storeText()), login, 'the refresh left the store of the login')
+    fake.expire()
+    assert.equal(await s.ping(downstream), PONG)
+    const refreshes = fake.seen.tokens.filter(form => form.get('grant_type') === 'refresh_token')
+    assert.equal(refreshes.at(-1)?.get('refresh_token'), login.tokens.refresh_token)
+  })
+
+  test('a login that registers a new client during a refresh keeps its client and tokens, which refresh', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    // Another program now has the port of the registered redirect URL, so the next login registers a new client.
+    const redirect = fake.seen.authorizations[0]?.searchParams.get('redirect_uri') ?? ''
+    const taken = http.createServer()
+    await new Promise<void>(resolve => taken.listen(Number(new URL(redirect).port), '127.0.0.1', resolve))
+    servers.push(taken)
+    const login = await loginDuringRefresh(fake, s, downstream)
+    assert.equal(fake.seen.registrations, 2)
+    assert.deepEqual(JSON.parse(s.storeText()), login, 'the refresh left the store of the login')
+    fake.expire()
+    assert.equal(await s.ping(s.connect()), PONG, 'the stored client refreshes the stored tokens')
   })
 
   test('eight calls of two links at expiry all go on, and the token endpoint gets one refresh', async () => {
