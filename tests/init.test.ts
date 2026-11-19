@@ -67,6 +67,9 @@ const homeWith = (files: Record<string, unknown>): string => {
   return dir
 }
 
+/** The platform of a test that prints the temp paths of this machine. The fixtures keep Claude Desktop where Linux has it. */
+const HOST = process.platform === 'darwin' ? 'linux' : process.platform
+
 const init = async (home: string, args: string[] = [], platform = 'linux', launch: Launch = NPX_LAUNCH) => {
   let out = ''
   const env = { XDG_CONFIG_HOME: path.join(home, '.config'), APPDATA: path.join(home, '.config') }
@@ -120,7 +123,7 @@ describe('toolscript-mcp init', () => {
 
   test('the report says what to remove and add in each client, and shows no secret', async () => {
     const home = homeWith(CLIENTS)
-    const { out, file } = await init(home, [], process.platform)
+    const { out, file } = await init(home, [], HOST)
     noSecret(out)
     const lines = out.split('\n').map(l => l.trim())
     const has = (line: string) => assert.ok(lines.includes(line), `missing line: ${line}\n\n${out}`)
@@ -1948,7 +1951,7 @@ describe('init --list and --add', () => {
 
   test('--list ends with the command that adds each server that --add can take', async () => {
     const { home, project } = setup()
-    const { code, out, file } = await run(home, project, ['--list'], process.platform)
+    const { code, out, file } = await run(home, project, ['--list'], HOST)
     assert.equal(code, 0, out)
     const [p, c] = [word(project), word(file)]
     const npx = '    npx -y toolscript-mcp init'
