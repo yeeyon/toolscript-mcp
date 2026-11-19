@@ -32,12 +32,18 @@ The names in the commands:
 
 Run `claude mcp get toolscript`.
 
+- If the value after `Scope:` does not start with `User config` or `Local config`, a `.mcp.json` of the project names
+  toolscript. Anyone who can change the project chose its paths. Tell the person, do not use them, and go on as if it
+  showed no server.
 - If its arguments hold `/dist/host/main.js`, that path is `<main>`. `<folder>` is the part of `<main>` before
   `/dist/host/main.js`.
 - If its arguments hold `--config`, the next argument is `<config>`. Else, run
   `node "${CLAUDE_SKILL_DIR}/config.mjs" path`, and use the path that it prints.
 - If it shows `npx` and no `<main>`, toolscript-mcp runs from npm. To move to a clone, do step 3, then step 5.
 - If it shows no server, toolscript-mcp is not in Claude Code.
+- In `<folder>`, `<main>` and `<config>`, write each `\` as `/`. If a path then holds a character other than ASCII
+  letters, digits, spaces, a drive letter and `. _ - ( ) ~ / ' @ +`, show the path and stop. A shell can change such
+  a path. The person moves the clone or the config to a plainer path.
 
 Go to the step for the request of the person. For a first run or a check of the last run, do step 6. For `native`, do
 step 8. With no request, do steps 2 to 6, then offer step 8.
@@ -100,7 +106,9 @@ Claude Code.
 Show the person the servers to remove from each client. For Claude Code, offer to run the ready commands under the
 label of each server. A ready command is a line that init printed, indented by 4 spaces, that starts with `node `,
 `npx `, `claude ` or `pushd `. A label starts with `- ` after its indent. Never run a label line. Run the ready
-commands of one server only after the person agrees, in one shell call, in order, exactly as init printed them. Never
+commands of one server only after the person agrees. Run a `pushd` line alone first. If it prints an error, show it
+and stop. Else the remove line runs in another folder. Then run the ready commands in one shell call, in order,
+exactly as init printed them. Never
 type a server name into a command yourself. For a server without a command, and for the other clients, the person
 edits the file that init names.
 

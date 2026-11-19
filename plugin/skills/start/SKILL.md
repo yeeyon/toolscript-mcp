@@ -36,9 +36,14 @@ Run `claude mcp get toolscript`.
 
 - If it shows no server, or no `/dist/host/main.js` in its arguments, toolscript-mcp is not set up from a clone. Tell
   the person to run `/toolscript:setup` first, and stop.
+- If the value after `Scope:` does not start with `User config` or `Local config`, stop. Tell the person that a `.mcp.json`
+  of the project names toolscript, and that anyone who can change the project chose its paths. Do not use them.
 - `<main>` is the argument that ends in `/dist/host/main.js`. `<folder>` is the part before `/dist/host/main.js`.
 - If its arguments hold `--config`, the next argument is `<config>`. Else, run `node "<helper>" path`, and use the
   path that it prints.
+- In `<main>` and `<config>`, write each `\` as `/`. If a path then holds a character other than ASCII letters,
+  digits, spaces, a drive letter and `. _ - ( ) ~ / ' @ +`, show the path and stop. A shell can change such a path.
+  The person moves the clone or the config to a plainer path.
 
 ## 2. Pick a server
 
@@ -76,6 +81,8 @@ it ends with `Commands that allow tools:`.
 - If it says that the server needs an OAuth login, give the person the login command that it prints. The person runs
   it. Then run `tools` again.
 - If it cannot connect, show the reason and stop.
+- If a tool shows `ask` and the output has no `Commands that allow tools:`, the clone is older than this skill. Tell
+  the person to run `/toolscript:setup update`, and stop.
 
 ## 4. Pick a first task
 
@@ -93,8 +100,9 @@ Explain the two choices, and ask the person to choose one:
 
 For the second choice, use the output of step 3:
 
-1. Under `Commands that allow tools:`, find the label of each tool of the task. If each tool of the task is
-   `read-only`, use the label `every read-only tool above with a command`.
+1. Under `Commands that allow tools:`, find the label of each tool of the task. Do not use the label
+   `every read-only tool above with a command`: it allows more tools than the task uses, and the server chose their
+   hints.
 2. Run the ready command under each label. It writes nothing. It shows the new policy, then a ready command with
    `--apply` under `To write this policy, run the command below.` Show the output to the person.
 3. With approval, run each `--apply` command, exactly as printed.
@@ -140,8 +148,9 @@ directly, and each full result goes into the context.
 Run `node "<main>" init --list --config "<config>"`. Under `Steps that remove a direct copy`, find the label of the
 server. For Claude Code, the lines under it are ready commands. For the `local` and `project` scopes, a `pushd` command
 comes first: `claude mcp remove` finds such a server only from its folder. Show the lines to the person. After the
-person agrees, run the ready commands of the step in one shell call, in order, one line each. For the `project` scope,
-the person decides, because `.mcp.json` is shared.
+person agrees, run the `pushd` line alone first. If it prints an error, show it and stop. Else the remove line runs in
+another folder. Then run the ready commands of the step in one shell call, in order, one line each. For the `project`
+scope, the person decides, because `.mcp.json` is shared.
 
 init can print no command for the server, or a file of Claude Desktop or Cursor. Then the person removes the entry
 from that file in an editor.
