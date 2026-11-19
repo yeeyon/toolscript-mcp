@@ -1022,9 +1022,15 @@ describe('the catalog', () => {
     const draft4 = { type: 'number', minimum: 0, exclusiveMinimum: true, maximum: 10, exclusiveMaximum: true }
     assert.equal(shown(draft4), '{ n?: number }')
     assert.equal(shown({ ...draft4, exclusiveMaximum: false }), '{ n?: number (max 10) }')
-    // A numeric exclusive bound beside the inclusive one can be the tighter one, so neither shows.
+    // A numeric exclusive bound as tight as the inclusive one or tighter hides it. A looser one leaves it.
     assert.equal(shown({ type: 'integer', minimum: 0, exclusiveMinimum: 0 }), '{ n?: number }')
     assert.equal(shown({ type: 'integer', minimum: 1, maximum: 10, exclusiveMaximum: 3 }), '{ n?: number (min 1) }')
+    assert.equal(shown({ type: 'integer', minimum: 5, exclusiveMinimum: 0 }), '{ n?: number (min 5) }')
+    assert.equal(shown({ type: 'integer', maximum: 100, exclusiveMaximum: 1000 }), '{ n?: number (max 100) }')
+    // Nested arrays read as the detail view does, with one pair of parentheses around a union.
+    const deep = { type: 'array', items: { type: 'array', items: { enum: ['a', 'b'] } } }
+    assert.equal(shown(deep), '{ n?: ("a" | "b")[][] }')
+    assert.equal(shown({ type: 'array', items: { enum: ['a | b'] } }), '{ n?: "a | b"[] }')
     // An array of a union holds the whole union in parentheses, so a bound never reads as a bound on the array.
     assert.equal(
       shown({ type: 'array', items: { type: ['null', 'integer'], minimum: 1 } }),
