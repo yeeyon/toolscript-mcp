@@ -1010,6 +1010,22 @@ describe('the catalog', () => {
       assert.equal(shown({ type: 'number', minimum: bad, maximum: bad }), '{ n?: number }', String(bad))
     assert.equal(shown({ type: 'number', exclusiveMinimum: 0, exclusiveMaximum: 9 }), '{ n?: number }')
     assert.equal(shown({ type: 'string', maximum: 3 }), '{ n?: string }')
+    // The MCP SDK with zod v4 gives every integer the safe-integer range, and z.int32() the int32 range: no limit
+    // that a program meets, so neither shows. A large bound under the int32 range still shows.
+    const safe = Number.MAX_SAFE_INTEGER
+    assert.equal(shown({ type: 'integer', minimum: -safe, maximum: safe }), '{ n?: number }')
+    assert.equal(shown({ type: 'integer', exclusiveMinimum: 0, maximum: safe }), '{ n?: number }')
+    assert.equal(shown({ type: 'integer', minimum: -2147483648, maximum: 2147483647 }), '{ n?: number }')
+    assert.equal(shown({ type: 'integer', minimum: 1, maximum: safe }), '{ n?: number (min 1) }')
+    assert.equal(shown({ type: 'integer', maximum: 1000000000 }), '{ n?: number (max 1000000000) }')
+    // In draft-04 and OpenAPI 3.0, `exclusiveMinimum: true` makes `minimum` exclusive, so that bound does not show.
+    const draft4 = { type: 'number', minimum: 0, exclusiveMinimum: true, maximum: 10, exclusiveMaximum: true }
+    assert.equal(shown(draft4), '{ n?: number }')
+    assert.equal(shown({ ...draft4, exclusiveMaximum: false }), '{ n?: number (max 10) }')
+    // The dash form holds two whole numbers in order only, so it never reads as a subtraction.
+    assert.equal(shown({ type: 'number', minimum: 1e-7, maximum: 1 }), '{ n?: number (min 1e-7, max 1) }')
+    assert.equal(shown({ type: 'number', minimum: 0.5, maximum: 2 }), '{ n?: number (min 0.5, max 2) }')
+    assert.equal(shown({ type: 'number', minimum: 10, maximum: 1 }), '{ n?: number (min 10, max 1) }')
   })
 
   test('a spec with bounded arguments still cuts at whole arguments', () => {

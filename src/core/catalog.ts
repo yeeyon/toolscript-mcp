@@ -148,16 +148,29 @@ const typeOf = (schema: unknown, nest = 0): string => {
 // `number (min 1)[]` would read as a bound on the array, so a bounded item gets parentheses.
 const ofArray = (item: string): string => (item.startsWith('number (') ? `(${item})` : item)
 
-const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+// A bound at or past the int32 range is the default of a schema generator (zod v4 gives every integer the safe-integer
+// range), not a limit that a program meets.
+const INT32 = 2147483647
+
+// The inclusive bound, or undefined. In draft-04 and OpenAPI 3.0, `exclusiveMinimum: true` makes `minimum` exclusive.
+const bound = (value: unknown, exclusive: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) < INT32 && exclusive !== true
+    ? value
+    : undefined
 
 // `number (max 100)`, `number (1-100)` or `number (min 1)`, so a program does not pass a value that the server
 // refuses. Only the inclusive bounds show, and only as numbers: the text comes from this code, never from the server.
-// An exclusive bound is left out: it would need a second form for each case, and the inclusive one stays true.
+// An exclusive bound is left out: it would need a second form for each case, and the inclusive one stays true. The
+// dash form holds two whole numbers in order only, so `1e-7-1` or `0--5` never reads as a subtraction.
 const withBounds = (base: string, schema: Record<string, unknown>): string => {
-  const { minimum: min, maximum: max } = schema
-  if (finite(min) && finite(max)) return `${base} (${min >= 0 ? `${min}-${max}` : `min ${min}, max ${max}`})`
-  if (finite(max)) return `${base} (max ${max})`
-  return finite(min) ? `${base} (min ${min})` : base
+  const min = bound(schema.minimum, schema.exclusiveMinimum)
+  const max = bound(schema.maximum, schema.exclusiveMaximum)
+  if (min !== undefined && max !== undefined)
+    return Number.isInteger(min) && Number.isInteger(max) && 0 <= min && min <= max
+      ? `${base} (${min}-${max})`
+      : `${base} (min ${min}, max ${max})`
+  if (max !== undefined) return `${base} (max ${max})`
+  return min !== undefined ? `${base} (min ${min})` : base
 }
 
 // The properties of an object schema, the required ones first.
