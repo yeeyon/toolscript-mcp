@@ -47,13 +47,14 @@ describe('rankTools on three sets of searches', () => {
   // The floors sit 2 top-1 points and about 0.01 MRR under the measured values. A later rule that is no worse out of
   // sample must pass. The first set tuned the rule: the other two did not. Measured, before #49 -> now:
   // tuning set 65 -> 69 (MRR 0.855 -> 0.894), set A 107 -> 111 (0.920 -> 0.939), set B 101 -> 101 (0.910 -> 0.909).
-  // Then the stem of a plural word (#58): 69 (0.894), 111 (0.939), 101 (0.909 -> 0.911). A stem hit scores 2 cost the
-  // tuning set one top-1 (68, 0.880), so it scores 1. Then the filler gate (#64): 69 (0.894), 111 -> 112
-  // (0.939 -> 0.947), 101 -> 103 (0.911 -> 0.932).
+  // Then the stem of a plural word (#58): 69 (0.894), 111 (0.939), 101 (0.909 -> 0.911). A stem hit of 2 cost the
+  // tuning set one top-1 (68, 0.880). Then the filler gate (#64): 69 (0.894), 111 -> 112 (0.939 -> 0.947), 101 -> 103
+  // (0.911 -> 0.932). Then a stem hit of 0.5 instead of 1, below a description hit: 69 (0.894), 112 (0.947),
+  // 103 -> 104 (0.932 -> 0.938).
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
     ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 110, 0.94],
-    ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 101, 0.92],
+    ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 102, 0.93],
   ]
   for (const [label, tools, queries, top1Floor, mrrFloor] of sets)
     test(label, () => {
@@ -111,8 +112,21 @@ describe('rankTools on three sets of searches', () => {
       { name: 'mcp__github__list_branches', description: 'List the branches of a repository' },
     ]
     for (const query of ['builds', 'pipelines get builds status branch'])
-      test(`"${query}" ranks pipelines_build first`, () => {
+      test(`"${query}" ranks pipelines_build first when its description lacks "builds"`, () => {
         assert.equal(rankTools(tools, query, 1)[0]?.name, 'mcp__azure-devops__pipelines_build')
+      })
+
+    // pipelines_build's description holds "builds", and pipelines_artifact's holds only "build" (#58).
+    const real: [string, string, readonly ToolEntry[]][] = [
+      ['builds', 'mcp__azure-devops__pipelines_build', catalog],
+      ['pipelines builds', 'mcp__azure-devops__pipelines_build', catalog],
+      ['pipelines get builds status branch', 'mcp__azure-devops__pipelines_build', catalog],
+      ['wikis', 'mcp__azure-devops__wiki', catalog],
+      ['pull request review comments', 'mcp__github__get_pull_request_comments', catalogB],
+    ]
+    for (const [query, wanted, set] of real)
+      test(`"${query}" ranks the tool that holds the full word above one that holds its stem`, () => {
+        assert.equal(rankTools(set, query, 1)[0]?.name, wanted)
       })
 
     test('a plural word still finds the singular name, a short word is not cut', () => {

@@ -1440,10 +1440,11 @@ const stem = (word: string): string => {
  * Ranks tools. A query token that is a tool's full name, `server__tool` or short name ranks it first, in that order.
  * A short name counts only when it is the whole query or holds `_`, `-` or `.`: a plain word such as "search" in a
  * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2 as a
- * word of the server key, else 1 in the description, else 1 when the stem of a plural word (`stem`) is in the short
- * name or the description. When the query holds a word that is not in `FILLER`, a tool that matches only filler
- * words gets no word score. Equal scores rank by name. Only the first `RANK_QUERY_MAX` characters of the query count,
- * and a token that the cut splits is dropped.
+ * word of the server key, else 1 in the description, else 0.5 when the stem of a plural word (`stem`) is in the short
+ * name or the description. A stem hit scores less than the full word, so for "builds" a tool whose description holds
+ * "builds" ranks above one whose description holds "build". When the query holds a word that is not in `FILLER`, a
+ * tool that matches only filler words gets no word score. Equal scores rank by name. Only the first `RANK_QUERY_MAX`
+ * characters of the query count, and a token that the cut splits is dropped.
  */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const q = rankQuery(query)
@@ -1475,7 +1476,7 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
       if (short.includes(word)) hit = 3
       else if (ofServer.has(word)) hit = 2
       else if (description.includes(word)) hit = 1
-      else if (stem !== word && (short.includes(stem) || description.includes(stem))) hit = 1
+      else if (stem !== word && (short.includes(stem) || description.includes(stem))) hit = 0.5
       if (FILLER.has(word)) filler += hit
       else real += hit
     }
