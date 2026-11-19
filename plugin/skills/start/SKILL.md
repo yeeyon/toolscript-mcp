@@ -32,18 +32,17 @@ The names in the commands:
 
 ## 1. Find the state
 
-Run `claude mcp get toolscript`.
+Run `claude mcp get toolscript`. In each path of its arguments, write each `\` as `/`.
 
 - If it shows no server, or no `/dist/host/main.js` in its arguments, toolscript-mcp is not set up from a clone. Tell
   the person to run `/toolscript:setup` first, and stop.
-- If the value after `Scope:` does not start with `User config` or `Local config`, stop. Tell the person that a `.mcp.json`
-  of the project names toolscript, and that anyone who can change the project chose its paths. Do not use them.
+- If the value after `Scope:` does not start with `User config` or `Local config`, stop. Tell the person that the
+  entry is not in their own user or local scope, so someone else can choose its paths. Do not use them.
 - `<main>` is the argument that ends in `/dist/host/main.js`. `<folder>` is the part before `/dist/host/main.js`.
 - If its arguments hold `--config`, the next argument is `<config>`. Else, run `node "<helper>" path`, and use the
   path that it prints.
-- In `<main>` and `<config>`, write each `\` as `/`. If a path then holds a character other than ASCII letters,
-  digits, spaces, a drive letter and `. _ - ( ) ~ / ' @ +`, show the path and stop. A shell can change such a path.
-  The person moves the clone or the config to a plainer path.
+- If `<main>` or `<config>` holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, show the path and
+  stop. A shell can change such a path. The person moves the clone or the config to another path.
 
 ## 2. Pick a server
 
@@ -51,6 +50,9 @@ Run `node "<main>" init --list --config "<config>"`. It shows one line for each 
 and Cursor: the name, client, scope, kind, status, key and folder. Show the list to the person, and ask which server to
 use first. `<server>` is the value in the `key` column of its line: the key that the server has or gets in `<config>`.
 A line with `-` as its key cannot go into `<config>`.
+
+If init says `Unknown option '--list'`, the clone is older than this skill. Tell the person to run
+`/toolscript:setup update`, and stop.
 
 - A server with the status `in config` is ready.
 - To add a server with the status `not in config`, find its label under `Commands that add a server:`. Run the ready
@@ -148,8 +150,9 @@ directly, and each full result goes into the context.
 Run `node "<main>" init --list --config "<config>"`. Under `Steps that remove a direct copy`, find the label of the
 server. For Claude Code, the lines under it are ready commands. For the `local` and `project` scopes, a `pushd` command
 comes first: `claude mcp remove` finds such a server only from its folder. Show the lines to the person. After the
-person agrees, run the `pushd` line alone first. If it prints an error, show it and stop. Else the remove line runs in
-another folder. Then run the ready commands of the step in one shell call, in order, one line each. For the `project`
+person agrees, run the `pushd` line alone first. If it prints an error, show it and stop: the remove line is then in
+the wrong folder. Without an error, run all the ready commands of the step, the `pushd` line too, in one shell call,
+in order, one line each. For the `project`
 scope, the person decides, because `.mcp.json` is shared.
 
 init can print no command for the server, or a file of Claude Desktop or Cursor. Then the person removes the entry

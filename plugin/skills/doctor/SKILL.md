@@ -31,18 +31,18 @@ The names in the commands:
 
 ## 1. Find the state
 
-Run `claude mcp get toolscript`. Keep its output for step 3.
+Run `claude mcp get toolscript`. Keep its output for step 3. In each path of its arguments, write each `\` as `/`.
 
 - If it shows no server, or no `/dist/host/main.js` in its arguments, toolscript-mcp is not set up from a clone. Tell
   the person to run `/toolscript:setup`, and stop.
-- If the value after `Scope:` does not start with `User config` or `Local config`, stop. Tell the person that a `.mcp.json`
-  of the project names toolscript, and that anyone who can change the project chose its paths. Do not use them.
+- If the value after `Scope:` does not start with `User config` or `Local config`, stop. Tell the person that the
+  entry is not in their own user or local scope, so someone else can choose its paths. Do not use them.
 - `<main>` is the argument that ends in `/dist/host/main.js`. `<folder>` is the part before `/dist/host/main.js`.
 - If its arguments hold `--config`, the next argument is the registered config. Else, run `node "<helper>" path`. The
   path that it prints is the registered config.
 - If the person gave a config path as the argument, that path is `<config>`. Else, the registered config is `<config>`.
-- In `<main>` and `<config>`, write each `\` as `/`. If a path then holds a character other than ASCII letters,
-  digits, spaces, a drive letter and `. _ - ( ) ~ / ' @ +`, show the path and stop. A shell can change such a path.
+- If `<main>` or `<config>` holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, show the path and
+  stop. A shell can change such a path. The person moves the clone or the config to another path.
 
 ## 2. Run doctor
 
