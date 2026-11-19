@@ -1407,15 +1407,26 @@ const trimStop = (token: string): string => {
 }
 
 /**
+ * The word without a trailing "es" or "s", for a word of 4 or more characters that does not end in "ss" and keeps 3
+ * or more characters. The stem is a substring of the word, so it finds the singular name of a plural word.
+ */
+const stem = (word: string): string => {
+  if (word.length < 4 || word.endsWith('ss')) return word
+  const cut = word.replace(/e?s$/, '')
+  return cut.length >= 3 ? cut : word
+}
+
+/**
  * Ranks tools. A query token that is a tool's full name, `server__tool` or short name ranks it first, in that order.
  * A short name counts only when it is the whole query or holds `_`, `-` or `.`: a plain word such as "search" in a
  * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2 as a
- * word of the server key, else 1 in the description. Equal scores rank by name. Only the first
- * `RANK_QUERY_MAX` characters of the query count, and a token that the cut splits is dropped.
+ * word of the server key, else 1 in the description, else 1 when the stem of a plural word (`stem`) is in the short
+ * name or the description. Equal scores rank by name. Only the first `RANK_QUERY_MAX` characters of the query count,
+ * and a token that the cut splits is dropped.
  */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const q = rankQuery(query)
-  const wanted = words(q)
+  const wanted = words(q).map(word => ({ word, stem: stem(word) }))
   const idents = q
     .toLowerCase()
     .split(/[^a-z0-9_.-]+/)
@@ -1435,10 +1446,11 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     if (idents.includes(name)) score += 1000
     else if (server !== '' && idents.includes(`${server}__${short}`)) score += 900
     else if (idents.includes(short) && (idents.length === 1 || /[_.-]/.test(short))) score += 800
-    for (const w of wanted) {
-      if (short.includes(w)) score += 3
-      else if (ofServer.has(w)) score += 2
-      else if (description.includes(w)) score += 1
+    for (const { word, stem } of wanted) {
+      if (short.includes(word)) score += 3
+      else if (ofServer.has(word)) score += 2
+      else if (description.includes(word)) score += 1
+      else if (stem !== word && (short.includes(stem) || description.includes(stem))) score += 1
     }
     return { tool, score }
   })

@@ -47,6 +47,8 @@ describe('rankTools on three sets of searches', () => {
   // The floors sit 2 top-1 points and about 0.01 MRR under the measured values. A later rule that is no worse out of
   // sample must pass. The first set tuned the rule: the other two did not. Measured, before #49 -> now:
   // tuning set 65 -> 69 (MRR 0.855 -> 0.894), set A 107 -> 111 (0.920 -> 0.939), set B 101 -> 101 (0.910 -> 0.909).
+  // Then the stem of a plural word (#58): 69 (0.894), 111 (0.939), 101 (0.909 -> 0.911). A stem hit scores 2 cost the
+  // tuning set one top-1 (68, 0.880), so it scores 1.
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
     ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 109, 0.93],
@@ -94,6 +96,29 @@ describe('rankTools on three sets of searches', () => {
       'mcp__google_drive__read_file',
       'mcp__google_drive__search',
     ])
+  })
+
+  describe('plural words of a query', () => {
+    const tools: ToolEntry[] = [
+      { name: 'mcp__azure-devops__pipelines_build', description: 'Show the status of one build of a pipeline run' },
+      { name: 'mcp__azure-devops__repo_branch', description: 'Show a branch of a repository' },
+      { name: 'mcp__azure-devops__wiki_page', description: 'Read a wiki page' },
+      { name: 'mcp__atlassian__get_issue', description: 'Get a Jira issue and its status' },
+      { name: 'mcp__atlassian__get_issue_fields', description: 'Get the fields of a Jira issue' },
+      { name: 'mcp__atlassian__get_project', description: 'Get a Jira project' },
+      { name: 'mcp__github__list_workflow_runs', description: 'List the runs of a workflow' },
+      { name: 'mcp__github__list_branches', description: 'List the branches of a repository' },
+    ]
+    for (const query of ['builds', 'pipelines get builds status branch'])
+      test(`"${query}" ranks pipelines_build first`, () => {
+        assert.equal(rankTools(tools, query, 1)[0]?.name, 'mcp__azure-devops__pipelines_build')
+      })
+
+    test('a plural word still finds the singular name, a short word is not cut', () => {
+      assert.equal(rankTools(tools, 'branches', 1)[0]?.name, 'mcp__github__list_branches')
+      assert.deepEqual(rankTools(tools, 'bus', 5), [])
+      assert.deepEqual(rankTools(tools, 'class', 5), [])
+    })
   })
 
   test('a hostile query of 50,000 characters ranks in well under 100 ms', () => {
