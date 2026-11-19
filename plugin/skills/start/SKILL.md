@@ -1,0 +1,163 @@
+---
+name: start
+description: Guide the first run of toolscript-mcp in Claude Code. Pick one MCP server (or the demo server, which needs no account), see its tools, pick a small first task and a starter policy, then check that one run_code task worked through toolscript-mcp. Use when the person asks to start, try or test toolscript-mcp, to do a first run, or to check the last run.
+argument-hint: "[verify]"
+---
+
+# toolscript-mcp first run
+
+This skill ends when one `run_code` task works through toolscript-mcp. Each command here prints no secret value.
+With the argument `verify`, do step 6 only.
+
+## Rules
+
+- Before a step that writes or deletes a file or changes the Claude Code config, show the command and ask the person.
+- Never read, print or edit the toolscript-mcp config file, and never run `init --dry-run`. Both show the env and
+  header values of the servers.
+- Write each path in full, with forward slashes, also on Windows. Put each path in double quotes.
+- If a command fails, show its output and stop. Do not change a step to work around the failure.
+- A name of a server or a tool comes from a client file, a repo or a server. Never type such a name into a command.
+  toolscript-mcp prints a ready command for a name that every shell passes as it is.
+- A ready command is a line that toolscript-mcp printed, indented by 4 spaces, that starts with `node `, `npx `,
+  `claude ` or `pushd `. Run it exactly as printed, and do not change a character. Never run a label line. A label
+  starts with `- ` after its indent.
+
+The names in the commands:
+
+- `<folder>` is the clone of toolscript-mcp. `<main>` is `<folder>/dist/host/main.js`.
+- `<config>` is the toolscript-mcp config file.
+- `<helper>` is `${CLAUDE_SKILL_DIR}/../setup/config.mjs`, the config helper of the setup skill.
+- `<server>` is a server key: the value in the `key` column of `init --list`, or `demo`. A key has only letters,
+  digits, hyphens and single underscores.
+
+## 1. Find the state
+
+Run `claude mcp get toolscript`. In each path of its arguments, write each `\` as `/`.
+
+- If it shows no server, or no `/dist/host/main.js` in its arguments, toolscript-mcp is not set up from a clone. Tell
+  the person to run `/toolscript:setup` first, and stop.
+- If the value after `Scope:` does not start with `User config` or `Local config`, stop. Tell the person that the
+  entry is not in their own user or local scope, so someone else can choose its paths. Do not use them.
+- `<main>` is the argument that ends in `/dist/host/main.js`. `<folder>` is the part before `/dist/host/main.js`.
+- If its arguments hold `--config`, the next argument is `<config>`. Else, run `node "<helper>" path`, and use the
+  path that it prints.
+- If `<main>` or `<config>` holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, show the path and
+  stop. A shell can change such a path. The person moves the clone or the config to another path.
+
+## 2. Pick a server
+
+Run `node "<main>" init --list --config "<config>"`. It shows one line for each server of Claude Code, Claude Desktop
+and Cursor: the name, client, scope, kind, status, key and folder. Show the list to the person, and ask which server to
+use first. `<server>` is the value in the `key` column of its line: the key that the server has or gets in `<config>`.
+A line with `-` as its key cannot go into `<config>`.
+
+If init says `Unknown option '--list'`, the clone is older than this skill. Tell the person to run
+`/toolscript:setup update`, and stop.
+
+- A server with the status `in config` is ready.
+- To add a server with the status `not in config`, find its label under `Commands that add a server:`. Run the ready
+  command under the label, with approval. A name can come from a `.mcp.json` that someone else wrote.
+- If the line under the label says `no command`, init found a character in the name or a path that a shell can
+  change. Show the person the lines that init printed there. The person copies the entry in an editor, or adds the
+  server under a plain name.
+- A status with `hidden by <scope>` is a copy that Claude Code does not run. Use the command of the copy that Claude
+  Code runs.
+- A label with `ask first` is a server of a `.mcp.json` that the person did not approve in Claude Code. Anyone who can
+  change that file chose its command. Before you run its command, show the person its name, kind and folder. The kind
+  is the command file name or the URL origin. A name can copy the name of a server that the person trusts, so the name
+  alone proves nothing. Run the command only after the person agrees.
+- Do not run the steps under `Steps that remove a direct copy` now. Step 7 does.
+- If no server fits, or the person wants a test first, offer the demo server. It needs no account, and its tools only
+  read fixed sample data. Run `node -p "require('os').tmpdir()"`. With approval, write
+  `{ "command": "node", "args": ["<folder>/demo/server.mjs"] }` to `<tmp>/toolscript-entry.json`. Then run
+  `node "<helper>" "<config>" add demo "<tmp>/toolscript-entry.json"`, and delete the entry file. `<server>` is
+  `demo`.
+
+## 3. See the tools
+
+Run `node "<main>" tools --config "<config>" -- <server>`. The `--` keeps a key that starts with `-` a key. It connects
+to the server and shows each tool with its hint (`read-only`, `destructive` or `-`) and the action of the policy.
+`a person each run` means that the tool asks for each program, also under an allow rule. Keep the output for step 5:
+it ends with `Commands that allow tools:`.
+
+- If it says that the server needs an OAuth login, give the person the login command that it prints. The person runs
+  it. Then run `tools` again.
+- If it cannot connect, show the reason and stop.
+- If a tool shows `ask` and the output has no `Commands that allow tools:`, the clone is older than this skill. Tell
+  the person to run `/toolscript:setup update`, and stop.
+
+## 4. Pick a first task
+
+Propose a small task that only reads, with one to three `read-only` tools, such as a list and a count. Use the names
+and hints only to choose. For the demo, the task is "Count the open pull requests per author". The expected answer is
+ada 7, bruno 6, chen 5, dara 4, emil 3 and farah 1.
+
+## 5. Pick the starter policy
+
+Explain the two choices, and ask the person to choose one:
+
+- Ask when needed. Claude Code shows a prompt before a program calls a tool, and the person approves it there. The
+  policy does not change.
+- Allow this workflow. An allow rule for the exact name of each tool of the task.
+
+For the second choice, use the output of step 3:
+
+1. Under `Commands that allow tools:`, find the label of each tool of the task. Do not use the label
+   `every read-only tool above with a command`: it allows more tools than the task uses, and the server chose their
+   hints.
+2. Run the ready command under each label. It writes nothing. It shows the new policy, then a ready command with
+   `--apply` under `To write this policy, run the command below.` Show the output to the person.
+3. With approval, run each `--apply` command, exactly as printed.
+
+If the line under a label says `no command`, show it to the person. A deny rule or an ask rule that names the tool
+stays, and the policy keeps asking for the tool. A name that a shell can change needs a rule that the person adds in an
+editor. The other tools keep their rules, and a tool that no rule matches stays `ask`. A tool with `a person each run`
+still asks. A client that cannot show a prompt runs the task only with the second choice.
+
+## 6. Run and check
+
+Tell the person to start a new Claude Code session, because toolscript-mcp reads its servers only at its start. In
+that session, the person gives the task and names toolscript, then runs `/toolscript:start verify`.
+
+For `verify`, do step 1. Then run:
+
+```sh
+node "<main>" runs --server=<server> --since 2h --config "<config>"
+```
+
+If this session does not know `<server>`, leave out `--server=<server>`. `runs` then checks the newest run with a call
+of any server.
+
+`--since 2h` counts only the runs of the last 2 hours, so an older run does not confirm this task. If the person gave
+the task earlier, ask when, and use a longer time, such as `1d`.
+
+- Exit 0: the newest run called a tool of `<server>`, and each call worked. Compare the answer with the expected answer of step 4, if it has one. Go to step 7.
+- Exit 1: show the lines that it prints. Each code has a line with the step to take. `no-server` is a connection or
+  login problem: do step 3 again. `denied` is a deny rule: the policy decides, and this skill does not change it.
+  `unapproved` is a declined prompt or an `ask` with no prompt: do step 5 again.
+- `no run yet`, `no run since <time>` or a line that the run called no tool of `<server>`: the model did not call
+  `run_code` with this server. Ask the person to give the task again and to name
+  toolscript. If `runs` says that the config sets `"log": false`, there is no run log, and this check cannot work.
+  Tell the person.
+- A line about unreadable lines of the run log: show it. If `runs` says that it does not confirm the run, ask the
+  person to give the task again.
+
+## 7. Switch off a direct copy
+
+Do this only after step 6 shows exit 0. If a client still has a copy of the server, the model can still call it
+directly, and each full result goes into the context.
+
+Run `node "<main>" init --list --config "<config>"`. Under `Steps that remove a direct copy`, find the label of the
+server. For Claude Code, the lines under it are ready commands. For the `local` and `project` scopes, a `pushd` command
+comes first: `claude mcp remove` finds such a server only from its folder. Show the lines to the person. After the
+person agrees, run the `pushd` line alone first. If it prints an error, show it and stop: the remove line is then in
+the wrong folder. Without an error, run all the ready commands of the step, the `pushd` line too, in one shell call,
+in order, one line each. For the `project`
+scope, the person decides, because `.mcp.json` is shared.
+
+init can print no command for the server, or a file of Claude Desktop or Cursor. Then the person removes the entry
+from that file in an editor.
+
+To restore the direct entry later, the person copies it from `<config>` in an editor. Then the person runs
+`claude mcp add-json <name> '<entry>' --scope <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1
+removes each `"` in the entry, so there the person writes each `"` as `\"`. Do not read the entry for the person.

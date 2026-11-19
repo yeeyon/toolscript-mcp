@@ -13,6 +13,7 @@
 // policy, prepend and add make the config when it does not exist.
 // untrusted sets "untrusted": true on a server, so each of its results reaches the model as untrusted text. false
 // removes the key.
+// To allow the exact tools of a task, run the lines that `toolscript-mcp tools` prints.
 // Exit 1 is a failure of the config or the entry. Exit 2 is a usage error.
 import fs from 'node:fs'
 import os from 'node:os'

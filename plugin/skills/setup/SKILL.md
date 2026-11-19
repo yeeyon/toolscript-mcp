@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install, update or uninstall toolscript-mcp from its GitHub beta branch and connect it to Claude Code. Use when the person asks to set up, install, update or remove toolscript-mcp. Also use it to add an MCP server to toolscript-mcp, let programs use the tools of Claude Code, log in to an OAuth server through it, or change its policy.
+description: Install, update or uninstall toolscript-mcp from its GitHub beta branch and connect it to Claude Code. Use when the person asks to set up, install, update or remove toolscript-mcp. For a guided first run or a check of the last run, use the start skill (/toolscript:start). For a check of the whole setup, use the doctor skill (/toolscript:doctor). Also use this skill to add an MCP server to toolscript-mcp, let programs use the tools of Claude Code, log in to an OAuth server through it, or change its policy.
 argument-hint: "[install|update|add|login|policy|native|uninstall]"
 ---
 
@@ -30,8 +30,12 @@ The names in the commands:
 
 ## 1. Find the state
 
-Run `claude mcp get toolscript`.
+Run `claude mcp get toolscript`. In each path of its arguments, write each `\` as `/`.
 
+- If the value after `Scope:` does not start with `User config` or `Local config`, someone else can choose its paths.
+  Tell the person, do not use them, and go on as if it showed no server.
+- If an argument holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, show it and stop. A shell can
+  change such a path. The person moves the clone or the config to another path.
 - If its arguments hold `/dist/host/main.js`, that path is `<main>`. `<folder>` is the part of `<main>` before
   `/dist/host/main.js`.
 - If its arguments hold `--config`, the next argument is `<config>`. Else, run
@@ -39,7 +43,8 @@ Run `claude mcp get toolscript`.
 - If it shows `npx` and no `<main>`, toolscript-mcp runs from npm. To move to a clone, do step 3, then step 5.
 - If it shows no server, toolscript-mcp is not in Claude Code.
 
-Go to the step for the request of the person. For `native`, do step 7. With no request, do steps 2 to 6, then offer step 7.
+Go to the step for the request of the person. For a first run or a check of the last run, do step 6. For `native`, do
+step 8. With no request, do steps 2 to 6, then offer step 8.
 
 ## 2. Check Node and git
 
@@ -87,23 +92,28 @@ node "<main>" init --config "<config>"
 ```
 
 init prints the servers that it imported and the servers that it left out, with no secret values. Show this list to
-the person. If init found no server, it writes nothing. Then add servers with step 8.
+the person. If init found no server, it writes nothing. `/toolscript:start` then offers the demo server, and step 9
+adds other servers.
 
 init sets `"untrusted": true` on each server that names Azure DevOps, and its report names them. If the person has an
-Azure DevOps server that the report does not name, mark it as the end of step 8 shows.
+Azure DevOps server that the report does not name, mark it as the end of step 9 shows.
 
-init also prints the steps for each client. They start toolscript-mcp with `node` and the path of `<main>`. An older
-clone prints `npx -y toolscript-mcp` or `cmd /c npx -y toolscript-mcp` there. If you see one of them, use
-`node "<main>"` in its place.
+init also prints the steps for each client. Do not run its `claude mcp add` line: step 5 adds toolscript-mcp to
+Claude Code.
 
-Show the person the servers to remove from each client. For Claude Code, offer to run each
-`claude mcp remove <name> --scope user` line. Run a line only after the person agrees. The person edits the files of
-the other clients.
+Show the person the servers to remove from each client. For Claude Code, offer to run the ready commands under the
+label of each server. A ready command is a line that init printed, indented by 4 spaces, that starts with `node `,
+`npx `, `claude ` or `pushd `. A label starts with `- ` after its indent. Never run a label line. Run the ready
+commands of one server only after the person agrees. Run a `pushd` line alone first. If it prints an error, show it
+and stop: the remove line is then in the wrong folder. Without an error, run all the ready commands of the server in one
+shell call, the `pushd` line too, in order, as init printed them. Never type a server name into a command
+yourself. For a server without a command, and for the other clients, the person
+edits the file that init names.
 
 Recommend one path to each server. If a client also lists a server directly, the model calls the direct tools, and
 each full result goes into the context. MCP gives a server no list of the servers of its client. So toolscript-mcp does
-not check for a duplicate while it runs. init imports only the user-scope servers, so run `claude mcp list` to find the
-other copies.
+not check for a duplicate while it runs. To find the other copies, run `node "<main>" init --list --config "<config>"`.
+It shows the servers of every Claude Code scope, and the steps that remove a direct copy.
 
 If the person wants a new import over a config that exists, run init with `--force` after approval. init keeps the old
 file as `<config>.bak`, and it lists the servers that the new config leaves out.
@@ -133,7 +143,12 @@ For Claude Desktop and Cursor, show the entry for `mcpServers`. The person adds 
 
 Tell the person to start a new Claude Code session, so the session gets `search_tools` and `run_code`.
 
-## 6. Choose the policy
+## 6. First run
+
+The skill `start` of this plugin guides the first run. Tell the person to run `/toolscript:start`. It picks a server
+or the demo server, shows its tools, sets a starter policy and checks one `run_code` task.
+
+## 7. Choose the policy
 
 Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>"`. It shows the servers and the policy, and no secret.
 
@@ -179,7 +194,7 @@ that tool to change its own policy.
 If toolscript-mcp runs, it reads the policy again at each run. A new `deny` rule applies at once. A looser policy
 applies after the person approves it in a prompt, or after a restart of toolscript-mcp.
 
-## 7. Use the tools of Claude Code in programs
+## 8. Use the tools of Claude Code in programs
 
 With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell tools of Claude Code. toolscript-mcp starts
 `claude mcp serve` as the server `claude-code`.
@@ -222,7 +237,7 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
    delete the entry file.
 7. Tell the person to start a new Claude Code session. toolscript-mcp starts its servers only at its own start.
 
-## 8. Add a server
+## 9. Add a server
 
 1. Ask for the server name. A name has letters, digits and hyphens, with single underscores between them.
 2. Ask for the command and arguments of a stdio server, or the URL of an HTTP server.
@@ -235,15 +250,17 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
      `"untrusted": true`. Then each of its results reaches the model as untrusted text.
 5. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add <name> "<tmp>/toolscript-entry.json"`. It makes `<config>` if it does not exist.
    Then delete the entry file.
-   If `claude mcp list` shows the same server, run `claude mcp get <name>` to find its scope. Step 4 tells why.
-   - For the user or local scope, offer to run `claude mcp remove <name> --scope <scope>`.
+   Then run `node "<main>" init --list --config "<config>"`. If a client still has the same server, it is under
+   `Steps that remove a direct copy`. Step 4 tells why it matters.
+   - For the user or local scope, offer the ready commands under its label, as step 4 runs them. Never type the
+     name into a command yourself.
    - For the project scope, tell the person that `.mcp.json` of the project holds the server. Other people can share
      that file, so the person decides.
 6. Tell the person to set each variable in the environment of the client, or to put the value in `<config>` in an
    editor.
 7. Tell the person to start a new Claude Code session. toolscript-mcp reads the servers only at its start.
 
-An HTTP server without `headers` logs in with OAuth. Go to step 9 for it.
+An HTTP server without `headers` logs in with OAuth. Go to step 10 for it.
 
 An Azure DevOps MCP server in `<config>` needs `"untrusted": true`. `config.mjs` shows `untrusted` at the end of the
 line of such a server. init misses a server whose name, command, arguments and URL do not name Azure DevOps, such as
@@ -255,14 +272,16 @@ node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" untrusted <name>
 
 Then tell the person to start a new Claude Code session. `untrusted <name> false` removes the key.
 
-## 9. Log in to an OAuth server
+## 10. Log in to an OAuth server
 
 init lists the HTTP servers without headers, and `config.mjs` marks them `oauth`. For each one, give the person
 this command:
 
 ```sh
-node "<main>" login <server> --config "<config>"
+node "<main>" login --config "<config>" -- <server>
 ```
+
+The `--` keeps a server name that starts with `-` a name.
 
 The person runs it. Do not run it yourself. A browser opens, and login waits 5 minutes for the approval. In Claude
 Code, the person can type the command after the `!` prefix.
@@ -271,7 +290,7 @@ If `search_tools` later says that a server needs a login, it names the command t
 `npx -y toolscript-mcp` there. If the command starts with `npx -y toolscript-mcp`, replace that part with
 `node "<main>"`. Give the person the command.
 
-## 10. Uninstall
+## 11. Uninstall
 
 Ask before each step:
 

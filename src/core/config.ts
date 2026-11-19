@@ -6,7 +6,10 @@
 import { ACTIONS, type Action, type Bridges, type Policy, type Rule } from './policy.ts'
 
 // The WHATWG URL and btoa of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
-declare const URL: { canParse(url: string): boolean; new (url: string): { readonly href: string } }
+declare const URL: {
+  canParse(url: string): boolean
+  new (url: string): { readonly href: string; readonly origin: string }
+}
 declare const btoa: (data: string) => string
 
 /** A server key that makes `mcp__<key>__<tool>` split back into the key and the tool. */
@@ -100,9 +103,25 @@ export const launchArgv = (launch: Launch): readonly string[] =>
 export const launchText = (launch: Launch, platform: string): string =>
   launch.kind === 'npx' ? launchArgv(launch).join(' ') : `node ${pathWord(launch.main, platform)}`
 
-/** The command that logs in to a server. `config` is the config file, when it is not the default one. */
+/**
+ * A command of the CLI for one server. `config` is the config file, when it is not the default one. A key can start
+ * with `-`, so it then comes last, after `--`: the CLI would read it as an option.
+ */
+const serverCommand = (command: string, launch: Launch, platform: string, key: ServerKey, config?: string): string => {
+  const option = config === undefined ? [] : ['--config', pathWord(config, platform)]
+  const words = key.startsWith('-')
+    ? [...option, shellWord('--', platform), shellWord(key, platform)]
+    : [shellWord(key, platform), ...option]
+  return [launchText(launch, platform), command, ...words].join(' ')
+}
+
+/** The command that logs in to a server. */
 export const loginCommand = (launch: Launch, platform: string, key: ServerKey, config?: string): string =>
-  `${launchText(launch, platform)} login ${shellWord(key, platform)}${config === undefined ? '' : ` --config ${pathWord(config, platform)}`}`
+  serverCommand('login', launch, platform, key, config)
+
+/** The command that connects to one server and lists its tools. */
+export const toolsCommand = (launch: Launch, platform: string, key: ServerKey, config?: string): string =>
+  serverCommand('tools', launch, platform, key, config)
 
 /** Why a server that needs an OAuth login, or whose refresh was refused, is not connected, as search_tools shows it. */
 export const loginReason = (command: string): string =>
@@ -633,6 +652,9 @@ export const hideUrlSecrets = (url: string): { url: string; secrets: string[] } 
   const { hide, secrets } = collector()
   return { url: hideUrl(url, hide), secrets: secrets() }
 }
+
+/** The scheme, host and port of a URL, with no login, path, query or fragment. */
+export const urlOrigin = (url: string): string | undefined => (URL.canParse(url) ? new URL(url).origin : undefined)
 
 /**
  * `user:password` with the password hidden, or undefined for a value with no password. A number on either side, or

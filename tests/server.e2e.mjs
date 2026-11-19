@@ -269,8 +269,10 @@ test('(c) "issue" ranks list_issues first', async () => {
 test('(d) a server whose command does not exist shows as failed, and bench still works', async () => {
   const text = await search('deploys')
   assert.match(text, /### mcp__bench__get_deploys/, text)
-  // Linux and macOS: spawn ... ENOENT. Windows: cmd.exe says the command is not recognized.
-  assert.match(text, /## Not connected\n(- .+\n)*- missing: .*(ENOENT|toolscript-e2e-no-such-command)/, text)
+  // Linux and macOS: spawn ... ENOENT. Windows: cmd.exe says on stderr that the command is not recognized, and
+  // search_tools shows no stderr, because it can hold a secret that is not in the config.
+  assert.match(text, /## Not connected\n(- .+\n)*- missing: .*(ENOENT|Its stderr is not shown here)/, text)
+  assert.doesNotMatch(text, /not recognized/, text)
 })
 
 test('(d) a server that hangs does not block the search', async () => {
@@ -350,8 +352,16 @@ process.stdout.write(loginCommand(detectLaunch(process.argv[1]), process.platfor
   assert.equal(login.stdout, '')
 })
 
-test('(p2) --help and -h print the usage to stderr and exit 0, for the server, init and login', () => {
-  for (const args of [['--help'], ['-h'], ['init', '--help'], ['init', '-h'], ['login', '--help'], ['login', '-h']]) {
+test('(p2) --help and -h print the usage to stderr and exit 0, for the server, init, login and doctor', () => {
+  for (const args of [
+    ['--help'],
+    ['-h'],
+    ['init', '--help'],
+    ['init', '-h'],
+    ['login', '--help'],
+    ['login', '-h'],
+    ['doctor', '--help'],
+  ]) {
     const run = spawnSync(process.execPath, [MAIN, ...args], { env: SERVER_ENV, input: '', encoding: 'utf8' })
     assert.equal(run.status, 0, `${args.join(' ')}: ${run.stderr}`)
     assert.equal(run.stdout, '', `${args.join(' ')} wrote to stdout`)
@@ -362,7 +372,8 @@ test('(p2) --help and -h print the usage to stderr and exit 0, for the server, i
 
 test('(e) a nested toolscript-mcp refuses to start', async () => {
   const text = await search('')
-  assert.match(text, /- nested: .*refused to start, because TOOLSCRIPT_MCP_DEPTH is set/, text)
+  // The refusal goes to the stderr of the nested child, which search_tools does not show.
+  assert.match(text, /- nested: .*Its stderr is not shown here/, text)
   const direct = spawnSync(process.execPath, [MAIN, '--config', configFile], {
     env: { ...process.env, TOOLSCRIPT_MCP_DEPTH: '1' },
     input: '',
@@ -823,7 +834,10 @@ test('(j) init imports the servers of a client into a config that the server sta
   assert.equal(init.status, 0, init.stderr)
   assert.equal(init.stdout, '', 'init writes nothing to stdout')
   assert.ok(!init.stderr.includes(secret), init.stderr)
-  assert.ok(init.stderr.includes('Remove from "mcpServers": "bench"'), init.stderr)
+  assert.ok(
+    init.stderr.includes('  - bench (cursor)\n    In an editor, remove its entry from "mcpServers" of this file.'),
+    init.stderr,
+  )
   assert.ok(fs.existsSync(written), init.stderr)
   if (process.platform !== 'win32') assert.equal(fs.statSync(written).mode & 0o777, 0o600)
   assert.equal(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8'), JSON.stringify(cursor))

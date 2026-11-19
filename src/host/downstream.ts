@@ -67,8 +67,15 @@ const CHANGE_WINDOW_MS = 60_000
 /** Hides the secrets of one server, its OAuth tokens too, in the text of one of its errors. */
 type Hide = (text: string) => string
 
-/** Ends the reason of a server whose text is untrusted, in place of the error text that the server or its child wrote. */
+/**
+ * Ends the reason of a server whose text is untrusted, in place of the error text that the server or its child wrote.
+ * The running server logs that text to its stderr.
+ */
 const UNSHOWN = 'Its error text is in the toolscript-mcp log only, because the text of this server is untrusted'
+
+/** Ends the reason of a failed stdio child that wrote to stderr, in place of that text. */
+const STDERR_UNSHOWN =
+  'Its stderr is not shown here. To read it, run the command of the server in a terminal. When the client starts toolscript-mcp, its log also holds it'
 
 /** An error whose text toolscript-mcp wrote: it holds no text of the server. */
 class OwnError extends Error {}
@@ -117,13 +124,13 @@ type Lists = {
  * The lists after the list at connect, which gave `first`. Each ask (a change or a miss) takes the next number, and
  * a list covers each ask before its start. One list runs at a time, `floorMs` after the start of the one before. So a
  * storm or an endless stream of changes costs one list per `floorMs`. A list that fails, or more than MAX_CHANGES
- * lists for a change in CHANGE_WINDOW_MS, stops the lists and gives `stop` the reason, and the reason without the
- * error text of the server.
+ * lists for a change in CHANGE_WINDOW_MS, stops the lists and gives `stop` the reason, and the start of the reason
+ * without the error text of the server when the reason holds such text.
  */
 export const startLists = (
   first: readonly DownstreamTool[],
   list: () => Promise<DownstreamTool[]>,
-  stop: (reason: string, sealed?: string) => void,
+  stop: (reason: string, hidden?: string) => void,
   floorMs: number,
 ): Lists => {
   let tools = first
@@ -141,9 +148,9 @@ export const startLists = (
     wake()
     ended = new Promise<void>(resolve => (wake = resolve))
   }
-  const halt = (reason: string, sealed?: string) => {
+  const halt = (reason: string, hidden?: string) => {
     stopped = true
-    stop(reason, sealed)
+    stop(reason, hidden)
   }
   const run = async () => {
     running = true
@@ -163,7 +170,7 @@ export const startLists = (
         endList()
       }
     } catch (err) {
-      halt(`could not list the tools again: ${errorText(err)}`, `could not list the tools again. ${UNSHOWN}`)
+      halt(`could not list the tools again: ${errorText(err)}`, 'could not list the tools again')
     } finally {
       running = false
       endList()
@@ -322,12 +329,13 @@ export const serverFetch = (server: HttpServer): FetchLike => {
 
 /**
  * The transport of one server, and the end of what its stdio child wrote to
- * stderr, as one line. The child's stderr still goes on to ours, as with `inherit`.
+ * stderr, as one line. The child's stderr also goes to `stderr`.
  */
 const transportOf = (
   server: ServerConfig,
   onSessionEnd: (err: Error) => void,
   auth: Auth | undefined,
+  stderr: (chunk: Buffer) => void,
 ): { transport: Transport; lastError: () => string } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   const transport = new StdioClientTransport({
@@ -339,7 +347,7 @@ const transportOf = (
   })
   let tail = ''
   transport.stderr?.on('data', (chunk: Buffer) => {
-    process.stderr.write(chunk)
+    stderr(chunk)
     tail = (tail + chunk.toString('utf8')).slice(-2000)
   })
   const lastError = () => tail.replace(/\s+/g, ' ').trim().slice(-300)
@@ -387,6 +395,14 @@ export type ConnectOptions = {
   readonly refreshTimeoutMs?: number
   /** The least time in ms from the start of one list of a server to the start of its next: a test sets it. */
   readonly listFloorMs?: number
+  /**
+   * Gets what each stdio child writes to stderr. The running server passes it on to its own stderr, the log of the
+   * client. `toolscript-mcp tools` drops it, so it prints only its own lines. No reason holds that text: `redact` hides
+   * only the values of the config, and a child can print a secret from anywhere.
+   */
+  readonly childStderr?: (chunk: Buffer) => void
+  /** The sentence that ends the reason of an untrusted server in place of its error text. */
+  readonly unshown?: string
 }
 
 export const connectAll = (
@@ -399,6 +415,8 @@ export const connectAll = (
     now = Date.now,
     refreshTimeoutMs = REFRESH_TIMEOUT_MS,
     listFloorMs = LIST_FLOOR_MS,
+    childStderr = chunk => void process.stderr.write(chunk),
+    unshown = UNSHOWN,
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -414,17 +432,17 @@ export const connectAll = (
     opened.add(client)
     let secrets = (): readonly string[] => []
     const hide: Hide = text => redact(text, server, secrets())
-    // `sealed`: the reason without the error text of the server or its child.
-    const fail = (reason: string, sealed = reason) => {
+    // `hidden`: the start of the reason without the error text of the server or its child, when it holds such text.
+    const fail = (reason: string, hidden?: string) => {
       const safe = hide(reason)
       log(`${key}: failed: ${safe}`)
-      links.set(key, { status: 'failed', reason: safe, sealed: hide(sealed) })
+      links.set(key, { status: 'failed', reason: safe, sealed: hidden === undefined ? safe : `${hidden}. ${unshown}` })
     }
     // Only while this client is still the link of `key`: a late event of an old client changes nothing.
-    const lost = (reason: string, sealed?: string): boolean => {
+    const lost = (reason: string, hidden?: string): boolean => {
       const link = links.get(key)
       if (closing || link?.status !== 'connected' || link.client !== client) return false
-      fail(reason, sealed)
+      fail(reason, hidden)
       return true
     }
     // The SDK HTTP transport fires onclose only from close(), so a server that
@@ -433,7 +451,7 @@ export const connectAll = (
     const sessionEnded = (err: Error) => {
       const ended = isOAuthStop(err)
         ? lost(err.message)
-        : lost(`the HTTP session ended: ${errorText(err)}`, `the HTTP session ended. ${UNSHOWN}`)
+        : lost(`the HTTP session ended: ${errorText(err)}`, 'the HTTP session ended')
       if (!ended) return
       // Later, so the failed request rejects with its own error first: close()
       // rejects each open request with "Connection closed".
@@ -470,7 +488,7 @@ export const connectAll = (
       if (problem !== undefined) throw new OwnError(problem)
       // close() closes only the clients that it sees: a shutdown during the check must not start a process after it.
       if (closing) throw new OwnError('toolscript-mcp is shutting down')
-      const made = transportOf(server, sessionEnded, auth)
+      const made = transportOf(server, sessionEnded, auth, childStderr)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const first = await list()
@@ -488,7 +506,7 @@ export const connectAll = (
         opened.delete(client)
         const stderr = lastError()
         if (stderr === '') lost('the connection closed')
-        else lost(`the connection closed. Its stderr ends with: ${stderr}`, `the connection closed. ${UNSHOWN}`)
+        else lost(`the connection closed. ${STDERR_UNSHOWN}`, 'the connection closed')
       }
     } catch (err) {
       // A child that exits gives only "Connection closed": its stderr says
@@ -498,8 +516,8 @@ export const connectAll = (
       await client.close().catch(() => {})
       opened.delete(client)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
-      const sealed = isOAuthStop(err) || err instanceof OwnError ? errorText(err) : `the connect failed. ${UNSHOWN}`
-      fail(stderr === '' ? errorText(err) : `${errorText(err)}. Its stderr ends with: ${stderr}`, sealed)
+      if (isOAuthStop(err) || err instanceof OwnError) fail(errorText(err))
+      else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
     }
   }
 

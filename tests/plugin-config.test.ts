@@ -318,6 +318,13 @@ describe('plugin config helper', () => {
     }
   })
 
+  it('has no allow-tools command: toolscript-mcp allow does it', () => {
+    const file = makeConfig()
+    const before = read(file)
+    assert.equal(run(file, 'allow-tools', 'mcp__gh__get').code, 2)
+    assert.equal(read(file), before)
+  })
+
   it('prints the default config path', () => {
     assert.equal(runWith({ TOOLSCRIPT_CONFIG: 'C:/fake/config.json' }, 'path').out.trim(), 'C:/fake/config.json')
     const base = process.platform === 'win32' ? { APPDATA: dir } : { XDG_CONFIG_HOME: dir }
