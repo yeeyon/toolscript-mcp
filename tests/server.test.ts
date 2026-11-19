@@ -1022,6 +1022,14 @@ describe('the catalog', () => {
     const draft4 = { type: 'number', minimum: 0, exclusiveMinimum: true, maximum: 10, exclusiveMaximum: true }
     assert.equal(shown(draft4), '{ n?: number }')
     assert.equal(shown({ ...draft4, exclusiveMaximum: false }), '{ n?: number (max 10) }')
+    // A numeric exclusive bound beside the inclusive one can be the tighter one, so neither shows.
+    assert.equal(shown({ type: 'integer', minimum: 0, exclusiveMinimum: 0 }), '{ n?: number }')
+    assert.equal(shown({ type: 'integer', minimum: 1, maximum: 10, exclusiveMaximum: 3 }), '{ n?: number (min 1) }')
+    // An array of a union holds the whole union in parentheses, so a bound never reads as a bound on the array.
+    assert.equal(
+      shown({ type: 'array', items: { type: ['null', 'integer'], minimum: 1 } }),
+      '{ n?: (null | number (min 1))[] }',
+    )
     // The dash form holds two whole numbers in order only, so it never reads as a subtraction.
     assert.equal(shown({ type: 'number', minimum: 1e-7, maximum: 1 }), '{ n?: number (min 1e-7, max 1) }')
     assert.equal(shown({ type: 'number', minimum: 0.5, maximum: 2 }), '{ n?: number (min 0.5, max 2) }')

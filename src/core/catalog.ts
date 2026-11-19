@@ -139,13 +139,17 @@ const typeOf = (schema: unknown, nest = 0): string => {
   const type = schema.type
   if (Array.isArray(type))
     return type.length === 0 ? 'unknown' : type.map(t => typeOf({ ...schema, type: t }, nest)).join(' | ')
-  if (type === 'array') return `${ofArray(typeOf(schema.items, nest + 1))}[]`
+  if (type === 'array') {
+    const item = typeOf(schema.items, nest + 1)
+    return item.includes(' | ') ? `(${item})[]` : `${ofArray(item)}[]`
+  }
   if (type === 'integer' || type === 'number') return withBounds('number', schema)
   if (typeof type === 'string') return type
   return 'unknown'
 }
 
-// `number (min 1)[]` would read as a bound on the array, so a bounded item gets parentheses.
+// `number (min 1)[]` would read as a bound on the array, so a bounded item gets parentheses. The detail view puts a
+// union in parentheses already (`grouped`), and the short list does it in `typeOf`.
 const ofArray = (item: string): string => (item.startsWith('number (') ? `(${item})` : item)
 
 // A bound at or past the int32 range is the default of a schema generator (zod v4 gives every integer the safe-integer
@@ -153,8 +157,13 @@ const ofArray = (item: string): string => (item.startsWith('number (') ? `(${ite
 const INT32 = 2147483647
 
 // The inclusive bound, or undefined. In draft-04 and OpenAPI 3.0, `exclusiveMinimum: true` makes `minimum` exclusive.
+// A numeric exclusive bound beside it can be the tighter one, so any exclusive bound hides the inclusive one.
 const bound = (value: unknown, exclusive: unknown): number | undefined =>
-  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) < INT32 && exclusive !== true
+  typeof value === 'number' &&
+  Number.isFinite(value) &&
+  Math.abs(value) < INT32 &&
+  exclusive !== true &&
+  typeof exclusive !== 'number'
     ? value
     : undefined
 
