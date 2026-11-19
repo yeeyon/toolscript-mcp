@@ -1427,12 +1427,18 @@ const FILLER: ReadonlySet<string> = new Set([
 ])
 
 /**
- * The word without a trailing "es" or "s", for a word of 4 or more characters that does not end in "ss" and keeps 3
- * or more characters. The stem is a substring of the word, so it finds the singular name of a plural word.
+ * The start of the singular of a plural word: "entries" -> "entr", "branches" -> "branch", "sites" -> "site". It cuts
+ * "ies", "es" after s, x, z, ch or sh, else "s", from a word of 4 or more characters that does not end in "ss", and
+ * keeps the word when fewer than 3 characters would stay. Cutting "es" after any other letter would leave "sit" of
+ * "sites", which matches "repository".
  */
 const stem = (word: string): string => {
-  if (word.length < 4 || word.endsWith('ss')) return word
-  const cut = word.replace(/e?s$/, '')
+  if (word.length < 4 || !word.endsWith('s') || word.endsWith('ss')) return word
+  const cut = word.endsWith('ies')
+    ? word.slice(0, -3)
+    : /(s|x|z|ch|sh)es$/.test(word)
+      ? word.slice(0, -2)
+      : word.slice(0, -1)
   return cut.length >= 3 ? cut : word
 }
 

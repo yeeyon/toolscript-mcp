@@ -50,7 +50,7 @@ describe('rankTools on three sets of searches', () => {
   // Then the stem of a plural word (#58): 69 (0.894), 111 (0.939), 101 (0.909 -> 0.911). A stem hit of 2 cost the
   // tuning set one top-1 (68, 0.880). Then the filler gate (#64): 69 (0.894), 111 -> 112 (0.939 -> 0.947), 101 -> 103
   // (0.911 -> 0.932). Then a stem hit of 0.5 instead of 1, below a description hit: 69 (0.894), 112 (0.947),
-  // 103 -> 104 (0.932 -> 0.938).
+  // 103 -> 104 (0.932 -> 0.938). A stem that cuts "ies", "es" only after s, x, z, ch or sh, else "s", left all three.
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
     ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 110, 0.94],
@@ -128,6 +128,35 @@ describe('rankTools on three sets of searches', () => {
       test(`"${query}" ranks the tool that holds the full word above one that holds its stem`, () => {
         assert.equal(rankTools(set, query, 1)[0]?.name, wanted)
       })
+
+    test('a plural word finds a singular that ends in "y" or has 3 letters', () => {
+      const singular: ToolEntry[] = [
+        { name: 'mcp__sec__get_cve', description: 'Get one CVE record' },
+        { name: 'mcp__gh__get_repository', description: 'Get a repository' },
+        { name: 'mcp__pg__run_query', description: 'Run a SQL query' },
+        { name: 'mcp__kv__get_policy', description: 'Read an access policy' },
+      ]
+      for (const [query, wanted] of [
+        ['cves', 'mcp__sec__get_cve'],
+        ['repositories', 'mcp__gh__get_repository'],
+        ['queries', 'mcp__pg__run_query'],
+        ['policies', 'mcp__kv__get_policy'],
+      ])
+        assert.deepEqual(
+          rankTools(singular, query, 5).map(t => t.name),
+          [wanted],
+          query,
+        )
+    })
+
+    test('the stem of a plural word keeps the "e" of its singular', () => {
+      const found = (tools: readonly ToolEntry[], query: string) =>
+        rankTools(tools, query, tools.length).map(t => t.name)
+      // "sit", "fil" and "not" would match "repository", "filters" and "notifications".
+      assert.ok(!found(catalog, 'sites').includes('mcp__azure-devops__repo_branch'))
+      assert.ok(!found(catalog, 'files').includes('mcp__github__list_issues'))
+      assert.ok(!found(catalogB, 'notes').includes('mcp__github__list_notifications'))
+    })
 
     test('a plural word still finds the singular name, a short word is not cut', () => {
       assert.equal(rankTools(tools, 'branches', 1)[0]?.name, 'mcp__github__list_branches')
