@@ -139,10 +139,25 @@ const typeOf = (schema: unknown, nest = 0): string => {
   const type = schema.type
   if (Array.isArray(type))
     return type.length === 0 ? 'unknown' : type.map(t => typeOf({ ...schema, type: t }, nest)).join(' | ')
-  if (type === 'array') return `${typeOf(schema.items, nest + 1)}[]`
-  if (type === 'integer') return 'number'
+  if (type === 'array') return `${ofArray(typeOf(schema.items, nest + 1))}[]`
+  if (type === 'integer' || type === 'number') return withBounds('number', schema)
   if (typeof type === 'string') return type
   return 'unknown'
+}
+
+// `number (min 1)[]` would read as a bound on the array, so a bounded item gets parentheses.
+const ofArray = (item: string): string => (item.startsWith('number (') ? `(${item})` : item)
+
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+// `number (max 100)`, `number (1-100)` or `number (min 1)`, so a program does not pass a value that the server
+// refuses. Only the inclusive bounds show, and only as numbers: the text comes from this code, never from the server.
+// An exclusive bound is left out: it would need a second form for each case, and the inclusive one stays true.
+const withBounds = (base: string, schema: Record<string, unknown>): string => {
+  const { minimum: min, maximum: max } = schema
+  if (finite(min) && finite(max)) return `${base} (${min >= 0 ? `${min}-${max}` : `min ${min}, max ${max}`})`
+  if (finite(max)) return `${base} (max ${max})`
+  return finite(min) ? `${base} (min ${min})` : base
 }
 
 // The properties of an object schema, the required ones first.
@@ -329,7 +344,8 @@ const members = (raw: unknown, r: Render, level: number, nest: number): string[]
   if (Array.isArray(type))
     return type.length === 0 ? ['unknown'] : type.flatMap(t => members({ ...schema, type: t }, r, level, nest + 1))
   if (type === 'object') return [objectType(schema, r, level + 1, nest + 1)]
-  if (type === 'array') return [`${grouped(members(schema.items, r, level, nest + 1))}[]`]
+  if (type === 'array') return [`${ofArray(grouped(members(schema.items, r, level, nest + 1)))}[]`]
+  if (type === 'number' || type === 'integer') return [withBounds('number', schema)]
   return [typeof type === 'string' && Object.hasOwn(PRIMITIVES, type) ? PRIMITIVES[type]! : 'unknown']
 }
 

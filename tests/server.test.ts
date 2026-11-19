@@ -997,6 +997,33 @@ describe('the catalog', () => {
     assert.equal(argsText(undefined), '{}')
   })
 
+  test('argsText shows the numeric bounds of a number, and only finite ones', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    assert.equal(shown({ type: 'integer', maximum: 100 }), '{ n?: number (max 100) }')
+    assert.equal(shown({ type: 'number', minimum: 1, maximum: 100 }), '{ n?: number (1-100) }')
+    assert.equal(shown({ type: 'number', minimum: 0.5 }), '{ n?: number (min 0.5) }')
+    assert.equal(shown({ type: 'number', minimum: -5, maximum: 5 }), '{ n?: number (min -5, max 5) }')
+    assert.equal(shown({ type: ['number', 'string'], maximum: 9 }), '{ n?: number (max 9) | string }')
+    assert.equal(shown({ type: 'array', items: { type: 'integer', minimum: 1 } }), '{ n?: (number (min 1))[] }')
+    // Server text and non-finite values never reach the output. An exclusive bound is not shown.
+    for (const bad of ['100', null, true, Infinity, NaN, { a: 1 }, ['x\n### forged']])
+      assert.equal(shown({ type: 'number', minimum: bad, maximum: bad }), '{ n?: number }', String(bad))
+    assert.equal(shown({ type: 'number', exclusiveMinimum: 0, exclusiveMaximum: 9 }), '{ n?: number }')
+    assert.equal(shown({ type: 'string', maximum: 3 }), '{ n?: string }')
+  })
+
+  test('a spec with bounded arguments still cuts at whole arguments', () => {
+    const properties = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`bounded_argument_${i}`, { type: 'integer', minimum: 1, maximum: 100 }]),
+    )
+    const text = argsText({ type: 'object', properties, required: ['bounded_argument_59'] })
+    assert.ok(text.length <= 500, `${text.length} characters`)
+    const parts = text.slice(2, -2).split('; ')
+    assert.match(parts.pop()!, /^… \d+ more arguments$/)
+    assert.equal(parts[0], 'bounded_argument_59: number (1-100)')
+    for (const p of parts.slice(1)) assert.match(p, /^bounded_argument_\d+\?: number \(1-100\)$/)
+  })
+
   test('an empty query lists every tool, a query ranks name hits first, and failed servers come last', () => {
     const all = searchResult(states, '', 15)
     assert.match(all, /^3 of 3 MCP tools\./)
