@@ -113,21 +113,25 @@ const RENAME_POLL_MS = 10
 
 /**
  * Changes the store: a new 0600 file in a 0700 folder, then a rename, so a reader in another process never sees a
- * part of a file. Windows does not apply the modes.
+ * part of a file. Windows does not apply the modes. A change that gives undefined leaves the store. Gives the store
+ * as the call left it.
  */
-const updateStore = async (file: string, change: (stored: Stored) => Stored): Promise<void> => {
+const updateStore = async (file: string, change: (stored: Stored) => Stored | undefined): Promise<Stored> => {
   const dir = path.dirname(file)
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
   // mkdir does not change a folder that exists.
   if (process.platform !== 'win32') await fs.promises.chmod(dir, 0o700)
-  const text = JSON.stringify(change(await readStore(file)), null, 2)
+  const stored = await readStore(file)
+  const next = change(stored)
+  if (next === undefined) return stored
   const temp = `${file}.${randomUUID()}.tmp`
   try {
-    await fs.promises.writeFile(temp, text, { mode: 0o600, flag: 'wx' })
+    await fs.promises.writeFile(temp, JSON.stringify(next, null, 2), { mode: 0o600, flag: 'wx' })
     await renameOver(temp, file)
   } finally {
     await fs.promises.rm(temp, { force: true })
   }
+  return next
 }
 
 /**
@@ -235,6 +239,8 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     // A call that read the tokens before the last refresh saved them sends a refresh token that is used up.
     const now = await current()
     if (now?.refresh_token !== undefined && now.refresh_token !== sent) return now
+    // The refresh token in the store now. A login in another process can save other tokens before the answer comes.
+    const storeHad = unsaved.get(file)?.storeHad ?? sent
     // Every call and link of the server waits for this refresh, so a token endpoint that never answers must not hold it.
     const signal = AbortSignal.timeout(timeoutMs)
     const silent = () => new RefreshFailed(refreshReason(`the token endpoint did not answer in ${timeoutMs / 1000} s`))
@@ -256,10 +262,14 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       // The SDK keeps the refresh token when the answer has none, and stamps the authorization server.
       const tokens = { refresh_token: sent, ...answer, ...(now?.issuer !== undefined && { issuer: now.issuer }) }
       try {
-        await updateStore(file, stored => ({ ...stored, tokens }))
+        const after = await updateStore(file, stored =>
+          stored.tokens?.refresh_token === storeHad ? { ...stored, tokens } : undefined,
+        )
         unsaved.delete(file)
+        // The store got other tokens during the refresh, as from a login: they are newer, and pair with its client.
+        if (after.tokens !== tokens) return after.tokens ?? needLogin()
       } catch (err) {
-        unsaved.set(file, { tokens, storeHad: unsaved.get(file)?.storeHad ?? sent })
+        unsaved.set(file, { tokens, storeHad })
         const cause = (err as NodeJS.ErrnoException).code ?? errorText(err)
         console.error(
           `toolscript-mcp: could not save the refreshed OAuth tokens in ${file} (${cause}). They work until toolscript-mcp stops or the store gets other tokens, as from a login.`,
