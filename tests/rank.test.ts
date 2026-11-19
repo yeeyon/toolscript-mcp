@@ -48,11 +48,12 @@ describe('rankTools on three sets of searches', () => {
   // sample must pass. The first set tuned the rule: the other two did not. Measured, before #49 -> now:
   // tuning set 65 -> 69 (MRR 0.855 -> 0.894), set A 107 -> 111 (0.920 -> 0.939), set B 101 -> 101 (0.910 -> 0.909).
   // Then the stem of a plural word (#58): 69 (0.894), 111 (0.939), 101 (0.909 -> 0.911). A stem hit scores 2 cost the
-  // tuning set one top-1 (68, 0.880), so it scores 1.
+  // tuning set one top-1 (68, 0.880), so it scores 1. Then the filler gate (#64): 69 (0.894), 111 -> 112
+  // (0.939 -> 0.947), 101 -> 103 (0.911 -> 0.932).
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
-    ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 109, 0.93],
-    ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 99, 0.9],
+    ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 110, 0.94],
+    ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 101, 0.92],
   ]
   for (const [label, tools, queries, top1Floor, mrrFloor] of sets)
     test(label, () => {
@@ -118,6 +119,44 @@ describe('rankTools on three sets of searches', () => {
       assert.equal(rankTools(tools, 'branches', 1)[0]?.name, 'mcp__github__list_branches')
       assert.deepEqual(rankTools(tools, 'bus', 5), [])
       assert.deepEqual(rankTools(tools, 'class', 5), [])
+    })
+  })
+
+  describe('filler words of a query', () => {
+    const tools: ToolEntry[] = [
+      ...['local', 'sit', 'uat'].map(s => ({
+        name: `mcp__grafana-${s}__get_dashboard_by_uid`,
+        description: 'Get a dashboard by its uid',
+      })),
+      { name: 'mcp__azure-devops__repo_pull_request', description: 'Show a pull request' },
+      { name: 'mcp__github__get_pull_request', description: 'Get a pull request of a repository' },
+      { name: 'mcp__github__list_pull_requests', description: 'List the pull requests of a repository' },
+      { name: 'mcp__github__get_me', description: 'Get the signed-in user' },
+      { name: 'mcp__github__list_issues', description: 'List the issues of a repository' },
+    ]
+    const names = (query: string, limit = 10) => rankTools(tools, query, limit).map(t => t.name)
+
+    test('filler words do not lift a tool that holds no other word of the query', () => {
+      const found = rankTools(tools.slice(0, 4), 'pull request get by id', 4).map(t => t.name)
+      assert.deepEqual(found, ['mcp__azure-devops__repo_pull_request'])
+    })
+
+    test('a query of only filler words still lists the tools that hold them', () => {
+      assert.ok(names('get').some(n => n.includes('__get_')))
+      assert.deepEqual(
+        names('list by id').filter(n => n.includes('__list_')),
+        ['mcp__github__list_issues', 'mcp__github__list_pull_requests'],
+      )
+    })
+
+    test('a filler word still breaks a tie between tools that hold a real word', () => {
+      const found = names('get pull request')
+      assert.equal(found[0], 'mcp__github__get_pull_request')
+      assert.ok(found.indexOf('mcp__github__list_pull_requests') > 0)
+    })
+
+    test('an exact short name that holds a filler word ranks first', () => {
+      assert.equal(names('get_me', 1)[0], 'mcp__github__get_me')
     })
   })
 

@@ -1406,6 +1406,26 @@ const trimStop = (token: string): string => {
   return token.slice(0, end)
 }
 
+/** Query words that sit in many tool names and say little about the tool (get_x_by_id, list_x). */
+const FILLER: ReadonlySet<string> = new Set([
+  'get',
+  'list',
+  'by',
+  'id',
+  'of',
+  'the',
+  'for',
+  'with',
+  'all',
+  'to',
+  'in',
+  'on',
+  'and',
+  'or',
+  'from',
+  'my',
+])
+
 /**
  * The word without a trailing "es" or "s", for a word of 4 or more characters that does not end in "ss" and keeps 3
  * or more characters. The stem is a substring of the word, so it finds the singular name of a plural word.
@@ -1421,12 +1441,14 @@ const stem = (word: string): string => {
  * A short name counts only when it is the whole query or holds `_`, `-` or `.`: a plain word such as "search" in a
  * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2 as a
  * word of the server key, else 1 in the description, else 1 when the stem of a plural word (`stem`) is in the short
- * name or the description. Equal scores rank by name. Only the first `RANK_QUERY_MAX` characters of the query count,
+ * name or the description. When the query holds a word that is not in `FILLER`, a tool that matches only filler
+ * words gets no word score. Equal scores rank by name. Only the first `RANK_QUERY_MAX` characters of the query count,
  * and a token that the cut splits is dropped.
  */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const q = rankQuery(query)
   const wanted = words(q).map(word => ({ word, stem: stem(word) }))
+  const hasReal = wanted.some(w => !FILLER.has(w.word))
   const idents = q
     .toLowerCase()
     .split(/[^a-z0-9_.-]+/)
@@ -1446,12 +1468,18 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     if (idents.includes(name)) score += 1000
     else if (server !== '' && idents.includes(`${server}__${short}`)) score += 900
     else if (idents.includes(short) && (idents.length === 1 || /[_.-]/.test(short))) score += 800
+    let real = 0
+    let filler = 0
     for (const { word, stem } of wanted) {
-      if (short.includes(word)) score += 3
-      else if (ofServer.has(word)) score += 2
-      else if (description.includes(word)) score += 1
-      else if (stem !== word && (short.includes(stem) || description.includes(stem))) score += 1
+      let hit = 0
+      if (short.includes(word)) hit = 3
+      else if (ofServer.has(word)) hit = 2
+      else if (description.includes(word)) hit = 1
+      else if (stem !== word && (short.includes(stem) || description.includes(stem))) hit = 1
+      if (FILLER.has(word)) filler += hit
+      else real += hit
     }
+    if (real > 0 || !hasReal) score += real + filler
     return { tool, score }
   })
   return scored
