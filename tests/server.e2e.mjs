@@ -835,7 +835,7 @@ test('(j) init imports the servers of a client into a config that the server sta
   assert.equal(init.stdout, '', 'init writes nothing to stdout')
   assert.ok(!init.stderr.includes(secret), init.stderr)
   assert.ok(
-    init.stderr.includes('  bench (cursor)\n    In an editor, remove its entry from "mcpServers" of this file.'),
+    init.stderr.includes('  - bench (cursor)\n    In an editor, remove its entry from "mcpServers" of this file.'),
     init.stderr,
   )
   assert.ok(fs.existsSync(written), init.stderr)
