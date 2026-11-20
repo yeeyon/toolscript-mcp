@@ -132,7 +132,7 @@ A manual smoke test passed. It is not a bench run and has no numbers.
 
 - Codex version: Codex CLI 0.171.0.
 - Command form: `codex exec`.
-- toolscript-mcp: a build of commit `4117acb` plus #84.
+- toolscript-mcp: the built `dist/host/main.js` of commit `4b275c8` (`4117acb` plus #84).
 - Setup: the bundled `demo` server, added with `-c mcp_servers.<name>...` overrides. No Codex config file changed.
 
 | Item | Result |
@@ -142,11 +142,13 @@ A manual smoke test passed. It is not a bench run and has no numbers.
 | Answer | `ada 7, bruno 6, chen 5, dara 4, emil 3, farah 1`. It equals `OPEN_BY_AUTHOR` of `demo/data.mjs`. |
 | Codex approval gate | By default, `codex exec` refuses every MCP call with "MCP tool call requires approval, but approval policy is never". The key `default_tools_approval_mode = "approve"` in the server entry fixes it. The key takes the values `auto`, `prompt`, `writes` and `approve`. Only `approve` was tested. |
 | Approval prompt (`ask` rule) | `codex exec` declines the prompt. The run stops before any call with "the person did not approve the tools that need approval". The model reports the missing `allow` rule. |
-| Working directory | Codex started in the folder `C:\tmp\cx75\run`, a new empty folder. A downstream stdio server with no `cwd` reported the same folder. See "Working directory run". |
+| Working directory | Codex started in `<run folder>`, a new empty folder. A downstream stdio server with no `cwd` reported the same folder. See "Working directory run". |
 
 ### Working directory run
 
-Tested on Windows 11 with Codex CLI 0.171.0, model `gpt-6-luna`, on the built `dist/host/main.js` of commit `4b275c8`. The toolscript config had the `demo` server and a small probe server with one tool, `where`, that returns `process.cwd()`. The probe had no `cwd`. Run from the new empty folder:
+Tested on Windows 11 with Codex CLI 0.171.0 and model `gpt-6-luna`. The toolscript config had the `demo` server
+and a small probe server with one tool, `where`, that returns `process.cwd()`. The probe had no `cwd`. Run from
+`<run folder>`, a new empty folder:
 
 ```sh
 codex exec --skip-git-repo-check \
@@ -156,18 +158,24 @@ codex exec --skip-git-repo-check \
   "<prompt>"
 ```
 
-The prompt asked Codex to find `where` with `search_tools`, call it from one program and return the result. The result was `{"cwd":"C:\\tmp\\cx75\\run"}`. Codex printed `workdir: C:\tmp\cx75\run`. A server with no `cwd` starts in the folder where Codex started. A server with its own `cwd` was not tested.
+The prompt asked Codex to find `where` with `search_tools`, call it from one program and return the result. The
+result was `{"cwd":"<run folder>"}`, and Codex printed `workdir: <run folder>`. A server with no `cwd` starts in the
+folder where Codex started. A server with its own `cwd` was not tested.
 
 ### Runs of the demo task
 
-Same setup, without the probe prompt. The prompt was "Count the open pull requests per author with the toolscript tools. Reply with only the counts."
+Same setup, without the probe prompt. The prompt was "Count the open pull requests per author with the toolscript
+tools. Reply with only the counts."
 
-1. Without `default_tools_approval_mode`: `search_tools` and `run_code` both failed with "MCP tool call requires approval, but approval policy is never". Codex answered "Unable to retrieve counts: toolscript access was blocked."
-2. With `default_tools_approval_mode = "approve"`: `search_tools` found the demo tools. `run_code` called them and Codex answered `ada: 7, bruno: 6, chen: 5, dara: 4, emil: 3, farah: 1`. It equals `OPEN_BY_AUTHOR`.
+1. Without `default_tools_approval_mode`: `search_tools` and `run_code` both failed with "MCP tool call requires
+   approval, but approval policy is never". Codex answered "Unable to retrieve counts: toolscript access was
+   blocked."
+2. With `default_tools_approval_mode = "approve"`: `search_tools` found the demo tools. `run_code` called them and
+   Codex answered `ada: 7, bruno: 6, chen: 5, dara: 4, emil: 3, farah: 1`. It equals `OPEN_BY_AUTHOR`.
 
 ### Not tested
 
 - The interactive Codex TUI, and its answer to the approval prompt.
 - A project `.codex/config.toml`.
 - A server entry with its own `cwd`, and other systems than Windows.
-- The bench arms of this plan. A follow-up issue on a paid plan will run them.
+- The bench arms of this plan. A follow-up issue will run them.

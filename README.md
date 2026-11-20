@@ -214,7 +214,8 @@ default_tools_approval_mode = "approve"
 
 Keep `default_tools_approval_mode = "approve"` in the Codex entry. Without it, `codex exec` refuses every MCP call.
 toolscript-mcp still checks its own policy on each call of a program.
-In a test on Windows, Codex started toolscript-mcp in the folder where `codex exec` ran.
+In a test on Windows, Codex started toolscript-mcp in the folder where `codex exec` ran. A downstream server with
+no `cwd` in its entry starts in that folder too.
 
 On Windows, use paths such as `C:/tools/toolscript-mcp/dist/host/main.js` in JSON and TOML.
 If you put the config file in the default place, you can omit `--config` and its path.
