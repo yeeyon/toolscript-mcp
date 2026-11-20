@@ -36,7 +36,10 @@ enforces; the others rely on discipline.
   reason. Only `toolscript-mcp login` does them. The provider answers each refresh in its `fetch`: a 4xx other than
   408 and 429 is a refusal and throws `LoginNeeded`. No answer, none within `REFRESH_TIMEOUT_MS`, a 5xx, 408 or 429 throws `RefreshFailed`: the tokens
   stay, and the next use tries again. One refresh of a store file runs at a time in a process (`refreshes`): a
-  rotating refresh token works once, so every other caller waits for that refresh and gets its tokens. Both are an `OAuthError`, so the SDK passes them on and starts no login. No log line, printed line, reason or nested-call error holds a token, code,
+  rotating refresh token works once, so every other caller waits for that refresh and gets its tokens. Both are an `OAuthError`, so the SDK passes them on and starts no login.
+  A refresh saves its tokens only when the store still holds the refresh token that it held when the refresh started: a login in
+  another process can save during the refresh, and then the refresh leaves the store to that login. A login that
+  saves between the read and the rename of the refresh is still lost. No log line, printed line, reason or nested-call error holds a token, code,
   verifier or client secret: each downstream error goes through the `hide` of its link, which passes the secrets of
   the provider to `redact`. `[test: oauth.test.ts, server.e2e.mjs case (p)]`
 - `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there
