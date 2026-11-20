@@ -162,15 +162,22 @@ Explain these choices, and ask the person to choose one:
 2. Allow all tools, with `deny` rules first. Use it when the client checks each `run_code` call itself, such as
    Claude Code in auto mode. Add a `deny` rule for each tool that must never run. Tell the person that the permission
    rules and hooks of Claude Code do not apply to the nested calls. The policy matches tool names only, not arguments.
-3. Allow specific tools. Allow the tools that programs use often, such as read tools. Other tools stay `ask`.
+3. Allow specific tools. Allow the tools that programs use often, such as read tools. Other tools stay `ask`. Do not
+   guess a name prefix such as `get_*`: a read tool can have another name, such as `issue_read` or
+   `alerting_rules_read`, and then it still asks. Run `node "<main>" tools --config "<config>" -- <server>` for each
+   server. If it says that the server needs an OAuth login, do step 10 first. It shows each tool with its hint and the
+   action of the policy, and it ends with `Commands that allow tools:`. Show the person the tools that ask, and let
+   them choose. For each chosen tool, run the ready command under its label. It writes nothing: it shows the new
+   policy and a command with `--apply`. Show the output, and with approval run that `--apply` command exactly as
+   printed. Do not use the label `every read-only tool above with a command`: it allows more tools than the person
+   chose. A tool with `a person each run` still asks under an allow rule.
 
 The `policy` command replaces the policy with the rules in order. Each rule is an action and a match that starts with
-`mcp__` or `*`:
+`mcp__` or `*`. Use it for choice 2, or to write a rule that `allow` cannot:
 
 ```sh
 node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" policy
 node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" policy deny "mcp__<server>__*delete*" allow "*"
-node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" policy allow "mcp__<server>__get_*" allow "mcp__<server>__search_*"
 ```
 
 Ask the person for the rules, and run the command with approval. Show the policy that it prints.
