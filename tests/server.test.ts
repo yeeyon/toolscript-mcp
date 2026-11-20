@@ -1047,6 +1047,7 @@ describe('the catalog', () => {
     assert.equal(shown({ anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }), '{ n?: number (min 1) | null }')
     assert.equal(shown({ oneOf: [{ type: 'string' }, { type: 'number' }] }), '{ n?: string | number }')
     assert.equal(shown({ const: 'open' }), '{ n?: "open" }')
+    assert.equal(shown({ allOf: [{ type: 'string' }, { minLength: 1 }] }), '{ n?: string }')
     assert.equal(
       shown({ type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'null' }] } }),
       '{ n?: (string | null)[] }',
@@ -1068,6 +1069,24 @@ describe('the catalog', () => {
     const wide = { anyOf: Array.from({ length: 50 }, () => ({ $ref: '#/$defs/W' })) }
     const huge = { type: 'object', $defs: { W: wide }, properties: { n: { $ref: '#/$defs/W' } } }
     assert.equal(argsText(huge), '{ n?: unknown }')
+  })
+
+  test('argsText keeps each type of the old text and reads only a schema with no type', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    // A type list shows each of its types, also next to a union that names the type of the items.
+    assert.equal(
+      shown({ type: ['string', 'array'], oneOf: [{ type: 'string' }, { items: { type: 'string' } }] }),
+      '{ n?: string | unknown[] }',
+    )
+    assert.equal(shown({ type: ['file', 'array'] }), '{ n?: file | unknown[] }')
+    assert.equal(shown({ type: [['string']] }), '{ n?: string }')
+    assert.equal(
+      shown({ type: ['array', 'null'], items: { anyOf: [{ type: 'string' }, { type: 'integer' }] } }),
+      '{ n?: (string | number)[] | null }',
+    )
+    // A value that a union repeats counts once, and a union of untyped parts next to properties is an object.
+    assert.equal(shown({ anyOf: Array.from({ length: 30 }, () => ({ const: 'a' })) }), '{ n?: "a" }')
+    assert.equal(shown({ properties: { a: {} }, anyOf: [{ required: ['a'] }] }), '{ n?: object }')
   })
 
   test('argsText keeps the text of each argument that shows no unknown', () => {
@@ -1171,11 +1190,22 @@ describe('the catalog', () => {
     )
   })
 
-  test('argsText stays fast on a long enum that many refs name and on a type list that repeats array', () => {
+  test('both views stay fast on a large schema behind many refs and on a type list that repeats array', () => {
     const many = Array.from({ length: 500000 }, (_, i) => i)
+    const keys = Object.fromEntries(Array.from({ length: 10000 }, (_, i) => [`k${i}`, 1]))
     const refs = { anyOf: Array.from({ length: 2000 }, () => ({ $ref: '#/$defs/E' })) }
-    for (const E of [{ enum: many }, { anyOf: many.map(i => ({ const: i })) }]) {
-      const inputSchema = { type: 'object', $defs: { E }, properties: { a: refs } }
+    const large = [
+      { enum: many },
+      { anyOf: many.map(i => ({ const: i })) },
+      { const: 'x'.repeat(400000) },
+      { const: { a: 'x'.repeat(400000) } },
+      { $ref: `#/x${'/y'.repeat(50000)}` },
+      { type: ['string', 'null'], ...keys },
+      { type: 'string', $ref: '#/$defs/S', ...keys },
+      { type: 'string', allOf: [{ minLength: 1 }], ...keys },
+    ]
+    for (const E of large) {
+      const inputSchema = { type: 'object', $defs: { E, S: { type: 'string' } }, properties: { a: refs } }
       const start = performance.now()
       const text = argsText(inputSchema)
       const detail = searchResult(

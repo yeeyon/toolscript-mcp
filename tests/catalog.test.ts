@@ -314,30 +314,6 @@ describe('search_tools with 3 or fewer hits', () => {
     )
   })
 
-  test('the short list shows a union, a const, a ref and an allOf as the detail view does', () => {
-    const schemas: unknown[] = [
-      { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
-      { oneOf: [{ type: 'string' }, { type: 'number' }] },
-      { const: 'open' },
-      { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
-      { type: 'array', items: { anyOf: [{ type: 'array', items: { const: 1 } }, { type: 'null' }] } },
-      { $ref: '#/$defs/Id' },
-      { anyOf: [{ enum: Array.from({ length: 30 }, (_, i) => `z${i}`) }, { type: 'null' }] },
-      { anyOf: [{ enum: Array.from({ length: 30 }, (_, i) => `z${i}`) }, { type: 'string' }] },
-      { anyOf: [{ type: 'string' }, { type: 'string', format: 'date' }, { type: 'null' }] },
-      { allOf: [{ type: 'string' }, { minLength: 1 }] },
-    ]
-    for (const schema of schemas) {
-      const inputSchema = {
-        type: 'object',
-        $defs: { Id: { anyOf: [{ type: 'integer' }, { type: 'null' }] } },
-        properties: { n: schema },
-      }
-      const short = argsText(inputSchema).slice(2, -2)
-      assert.equal(one({ name: 'u', inputSchema }), `### mcp__x__u\ncall("mcp__x__u", {\n  ${short}\n})`, short)
-    }
-  })
-
   test('a cut list of values keeps the null and the types of the union in both views', () => {
     const values = Array.from({ length: 30 }, (_, i) => `z${i}`)
     const first = values.slice(0, 25).map(v => `"${v}"`)
