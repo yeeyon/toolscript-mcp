@@ -1090,6 +1090,32 @@ describe('the catalog', () => {
     )
   })
 
+  test('argsText keeps short unions whole in a tool with many arguments', () => {
+    const many = (name: string): [string, unknown] => [name, { type: 'string' }]
+    const properties = Object.fromEntries([
+      many('owner'),
+      ['state', { type: 'string', enum: ['open', 'closed', 'all'] }],
+      ['direction', { type: 'string', enum: ['asc', 'desc'] }],
+      ['since', { type: ['string', 'null'] }],
+      ['milestone', { type: ['string', 'number', 'null'] }],
+      ['tz', { anyOf: [{ enum: Array.from({ length: 30 }, (_, i) => `z${i}`) }, { type: 'null' }] }],
+      ...Array.from({ length: 30 }, (_, i) => many(`a_long_argument_name_number_${i}`)),
+    ])
+    const text = argsText({ type: 'object', required: ['owner'], properties })
+    assert.ok(text.length <= 500, `${text.length} characters`)
+    assert.match(
+      text,
+      /^\{ owner: string; state\?: "open" \| "closed" \| "all"; direction\?: "asc" \| "desc"; since\?: string \| null; milestone\?: string \| number \| null; tz\?: "z0" \| "z1" \| "z2" \| "z3" \| … \| null; a_long_argument_name_number_0\?: string; .+; … \d+ more arguments \}$/,
+    )
+  })
+
+  test('argsText reads a plain argument after a wide one spent the steps', () => {
+    const wide = { anyOf: Array.from({ length: 50 }, () => ({ $ref: '#/$defs/W' })) }
+    const root = { type: 'object', required: ['a', 'b'], $defs: { W: wide } }
+    const properties = { a: { $ref: '#/$defs/W' }, b: { type: 'string' } }
+    assert.equal(argsText({ ...root, properties }), '{ a: unknown; b: string }')
+  })
+
   test('argsText shows each member of a union once', () => {
     const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
     const variants = Array.from({ length: 12 }, (_, i) => ({ type: 'object', properties: { kind: { const: i } } }))
@@ -1102,7 +1128,8 @@ describe('the catalog', () => {
   })
 
   test('argsText reads a wide schema with many arguments fast and stays short', () => {
-    // Each argument refers to a union of 50 refs to itself. The arguments share one budget of steps.
+    // Each argument refers to a union of 50 refs to itself. The arguments share one budget of steps, and each one past
+    // it gets a few steps of its own.
     const wide = { anyOf: Array.from({ length: 50 }, () => ({ $ref: '#/$defs/W' })) }
     const properties = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`p${i}`, { $ref: '#/$defs/W' }]))
     const start = performance.now()
