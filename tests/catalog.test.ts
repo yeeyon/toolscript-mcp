@@ -376,6 +376,14 @@ describe('search_tools with 3 or fewer hits', () => {
     assert.match(argsText(consts), /"v24" \| … \}$/)
   })
 
+  test('the detail view marks each cut enum of a union, and the short list marks its cut once', () => {
+    const values = (p: string): { enum: string[] } => ({ enum: Array.from({ length: 30 }, (_, i) => `${p}${i}`) })
+    const inputSchema = { type: 'object', properties: { n: { anyOf: [values('a'), values('b')] } } }
+    const detail = one({ name: 'u', inputSchema })
+    assert.ok(detail.includes('"a24" | … | "b0"') && detail.endsWith('"b24" | …\n})'), detail)
+    assert.match(argsText(inputSchema), /"a24" \| … \}$/)
+  })
+
   test('an empty enum shows never and an empty type list shows unknown', () => {
     const inputSchema = { type: 'object', properties: { a: { enum: [] }, b: { type: [] } } }
     assert.equal(one({ name: 'e', inputSchema }), '### mcp__x__e\ncall("mcp__x__e", {\n  a?: never\n  b?: unknown\n})')

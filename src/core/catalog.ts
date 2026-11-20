@@ -175,11 +175,13 @@ const requiredFirst = (schema: Record<string, unknown>): [name: string, schema: 
 /**
  * The argument names and types of an input schema, the required ones first:
  * `{ project: string; limit?: number }`, with the types of the detail view and
- * no nested object spelled out. A list longer than MAX_ARGS first shows fewer
- * values of each union, down to MIN_VALUES, then keeps whole arguments and ends
- * with the count of the others, so a required argument shows whenever any
- * argument does. An argument too long alone shows unknown. The arguments share
- * one MAX_STEPS budget, and each one past it reads at least ARG_STEPS schemas
+ * no nested object spelled out. A union shows at most MAX_ENUM values. A list
+ * longer than MAX_ARGS keeps whole arguments in order and ends with the count
+ * of the others. The unions show fewer values only until the required
+ * arguments fit, or the first argument when none is required, and never to
+ * make room for an optional one. When they still do not fit with MIN_VALUES
+ * values, an argument too long alone shows unknown. The arguments share one
+ * MAX_STEPS budget, and each one past it reads at least ARG_STEPS schemas
  * before it shows unknown. The ones past MAX_ARGS characters of names cannot
  * show, so they are not read.
  */
@@ -188,7 +190,7 @@ export const argsText = (inputSchema: unknown): string => {
   if (properties.length === 0) return '{}'
   const r: Render = { root: inputSchema, maxLevel: 0, notes: false, steps: { left: MAX_STEPS } }
   let room = MAX_ARGS
-  const args: { head: string; types: string[] }[] = []
+  const args: { head: string; types: Member[] }[] = []
   for (const [name, schema, required] of properties) {
     const head = oneLine(`${name}${required ? '' : '?'}: `, Infinity)
     room -= head.length + 2
@@ -196,34 +198,43 @@ export const argsText = (inputSchema: unknown): string => {
     r.steps.left = Math.max(r.steps.left, ARG_STEPS)
     args.push({ head, types: typeMembers(schema, r) })
   }
-  const parts = (most: number): string[] => args.map(a => a.head + unionOf(a.types, most).join(' | '))
   const cut = (shown: readonly string[]): string => {
     const left = properties.length - shown.length
     return `{ ${[...shown, ...(left > 0 ? [`… ${left} more arguments`] : [])].join('; ')} }`
   }
-  for (let most = args.reduce((m, a) => Math.max(m, a.types.length), 0); most > MIN_VALUES; most--) {
-    const all = cut(parts(most))
-    if (all.length <= MAX_ARGS) return all
+  // The arguments in order while they fit, each union with its first `most` values. An argument too long alone ends
+  // the list, or shows unknown when `unknown` is set.
+  const fill = (most: number, unknown: boolean): string[] => {
+    const shown: string[] = []
+    for (const a of args) {
+      const whole = a.head + joined(unionOf(a.types, most))
+      const part = cut([whole]).length <= MAX_ARGS ? whole : unknown ? `${a.head}unknown` : undefined
+      if (part === undefined || cut([...shown, part]).length > MAX_ARGS) break
+      shown.push(part)
+    }
+    return shown
   }
-  const short = parts(MIN_VALUES)
-  const whole = short.map((p, i) => (cut([p]).length <= MAX_ARGS ? p : `${args[i]!.head}unknown`))
-  let shown = 0
-  while (shown < whole.length && cut(whole.slice(0, shown + 1)).length <= MAX_ARGS) shown++
-  return cut(whole.slice(0, shown))
+  const fewest = fill(MIN_VALUES, true)
+  const needed = Math.min(Math.max(1, properties.filter(p => p[2]).length), fewest.length)
+  for (let most = Math.max(...args.map(a => a.types.filter(m => m.value).length)); most > MIN_VALUES; most--) {
+    const shown = fill(most, false)
+    if (shown.length >= needed) return cut(shown)
+  }
+  return cut(fewest)
 }
 
 // The members of an argument's type, or unknown when the steps of the list are spent.
-const typeMembers = (schema: unknown, r: Render): string[] => {
+const typeMembers = (schema: unknown, r: Render): Member[] => {
   try {
     return members(schema, r, 0, 0)
   } catch (e) {
-    if (e === TOO_LARGE) return ['unknown']
+    if (e === TOO_LARGE) return [asType('unknown')]
     throw e
   }
 }
 
 const MAX_ARGS = 500
-// A union of this many values or fewer shows whole in the short list: a long list loses arguments first.
+// The fewest values that a union of the short list shows to make room for a required argument.
 const MIN_VALUES = 4
 // The steps that each argument of the short list can spend after the arguments before it spent MAX_STEPS.
 const ARG_STEPS = 20
@@ -354,73 +365,88 @@ const PRIMITIVES: Record<string, string> = {
   null: 'null',
 }
 
+// A member of a union: a type, or a value of a const or an enum, which a long union can leave out. A null is a type.
+type Member = { readonly text: string; readonly value: boolean }
+
+const asType = (text: string): Member => ({ text, value: false })
+
+// Stands where a union left out values.
+const MORE = asType('…')
+
+const joined = (members: readonly Member[]): string => members.map(m => m.text).join(' | ')
+
 // The members of a const or an enum, or undefined for any other schema. An enum is cut at MAX_ENUM values, and keeps
 // its null.
-const valueParts = (schema: Record<string, unknown>): string[] | undefined => {
-  if ('const' in schema) return [literal(schema.const)]
+const valueParts = (schema: Record<string, unknown>): Member[] | undefined => {
+  const value = (v: unknown): Member => ({ text: literal(v), value: v !== null })
+  if ('const' in schema) return [value(schema.const)]
   if (!Array.isArray(schema.enum)) return undefined
-  if (schema.enum.length === 0) return ['never']
+  if (schema.enum.length === 0) return [asType('never')]
   const shown = [...schema.enum.slice(0, MAX_ENUM), ...(schema.enum.includes(null) ? [null] : [])]
-  return unionOf(shown.map(literal), MAX_ENUM, schema.enum.length > MAX_ENUM)
+  return unionOf(shown.map(value), MAX_ENUM, schema.enum.length > MAX_ENUM)
 }
-
-// A member that `literal` wrote for a string, a number, a boolean, an array or an object. No type text starts as one
-// does. A null is kept as a type.
-const VALUE = /^(?:["[\d-]|\{["}]|true$|false$)/
 
 // The members of a union, each one once, with its first `most` values and all its types. A `…` stands where values
-// were left out, or at the end when `more` says that the schema had more.
-const unionOf = (parts: readonly string[], most: number, more = false): string[] => {
-  const shown = new Set<string>()
+// were left out, or at the end when `more` says that the schema had more, and never twice in a row.
+const unionOf = (parts: readonly Member[], most: number, more = false): Member[] => {
+  const seen = new Set<string>()
+  const shown: Member[] = []
   let values = 0
-  for (const p of new Set(parts)) shown.add(VALUE.test(p) && ++values > most ? '…' : p)
-  if (more) shown.add('…')
-  return [...shown]
+  for (const p of more ? [...parts, MORE] : parts) {
+    if (p !== MORE && seen.has(p.text)) continue
+    seen.add(p.text)
+    const m = p.value && ++values > most ? MORE : p
+    if (m !== MORE || shown.at(-1) !== MORE) shown.push(m)
+  }
+  return shown
 }
 
-const grouped = (parts: readonly string[]): string => (parts.length === 1 ? parts[0]! : `(${parts.join(' | ')})`)
+const grouped = (parts: readonly Member[]): string => (parts.length === 1 ? parts[0]!.text : `(${joined(parts)})`)
 
 // The members of a schema's type: more than one for a union. `level` is the
 // level of the object around it, which sets the indent of a nested object.
-const members = (raw: unknown, r: Render, level: number, nest: number): string[] => {
+const members = (raw: unknown, r: Render, level: number, nest: number): Member[] => {
   if (--r.steps.left < 0) throw TOO_LARGE
   const schema = resolve(raw, r.root)
-  if (!isObject(schema) || nest > MAX_NEST) return ['unknown']
+  if (!isObject(schema) || nest > MAX_NEST) return [asType('unknown')]
   if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
     // The schema next to the allOf is one more part. A part that is only
     // object or unknown adds nothing to the others.
     const { allOf, ...rest } = schema
     const parts = [rest, ...allOf].map(s => grouped(members(s, r, level, nest + 1)))
     const shown = parts.filter(p => p !== 'object' && p !== 'unknown')
-    return [shown.length > 0 ? shown.join(' & ') : parts.includes('object') ? 'object' : 'unknown']
+    return [asType(shown.length > 0 ? shown.join(' & ') : parts.includes('object') ? 'object' : 'unknown')]
   }
   const values = valueParts(schema)
   if (values) return values
   const union = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : []
   if (union.length > 0) {
-    // The short list shows MAX_ENUM values and does not read a const past them, so a long union of consts costs few
-    // steps. The detail view shows them all.
+    // The short list shows MAX_ENUM values and reads no const past them, so a long union of consts costs few steps. A
+    // null const is a type. The detail view shows them all.
     const short = r.maxLevel === 0
-    const read = short ? union.filter((s, i) => i < MAX_ENUM || !isObject(s) || !('const' in s)) : union
+    let consts = 0
+    const read = short
+      ? union.filter(s => !isObject(s) || !('const' in s) || s.const === null || ++consts <= MAX_ENUM)
+      : union
     const parts = read.flatMap(s => members(s, r, level, nest + 1))
     return unionOf(parts, short ? MAX_ENUM : Infinity, read.length < union.length)
   }
   const type = schema.type ?? (isObject(schema.properties) ? 'object' : undefined)
   if (Array.isArray(type))
     return type.length === 0
-      ? ['unknown']
+      ? [asType('unknown')]
       : unionOf(
           type.flatMap(t => members({ ...schema, type: t }, r, level, nest + 1)),
           Infinity,
         )
-  if (type === 'object') return [objectType(schema, r, level + 1, nest + 1)]
-  if (type === 'array') return [`${ofArray(grouped(members(schema.items, r, level, nest + 1)))}[]`]
-  if (type === 'number' || type === 'integer') return [withBounds('number', schema)]
-  return [typeof type === 'string' && Object.hasOwn(PRIMITIVES, type) ? PRIMITIVES[type]! : 'unknown']
+  if (type === 'object') return [asType(objectType(schema, r, level + 1, nest + 1))]
+  if (type === 'array') return [asType(`${ofArray(grouped(members(schema.items, r, level, nest + 1)))}[]`)]
+  if (type === 'number' || type === 'integer') return [asType(withBounds('number', schema))]
+  return [asType(typeof type === 'string' && Object.hasOwn(PRIMITIVES, type) ? PRIMITIVES[type]! : 'unknown')]
 }
 
 const typeText = (schema: unknown, r: Render, level: number, nest: number): string =>
-  members(schema, r, level, nest).join(' | ')
+  joined(members(schema, r, level, nest))
 
 // The description of a property, or of the schema its $ref names, as a line comment.
 const noteOf = (schema: unknown, root: unknown): string => {

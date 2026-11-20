@@ -1090,23 +1090,70 @@ describe('the catalog', () => {
     )
   })
 
-  test('argsText keeps short unions whole in a tool with many arguments', () => {
+  test('argsText cuts no value to show an optional argument', () => {
     const many = (name: string): [string, unknown] => [name, { type: 'string' }]
     const properties = Object.fromEntries([
       many('owner'),
       ['state', { type: 'string', enum: ['open', 'closed', 'all'] }],
-      ['direction', { type: 'string', enum: ['asc', 'desc'] }],
       ['since', { type: ['string', 'null'] }],
-      ['milestone', { type: ['string', 'number', 'null'] }],
       ['tz', { anyOf: [{ enum: Array.from({ length: 30 }, (_, i) => `z${i}`) }, { type: 'null' }] }],
       ...Array.from({ length: 30 }, (_, i) => many(`a_long_argument_name_number_${i}`)),
     ])
-    const text = argsText({ type: 'object', required: ['owner'], properties })
-    assert.ok(text.length <= 500, `${text.length} characters`)
-    assert.match(
-      text,
-      /^\{ owner: string; state\?: "open" \| "closed" \| "all"; direction\?: "asc" \| "desc"; since\?: string \| null; milestone\?: string \| number \| null; tz\?: "z0" \| "z1" \| "z2" \| "z3" \| … \| null; a_long_argument_name_number_0\?: string; .+; … \d+ more arguments \}$/,
+    const tz = Array.from({ length: 25 }, (_, i) => `"z${i}"`).join(' | ')
+    assert.equal(
+      argsText({ type: 'object', required: ['owner'], properties }),
+      `{ owner: string; state?: "open" | "closed" | "all"; since?: string | null; tz?: ${tz} | … | null; ` +
+        'a_long_argument_name_number_0?: string; a_long_argument_name_number_1?: string; ' +
+        'a_long_argument_name_number_2?: string; a_long_argument_name_number_3?: string; … 26 more arguments }',
     )
+    const kind = Array.from({ length: 10 }, (_, i) => `kind_${i}`)
+    const options = Object.fromEntries(Array.from({ length: 30 }, (_, i) => many(`opt_${i}`)))
+    const text = argsText({ type: 'object', required: ['kind'], properties: { kind: { enum: kind }, ...options } })
+    assert.ok(text.startsWith(`{ kind: ${kind.map(k => `"${k}"`).join(' | ')}; opt_0?: string;`), text)
+  })
+
+  test('argsText shows the list without cut values, or more required arguments', () => {
+    // The list when no value is cut: whole arguments while they fit.
+    const uncut = (parts: readonly string[]): string => {
+      const text = (n: number): string => {
+        const more = n < parts.length ? [`… ${parts.length - n} more arguments`] : []
+        return `{ ${[...parts.slice(0, n), ...more].join('; ')} }`
+      }
+      let n = 0
+      while (n < parts.length && text(n + 1).length <= 500) n++
+      return text(n)
+    }
+    const count = (text: string): number => text.split('; ').length - (text.includes('more arguments') ? 1 : 0)
+    for (const n of [5, 10, 25])
+      for (let len = 3; len <= 90; len += 6)
+        for (const required of [[], ['kind'], ['r0', 'r1', 'kind']]) {
+          const values = { enum: Array.from({ length: n }, (_, i) => `k${i}`) }
+          const names = ['r0', 'r1', 'kind', ...Array.from({ length: 40 }, (_, i) => `${'a'.repeat(len)}${i}`)]
+          const properties = Object.fromEntries(names.map((a, i) => [a, i < 3 ? values : { type: 'string' }]))
+          const type = values.enum.map(v => `"${v}"`).join(' | ')
+          const ordered = [...required, ...names.filter(a => !required.includes(a))]
+          const before = uncut(
+            ordered.map((a, i) => `${a}${i < required.length ? '' : '?'}: ${names.indexOf(a) < 3 ? type : 'string'}`),
+          )
+          const text = argsText({ type: 'object', required, properties })
+          if (text === before) continue
+          const needed = Math.max(1, required.length)
+          assert.ok(count(before) < needed && count(text) >= needed, `${text}\n${before}`)
+        }
+  })
+
+  test('argsText cuts only the values of a long union, and counts them', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    const consts = Array.from({ length: 30 }, (_, i) => ({ const: `v${i}` }))
+    const first = Array.from({ length: 25 }, (_, i) => `"v${i}"`).join(' | ')
+    const types = [
+      { type: 'array', items: { const: 'x' } },
+      { type: 'array', items: { const: 1 } },
+      { allOf: [{ const: 'q' }, { type: 'string' }] },
+    ]
+    assert.equal(shown({ anyOf: [...consts, ...types] }), `{ n?: ${first} | "x"[] | 1[] | "q" & string | … }`)
+    const strings = Array.from({ length: 25 }, () => ({ type: 'string' }))
+    assert.equal(shown({ anyOf: [...strings, { const: 'x' }, { const: null }] }), '{ n?: string | "x" | null }')
   })
 
   test('argsText reads a plain argument after a wide one spent the steps', () => {
