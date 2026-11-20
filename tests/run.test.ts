@@ -2029,6 +2029,41 @@ describe('a run waits only for the servers that it names', () => {
     }
   })
 
+  test('a call token that is not a literal call, or a use of tools, takes the full wait', async () => {
+    const programs = [
+      'await call("mcp__f__probe", {}); return `${(await call("mcp__h__probe", {})).n}`',
+      'await call("mcp__f__probe", {}); return [].map(call)',
+      'await call("mcp__f__probe", {}); const c = call; return await c("mcp__f__probe", {})',
+      'return await call(call("mcp__f__probe", {}))',
+      '// call\nreturn await call("mcp__f__probe", {})',
+      'await call("mcp__f__probe", {}); return await tools.f.probe({})',
+    ]
+    for (const code of programs) {
+      const { downstream, open } = mixed()
+      try {
+        const { run } = setup({ downstream })
+        const r = run(code)
+        assert.equal(await stays(r), true, code)
+        open()
+        await r
+      } finally {
+        await downstream.close()
+      }
+    }
+  })
+
+  test('a .call member is not a call token, so the program stays fast', async () => {
+    const { downstream, status } = mixed()
+    try {
+      const { run } = setup({ downstream })
+      const r = await run('(function () {}).call(null); return await call("mcp__f__probe", {})')
+      assert.equal(r.isError, false, r.text)
+      assert.equal(status('h'), 'connecting')
+    } finally {
+      await downstream.close()
+    }
+  })
+
   test('the refusal texts are the same while another server connects', async () => {
     const { downstream, status } = mixed()
     try {

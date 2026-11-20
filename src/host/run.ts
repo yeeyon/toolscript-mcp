@@ -48,7 +48,6 @@ import {
   keep,
   limiter,
   literalCalls,
-  maskCode,
   mcpReply,
   notListedText,
   problemReport,
@@ -205,11 +204,16 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   if (code.trim() === '') return refused(withNote('Error: code is empty.'), new Set(), [])
   const named = literalCalls(code)
   const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
-  // A program whose every call( has a literal name of a server waits for those servers only. A program with a name
-  // that is built at run time, or with no literal name, waits for all of them.
-  const callCount = (maskCode(code).match(/(^|[^\w$.])call\s*\(/g) ?? []).length
+  // A program whose every `call` token is a call with a literal name of a server waits for those servers only. A
+  // program with any other use of `call` or of `tools`, a name built at run time or no literal name waits for all of
+  // them. The count reads the raw code, so a word in a string or comment costs only the fast path.
+  const callCount = (code.match(/(?<![\w$.])call(?![\w$])/g) ?? []).length
+  const usesTools = /(?<![\w$.])tools(?![\w$])/.test(code)
   const fast =
-    literal.length > 0 && literal.length === callCount && literal.every(c => splitToolName(c.tool) !== undefined)
+    !usesTools &&
+    literal.length > 0 &&
+    literal.length === callCount &&
+    literal.every(c => splitToolName(c.tool) !== undefined)
   await (fast ? ctx.downstream.settledFor(serversOf(literal)) : ctx.downstream.settled)
   const { policy, bridges } = ctx.config
   const refuse = (text: string) => {
