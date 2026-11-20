@@ -153,6 +153,13 @@ const TOOLS: Record<string, Tool> = {
     await new Promise(r => setTimeout(r, 300)),
     json({ items: [1], next: `${String(args.cursor ?? 'cursor')}-next` })
   ),
+  // A reply of about 2 MB to a call with no arguments, a small one otherwise.
+  sized: args =>
+    json(
+      Object.keys(args).length > 0
+        ? { ok: 1 }
+        : Array.from({ length: 30_000 }, (_, i) => ({ id: i, name: `fake item number ${i} with some padding text` })),
+    ),
   // Answers only when the run cancels it.
   hang: (_, signal) =>
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
@@ -248,7 +255,7 @@ type Options = {
   written?: RunContext['written']
   policyNote?: string
   servers?: Config['servers']
-  serialSavedMs?: number
+  serialLimits?: RunContext['serialLimits']
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -288,7 +295,7 @@ const setup = (o: Options = {}) => {
     signal: o.signal ?? new AbortController().signal,
     log: () => {},
     home,
-    ...(o.serialSavedMs === undefined ? {} : { serialSavedMs: o.serialSavedMs }),
+    ...(o.serialLimits === undefined ? {} : { serialLimits: o.serialLimits }),
   }
   const run = async (code: string) => runCode(ctx, code)
   const lines = (): RunRecord[] => {
@@ -1182,15 +1189,16 @@ describe('output projection', () => {
 })
 
 describe('calls of one tool one after another', () => {
-  // Three slow calls save about 600 ms in parallel: the footer here needs 200 ms, not 3 s.
-  const options = { serialSavedMs: 200 }
+  // Three slow calls save about 600 ms in parallel: the footer here needs 200 ms, not 3 s. A loop sent its next
+  // call up to 140 ms after the reply under 6 test processes, so the gap here is 400 ms, below the sleep(600) below.
+  const options = { serialLimits: { gapMs: 400, minSavedMs: 200 } }
   const NOTE =
-    /\n3 calls of one tool ran one after another \(\d+\.\d s\)\. Start calls that do not need each other's result together with Promise\.all\.$/
+    /\n3 calls of mcp__f__slow ran one after another \(\d+\.\d s\)\. If the calls do not need each other's result and their order does not matter, start them together with Promise\.all\.$/
   const loop = (body: string) => `for (const n of ["first", "second", "third"]) {\n  ${body}\n}\nreturn "ok"`
   const noNote = (text: string) => assert.ok(!text.includes('one after another'), text)
 
   test('a loop that awaits each call gets the note', async () => {
-    // Under load, the time from a reply to the next call can pass SERIAL_GAP_MS: one note in three runs is enough.
+    // A run on a loaded machine can still pass the gap: one note in three runs is enough.
     const { run } = setup(options)
     let text = ''
     for (let i = 0; i < 3 && !NOTE.test(text); i++) text = (await run(loop('await call("mcp__f__slow", { n })'))).text
@@ -1232,6 +1240,16 @@ describe('calls of one tool one after another', () => {
     const r = await setup(options).run(loop('await call("mcp__f__slow", { n })\n  await sleep(600)'))
     assert.equal(r.isError, false, r.text)
     noNote(r.text)
+  })
+
+  test('a Promise.all after a reply of 2 MB is not slowed by the check', async () => {
+    const r = await setup().run(
+      'await call("mcp__f__sized", {})\nconst t = Date.now()\nawait Promise.all(Array.from({ length: 50 }, (_, i) => call("mcp__f__sized", { ids: Array.from({ length: 100 }, (_, j) => `fake-id-${i}-${j}`) })))\nreturn Date.now() - t',
+    )
+    assert.equal(r.isError, false, r.text)
+    // About 50 ms without the check. A scan of the reply for each call took 4 to 13 s.
+    const ms = Number(/^\d+/.exec(r.text)?.[0])
+    assert.ok(ms < 2000, r.text)
   })
 })
 

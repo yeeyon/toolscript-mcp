@@ -8,7 +8,7 @@ enforces; the others rely on discipline.
   pinned version. Turn on the pre-commit hook one time per clone: `git config core.hooksPath .githooks`.
   `[test: code.check.mjs]`
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
-  `config.ts`, `catalog.ts` and `policy.ts`. They import no Node module and no host package, so tests call them directly.
+  `config.ts`, `catalog.ts`, `policy.ts` and `serial.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
 - `src/host/` holds the code that runs in Node. `tsconfig.host.json` checks it with the Node types.
 - The package runs one file: `scripts/build.mjs` bundles `src/host/main.ts` and the packages it imports into

@@ -1,8 +1,6 @@
 // Pure helpers for code-mode: the runner's wire protocol, result shaping,
 // tool search and type extraction. No `$` here, so tests can call them directly.
 
-import type { Streak } from './serial.ts'
-
 export const MARK = '\u0001cm '
 
 export type RunnerCall = { t: 'call'; id: number; tool: string; args: Record<string, unknown> }
@@ -712,7 +710,8 @@ export type Projection = {
   recalls: number
   recalled: { ref: number; ageMs: number }[]
   wholeRef?: number
-  serial?: Streak
+  /** `tool` is absent when the footer must not name it: the footer is outside the wrapper of untrusted content. */
+  serial?: { readonly calls: number; readonly ms: number; readonly tool?: string }
 }
 
 /**
@@ -1366,12 +1365,11 @@ export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerErro
   const missed = missedData(outcome, p.calls)
     ? ['The result is empty, but the calls returned data: check the shapes.']
     : []
-  // Counts and seconds only: the footer is outside the wrapper of untrusted content.
   const serial =
     p.serial === undefined
       ? []
       : [
-          `${p.serial.calls} calls of one tool ran one after another (${(p.serial.ms / 1000).toFixed(1)} s). Start calls that do not need each other's result together with Promise.all.`,
+          `${p.serial.calls} calls of ${p.serial.tool ?? 'one tool'} ran one after another (${(p.serial.ms / 1000).toFixed(1)} s). If the calls do not need each other's result and their order does not matter, start them together with Promise.all.`,
         ]
   // A line per call names its recall(n). A group line has a range of numbers, so the note says how to use them.
   if (n <= MAX_CALL_LINES) return [head, ...p.calls.map(callLine), ...recalled, ...missed, ...serial].join('\n')

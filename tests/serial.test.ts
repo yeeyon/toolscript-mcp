@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { serialStreak, usesResult, type TimedCall } from '../src/core/serial.ts'
+import { MAX_NEW_VALUES, MAX_SCAN_CHARS, serialStreak, usesResult, type TimedCall } from '../src/core/serial.ts'
 
 // Calls of one tool, each sent `gap` ms after the reply before it, as a loop that awaits each call.
 const loop = (ms: readonly number[], gap = 5): TimedCall[] => {
@@ -28,12 +28,17 @@ describe('serialStreak', () => {
   test('six reads of one tool in a loop: the time they took and what parallel calls save', () => {
     const streak = serialStreak(loop(SIX))
     const sum = SIX.reduce((a, b) => a + b, 0)
-    assert.deepEqual(streak, { calls: 6, ms: sum + 5 * 5, savedMs: sum + 5 * 5 - 4100 })
+    assert.deepEqual(streak, { tool: 'mcp__x__get', calls: 6, ms: sum + 5 * 5, savedMs: sum + 5 * 5 - 4100 })
   })
 
   test('no streak when parallel calls save less than 3 s', () => {
     assert.equal(serialStreak(loop([1400, 1500])), undefined)
-    assert.deepEqual(serialStreak(loop([1400, 1500]), 100, 1000), { calls: 2, ms: 2905, savedMs: 1405 })
+    assert.deepEqual(serialStreak(loop([1400, 1500]), { gapMs: 100, minSavedMs: 1000 }), {
+      tool: 'mcp__x__get',
+      calls: 2,
+      ms: 2905,
+      savedMs: 1405,
+    })
   })
 
   test('calls sent together, as Promise.all sends them, are no streak', () => {
@@ -72,7 +77,7 @@ describe('serialStreak', () => {
   test('a wait between the calls, as from sleep, is no streak', () => {
     assert.equal(serialStreak(loop(SIX, 150))?.calls, 6)
     assert.equal(serialStreak(loop(SIX, 250)), undefined)
-    assert.equal(serialStreak(loop(SIX, 250), 300)?.calls, 6)
+    assert.equal(serialStreak(loop(SIX, 250), { gapMs: 300 })?.calls, 6)
   })
 
   test('a failed call or one that did not finish ends the streak', () => {
@@ -97,7 +102,12 @@ describe('serialStreak', () => {
       repliedAt: c.repliedAt! + 10_000,
       previous: { id: c.id + 2, usesResult: false },
     }))
-    assert.deepEqual(serialStreak([...first, ...second]), { calls: 4, ms: 12_015, savedMs: 9015 })
+    assert.deepEqual(serialStreak([...first, ...second]), {
+      tool: 'mcp__x__list',
+      calls: 4,
+      ms: 12_015,
+      savedMs: 9015,
+    })
   })
 })
 
@@ -129,5 +139,14 @@ describe('usesResult', () => {
   test('a string with a quote matches its JSON text', () => {
     const json = JSON.stringify({ next: 'say "hi"' })
     assert.equal(usesResult({ after: 'say "hi"' }, {}, json), true)
+  })
+
+  test('a result too large to scan, or too many new values, counts as used: the calls get no note', () => {
+    const ids = (n: number) => ({ ids: Array.from({ length: n }, (_, i) => `fake-id-${i}`) })
+    assert.equal(usesResult(ids(1), {}, JSON.stringify('x'.repeat(MAX_SCAN_CHARS - 2))), false)
+    assert.equal(usesResult(ids(1), {}, JSON.stringify('x'.repeat(MAX_SCAN_CHARS))), true)
+    assert.equal(usesResult(ids(MAX_NEW_VALUES), {}, '{}'), false)
+    assert.equal(usesResult(ids(MAX_NEW_VALUES + 1), {}, '{}'), true)
+    assert.equal(usesResult(ids(MAX_NEW_VALUES + 1), ids(1), '{}'), false)
   })
 })

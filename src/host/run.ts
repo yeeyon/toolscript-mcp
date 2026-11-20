@@ -79,7 +79,7 @@ import {
   type CallLog,
   type RunEnding,
 } from '../core/runlog.ts'
-import { serialStreak, usesResult, type TimedCall } from '../core/serial.ts'
+import { mayFollow, serialStreak, usesResult, type SerialLimits, type TimedCall } from '../core/serial.ts'
 import { SERVER_NAME } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
@@ -131,8 +131,8 @@ export type RunContext = {
   readonly log: (line: string) => void
   /** HOME, where the run log goes. */
   readonly home: string
-  /** The time parallel calls must save before the footer names a serial streak, SERIAL_MIN_SAVED_MS when absent. Tests set it lower. */
-  readonly serialSavedMs?: number
+  /** Tests only: lower limits of the note on calls that ran one after another, so a test stays short. */
+  readonly serialLimits?: SerialLimits
 }
 
 /** An MCP image block: `data` is base64. */
@@ -411,8 +411,10 @@ const execute = async (
   const interactiveNow = () => interactiveTools(downstream.states())
   // When each call was sent and answered, for the note on calls of one tool that ran one after another.
   const timed = new Map<number, TimedCall>()
-  // The call whose reply was written last: the next call that the program sends can follow it.
-  let lastReply: { id: number; args: Record<string, unknown>; json: string } | undefined
+  // The call whose reply was written last, and the id of the call sent last: only the
+  // first call sent after a reply can follow it, so the calls of a Promise.all skip the check.
+  let lastReply: { call: TimedCall; args: Record<string, unknown>; json: string } | undefined
+  let lastSent: number | undefined
   const recalled: { ref: number; ageMs: number }[] = []
   let recalls = 0
   // Set before the program gets untrusted content, so a saveFile after it marks its file.
@@ -582,8 +584,9 @@ const execute = async (
     const key = callKey(tool, args)
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
-    timed.set(id, { ...timed.get(id)!, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' })
-    lastReply = { id, args, json }
+    const done = { ...timed.get(id)!, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' }
+    timed.set(id, done)
+    lastReply = { call: done, args, json }
     const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
     // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
@@ -614,24 +617,30 @@ const execute = async (
 
   const dispatch = (m: RunnerMessage): void => {
     switch (m.t) {
-      case 'call':
+      case 'call': {
         started.set(m.id, m.tool)
-        timed.set(m.id, {
+        const sent: TimedCall = {
           id: m.id,
           tool: m.tool,
           key: callKey(m.tool, m.args),
           sentAt: performance.now(),
           ok: false,
           plain: false,
-          ...(lastReply === undefined
-            ? {}
-            : { previous: { id: lastReply.id, usesResult: usesResult(m.args, lastReply.args, lastReply.json) } }),
-        })
+        }
+        const prev = lastReply?.call.id === lastSent ? lastReply : undefined
+        timed.set(
+          m.id,
+          prev !== undefined && mayFollow(prev.call, sent, ctx.serialLimits?.gapMs)
+            ? { ...sent, previous: { id: prev.call.id, usesResult: usesResult(m.args, prev.args, prev.json) } }
+            : sent,
+        )
+        lastSent = m.id
         answer(
           limit(() => answerCall(m.id, m.tool, m.args)),
           m.id,
         )
         break
+      }
       case 'recall':
         answer(answerRecall(m.id, m.ref), m.id)
         break
@@ -735,6 +744,11 @@ const execute = async (
   const calls = [...records]
     .sort((a, b) => a[0] - b[0])
     .map(([, r]) => (listed === undefined || listed.has(r.tool) ? r : { ...r, tool: '(a name that no server lists)' }))
+  const streak = serialStreak([...timed.values()], ctx.serialLimits)
+  const serial =
+    streak === undefined || listed === undefined || listed.has(streak.tool)
+      ? streak
+      : { calls: streak.calls, ms: streak.ms }
 
   // A result too large to show is kept whole, so the next program can page it.
   const returned = outcome?.t === 'done' ? outcome.value : undefined
@@ -756,7 +770,7 @@ const execute = async (
     calls.length,
     stderr,
     MAX_RESULT_CHARS,
-    { calls, recalls, recalled, wholeRef, serial: serialStreak([...timed.values()], undefined, ctx.serialSavedMs) },
+    { calls, recalls, recalled, wholeRef, serial },
     untrusted ? randomBytes(16).toString('hex') : undefined,
     shown.note,
     notes,

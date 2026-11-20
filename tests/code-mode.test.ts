@@ -690,10 +690,11 @@ describe('output projection', () => {
     )
   })
 
-  test('calls of one tool one after another: a line with counts and seconds, after the empty-result note', () => {
-    const NOTE =
-      "6 calls of one tool ran one after another (16.5 s). Start calls that do not need each other's result together with Promise.all."
-    const serial = { calls: 6, ms: 16_520, savedMs: 12_400 }
+  test('calls of one tool one after another: a line with the tool, counts and seconds, after the empty-result note', () => {
+    const TAIL =
+      "ran one after another (16.5 s). If the calls do not need each other's result and their order does not matter, start them together with Promise.all."
+    const NOTE = `6 calls of mcp__x__get ${TAIL}`
+    const serial = { tool: 'mcp__x__get', calls: 6, ms: 16_520 }
     const get = (ref: number): CallRecord => ({ ref, tool: 'mcp__x__get', status: 'ok', chars: 10, data: true })
     const empty = { t: 'done', value: '[]', logs: [] } as const
     const few = projectionFooter({ calls: [1, 2, 3, 4, 5, 6].map(get), recalls: 0, recalled: [], serial }, empty)
@@ -706,6 +707,11 @@ describe('output projection', () => {
       many.endsWith(`check the shapes.\n${NOTE}\nawait recall(n) returns result #n again, with no new call.`),
       many,
     )
+    const unnamed = projectionFooter(
+      { calls: [1, 2].map(get), recalls: 0, recalled: [], serial: { calls: 6, ms: 16_520 } },
+      empty,
+    )
+    assert.ok(unnamed.endsWith(`\n6 calls of one tool ${TAIL}`), unnamed)
     const none = projectionFooter({ calls: [1, 2].map(get), recalls: 0, recalled: [] }, empty)
     assert.ok(!none.includes('one after another'), none)
   })
