@@ -153,13 +153,9 @@ const TOOLS: Record<string, Tool> = {
     await new Promise(r => setTimeout(r, 300)),
     json({ items: [1], next: `${String(args.cursor ?? 'cursor')}-next` })
   ),
-  // A reply of about 2 MB to a call with no arguments, a small one otherwise.
-  sized: args =>
-    json(
-      Object.keys(args).length > 0
-        ? { ok: 1 }
-        : Array.from({ length: 30_000 }, (_, i) => ({ id: i, name: `fake item number ${i} with some padding text` })),
-    ),
+  // A reply of 900,000 digits to a call with no arguments, a small one otherwise. The check scans it, and a
+  // number such as 11 matches nowhere in it, which is the slowest scan.
+  sized: args => json(Object.keys(args).length > 0 ? { ok: 1 } : '1'.repeat(900_000)),
   // Answers only when the run cancels it.
   hang: (_, signal) =>
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
@@ -1242,12 +1238,14 @@ describe('calls of one tool one after another', () => {
     noNote(r.text)
   })
 
-  test('a Promise.all after a reply of 2 MB is not slowed by the check', async () => {
+  test('a Promise.all after a large reply inside the scan limits stays fast', async () => {
     const r = await setup().run(
-      'await call("mcp__f__sized", {})\nconst t = Date.now()\nawait Promise.all(Array.from({ length: 50 }, (_, i) => call("mcp__f__sized", { ids: Array.from({ length: 100 }, (_, j) => `fake-id-${i}-${j}`) })))\nreturn Date.now() - t',
+      'await call("mcp__f__sized", {})\nconst t = Date.now()\nawait Promise.all(Array.from({ length: 50 }, (_, i) => call("mcp__f__sized", { i, n: Array.from({ length: 15 }, (_, j) => Number("1".repeat(j + 2))) })))\nreturn Date.now() - t',
     )
     assert.equal(r.isError, false, r.text)
-    // About 50 ms without the check. A scan of the reply for each call took 4 to 13 s.
+    // The reply and the 16 new values are inside the scan limits, and one scan takes about 40 ms. The host scans for
+    // the first call sent after the reply only. Without that rule, the 200 ms gap still stops the scans after about 5
+    // calls, so this test cannot see that rule: it bounds the whole cost.
     const ms = Number(/^\d+/.exec(r.text)?.[0])
     assert.ok(ms < 2000, r.text)
   })

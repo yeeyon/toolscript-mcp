@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_NEW_VALUES, MAX_SCAN_CHARS, serialStreak, usesResult, type TimedCall } from '../src/core/serial.ts'
+import { MAX_SCAN_CHARS, MAX_SCAN_WORK, serialStreak, usesResult, type TimedCall } from '../src/core/serial.ts'
 
 // Calls of one tool, each sent `gap` ms after the reply before it, as a loop that awaits each call.
 const loop = (ms: readonly number[], gap = 5): TimedCall[] => {
@@ -141,12 +141,15 @@ describe('usesResult', () => {
     assert.equal(usesResult({ after: 'say "hi"' }, {}, json), true)
   })
 
-  test('a result too large to scan, or too many new values, counts as used: the calls get no note', () => {
+  test('a result too large to scan, or too many new values for its length, counts as used: the calls get no note', () => {
     const ids = (n: number) => ({ ids: Array.from({ length: n }, (_, i) => `fake-id-${i}`) })
-    assert.equal(usesResult(ids(1), {}, JSON.stringify('x'.repeat(MAX_SCAN_CHARS - 2))), false)
-    assert.equal(usesResult(ids(1), {}, JSON.stringify('x'.repeat(MAX_SCAN_CHARS))), true)
-    assert.equal(usesResult(ids(MAX_NEW_VALUES), {}, '{}'), false)
-    assert.equal(usesResult(ids(MAX_NEW_VALUES + 1), {}, '{}'), true)
-    assert.equal(usesResult(ids(MAX_NEW_VALUES + 1), ids(1), '{}'), false)
+    const text = (length: number) => JSON.stringify('x'.repeat(length - 2))
+    assert.equal(usesResult(ids(1), {}, text(MAX_SCAN_CHARS)), false)
+    assert.equal(usesResult(ids(1), {}, text(MAX_SCAN_CHARS + 1)), true)
+    // A batch of 100 ids against a small result scans.
+    assert.equal(usesResult(ids(100), {}, text(1000)), false)
+    assert.equal(usesResult(ids(20), {}, text(MAX_SCAN_WORK / 20)), false)
+    assert.equal(usesResult(ids(21), {}, text(MAX_SCAN_WORK / 20)), true)
+    assert.equal(usesResult(ids(21), ids(1), text(MAX_SCAN_WORK / 20)), false)
   })
 })
