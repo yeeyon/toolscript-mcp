@@ -1462,6 +1462,8 @@ const ABBREVIATIONS: ReadonlyMap<string, string> = new Map([
 const nameWords = (name: string): string[] =>
   splitName(name)
     .short.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    // An acronym before a capitalized word: getPRComments gives get, pr, comments.
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(w => w !== '')

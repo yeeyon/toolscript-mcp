@@ -259,6 +259,12 @@ describe('rankTools on three sets of searches', () => {
       sameSet(short(r, 'mr', 20), mergeRequests)
     })
 
+    test('an abbreviation written in capitals inside a camelCase name is a name word', () => {
+      const tools = toCatalog({ forge: ['getPRComments', 'listMRNotes', 'getProject'].map(t => [t, '']) })
+      assert.deepEqual(short(tools, 'pr'), ['getPRComments'])
+      assert.deepEqual(short(tools, 'mr notes'), ['listMRNotes'])
+    })
+
     test('an abbreviation with other words ranks the tool of its action first', () => {
       assert.equal(short(r, 'get pr by id', 1)[0], 'repo_get_pull_request_by_id')
       assert.equal(short(r, 'create pr', 1)[0], 'create_pull_request')
