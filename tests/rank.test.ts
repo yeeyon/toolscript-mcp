@@ -19,6 +19,8 @@ const catalog = toCatalog(tuning.servers!)
 const heldOutA = load('rank-heldout-a.json')
 const heldOutB = load('rank-heldout-b.json')
 const catalogB = toCatalog(heldOutB.servers!)
+// 36 tools of github/github-mcp-server with the names and descriptions of its README.
+const catalogH = toCatalog(load('rank-github-readme.json').servers!)
 const dotted: ToolEntry[] = [
   ...catalog,
   { name: 'mcp__fs__files.read', description: 'Read a file' },
@@ -52,7 +54,7 @@ describe('rankTools on three sets of searches', () => {
   // (0.911 -> 0.932). Then a stem hit of 0.5 instead of 1, below a description hit: 69 (0.894), 112 (0.947),
   // 103 -> 104 (0.932 -> 0.938). A stem that cuts "ies", "es" only after s, x, z, ch or sh, else "s", left all three.
   // Then "pr", "prs", "mr", "mrs" and a word written together from name words (#67): 69 (0.894), 112 -> 114
-  // (0.947 -> 0.961), 104 -> 107 (0.938 -> 0.961).
+  // (0.947 -> 0.961), 104 -> 107 (0.938 -> 0.961). The long form in a description (#82): 69, 114, 107, unchanged.
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
     ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 112, 0.95],
@@ -308,44 +310,111 @@ describe('rankTools on three sets of searches', () => {
       )
     })
 
+    const gitlab: [string, string][] = [
+      ['merge_merge_request', 'Merge a merge request'],
+      ['approve_merge_request', 'Approve a merge request'],
+      ['get_merge_request_approval_state', 'Get merge request approval details including approvers'],
+      ['get_merge_request_conflicts', 'Get the conflicts of a merge request'],
+      ['list_merge_request_pipelines', 'List pipelines for a merge request with pagination'],
+      ['create_merge_request', 'Create a new merge request'],
+      ['get_merge_request', 'Get details of a merge request (merge_request_iid or source_branch required)'],
+      ['get_merge_request_diffs', 'Get the changes/diffs of a merge request'],
+      ['list_merge_request_changed_files', 'List changed file paths in a merge request without diff content'],
+      ['list_merge_request_versions', 'List all versions of a merge request'],
+      ['update_merge_request', 'Update a merge request'],
+      ['list_merge_requests', "List merge requests (without project_id: user's MRs; with project_id: project MRs)"],
+      ['list_group_merge_requests', 'List merge requests across all projects of a group and its subgroups'],
+      ['list_deployment_merge_requests', 'List merge requests shipped with a deployment'],
+      ['get_milestone_merge_requests', 'Get merge requests associated with a specific milestone'],
+      ['rebase_merge_request', 'Rebase the source branch of a merge request onto its target branch'],
+      ['create_note', 'Create a new note (comment) to an issue or merge request'],
+      ['create_merge_request_thread', 'Create a new thread on a merge request'],
+      ['mr_discussions', 'List discussion items for a merge request'],
+      ['get_merge_request_discussion', 'Get a single discussion item for a merge request'],
+      ['create_merge_request_note', 'Add a new note to a merge request'],
+      ['get_merge_request_notes', 'List notes for a merge request'],
+      ['update_merge_request_note', 'Modify an existing merge request note'],
+      ['list_draft_notes', 'List draft notes for a merge request'],
+      ['list_pipelines', 'List pipelines with filtering options'],
+      ['list_issues', 'List issues'],
+      ['list_projects', 'List projects'],
+    ]
+    const g = toCatalog({ gitlab })
+    const gitlabFirst = (query: string, wanted: string) => assert.equal(short(g, query, 1)[0], wanted, query)
+
     test('"mr" in a tool name ranks above the many tools that hold "merge request" (zereight/gitlab-mcp)', () => {
-      const gitlab: [string, string][] = [
-        ['merge_merge_request', 'Merge a merge request'],
-        ['approve_merge_request', 'Approve a merge request'],
-        ['get_merge_request_approval_state', 'Get merge request approval details including approvers'],
-        ['get_merge_request_conflicts', 'Get the conflicts of a merge request'],
-        ['list_merge_request_pipelines', 'List pipelines for a merge request with pagination'],
-        ['create_merge_request', 'Create a new merge request'],
-        ['get_merge_request', 'Get details of a merge request (merge_request_iid or source_branch required)'],
-        ['get_merge_request_diffs', 'Get the changes/diffs of a merge request'],
-        ['list_merge_request_changed_files', 'List changed file paths in a merge request without diff content'],
-        ['list_merge_request_versions', 'List all versions of a merge request'],
-        ['update_merge_request', 'Update a merge request'],
-        ['list_merge_requests', "List merge requests (without project_id: user's MRs; with project_id: project MRs)"],
-        ['list_group_merge_requests', 'List merge requests across all projects of a group and its subgroups'],
-        ['list_deployment_merge_requests', 'List merge requests shipped with a deployment'],
-        ['get_milestone_merge_requests', 'Get merge requests associated with a specific milestone'],
-        ['rebase_merge_request', 'Rebase the source branch of a merge request onto its target branch'],
-        ['create_note', 'Create a new note (comment) to an issue or merge request'],
-        ['create_merge_request_thread', 'Create a new thread on a merge request'],
-        ['mr_discussions', 'List discussion items for a merge request'],
-        ['get_merge_request_discussion', 'Get a single discussion item for a merge request'],
-        ['create_merge_request_note', 'Add a new note to a merge request'],
-        ['get_merge_request_notes', 'List notes for a merge request'],
-        ['update_merge_request_note', 'Modify an existing merge request note'],
-        ['list_draft_notes', 'List draft notes for a merge request'],
-        ['list_pipelines', 'List pipelines with filtering options'],
-        ['list_issues', 'List issues'],
-        ['list_projects', 'List projects'],
-      ]
-      const g = toCatalog({ gitlab })
       // Main ranked mr_discussions 1, 2 and 1 for the first two, and list_merge_requests 1 for "my mrs". For "comment
       // on mr" main also had mr_discussions first. No name of the family holds "comment", so only create_note's
-      // description separates it from the ties, and it cannot reach the name hits.
-      assert.equal(short(g, 'mr comments', 1)[0], 'mr_discussions')
-      assert.equal(short(g, 'list mr comments', 1)[0], 'mr_discussions')
-      assert.equal(short(g, 'my mrs', 1)[0], 'list_merge_requests')
-      assert.equal(short(g, 'comment on mr', 1)[0], 'mr_discussions')
+      // description separates it from the ties, and it stays below the name hits.
+      gitlabFirst('mr comments', 'mr_discussions')
+      gitlabFirst('list mr comments', 'mr_discussions')
+      gitlabFirst('my mrs', 'list_merge_requests')
+      gitlabFirst('comment on mr', 'mr_discussions')
+    })
+
+    test('a description that holds "merge request" lifts create_note for a comment query (#82)', () => {
+      // Main, then now: "mr comment" 23 -> 2, "mr comments" 23 -> 2, "comment on mr" 23 -> 10, "add comment to mr" 9 -> 4,
+      // "list mr comments" 24 -> 10. The filler words "on" and "to" still match inside "discussion" and "milestone".
+      const note = (query: string) => short(g, query).indexOf('create_note') + 1
+      assert.equal(note('mr comment'), 2)
+      assert.equal(note('mr comments'), 2)
+      assert.ok(note('comment on mr') <= 10, 'comment on mr')
+      assert.ok(note('add comment to mr') <= 4, 'add comment to mr')
+      assert.ok(note('list mr comments') <= 10, 'list mr comments')
+      gitlabFirst('mr comment', 'mr_discussions')
+      const gl = rankTools(catalogB, 'mr comment', 3).map(t => t.name)
+      assert.ok(gl.includes('mcp__gitlab__create_note'), gl.join(' '))
+    })
+
+    test('a name that holds another word of the query keeps the plain description score', () => {
+      // list_draft_notes holds "merge request" only in its description: it must not pass get_merge_request_notes.
+      assert.deepEqual(short(g, 'list mr notes', 2), ['get_merge_request_notes', 'list_draft_notes'])
+    })
+
+    test('a name that holds "pr", "mr" or the long form ranks above every tool that holds only the long form', () => {
+      const holds = (t: ToolEntry, abbr: string, long: string) => {
+        const words = ` ${t.name
+          .replace(/^mcp__.+?__/, '')
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .join(' ')} `
+        return [abbr, long].some(form => words.includes(` ${form} `) || words.includes(` ${form}s `))
+      }
+      for (const [label, tools] of [
+        ['T', catalog],
+        ['B', catalogB],
+        ['G', g],
+        ['H', catalogH],
+      ] as const)
+        for (const [abbr, long] of [
+          ['pr', 'pull request'],
+          ['mr', 'merge request'],
+        ] as const)
+          for (const query of [abbr, `${abbr}s`]) {
+            const found = rankTools(tools, query, tools.length)
+            const lastName = found.findLastIndex(t => holds(t, abbr, long))
+            const firstOther = found.findIndex(t => !holds(t, abbr, long))
+            assert.ok(firstOther < 0 || lastName < firstOther, `${label} ${query}`)
+          }
+    })
+
+    test('real GitHub descriptions: the pull request tools stay first, add_issue_comment ranks as on main', () => {
+      assert.ok(catalogH.length >= 20)
+      for (const [query, wanted] of [
+        ['get pr', 'pull_request_read'],
+        ['create pr', 'create_pull_request'],
+        ['merge pr', 'merge_pull_request'],
+        ['list prs', 'list_pull_requests'],
+        ['pr comments', 'add_reply_to_pull_request_comment'],
+        ['pr review', 'pull_request_review_write'],
+        ['update pr', 'update_pull_request'],
+        ['update pr branch', 'update_pull_request_branch'],
+      ])
+        assert.equal(short(catalogH, query, 1)[0], wanted, query)
+      // Main ranked add_issue_comment 5 and 3: its name holds "comment", so the long form in its description stays 1.
+      assert.equal(rankOf(catalogH, 'comment on pr', 'mcp__github__add_issue_comment'), 5)
+      assert.equal(rankOf(catalogH, 'add comment to pr', 'mcp__github__add_issue_comment'), 3)
     })
 
     test('the words that matched before still rank the same', () => {
