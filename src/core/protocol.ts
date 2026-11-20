@@ -1194,7 +1194,7 @@ export type CallProblem = { line: number; text: string; isGuess: boolean }
  * The wrong names in the literal calls of a program: a tool that is not
  * connected, and with a declaration, an unknown or a missing argument. With
  * only the names of earlier calls, a name close to one of them. A tool of a
- * server in `down` (key to reason) gets the reason, not a guess.
+ * server in `down` (key to reason) gets the reason, not a guess, also when no tool is known yet.
  */
 export const checkCalls = (
   calls: readonly LiteralCall[],
@@ -1205,7 +1205,12 @@ export const checkCalls = (
 ): CallProblem[] => {
   const problems: CallProblem[] = []
   for (const c of calls) {
-    if (tools.size > 0 && !tools.has(c.tool) && splitToolName(c.tool) !== undefined) {
+    // With no tool known, only a server in `down` refuses: its reason is certain, a guess from nothing is not.
+    if (
+      (tools.size > 0 || down.has(splitToolName(c.tool)?.server ?? '')) &&
+      !tools.has(c.tool) &&
+      splitToolName(c.tool) !== undefined
+    ) {
       const server = splitToolName(c.tool)!.server
       const reason = down.get(server)
       if (reason !== undefined) {

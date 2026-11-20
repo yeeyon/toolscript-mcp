@@ -11,6 +11,7 @@
 //   --write-on-call    a call of `probe` writes its `text` argument to its `path` argument
 //   --requires-person  lists `probe` with _meta["anthropic/requiresUserInteraction"] = true
 //   --add-later        after n calls, its lists also have the tools `added1` to `added<n>`, with no notification
+//   --gate             answers `initialize` only once the file plus `.gate` exists, so a test holds it in its connect
 //   --endless-list     each page of its tool list names a next page
 //   --list-changed     declares tools.listChanged. After each call it sends notifications/tools/list_changed, as
 //                      many times as the `notifications` argument of the call (1 when absent). Its next lists mark
@@ -54,6 +55,19 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (msg.method === 'notifications/cancelled') return event({ event: 'cancelled', requestId: msg.params.requestId })
   if (msg.id === undefined) return
   const reply = result => send({ jsonrpc: '2.0', id: msg.id, result })
+  if (msg.method === 'initialize' && mode === '--gate') {
+    // Held in its connect until the test writes the file plus `.gate`.
+    const wait = setInterval(() => {
+      if (!fs.existsSync(`${file}.gate`)) return
+      clearInterval(wait)
+      reply({
+        protocolVersion: msg.params.protocolVersion,
+        capabilities: {},
+        serverInfo: { name: 'probe', version: '1.0.0' },
+      })
+    }, 20)
+    return
+  }
   if (msg.method === 'initialize')
     return reply({
       protocolVersion: msg.params.protocolVersion,

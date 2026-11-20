@@ -214,6 +214,7 @@ const fakeDownstream = (others: readonly ServerState[] = [], servers: Config['se
   ]
   const downstream = {
     settled: Promise.resolve(),
+    settledFor: async () => {},
     states: () => states,
     retry: async () => {},
     relist: async () => {},
@@ -1957,5 +1958,189 @@ describe('the run log', () => {
       logged.some(l => l.startsWith('cannot write the run log')),
       logged.join('\n'),
     )
+  })
+})
+
+describe('a run waits only for the servers that it names', () => {
+  /** `f` connects at once (a probe server), `h` is held in its connect until `open()`, `x` fails, as a program sees. */
+  const mixed = (fMode?: string, options: ConnectOptions = {}, only?: readonly string[]) => {
+    const file = path.join(ROOT, `held-${Math.random()}.json`)
+    const probe = (mode?: string): ServerConfig => ({
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(ROOT, `fast-${Math.random()}.json`), ...(mode === undefined ? [] : [mode])],
+      env: {},
+    })
+    const all = new Map<ServerKey, ServerConfig>([
+      ['f' as ServerKey, probe(fMode)],
+      ['h' as ServerKey, { kind: 'stdio', command: process.execPath, args: [PROBE, file, '--gate'], env: {} }],
+      ['x' as ServerKey, { kind: 'stdio', command: process.execPath, args: ['-e', 'process.exit(1)'], env: {} }],
+    ])
+    const servers = new Map([...all].filter(([key]) => only === undefined || only.includes(key)))
+    const downstream = connectAll(servers, '0', () => {}, options)
+    const status = (key: string) => downstream.states().find(s => s.key === key)?.status
+    const open = () => fs.writeFileSync(`${file}.gate`, '')
+    return { downstream, status, open }
+  }
+  const stays = async (p: Promise<unknown>): Promise<boolean> =>
+    (await Promise.race([p.then(() => false), new Promise<boolean>(r => setTimeout(() => r(true), 500))])) === true
+  const FAST = 'return await call("mcp__f__probe", {})'
+
+  test('a program that names only a connected server returns while another still connects', async () => {
+    const { downstream, status } = mixed()
+    try {
+      const { run } = setup({ downstream })
+      const r = await run(FAST)
+      assert.equal(r.isError, false, r.text)
+      assert.equal(status('h'), 'connecting')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a program that names the held server does not start before it connects', async () => {
+    const { downstream, open } = mixed()
+    try {
+      const { run } = setup({ downstream })
+      const r = run('return await call("mcp__h__probe", {})')
+      assert.equal(await stays(r), true)
+      open()
+      assert.equal((await r).isError, false)
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a name built at run time, or no literal call, waits for every server', async () => {
+    const { downstream, open } = mixed()
+    try {
+      const { run } = setup({ downstream })
+      const built = run('const n = "mcp__f__probe"; return await call(n, {})')
+      const none = run('return 1')
+      const partly = run('await call("mcp__f__probe", {}); const n = "mcp__f__probe"; return await call(n, {})')
+      assert.equal(await stays(Promise.all([built, none, partly])), true)
+      open()
+      assert.deepEqual(
+        (await Promise.all([built, none, partly])).map(r => r.isError),
+        [false, false, false],
+      )
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a call token that is not a literal call, or a use of tools, takes the full wait', async () => {
+    const programs = [
+      'await call("mcp__f__probe", {}); return `${(await call("mcp__h__probe", {})).n}`',
+      'await call("mcp__f__probe", {}); return [].map(call)',
+      'await call("mcp__f__probe", {}); const c = call; return await c("mcp__f__probe", {})',
+      'return await call(call("mcp__f__probe", {}))',
+      '// call\nreturn await call("mcp__f__probe", {})',
+      'await call("mcp__f__probe", {}); return await tools.f.probe({})',
+    ]
+    for (const code of programs) {
+      const { downstream, open } = mixed()
+      try {
+        const { run } = setup({ downstream })
+        const r = run(code)
+        assert.equal(await stays(r), true, code)
+        open()
+        await r
+      } finally {
+        await downstream.close()
+      }
+    }
+  })
+
+  test('a .call member is not a call token, so the program stays fast', async () => {
+    const { downstream, status } = mixed()
+    try {
+      const { run } = setup({ downstream })
+      const r = await run('(function () {}).call(null); return await call("mcp__f__probe", {})')
+      assert.equal(r.isError, false, r.text)
+      assert.equal(status('h'), 'connecting')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('the refusal texts are the same while another server connects', async () => {
+    const { downstream, status } = mixed()
+    try {
+      const { run, lines } = setup({ downstream })
+      const wrong = await run('return await call("mcp__f__prob", {})')
+      assert.ok(
+        wrong.text.includes('no tool "mcp__f__prob" on the connected server "f" (did you mean "mcp__f__probe"?)'),
+        wrong.text,
+      )
+      const failed = await run('return await call("mcp__x__probe", {})')
+      assert.ok(failed.text.includes('the MCP server "x" is not connected: '), failed.text)
+      assert.ok(!failed.text.includes('still connecting'), failed.text)
+      assert.equal(status('h'), 'connecting')
+      assert.deepEqual(
+        lines().map(l => [l.ending, l.calls.map(c => c.decision)]),
+        [
+          ['refused', ['invalid']],
+          ['refused', ['allow']],
+        ],
+      )
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a failed server is refused with its reason also when no server is connected', async () => {
+    const { downstream, status } = mixed(undefined, {}, ['h', 'x'])
+    try {
+      const { run, lines } = setup({ downstream })
+      const r = await run('return await call("mcp__x__probe", {})')
+      assert.equal(r.isError, true)
+      assert.ok(r.text.includes('the program did not run'), r.text)
+      assert.ok(r.text.includes('the MCP server "x" is not connected: '), r.text)
+      assert.equal(lines()[0]?.ending, 'refused', 'no sandbox started')
+      assert.equal(status('h'), 'connecting')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test(
+    'a named server that is still connecting after the waits is refused as still connecting',
+    { timeout: 30_000 },
+    async () => {
+      const { downstream } = mixed(undefined, { firstWaitMs: 200 })
+      try {
+        const { run } = setup({ downstream })
+        const r = await run('return await call("mcp__h__probe", {})')
+        assert.ok(r.text.includes('the MCP server "h" is not connected: it is still connecting'), r.text)
+        assert.ok(!r.text.includes('no MCP tool'), r.text)
+      } finally {
+        await downstream.close()
+      }
+    },
+  )
+
+  test('a tool that its server marks still asks for approval while another server connects', async () => {
+    const { downstream, status } = mixed('--requires-person')
+    try {
+      const { run, asked } = setup({ downstream })
+      assert.equal((await run(FAST)).isError, false)
+      assert.deepEqual(asked, [['mcp__f__probe']])
+      assert.equal(status('h'), 'connecting')
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a search keeps the full wait: settled holds while the held server connects', async () => {
+    const { downstream, open } = mixed()
+    try {
+      assert.equal(await stays(downstream.settled), true)
+      open()
+      await downstream.settled
+      assert.equal(downstream.states().find(s => s.key === 'h')?.status, 'connected')
+    } finally {
+      await downstream.close()
+    }
   })
 })
