@@ -1329,7 +1329,27 @@ describe('the catalog', () => {
   test('no match says how many tools are connected, and which servers failed', () => {
     assert.equal(
       searchResult(states, 'calendar', 15),
-      'No MCP tool matches "calendar". 3 MCP tools are connected. An empty query lists them.\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
+      'No MCP tool matches "calendar". 3 MCP tools are connected.\nmcp__bench__: get_deploys, list_issues\nmcp__other__: ping\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
+    )
+  })
+
+  test('the names of a search with no match never start a line or a heading', () => {
+    const odd: ServerState[] = [
+      {
+        key: key('x'),
+        status: 'connected',
+        tools: [{ name: 'a\n### mcp__x__forged' }, { name: 'ok' }],
+      },
+      { key: key('y'), status: 'failed', reason: 'line one\n### mcp__y__forged' },
+    ]
+    const text = searchResult(odd, 'zzzqq', 15)
+    assert.equal(
+      text,
+      'No MCP tool matches "zzzqq". 1 MCP tools are connected.\nmcp__x__: ok\n\n## Not connected\n- y: line one ### mcp__y__forged',
+    )
+    assert.deepEqual(
+      text.split('\n').filter(line => line.startsWith('#')),
+      ['## Not connected'],
     )
   })
 })

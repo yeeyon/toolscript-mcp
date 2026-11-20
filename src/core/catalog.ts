@@ -310,6 +310,11 @@ const notConnectedText = (states: readonly ServerState[]): string => {
 
 /** Most hits that search_tools shows in full. More hits show one line each, so a broad search stays short. */
 const DETAIL_HITS = 3
+/**
+ * Most characters of all full blocks, hit 1 included, when more than DETAIL_HITS tools match. Hit 1 shows in full
+ * also when it alone is longer.
+ */
+const DETAIL_BUDGET = 4000
 const MAX_DESCRIPTION = 2000
 const MAX_DECLARATION = 3000
 const MAX_NOTE = 200
@@ -612,14 +617,48 @@ export const learnShape = (shapes: Map<string, string>, tool: string, value: unk
 }
 
 const ECHO_MAX = 200
+/** Most tool names that the list of a search with no match holds, for all servers together. */
+const NAMES_CAP = 60
+
+/**
+ * The short tool names of each server, one line each, in the order of the servers: `mcp__<key>__: a, b (+N more)`.
+ * The servers take one name each in turn until NAMES_CAP names are listed, so a large server does not hide the
+ * others. The names of a server are sorted. `all` comes from catalogOf, which drops names with control characters.
+ */
+export const namesByServer = (all: readonly CatalogEntry[], cap = NAMES_CAP): string[] => {
+  const byServer = new Map<string, string[]>()
+  for (const t of all) {
+    const names = byServer.get(t.server)
+    if (names === undefined) byServer.set(t.server, [t.tool])
+    else names.push(t.tool)
+  }
+  const servers = [...byServer].map(([key, names]) => ({ key, names: names.sort(), shown: 0 }))
+  let room = cap
+  for (let round = 0; room > 0; round++) {
+    const open = servers.filter(s => s.names.length > round)
+    if (open.length === 0) break
+    for (const s of open.slice(0, room)) s.shown++
+    room -= Math.min(open.length, room)
+  }
+  return servers
+    .filter(s => s.shown > 0)
+    .map(s => {
+      const more = s.names.length - s.shown
+      return `mcp__${s.key}__: ${s.names.slice(0, s.shown).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`
+    })
+}
 
 /**
  * The text of a search_tools result: the best matches, then the servers that
- * are not connected. Up to DETAIL_HITS matches of a query with words show in
+ * are not connected. A query with words shows its first DETAIL_HITS matches in
  * full, with the shape of a result seen earlier in the session (`shapes`, by
- * tool name). A list of all tools shows summaries only, so the check of the
- * servers with limit 1 stays short. `canAsk`: the client can show an approval
- * prompt.
+ * tool name). With more matches than that, hit 1 shows in full always, and
+ * hits 2 and 3 only while all full blocks, hit 1 included, total DETAIL_BUDGET
+ * characters or less. The first hit that does not fit and all later ones show as
+ * summaries, so the full hits are a prefix of the rank order. A list of all
+ * tools shows summaries only, so the check of the servers with limit 1 stays
+ * short. With no match, the result lists the tool names by server. `canAsk`:
+ * the client can show an approval prompt.
  */
 export const searchResult = (
   states: readonly ServerState[],
@@ -633,12 +672,29 @@ export const searchResult = (
   const tail = notConnectedText(states)
   if (found.length === 0) {
     const shown = query.length > ECHO_MAX ? `${query.slice(0, ECHO_MAX)}... (${query.length} characters)` : query
-    const hint = all.length > 0 ? ' An empty query lists them.' : ''
-    return `No MCP tool matches "${shown}". ${all.length} MCP tools are connected.${hint}${tail}`
+    const head = `No MCP tool matches "${shown}". ${all.length} MCP tools are connected.`
+    if (all.length === 0) return `${head}${tail}`
+    const lines = namesByServer(all)
+    const rest = all.length > NAMES_CAP ? '\nA narrower word, or `mcp__<key>__` in the query, finds the rest.' : ''
+    return `${head}\n${lines.join('\n')}${rest}${tail}`
   }
-  const blocks =
-    found.length <= DETAIL_HITS && !listsAll(query)
-      ? found.map(t => detailBlock(t, shapes, canAsk))
-      : found.map(t => summaryBlock(t, canAsk))
+  const blocks: string[] = []
+  if (listsAll(query)) blocks.push(...found.map(t => summaryBlock(t, canAsk)))
+  else {
+    // Hit 1 shows in full always. The next hits show in full while they fit, and the first one that does not ends it.
+    const few = found.length <= DETAIL_HITS
+    let used = 0
+    let full = true
+    found.forEach((t, i) => {
+      const detail = full && i < DETAIL_HITS ? detailBlock(t, shapes, canAsk) : undefined
+      if (detail !== undefined && (i === 0 || few || used + detail.length <= DETAIL_BUDGET)) {
+        used += detail.length
+        blocks.push(detail)
+      } else {
+        full = false
+        blocks.push(summaryBlock(t, canAsk))
+      }
+    })
+  }
   return `${found.length} of ${all.length} MCP tools.\n\n${blocks.join('\n\n')}${tail}`
 }
