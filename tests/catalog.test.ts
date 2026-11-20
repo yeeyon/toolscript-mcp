@@ -3,8 +3,11 @@ import assert from 'node:assert/strict'
 import {
   argsText,
   argSpec,
+  catalogOf,
   learnShape,
+  namesByServer,
   searchResult,
+  type CatalogEntry,
   type DownstreamTool,
   type ServerState,
 } from '../src/core/catalog.ts'
@@ -22,16 +25,19 @@ describe('search_tools with no match', () => {
   test('a short query is echoed whole', () => {
     assert.equal(
       searchResult(server(tools), 'zzzqq', 15),
-      'No MCP tool matches "zzzqq". 1 MCP tools are connected. An empty query lists them.',
+      'No MCP tool matches "zzzqq". 1 MCP tools are connected.\nmcp__x__: grant',
     )
   })
 
   // #49 review: "mcp" is no longer a word of every tool name, so a model that searched it to list all needs the way out.
-  test('a search for "mcp" finds no tool and names the empty query', () => {
-    assert.match(searchResult(server(tools), 'mcp', 15), /^No MCP tool matches "mcp"\. .* An empty query lists them\.$/)
+  test('a search for "mcp" finds no tool and lists the names', () => {
+    assert.equal(
+      searchResult(server(tools), 'mcp', 15),
+      'No MCP tool matches "mcp". 1 MCP tools are connected.\nmcp__x__: grant',
+    )
   })
 
-  test('with no tool connected, the text names no empty query', () => {
+  test('with no tool connected, the text lists no names', () => {
     assert.equal(searchResult([], 'zzzqq', 15), 'No MCP tool matches "zzzqq". 0 MCP tools are connected.')
   })
 
@@ -39,7 +45,7 @@ describe('search_tools with no match', () => {
     const query = 'zzz '.repeat(1250)
     assert.equal(
       searchResult(server(tools), query, 15),
-      `No MCP tool matches "${query.slice(0, 200)}... (5000 characters)". 1 MCP tools are connected. An empty query lists them.`,
+      `No MCP tool matches "${query.slice(0, 200)}... (5000 characters)". 1 MCP tools are connected.\nmcp__x__: grant`,
     )
   })
 })
@@ -629,5 +635,271 @@ describe('search_tools with more than 3 hits', () => {
     const text = searchResult(server(tools), '', 15)
     assert.match(text, /### mcp__x__d\n\nargs: \{ id\?: unknown(\[\])+ \}/)
     assert.match(one(tools[3]!), /^### mcp__x__d\ncall\("mcp__x__d", \{\n {2}id\?: unknown(\[\])+\n\}\)$/)
+  })
+})
+
+describe('search_tools shows the top hits in full', () => {
+  // A full hit holds `call(`. A summary holds `args:`. The first line "N of M MCP tools." is not a block.
+  const blocksOf = (text: string): string[] =>
+    text
+      .replace(/^\d+ of \d+ MCP tools\.\n\n/, '')
+      .replace(/\n\n## Not connected[^]*$/, '')
+      .split(/\n\n(?=### mcp__)/)
+  const kindsOf = (text: string): string[] => blocksOf(text).map(b => (b.includes('call(') ? 'full' : 'summary'))
+  const nameOf = (block: string): string => /^### (\S+)/.exec(block)![1]!
+  const widget = (name: string): DownstreamTool => ({ name, description: `Make a widget, ${name}.` })
+  const widgets = (n: number): DownstreamTool[] =>
+    Array.from({ length: n }, (_, i) => widget(`widget_${'abcdefghij'[i]}`))
+  // A block of about 4,500 characters: a long description and 30 arguments with notes.
+  const large = (name: string): DownstreamTool => ({
+    name,
+    description: `Make a widget, ${name}.\n${'More about the widget.\n'.repeat(300)}`,
+    inputSchema: {
+      type: 'object',
+      properties: Object.fromEntries(
+        Array.from({ length: 30 }, (_, i) => [
+          `group_${i}`,
+          { type: 'object', description: 'A group of fields of the widget, with a note of 60 chars.' },
+        ]),
+      ),
+    },
+  })
+
+  test('15 hits: hit 1 in full with its notes, the others as summaries, in rank order', () => {
+    const tools = Array.from({ length: 15 }, (_, i) => ({
+      name: `widget_${String(i).padStart(2, '0')}`,
+      description: `Make a widget.\n${'More about the widget.\n'.repeat(i === 1 ? 60 : 1)}`,
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'object', description: 'The id of the widget.' } },
+        required: ['id'],
+      },
+    }))
+    const text = searchResult(server(tools), 'widget', 15)
+    const blocks = blocksOf(text)
+    assert.equal(blocks.length, 15)
+    assert.ok(text.startsWith('15 of 15 MCP tools.\n\n'))
+    assert.ok(blocks[0]!.includes('call(') && blocks[0]!.includes('// The id of the widget.'))
+    // Hit 2 holds about 1,400 characters, so hits 1 to 3 fit in the budget and hits 4 to 15 are summaries.
+    assert.deepEqual(kindsOf(text), ['full', 'full', 'full', ...Array<string>(12).fill('summary')])
+    for (const b of blocks.slice(3)) assert.ok(b.includes('args:') && !b.includes('call('))
+    const order = blocks.map(nameOf)
+    assert.deepEqual(order, [...order].sort())
+  })
+
+  test('15 hits with a large hit 2: hit 1 in full, the other 14 as summaries', () => {
+    const tools = [widget('widget_a'), large('widget_b'), ...widgets(15).slice(2)]
+    const text = searchResult(server(tools), 'widget', 15)
+    assert.deepEqual(kindsOf(text), ['full', ...Array<string>(14).fill('summary')])
+    assert.deepEqual(blocksOf(text).slice(0, 3).map(nameOf), [
+      'mcp__x__widget_a',
+      'mcp__x__widget_b',
+      'mcp__x__widget_c',
+    ])
+  })
+
+  test('a first hit longer than the budget shows in full, and hit 2 is a summary', () => {
+    const tools = [large('widget_b'), ...widgets(5)]
+    const text = searchResult(server(tools), 'mcp__x__widget_b', 15)
+    assert.ok(blocksOf(text)[0]!.length > 4000)
+    assert.deepEqual(kindsOf(text), ['full', 'summary', 'summary', 'summary', 'summary', 'summary'])
+  })
+
+  test('5 small hits: 3 in full, 2 as summaries', () => {
+    assert.deepEqual(kindsOf(searchResult(server(widgets(5)), 'widget', 15)), [
+      'full',
+      'full',
+      'full',
+      'summary',
+      'summary',
+    ])
+  })
+
+  test('hit 1 and hit 3 small, hit 2 large: hit 3 is not skipped to, and it stays a summary', () => {
+    const tools = [widget('widget_a'), large('widget_b'), ...widgets(5).slice(2)]
+    assert.deepEqual(kindsOf(searchResult(server(tools), 'widget', 15)), [
+      'full',
+      'summary',
+      'summary',
+      'summary',
+      'summary',
+    ])
+  })
+
+  test('3 hits show in full however long; an empty query shows summaries only, for limit 1 and 15', () => {
+    const tools = [large('widget_a'), large('widget_b'), large('widget_c')]
+    assert.deepEqual(kindsOf(searchResult(server(tools), 'widget', 15)), ['full', 'full', 'full'])
+    for (const limit of [1, 15]) {
+      const text = searchResult(server(widgets(5)), '', limit)
+      assert.deepEqual(kindsOf(text), Array<string>(Math.min(limit, 5)).fill('summary'))
+    }
+  })
+
+  test('a full tool name with more than 3 hits shows that tool first and in full', () => {
+    const text = searchResult(server(widgets(6)), 'mcp__x__widget_e', 15)
+    assert.match(text, /^6 of 6 MCP tools\.\n\n### mcp__x__widget_e\nMake a widget, widget_e\.\ncall\(/)
+  })
+})
+
+describe('namesByServer', () => {
+  const entries = (spec: Record<string, number>): CatalogEntry[] =>
+    Object.entries(spec).flatMap(([key, n]) =>
+      Array.from({ length: n }, (_, i) => ({
+        name: `mcp__${key}__t${String(i).padStart(3, '0')}`,
+        description: '',
+        server: key,
+        tool: `t${String(i).padStart(3, '0')}`,
+        requiresUserInteraction: false,
+      })),
+    ) as CatalogEntry[]
+  const count = (lines: string[]): number => lines.join('\n').split(/t\d{3}/).length - 1
+
+  test('lists short names sorted, one line per server in order, with no "more" when all show', () => {
+    const lines = namesByServer(
+      [...entries({ b: 2 }), { ...entries({ a: 1 })[0]!, tool: 'zeta' }, { ...entries({ a: 1 })[0]!, tool: 'alpha' }],
+      60,
+    )
+    assert.deepEqual(lines, ['mcp__b__: t000, t001', 'mcp__a__: alpha, zeta'])
+  })
+
+  test('200 tools and 5 tools: all 5 show, 55 of the first, and the first says +145 more', () => {
+    const lines = namesByServer(entries({ big: 200, small: 5 }), 60)
+    assert.equal(lines.length, 2)
+    assert.ok(lines[0]!.endsWith('(+145 more)'))
+    assert.ok(!lines[1]!.includes('more'))
+    assert.equal(lines[1]!.split(', ').length, 5)
+    assert.equal(count(lines), 60)
+  })
+
+  test('8 servers of mixed size: each has a line and the names total 60', () => {
+    const lines = namesByServer(entries({ a: 90, b: 40, c: 12, d: 7, e: 3, f: 1, g: 25, h: 60 }), 60)
+    assert.equal(lines.length, 8)
+    assert.equal(count(lines), 60)
+  })
+})
+
+describe('search_tools on a realistic catalog', () => {
+  // Fake data: 8 servers shaped like 2 GitHub, 1 Azure DevOps, 1 Atlassian and 4 Grafana-like servers.
+  const NOUNS: Record<string, string[]> = {
+    gh1: ['issue', 'pull_request', 'branch', 'commit', 'release', 'workflow_run', 'repository', 'comment'],
+    gh2: ['issue', 'pull_request', 'gist', 'label', 'milestone', 'review', 'check_run', 'team'],
+    azdo: ['work_item', 'pull_request', 'build_definition', 'pipeline_run', 'wiki_page', 'test_plan', 'iteration'],
+    atl: ['jira_issue', 'jira_sprint', 'jira_project', 'confluence_page', 'confluence_space', 'jira_comment'],
+    gf1: ['dashboard', 'folder', 'datasource', 'alert_rule', 'annotation', 'team'],
+    gf2: ['dashboard', 'panel', 'prometheus_query', 'loki_query', 'contact_point', 'silence'],
+    gf3: ['dashboard', 'incident', 'oncall_shift', 'plugin', 'service_account', 'snapshot'],
+    gf4: ['dashboard', 'library_panel', 'playlist', 'org', 'user', 'report'],
+  }
+  const VERBS = ['create', 'list', 'get', 'update', 'delete', 'search']
+  const fixture = (): ServerState[] =>
+    Object.entries(NOUNS).map(([key, nouns], s) => ({
+      key: serverKey(key)!,
+      status: 'connected',
+      tools: nouns.flatMap((noun, n) =>
+        VERBS.slice(0, 2 + ((s + n) % 3)).map((verb, v) => {
+          const i = s * 100 + n * 10 + v
+          const props: Record<string, unknown> = {}
+          for (let a = 0; a < 1 + (i % 12); a++)
+            props[`field_${a}`] =
+              a % 4 === 3
+                ? {
+                    type: 'object',
+                    description: `The part ${a}.`,
+                    properties: { name: { type: 'string' }, value: { type: 'number', description: 'A number.' } },
+                  }
+                : { type: 'string', description: `The field ${a} of the ${noun}.` }
+          return {
+            name: `${verb}_${noun}`,
+            description: Array.from(
+              { length: 1 + (i % 10) },
+              (_, l) => `Line ${l} says how to ${verb} a ${noun}.`,
+            ).join('\n'),
+            inputSchema: { type: 'object', properties: props, required: ['field_0'] },
+          }
+        }),
+      ),
+    }))
+  const states = fixture()
+  const all = catalogOf(states)
+  const split = (text: string): string[] =>
+    text
+      .replace(/^\d+ of \d+ MCP tools\.\n\n/, '')
+      .replace(/\n\n## Not connected[^]*$/, '')
+      .split(/\n\n(?=### mcp__)/)
+  const nameOf = (block: string): string => /^### (\S+)/.exec(block)![1]!
+  // The text of the empty query holds every tool as a summary: the same block that main shows for a hit.
+  const summaryOf = new Map(split(searchResult(states, '', 500)).map(b => [nameOf(b), b] as const))
+
+  test('the fixture has 50 to 200 tools on 8 servers', () => {
+    assert.ok(all.length >= 50 && all.length <= 200, `${all.length} tools`)
+    assert.equal(new Set(all.map(t => t.server)).size, 8)
+    assert.ok(all.every(t => t.tool.length <= 40))
+  })
+
+  for (const query of [
+    'jira issue create',
+    'issue',
+    'pull request',
+    'dashboard',
+    'work item',
+    'mcp__gf2__',
+    'mcp__azdo__get_work_item',
+  ]) {
+    test(`"${query}": the full hits are a prefix of at most 3 and the result grows by at most 5,500 characters`, () => {
+      const text = searchResult(states, query, 15)
+      const blocks = split(text)
+      assert.ok(text.startsWith(`${blocks.length} of ${all.length} MCP tools.\n\n### mcp__`))
+      const full = blocks.filter(b => b.includes('call('))
+      assert.ok(full.length >= 1 && full.length <= 3)
+      assert.ok(blocks.slice(0, full.length).every(b => b.includes('call(')))
+      assert.ok(blocks.slice(full.length).every(b => b.includes('args:') && !b.includes('call(')))
+      if (blocks.length > 3) {
+        const grown = full.reduce((n, b) => n + b.length - summaryOf.get(nameOf(b))!.length, 0)
+        assert.ok(grown <= 5500, `grew by ${grown}`)
+        assert.ok(full.slice(1).reduce((n, b) => n + b.length, 0) <= 4000)
+      }
+    })
+  }
+
+  test('"mcp__gf2__" returns tools of that server, so the closing sentence of a zero-hit list is true', () => {
+    assert.ok(split(searchResult(states, 'mcp__gf2__', 15)).every(b => b.startsWith('### mcp__gf2__')))
+  })
+
+  for (const query of ['calendar', 'zzzqq']) {
+    test(`"${query}": no hit lists the names of the 8 servers within 3,000 characters`, () => {
+      const text = searchResult(states, query, 15)
+      assert.ok(text.length <= 3000, `${text.length} characters`)
+      const lines = text.split('\n')
+      assert.equal(lines[0], `No MCP tool matches "${query}". ${all.length} MCP tools are connected.`)
+      assert.equal(lines.filter(l => l.startsWith('mcp__') && l.includes('__: ')).length, 8)
+      assert.equal(lines.at(-1)!.startsWith('A narrower word'), all.length > 60)
+    })
+  }
+})
+
+describe('search_tools with no match, the list of names', () => {
+  const two: ServerState[] = [
+    { key: serverKey('b')!, status: 'connected', tools: [{ name: 'two' }, { name: 'one' }] },
+    { key: serverKey('a')!, status: 'connected', tools: [{ name: 'only' }] },
+    { key: serverKey('c')!, status: 'failed', reason: 'spawn c ENOENT' },
+  ]
+
+  test('2 servers: a line under each, then the Not connected tail, and no closing sentence', () => {
+    assert.equal(
+      searchResult(two, 'zzzqq', 15),
+      'No MCP tool matches "zzzqq". 3 MCP tools are connected.\nmcp__b__: one, two\nmcp__a__: only\n\n## Not connected\n- c: spawn c ENOENT',
+    )
+  })
+
+  test('with a cut name, one closing sentence tells how to find the rest', () => {
+    const many: ServerState[] = [
+      {
+        key: serverKey('big')!,
+        status: 'connected',
+        tools: Array.from({ length: 61 }, (_, i) => ({ name: `t${String(i).padStart(2, '0')}` })),
+      },
+    ]
+    const text = searchResult(many, 'zzzqq', 15)
+    assert.ok(text.endsWith('(+1 more)\nA narrower word, or `mcp__<key>__` in the query, finds the rest.'))
   })
 })

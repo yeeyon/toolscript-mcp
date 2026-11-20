@@ -73,8 +73,10 @@ Read [bench/RESULTS-codemode.md](bench/RESULTS-codemode.md) for the method, cold
 ## How it works
 
 1. Your MCP client connects to toolscript-mcp. toolscript-mcp connects to your other MCP servers.
-2. The model finds tools with `search_tools`. A keyword search with 3 or fewer matches shows each tool in full, with a
-   TypeScript declaration of its `call()`: the nested types and the note of each argument.
+2. The model finds tools with `search_tools`. A keyword search shows its first 3 matches in full, with a TypeScript
+   declaration of its `call()`: the nested types and the note of each argument. If more than 3 tools match, only the
+   first match always shows in full. The next 2 show in full while the total stays within 4,000 characters. The other
+   matches show as one summary each.
 3. The model sends one program to `run_code`.
 4. The program runs in a separate Node process. Each nested tool call goes through your allow, deny and ask rules.
 5. The return value of the program goes back to the model. If the formatted value is longer than 20,000 characters,
