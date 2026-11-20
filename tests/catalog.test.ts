@@ -314,6 +314,80 @@ describe('search_tools with 3 or fewer hits', () => {
     )
   })
 
+  test('a cut list of values keeps the null and the types of the union in both views', () => {
+    const values = Array.from({ length: 30 }, (_, i) => `z${i}`)
+    const first = values.slice(0, 25).map(v => `"${v}"`)
+    for (const [other, end] of [
+      [{ type: 'null' }, 'null'],
+      [{ type: 'string' }, 'string'],
+    ] as const) {
+      const inputSchema = { type: 'object', properties: { tz: { anyOf: [{ enum: values }, other] } } }
+      const type = [...first, '…', end].join(' | ')
+      assert.equal(argsText(inputSchema), `{ tz?: ${type} }`)
+      assert.equal(one({ name: 'u', inputSchema }), `### mcp__x__u\ncall("mcp__x__u", {\n  tz?: ${type}\n})`)
+    }
+  })
+
+  test('the detail view shows every member of a long union, and the short list its first 25 values', () => {
+    const variants = Array.from({ length: 30 }, (_, i) => ({
+      type: 'object',
+      required: ['action'],
+      properties: { action: { const: `act_${i}` }, id: { type: 'string' } },
+    }))
+    const detail = one({
+      name: 'v',
+      inputSchema: { type: 'object', required: ['op'], properties: { op: { anyOf: variants } } },
+    })
+    assert.ok(detail.includes('action: "act_29"') && !detail.includes('…'), detail)
+    const consts = {
+      type: 'object',
+      properties: { n: { anyOf: Array.from({ length: 30 }, (_, i) => ({ const: `v${i}` })) } },
+    }
+    assert.ok(one({ name: 'c', inputSchema: consts }).includes('"v28" | "v29"'))
+    assert.match(argsText(consts), /"v24" \| … \}$/)
+  })
+
+  test('the detail view marks each cut enum of a union, and the short list marks its cut once', () => {
+    const values = (p: string): { enum: string[] } => ({ enum: Array.from({ length: 30 }, (_, i) => `${p}${i}`) })
+    const inputSchema = { type: 'object', properties: { n: { anyOf: [values('a'), values('b')] } } }
+    const detail = one({ name: 'u', inputSchema })
+    assert.ok(detail.includes('"a24" | … | "b0"') && detail.endsWith('"b24" | …\n})'), detail)
+    assert.match(argsText(inputSchema), /"a24" \| … \}$/)
+  })
+
+  test('a union or a $ref next to a type keeps the type', () => {
+    const inputSchema = {
+      type: 'object',
+      $defs: { Sha: { pattern: '^[0-9a-f]{40}$', description: 'A commit' }, Mode: { enum: ['a', 'b'] } },
+      required: ['q', 'when', 'sha'],
+      properties: {
+        q: {
+          type: 'object',
+          properties: { a: { type: 'string' }, b: { type: 'number' } },
+          oneOf: [{ required: ['a'] }, { required: ['b'] }],
+        },
+        when: { type: 'string', anyOf: [{ format: 'date' }, { format: 'date-time' }] },
+        sha: { type: 'string', $ref: '#/$defs/Sha' },
+        mode: { type: 'string', $ref: '#/$defs/Mode' },
+      },
+    }
+    assert.equal(
+      one({ name: 't', inputSchema }),
+      [
+        '### mcp__x__t',
+        'call("mcp__x__t", {',
+        '  q: {',
+        '    a?: string',
+        '    b?: number',
+        '  }',
+        '  when: string',
+        '  sha: string // A commit',
+        '  mode?: string & ("a" | "b")',
+        '})',
+      ].join('\n'),
+    )
+  })
+
   test('an empty enum shows never and an empty type list shows unknown', () => {
     const inputSchema = { type: 'object', properties: { a: { enum: [] }, b: { type: [] } } }
     assert.equal(one({ name: 'e', inputSchema }), '### mcp__x__e\ncall("mcp__x__e", {\n  a?: never\n  b?: unknown\n})')

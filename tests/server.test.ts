@@ -1042,6 +1042,233 @@ describe('the catalog', () => {
     assert.equal(shown({ type: 'number', minimum: 10, maximum: 1 }), '{ n?: number (min 10, max 1) }')
   })
 
+  test('argsText gives the real type of a union, a const and a ref', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    assert.equal(shown({ anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }), '{ n?: number (min 1) | null }')
+    assert.equal(shown({ oneOf: [{ type: 'string' }, { type: 'number' }] }), '{ n?: string | number }')
+    assert.equal(shown({ const: 'open' }), '{ n?: "open" }')
+    assert.equal(shown({ allOf: [{ type: 'string' }, { minLength: 1 }] }), '{ n?: string }')
+    assert.equal(
+      shown({ type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'null' }] } }),
+      '{ n?: (string | null)[] }',
+    )
+    assert.equal(
+      shown({ type: 'array', items: { anyOf: [{ type: 'array', items: { const: 1 } }, { type: 'null' }] } }),
+      '{ n?: (1[] | null)[] }',
+    )
+    // A $ref is followed as in the detail view. A loop or a miss is unknown.
+    const root = {
+      type: 'object',
+      $defs: { Id: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, Loop: { anyOf: [{ $ref: '#/$defs/Loop' }] } },
+      properties: { a: { $ref: '#/$defs/Id' }, b: { $ref: '#/$defs/Loop' }, c: { $ref: '#/$defs/Nope' } },
+    }
+    assert.equal(argsText(root), '{ a?: number | null; b?: unknown; c?: unknown }')
+    // A value that is too long is replaced by its type, so text from the server stays bounded.
+    assert.equal(shown({ const: 'x'.repeat(600) }), '{ n?: string /* long value left out */ }')
+    // A union that branches wide and deep is cut, not walked in full.
+    const wide = { anyOf: Array.from({ length: 50 }, () => ({ $ref: '#/$defs/W' })) }
+    const huge = { type: 'object', $defs: { W: wide }, properties: { n: { $ref: '#/$defs/W' } } }
+    assert.equal(argsText(huge), '{ n?: unknown }')
+  })
+
+  test('argsText keeps each type of the old text and reads only a schema with no type', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    // A type list shows each of its types, also next to a union that names the type of the items.
+    assert.equal(
+      shown({ type: ['string', 'array'], oneOf: [{ type: 'string' }, { items: { type: 'string' } }] }),
+      '{ n?: string | unknown[] }',
+    )
+    assert.equal(shown({ type: ['file', 'array'] }), '{ n?: file | unknown[] }')
+    assert.equal(shown({ type: [['string']] }), '{ n?: string }')
+    assert.equal(
+      shown({ type: ['array', 'null'], items: { anyOf: [{ type: 'string' }, { type: 'integer' }] } }),
+      '{ n?: (string | number)[] | null }',
+    )
+    // A value that a union repeats counts once, and a union of untyped parts next to properties is an object.
+    assert.equal(shown({ anyOf: Array.from({ length: 30 }, () => ({ const: 'a' })) }), '{ n?: "a" }')
+    assert.equal(shown({ properties: { a: {} }, anyOf: [{ required: ['a'] }] }), '{ n?: object }')
+  })
+
+  test('argsText keeps the text of each argument that shows no unknown', () => {
+    const list = {
+      type: 'object',
+      required: ['owner', 'repo'],
+      properties: {
+        owner: { type: 'string' },
+        repo: { type: 'string' },
+        state: { type: 'string', enum: ['open', 'closed', 'all'] },
+        sort: { type: 'string', enum: ['created', 'updated', 'comments'] },
+        direction: { type: 'string', enum: ['asc', 'desc'] },
+        labels: { type: 'array', items: { type: 'string' } },
+        since: { type: ['string', 'null'] },
+        milestone: { type: ['string', 'number', 'null'] },
+        page: { type: 'integer', minimum: 1 },
+        perPage: { type: 'integer', minimum: 1, maximum: 100 },
+        includePullRequests: { type: 'boolean' },
+        ...Object.fromEntries(
+          Array.from({ length: 12 }, (_, i) => [`aLongArgumentNameForTesting${i}`, { type: 'string' }]),
+        ),
+      },
+    }
+    assert.equal(
+      argsText(list),
+      '{ owner: string; repo: string; state?: "open" | "closed" | "all"; sort?: "created" | "updated" | "comments"; ' +
+        'direction?: "asc" | "desc"; labels?: string[]; since?: string | null; milestone?: string | number | null; ' +
+        'page?: number (min 1); perPage?: number (1-100); includePullRequests?: boolean; ' +
+        'aLongArgumentNameForTesting0?: string; aLongArgumentNameForTesting1?: string; ' +
+        'aLongArgumentNameForTesting2?: string; aLongArgumentNameForTesting3?: string; … 8 more arguments }',
+    )
+    // An enum stays whole, also past 25 values. A union, a const or a $ref next to a type leaves the type.
+    const values = Array.from({ length: 30 }, (_, i) => `v${i}`)
+    const required = ['e', 'q', 'when', 'sha', 'c']
+    const typed = {
+      type: 'object',
+      required,
+      $defs: { Sha: { pattern: '^[0-9a-f]{40}$' } },
+      properties: {
+        e: { enum: values },
+        q: { type: 'object', oneOf: [{ required: ['a'] }, { required: ['b'] }] },
+        when: { type: 'string', anyOf: [{ format: 'date' }, { format: 'date-time' }] },
+        sha: { type: 'string', $ref: '#/$defs/Sha' },
+        c: { type: 'string', anyOf: [{ const: 'a' }, { const: 'b' }] },
+      },
+    }
+    assert.equal(
+      argsText(typed),
+      `{ e: ${values.map(v => `"${v}"`).join(' | ')}; q: object; when: string; sha: string; c: string }`,
+    )
+  })
+
+  test('argsText shows a union in place of unknown only when the list keeps its arguments', () => {
+    // A union too long to fit with the arguments after it stays unknown.
+    const values = Array.from({ length: 20 }, (_, i) => `pull_request_review_${i}`)
+    const tool = (event: unknown): unknown => ({
+      type: 'object',
+      required: ['event', 'repo'],
+      properties: { event, repo: { type: 'string' } },
+    })
+    const union = (n: number): unknown => ({ anyOf: values.slice(0, n).map(v => ({ type: 'string', const: v })) })
+    assert.equal(argsText(tool(union(20))), '{ event: unknown; repo: string }')
+    assert.equal(
+      argsText(tool(union(3))),
+      '{ event: "pull_request_review_0" | "pull_request_review_1" | "pull_request_review_2"; repo: string }',
+    )
+    const long = Array.from({ length: 30 }, (_, i) => ({ const: `pull_request_review_comment_${i}` }))
+    const kind = { enum: Array.from({ length: 6 }, (_, i) => `k${i}`) }
+    assert.equal(
+      argsText({
+        type: 'object',
+        required: ['kind', 'owner', 'events', 'repo'],
+        properties: { kind, owner: { type: 'string' }, events: { type: 'array', items: { anyOf: long } }, repo: {} },
+      }),
+      '{ kind: "k0" | "k1" | "k2" | "k3" | "k4" | "k5"; owner: string; events: unknown[]; repo: unknown }',
+    )
+    const choices = Array.from({ length: 25 }, (_, i) => ({ const: `an_optional_field_name_choice_${i}` }))
+    assert.equal(
+      argsText({
+        type: 'object',
+        required: ['q'],
+        properties: { q: { type: 'string' }, field: { anyOf: choices }, page: { type: 'integer' } },
+      }),
+      '{ q: string; field?: unknown; page?: number }',
+    )
+    // The pydantic form of an optional Literal: the short one shows, the long list of fields does not fit.
+    const sort = Array.from({ length: 8 }, (_, i) => `sort_by_${i}`)
+    const fields = Array.from({ length: 40 }, (_, i) => `a_field_name_${i}`)
+    assert.equal(
+      argsText({
+        type: 'object',
+        required: ['query'],
+        properties: {
+          query: { type: 'string' },
+          sort: { anyOf: [{ enum: sort }, { type: 'null' }] },
+          fields: { anyOf: [{ type: 'array', items: { enum: fields } }, { type: 'null' }] },
+          page: { type: 'integer' },
+        },
+      }),
+      `{ query: string; sort?: ${sort.map(s => `"${s}"`).join(' | ')} | null; fields?: unknown; page?: number }`,
+    )
+  })
+
+  test('both views stay fast on a large schema behind many refs and on a type list that repeats array', () => {
+    const many = Array.from({ length: 500000 }, (_, i) => i)
+    const keys = Object.fromEntries(Array.from({ length: 10000 }, (_, i) => [`k${i}`, 1]))
+    const refs = { anyOf: Array.from({ length: 2000 }, () => ({ $ref: '#/$defs/E' })) }
+    const large = [
+      { enum: many },
+      { anyOf: many.map(i => ({ const: i })) },
+      { const: 'x'.repeat(400000) },
+      { const: { a: 'x'.repeat(400000) } },
+      { $ref: `#/x${'/y'.repeat(50000)}` },
+      { type: ['string', 'null'], ...keys },
+      { type: 'string', $ref: '#/$defs/S', ...keys },
+      { type: 'string', allOf: [{ minLength: 1 }], ...keys },
+    ]
+    for (const E of large) {
+      const inputSchema = { type: 'object', $defs: { E, S: { type: 'string' } }, properties: { a: refs } }
+      const start = performance.now()
+      const text = argsText(inputSchema)
+      const detail = searchResult(
+        [{ key: serverKey('x'), status: 'connected', tools: [{ name: 't', description: 'd', inputSchema }] }],
+        'mcp__x__t',
+        15,
+      )
+      assert.ok(performance.now() - start < 1000, `${performance.now() - start} ms`)
+      assert.ok(text.length <= 500 && detail.length <= 5000, `${text.length} and ${detail.length} characters`)
+    }
+    // A type list that repeats array at each level shows each type once.
+    let nested: unknown = { type: 'string' }
+    for (let i = 0; i < 12; i++) nested = { type: Array(10).fill('array'), items: nested }
+    const start = performance.now()
+    assert.equal(argsText({ type: 'object', properties: { a: nested } }), `{ a?: string${'[]'.repeat(12)} }`)
+    assert.ok(performance.now() - start < 1000, `${performance.now() - start} ms`)
+  })
+
+  test('argsText cuts only the values of a long union, and counts them', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    const consts = Array.from({ length: 30 }, (_, i) => ({ const: `v${i}` }))
+    const first = Array.from({ length: 25 }, (_, i) => `"v${i}"`).join(' | ')
+    const types = [
+      { type: 'array', items: { const: 'x' } },
+      { type: 'array', items: { const: 1 } },
+      { allOf: [{ const: 'q' }, { type: 'string' }] },
+    ]
+    assert.equal(shown({ anyOf: [...consts, ...types] }), `{ n?: ${first} | "x"[] | 1[] | "q" & string | … }`)
+    const strings = Array.from({ length: 25 }, () => ({ type: 'string' }))
+    assert.equal(shown({ anyOf: [...strings, { const: 'x' }, { const: null }] }), '{ n?: string | "x" | null }')
+  })
+
+  test('argsText reads a plain argument after a wide one spent the steps', () => {
+    const wide = { anyOf: Array.from({ length: 50 }, () => ({ $ref: '#/$defs/W' })) }
+    const root = { type: 'object', required: ['a', 'b'], $defs: { W: wide } }
+    const properties = { a: { $ref: '#/$defs/W' }, b: { type: 'string' } }
+    assert.equal(argsText({ ...root, properties }), '{ a: unknown; b: string }')
+  })
+
+  test('argsText shows each member of a union once', () => {
+    const shown = (schema: unknown): string => argsText({ type: 'object', properties: { n: schema } })
+    const variants = Array.from({ length: 12 }, (_, i) => ({ type: 'object', properties: { kind: { const: i } } }))
+    assert.equal(shown({ oneOf: variants }), '{ n?: object }')
+    assert.equal(shown({ anyOf: [{ type: 'string' }, { type: 'string', format: 'date' }] }), '{ n?: string }')
+    // Properties without a type are an object, and a type name in a union that is not a JSON type is unknown.
+    assert.equal(shown({ properties: { x: { type: 'string' } } }), '{ n?: object }')
+    assert.equal(shown({ anyOf: [{ type: 'any' }, { type: 'null' }] }), '{ n?: unknown | null }')
+  })
+
+  test('argsText reads a wide schema with many arguments fast and stays short', () => {
+    // Each argument refers to a union of 50 refs to itself. The arguments share one budget of steps, and each one past
+    // it gets a few steps of its own.
+    const wide = { anyOf: Array.from({ length: 50 }, () => ({ $ref: '#/$defs/W' })) }
+    const properties = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`p${i}`, { $ref: '#/$defs/W' }]))
+    const start = performance.now()
+    const text = argsText({ type: 'object', $defs: { W: wide }, properties })
+    assert.ok(performance.now() - start < 1000, `${performance.now() - start} ms`)
+    assert.ok(text.length <= 500, `${text.length} characters`)
+    const parts = text.slice(2, -2).split('; ')
+    assert.match(parts.pop()!, /^… \d+ more arguments$/)
+    parts.forEach((p, i) => assert.equal(p, `p${i}?: unknown`))
+  })
+
   test('a spec with bounded arguments still cuts at whole arguments', () => {
     const properties = Object.fromEntries(
       Array.from({ length: 60 }, (_, i) => [`bounded_argument_${i}`, { type: 'integer', minimum: 1, maximum: 100 }]),
