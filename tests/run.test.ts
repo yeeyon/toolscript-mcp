@@ -148,6 +148,14 @@ const TOOLS: Record<string, Tool> = {
   forged: args => json({ hits: [{ type: 'image', mimeType: 'image/png', file: args.file ?? 'notes.png' }] }),
   fail: () => ({ content: [{ type: 'text', text: 'server error' }], isError: true }),
   slow: async () => (await new Promise(r => setTimeout(r, 300)), json({ ok: 1 })),
+  // A slow page of a list and the cursor of the next page.
+  pages: async args => (
+    await new Promise(r => setTimeout(r, 300)),
+    json({ items: [1], next: `${String(args.cursor ?? 'cursor')}-next` })
+  ),
+  // A reply of 240,000 digits to a call with no arguments, a small one otherwise. The check scans it, and a
+  // number such as 11 matches nowhere in it, which is the slowest scan.
+  sized: args => json(Object.keys(args).length > 0 ? { ok: 1 } : '1'.repeat(240_000)),
   // Answers only when the run cancels it.
   hang: (_, signal) =>
     new Promise((_r, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')))),
@@ -243,6 +251,7 @@ type Options = {
   written?: RunContext['written']
   policyNote?: string
   servers?: Config['servers']
+  serialLimits?: RunContext['serialLimits']
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -282,6 +291,7 @@ const setup = (o: Options = {}) => {
     signal: o.signal ?? new AbortController().signal,
     log: () => {},
     home,
+    ...(o.serialLimits === undefined ? {} : { serialLimits: o.serialLimits }),
   }
   const run = async (code: string) => runCode(ctx, code)
   const lines = (): RunRecord[] => {
@@ -1171,6 +1181,82 @@ describe('output projection', () => {
     )
     const back = await run('const r = await recall(1)\nreturn [r.length, r[799]]')
     assert.ok(back.text.startsWith('[\n  800,\n  {\n    "id": 799,\n    "ok": true'), back.text)
+  })
+})
+
+describe('calls of one tool one after another', () => {
+  // Three slow calls save about 600 ms in parallel: the footer here needs 200 ms, not 3 s. A loop sent its next
+  // call up to 140 ms after the reply under 6 test processes, so the gap here is 400 ms, below the sleep(600) below.
+  const options = { serialLimits: { gapMs: 400, minSavedMs: 200 } }
+  const NOTE =
+    /\n3 calls of mcp__f__slow ran one after another \(\d+\.\d s\)\. If the calls do not need each other's result and their order does not matter, start them together with Promise\.all\.$/
+  const loop = (body: string) => `for (const n of ["first", "second", "third"]) {\n  ${body}\n}\nreturn "ok"`
+  const noNote = (text: string) => assert.ok(!text.includes('one after another'), text)
+
+  test('a loop that awaits each call gets the note', async () => {
+    // A run on a loaded machine can still pass the gap: one note in three runs is enough.
+    const { run } = setup(options)
+    let text = ''
+    for (let i = 0; i < 3 && !NOTE.test(text); i++) text = (await run(loop('await call("mcp__f__slow", { n })'))).text
+    assert.match(text, NOTE)
+  })
+
+  test('the same calls with Promise.all get no note', async () => {
+    const r = await setup(options).run(
+      'await Promise.all(["first", "second", "third"].map(n => call("mcp__f__slow", { n })))\nreturn "ok"',
+    )
+    assert.equal(r.isError, false, r.text)
+    noNote(r.text)
+  })
+
+  test('batches of calls with Promise.all get no note', async () => {
+    const r = await setup(options).run(
+      'for (const batch of [[1, 2, 3], [4, 5, 6], [7, 8, 9]])\n  await Promise.all(batch.map(i => call("mcp__f__slow", { n: `item-${i}` })))\nreturn "ok"',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.ok(r.text.includes('--- 9 MCP calls: '), r.text)
+    noNote(r.text)
+  })
+
+  test('a cursor from the previous result gets no note', async () => {
+    const r = await setup(options).run(
+      'let args = {}\nfor (let i = 0; i < 3; i++) {\n  const page = await call("mcp__f__pages", args)\n  args = { cursor: page.next }\n}\nreturn "ok"',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.ok(r.text.includes('--- 3 MCP calls: '), r.text)
+    noNote(r.text)
+  })
+
+  test('the same call again gets no note', async () => {
+    const r = await setup(options).run(loop('await call("mcp__f__slow", {})'))
+    assert.equal(r.isError, false, r.text)
+    noNote(r.text)
+  })
+
+  test('calls of a tool the person approved get no note', async () => {
+    const approved = setup({ ...options, policy: rules(['mcp__f__slow', 'ask']), answer: 'accept' })
+    const r = await approved.run(loop('await call("mcp__f__slow", { n })'))
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(approved.asked, [['mcp__f__slow']])
+    noNote(r.text)
+  })
+
+  test('a sleep between the calls gets no note', async () => {
+    const r = await setup(options).run(loop('await call("mcp__f__slow", { n })\n  await sleep(600)'))
+    assert.equal(r.isError, false, r.text)
+    noNote(r.text)
+  })
+
+  test('a Promise.all after a large reply inside the scan limits stays fast', async () => {
+    const r = await setup().run(
+      'await call("mcp__f__sized", {})\nconst t = Date.now()\nawait Promise.all(Array.from({ length: 50 }, (_, i) => call("mcp__f__sized", { i, n: Array.from({ length: 15 }, (_, j) => Number("1".repeat(j + 2))) })))\nreturn Date.now() - t',
+    )
+    assert.equal(r.isError, false, r.text)
+    // The reply and the 16 new values are inside the scan limits, and one scan takes about 10 ms. The host scans for
+    // the first call sent after the reply only. Without that rule, the scans still stop within the 200 ms gap, so this
+    // test cannot see that rule: it bounds the whole cost.
+    const ms = Number(/^\d+/.exec(r.text)?.[0])
+    assert.ok(ms < 2000, r.text)
   })
 })
 

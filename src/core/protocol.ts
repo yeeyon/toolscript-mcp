@@ -702,13 +702,16 @@ export type CallRecord = {
 
 /**
  * What a run with output projection reports: its calls, the results it read
- * again with recall() and how old each one was, and the number of a cut result.
+ * again with recall() and how old each one was, the number of a cut result,
+ * and the calls of one tool that ran one after another (serialStreak).
  */
 export type Projection = {
   calls: CallRecord[]
   recalls: number
   recalled: { ref: number; ageMs: number }[]
   wholeRef?: number
+  /** `tool` is absent when the footer must not name it: the footer is outside the wrapper of untrusted content. */
+  serial?: { readonly calls: number; readonly ms: number; readonly tool?: string }
 }
 
 /**
@@ -1362,13 +1365,20 @@ export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerErro
   const missed = missedData(outcome, p.calls)
     ? ['The result is empty, but the calls returned data: check the shapes.']
     : []
+  const serial =
+    p.serial === undefined
+      ? []
+      : [
+          `${p.serial.calls} calls of ${p.serial.tool ?? 'one tool'} ran one after another (${(p.serial.ms / 1000).toFixed(1)} s). If the calls do not need each other's result and their order does not matter, start them together with Promise.all.`,
+        ]
   // A line per call names its recall(n). A group line has a range of numbers, so the note says how to use them.
-  if (n <= MAX_CALL_LINES) return [head, ...p.calls.map(callLine), ...recalled, ...missed].join('\n')
+  if (n <= MAX_CALL_LINES) return [head, ...p.calls.map(callLine), ...recalled, ...missed, ...serial].join('\n')
   return [
     head,
     ...groupLines(p.calls),
     ...recalled,
     ...missed,
+    ...serial,
     'await recall(n) returns result #n again, with no new call.',
   ].join('\n')
 }

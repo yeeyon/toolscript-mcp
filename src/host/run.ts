@@ -79,6 +79,14 @@ import {
   type CallLog,
   type RunEnding,
 } from '../core/runlog.ts'
+import {
+  mayFollow,
+  serialStreak,
+  usesResult,
+  type SentCall,
+  type SerialLimits,
+  type TimedCall,
+} from '../core/serial.ts'
 import { SERVER_NAME } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
@@ -130,6 +138,8 @@ export type RunContext = {
   readonly log: (line: string) => void
   /** HOME, where the run log goes. */
   readonly home: string
+  /** Tests only: lower limits of the note on calls that ran one after another, so a test stays short. */
+  readonly serialLimits?: SerialLimits
 }
 
 /** An MCP image block: `data` is base64. */
@@ -406,6 +416,14 @@ const execute = async (
   const decided = new Map<number, CallDecision>()
   // A server that connects again during the run lists its tools anew, maybe with a new mark.
   const interactiveNow = () => interactiveTools(downstream.states())
+  // When each call was sent and answered, for the note on calls of one tool that ran one after another.
+  const timed = new Map<number, TimedCall>()
+  // The reply of a call that ran alone, until the next call is sent: only that call can follow it. So no call of a
+  // Promise.all follows a call, and no call follows one of a Promise.all, as in a loop of batches.
+  let lastReply: (SentCall & { call: TimedCall; json: string }) | undefined
+  let inFlight = 0
+  // The call sent when no other call was in flight, until the next call is sent.
+  let alone: number | undefined
   const recalled: { ref: number; ageMs: number }[] = []
   let recalls = 0
   // Set before the program gets untrusted content, so a saveFile after it marks its file.
@@ -553,7 +571,12 @@ const execute = async (
     }
   }
 
-  const answerCall = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
+  const answerCall = async (
+    id: number,
+    tool: string,
+    args: Record<string, unknown>,
+    sentKey: string | undefined,
+  ): Promise<void> => {
     if (ended) return
     const began = performance.now()
     const { code: failure, untrusted: fromTool, ...r } = await callTool(id, tool, args)
@@ -569,11 +592,18 @@ const execute = async (
       ...(r.ok ? {} : { error: failure ?? 'failed' }),
     })
     await reply(id, r)
+    const repliedAt = performance.now()
+    // The runner can read the reply and send its next call before this line runs. That call then counts as sent
+    // during this one, and the streak misses a link: a note can go missing, never come wrong.
+    inFlight--
     // A repeat is a call equal to an earlier one that worked. A failed call is
     // not kept: a new call is the only way to retry it.
-    const key = callKey(tool, args)
+    const key = sentKey ?? callKey(tool, args)
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
+    const done = { ...timed.get(id)!, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' }
+    timed.set(id, done)
+    lastReply = alone === id ? { call: done, args, key, json } : undefined
     const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
     // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
@@ -604,13 +634,34 @@ const execute = async (
 
   const dispatch = (m: RunnerMessage): void => {
     switch (m.t) {
-      case 'call':
+      case 'call': {
         started.set(m.id, m.tool)
+        // This runs in the stdout handler, where a throw stops the server. The stack of the runner gives out
+        // before callKey's on deep arguments, but if callKey throws, answerCall builds the key where a throw
+        // ends only this run, and the call gets no link.
+        let key: string | undefined
+        try {
+          key = callKey(m.tool, m.args)
+        } catch {
+          key = undefined
+        }
+        const sent: TimedCall = { id: m.id, tool: m.tool, sentAt: performance.now(), ok: false, plain: false }
+        const prev = lastReply
+        lastReply = undefined
+        alone = inFlight === 0 ? m.id : undefined
+        inFlight++
+        timed.set(
+          m.id,
+          key !== undefined && prev !== undefined && mayFollow(prev.call, sent, ctx.serialLimits?.gapMs)
+            ? { ...sent, previous: { id: prev.call.id, usesResult: usesResult({ args: m.args, key }, prev) } }
+            : sent,
+        )
         answer(
-          limit(() => answerCall(m.id, m.tool, m.args)),
+          limit(() => answerCall(m.id, m.tool, m.args, key)),
           m.id,
         )
         break
+      }
       case 'recall':
         answer(answerRecall(m.id, m.ref), m.id)
         break
@@ -714,6 +765,11 @@ const execute = async (
   const calls = [...records]
     .sort((a, b) => a[0] - b[0])
     .map(([, r]) => (listed === undefined || listed.has(r.tool) ? r : { ...r, tool: '(a name that no server lists)' }))
+  const streak = serialStreak([...timed.values()], ctx.serialLimits)
+  const serial =
+    streak === undefined || listed === undefined || listed.has(streak.tool)
+      ? streak
+      : { calls: streak.calls, ms: streak.ms }
 
   // A result too large to show is kept whole, so the next program can page it.
   const returned = outcome?.t === 'done' ? outcome.value : undefined
@@ -735,7 +791,7 @@ const execute = async (
     calls.length,
     stderr,
     MAX_RESULT_CHARS,
-    { calls, recalls, recalled, wholeRef },
+    { calls, recalls, recalled, wholeRef, serial },
     untrusted ? randomBytes(16).toString('hex') : undefined,
     shown.note,
     notes,
