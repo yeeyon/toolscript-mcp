@@ -1,0 +1,41 @@
+{
+  "servers": {
+    "github": [
+      ["actions_get", "Get details of GitHub Actions resources (workflows, workflow runs, jobs, and artifacts)"],
+      ["actions_list", "List GitHub Actions workflows in a repository"],
+      ["get_job_logs", "Get GitHub Actions workflow job logs"],
+      ["get_me", "Get my user profile"],
+      ["get_teams", "Get teams"],
+      ["assign_copilot_to_issue", "Assign Copilot to issue"],
+      ["request_copilot_review", "Request Copilot review"],
+      ["list_code_scanning_alerts", "List code scanning alerts"],
+      ["list_dependabot_alerts", "List dependabot alerts"],
+      ["discussion_comment_write", "Manage discussion comments"],
+      ["get_discussion_comments", "Get discussion comments"],
+      ["list_discussions", "List discussions"],
+      ["create_gist", "Create Gist"],
+      ["get_repository_tree", "Get repository tree"],
+      ["add_issue_comment", "Add comment to issue or pull request"],
+      ["get_label", "Get a specific label from a repository"],
+      ["issue_read", "Get issue details"],
+      ["issue_write", "Create or update issue/pull request"],
+      ["list_issues", "List issues"],
+      ["search_issues", "Search issues"],
+      ["sub_issue_write", "Change sub-issue"],
+      ["update_issue_comment", "Update issue comment"],
+      ["list_notifications", "List notifications"],
+      ["search_orgs", "Search organizations"],
+      ["projects_list", "List GitHub Projects resources"],
+      ["add_comment_to_pending_review", "Add review comment to the requester's latest pending pull request review"],
+      ["add_reply_to_pull_request_comment", "Add reply to pull request comment"],
+      ["create_pull_request", "Open new pull request"],
+      ["list_pull_requests", "List pull requests"],
+      ["merge_pull_request", "Merge pull request"],
+      ["pull_request_read", "Get details for a single pull request"],
+      ["pull_request_review_write", "Write operations (create, submit, delete) on pull request reviews"],
+      ["search_pull_requests", "Search pull requests"],
+      ["update_pull_request", "Edit pull request"]
+    ]
+  },
+  "queries": []
+}

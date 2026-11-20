@@ -1499,7 +1499,10 @@ const wholeWordRe = (word: string): RegExp => new RegExp(`(?<![a-z0-9])${word}s?
  * spells the abbreviation is the one meant, and it must stay above the dozens of `*_merge_request*` tools. It scores
  * 3 as the long form joined from the name words ("get_pull_request", "getPullRequest"), 3.25 when the description also
  * holds the abbreviation as a word, 2.5 for a plural query that matches only the other number, 2 as a word of the
- * server key, else 1 as a whole word or by its long form in the description. "pr" finds no "project". When some tool
+ * server key, else 1 as a whole word or by its long form in the description. A tool whose name holds no query word
+ * gets 1.75 more (1.25 for a plural query) for the long form in its description ("create_note": "...or merge
+ * request"): 2.75 and 2.25 in all, under the name hits above. A name that holds another word of the query keeps the 1,
+ * so "list mr notes" ranks "get_merge_request_notes" above "list_draft_notes". "pr" finds no "project". When some tool
  * holds a query word that is not in `FILLER`, a tool that matches only filler words gets no word score. Equal scores
  * rank by name. Only the first `RANK_QUERY_MAX` characters of the query count, and a token that the cut splits is
  * dropped.
@@ -1538,6 +1541,8 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     let real = 0
     let filler = 0
     let segs: string[] | undefined
+    let named = false
+    let phrase = 0
     for (const { word, stem, abbr } of wanted) {
       segs ??= nameWords(tool.name)
       let hit = 0
@@ -1549,16 +1554,21 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
         else if (form(abbr.plural ? `${abbr.long}s` : abbr.long)) hit = inDescription ? 3.25 : 3
         else if (abbr.plural && (form(abbr.short) || form(abbr.long))) hit = 2.5
         else if (ofServer.has(word)) hit = 2
-        else if (description.includes(abbr.phrase) || inDescription) hit = 1
+        else if (description.includes(abbr.phrase) || inDescription) {
+          hit = 1
+          if (description.includes(abbr.phrase)) phrase = abbr.plural ? 1.25 : 1.75
+        }
       } else if (short.includes(word)) hit = 3
       else if (word.length >= 4 && joinedIn(segs, word)) hit = 2.5
       else if (ofServer.has(word)) hit = 2
       else if (description.includes(word)) hit = 1
       else if (stem !== word && (short.includes(stem) || description.includes(stem))) hit = 0.5
       else if (stem !== word && stem.length >= 4 && joinedIn(segs, stem)) hit = 0.5
+      if (hit >= 2.5) named = true
       if (FILLER.has(word)) filler += hit
       else real += hit
     }
+    if (!named) real += phrase
     return { tool, score, real, filler }
   })
   // When no tool holds a real word of the query (a synonym or an abbreviation), or the query has only filler words,
