@@ -1477,8 +1477,8 @@ const joinedIn = (segs: readonly string[], word: string): boolean => {
   return false
 }
 
-/** True when `text` holds `word` or its plural as a whole word. */
-const wholeWord = (text: string, word: string): boolean => new RegExp(`(?<![a-z0-9])${word}s?(?![a-z0-9])`).test(text)
+/** A regex for `word` or its plural as a whole word. */
+const wholeWordRe = (word: string): RegExp => new RegExp(`(?<![a-z0-9])${word}s?(?![a-z0-9])`)
 
 /**
  * Ranks tools. A query token that is a tool's full name, `server__tool` or short name ranks it first, in that order.
@@ -1488,11 +1488,14 @@ const wholeWord = (text: string, word: string): boolean => new RegExp(`(?<![a-z0
  * "wit_work_items"), else 2 as a word of the server key, else 1 in the description, else 0.5 when the stem of a plural
  * word (`stem`) is in the short name, joined from its words or in the description. A stem hit scores less than the
  * full word, so for "builds" a tool whose description holds "builds" ranks above one whose description holds "build".
- * A word of `ABBREVIATIONS` or its plural ("prs") scores 3 as a name word, or as the long form joined from its words
- * ("get_pull_request", "getPullRequest"), 2.5 when only the other number matches, else 1 as a whole word or by its
- * long form in the description. "pr" finds no "project". When some tool holds a query word that is not in `FILLER`, a
- * tool that matches only filler words gets no word score. Equal scores rank by name. Only the first `RANK_QUERY_MAX`
- * characters of the query count, and a token that the cut splits is dropped.
+ * A word of `ABBREVIATIONS` or its plural ("prs") scores 6 as a name word as written ("mr_discussions"): a tool that
+ * spells the abbreviation is the one meant, and it must stay above the dozens of `*_merge_request*` tools. It scores
+ * 3 as the long form joined from the name words ("get_pull_request", "getPullRequest"), 3.25 when the description also
+ * holds the abbreviation as a word, 2.5 for a plural query that matches only the other number, 2 as a word of the
+ * server key, else 1 as a whole word or by its long form in the description. "pr" finds no "project". When some tool
+ * holds a query word that is not in `FILLER`, a tool that matches only filler words gets no word score. Equal scores
+ * rank by name. Only the first `RANK_QUERY_MAX` characters of the query count, and a token that the cut splits is
+ * dropped.
  */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const q = rankQuery(query)
@@ -1500,7 +1503,10 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     const plural = word.endsWith('s')
     const abbr = plural ? word.slice(0, -1) : word
     const phrase = ABBREVIATIONS.get(abbr)
-    const found = phrase === undefined ? undefined : { short: abbr, long: phrase.replace(' ', ''), phrase, plural }
+    const found =
+      phrase === undefined
+        ? undefined
+        : { short: abbr, long: phrase.replace(' ', ''), phrase, plural, whole: wholeWordRe(abbr) }
     return { word, stem: stem(word), abbr: found }
   })
   const idents = q
@@ -1531,10 +1537,12 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
       if (abbr !== undefined) {
         // joinedIn also takes the plural of its word, so "pr" finds "prs" and "pull_requests".
         const form = (f: string) => joinedIn(segs!, f)
-        if (form(abbr.plural ? word : abbr.short) || form(abbr.plural ? `${abbr.long}s` : abbr.long)) hit = 3
+        const inDescription = abbr.whole.test(description)
+        if (form(abbr.plural ? word : abbr.short)) hit = 6
+        else if (form(abbr.plural ? `${abbr.long}s` : abbr.long)) hit = inDescription ? 3.25 : 3
         else if (abbr.plural && (form(abbr.short) || form(abbr.long))) hit = 2.5
         else if (ofServer.has(word)) hit = 2
-        else if (description.includes(abbr.phrase) || wholeWord(description, abbr.short)) hit = 1
+        else if (description.includes(abbr.phrase) || inDescription) hit = 1
       } else if (short.includes(word)) hit = 3
       else if (word.length >= 4 && joinedIn(segs, word)) hit = 2.5
       else if (ofServer.has(word)) hit = 2

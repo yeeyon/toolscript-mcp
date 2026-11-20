@@ -302,6 +302,46 @@ describe('rankTools on three sets of searches', () => {
       )
     })
 
+    test('"mr" in a tool name ranks above the many tools that hold "merge request" (zereight/gitlab-mcp)', () => {
+      const gitlab: [string, string][] = [
+        ['merge_merge_request', 'Merge a merge request'],
+        ['approve_merge_request', 'Approve a merge request'],
+        ['get_merge_request_approval_state', 'Get merge request approval details including approvers'],
+        ['get_merge_request_conflicts', 'Get the conflicts of a merge request'],
+        ['list_merge_request_pipelines', 'List pipelines for a merge request with pagination'],
+        ['create_merge_request', 'Create a new merge request'],
+        ['get_merge_request', 'Get details of a merge request (merge_request_iid or source_branch required)'],
+        ['get_merge_request_diffs', 'Get the changes/diffs of a merge request'],
+        ['list_merge_request_changed_files', 'List changed file paths in a merge request without diff content'],
+        ['list_merge_request_versions', 'List all versions of a merge request'],
+        ['update_merge_request', 'Update a merge request'],
+        ['list_merge_requests', "List merge requests (without project_id: user's MRs; with project_id: project MRs)"],
+        ['list_group_merge_requests', 'List merge requests across all projects of a group and its subgroups'],
+        ['list_deployment_merge_requests', 'List merge requests shipped with a deployment'],
+        ['get_milestone_merge_requests', 'Get merge requests associated with a specific milestone'],
+        ['rebase_merge_request', 'Rebase the source branch of a merge request onto its target branch'],
+        ['create_note', 'Create a new note (comment) to an issue or merge request'],
+        ['create_merge_request_thread', 'Create a new thread on a merge request'],
+        ['mr_discussions', 'List discussion items for a merge request'],
+        ['get_merge_request_discussion', 'Get a single discussion item for a merge request'],
+        ['create_merge_request_note', 'Add a new note to a merge request'],
+        ['get_merge_request_notes', 'List notes for a merge request'],
+        ['update_merge_request_note', 'Modify an existing merge request note'],
+        ['list_draft_notes', 'List draft notes for a merge request'],
+        ['list_pipelines', 'List pipelines with filtering options'],
+        ['list_issues', 'List issues'],
+        ['list_projects', 'List projects'],
+      ]
+      const g = toCatalog({ gitlab })
+      // Main ranked mr_discussions 1, 2 and 1 for the first two, and list_merge_requests 1 for "my mrs". For "comment
+      // on mr" main also had mr_discussions first. No name of the family holds "comment", so only create_note's
+      // description separates it from the ties, and it cannot reach the name hits.
+      assert.equal(short(g, 'mr comments', 1)[0], 'mr_discussions')
+      assert.equal(short(g, 'list mr comments', 1)[0], 'mr_discussions')
+      assert.equal(short(g, 'my mrs', 1)[0], 'list_merge_requests')
+      assert.equal(short(g, 'comment on mr', 1)[0], 'mr_discussions')
+    })
+
     test('the words that matched before still rank the same', () => {
       assert.equal(short(r, 'list projects', 1)[0], 'core_list_projects')
       assert.equal(rankTools(catalogB, 'user profile', 1)[0]?.name, 'mcp__atlassian__jira_get_user_profile')
