@@ -506,6 +506,13 @@ describe('protocol', () => {
     assert.ok(has(problemReport(problems), 'pass the arguments as a variable'))
     assert.ok(!has(problemReport(problems.slice(0, 1)), 'as a variable'))
     assert.deepEqual(checkCalls([{ tool: 'mcp__j__x', line: 1, keys: [] }], new Set(), spec, {}, new Map()), [])
+    // No tool known, but a named server is down: its reason refuses the call.
+    assert.deepEqual(
+      checkCalls([{ tool: 'mcp__j__x', line: 1, keys: [] }], new Set(), spec, {}, new Map([['j', 'down: why']])).map(
+        p => p.text,
+      ),
+      ['down: why'],
+    )
     assert.deepEqual(
       checkCalls([{ tool: 'mcp__k__x', line: 1, keys: [] }], tools, spec, {}, new Map()).map(p => p.text),
       ['no MCP tool "mcp__k__x" is connected'],

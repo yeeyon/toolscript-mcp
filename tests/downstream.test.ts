@@ -711,3 +711,82 @@ describe('a server whose text is untrusted', () => {
     }
   })
 })
+
+describe('settledFor', () => {
+  /** A probe server held in its connect until `open()` writes its gate file, one that connects, and one that fails. */
+  const mixed = (firstWaitMs?: number) => {
+    const file = path.join(DIR, `${randomUUID()}.json`)
+    const probe = (mode?: string): ServerConfig => ({
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(DIR, `${randomUUID()}.json`), ...(mode === undefined ? [] : [mode])],
+      env: {},
+    })
+    const held: ServerConfig = { kind: 'stdio', command: process.execPath, args: [PROBE, file, '--gate'], env: {} }
+    const dead: ServerConfig = { kind: 'stdio', command: process.execPath, args: ['-e', 'process.exit(1)'], env: {} }
+    const servers = new Map<ServerKey, ServerConfig | { kind: 'invalid'; errors: string[] }>([
+      ['f' as ServerKey, probe()],
+      ['h' as ServerKey, held],
+      ['x' as ServerKey, dead],
+      ['i' as ServerKey, { kind: 'invalid', errors: ['mcpServers.i.env.T: ${T} is not set'] }],
+    ])
+    const downstream = connectAll(servers, '0', () => {}, firstWaitMs === undefined ? {} : { firstWaitMs })
+    opened.push(downstream)
+    const status = (key: string) => downstream.states().find(s => s.key === key)?.status
+    return { downstream, status, open: () => fs.writeFileSync(`${file}.gate`, '') }
+  }
+  const key = (k: string) => k as ServerKey
+  const pending = async (p: Promise<void>): Promise<boolean> =>
+    (await Promise.race([p.then(() => false), new Promise<boolean>(r => setTimeout(() => r(true), 300))])) === true
+
+  test('settles for a connected key while another key still connects', async () => {
+    const { downstream, status, open } = mixed()
+    await downstream.settledFor([key('f')])
+    assert.equal(status('f'), 'connected')
+    assert.equal(status('h'), 'connecting')
+    assert.equal(await pending(downstream.settled), true, 'the full wait still holds')
+    open()
+    await downstream.settled
+    assert.equal(status('h'), 'connected')
+  })
+
+  test('waits for a key that still connects, until its attempt ends', async () => {
+    const { downstream, status, open } = mixed()
+    const named = downstream.settledFor([key('f'), key('h')])
+    assert.equal(await pending(named), true)
+    open()
+    await named
+    assert.equal(status('h'), 'connected')
+  })
+
+  test('a key that never connects holds the wait to the cap and no longer', async () => {
+    const { downstream, status } = mixed(400)
+    await downstream.settledFor([key('h')])
+    assert.equal(status('h'), 'connecting')
+  })
+
+  test('a key that failed does not hold the wait', async () => {
+    const { downstream, status } = mixed()
+    await downstream.settledFor([key('x')])
+    assert.equal(status('x'), 'failed')
+    assert.equal(status('h'), 'connecting')
+  })
+
+  test('a key with config errors or an unknown key keeps the full wait', async () => {
+    const { downstream, open } = mixed()
+    for (const bad of ['i', 'nope']) {
+      const named = downstream.settledFor([key('f'), key(bad)])
+      assert.equal(await pending(named), true, `${bad} waits for the held server`)
+    }
+    open()
+    await downstream.settledFor([key('nope')])
+    assert.equal(downstream.states().find(s => s.key === 'h')?.status, 'connected')
+  })
+
+  test('after settled, it returns at once', async () => {
+    const { downstream, open } = mixed()
+    open()
+    await downstream.settled
+    assert.equal(await pending(downstream.settledFor([key('f'), key('h'), key('x')])), false)
+  })
+})

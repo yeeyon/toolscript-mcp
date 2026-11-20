@@ -35,9 +35,10 @@ export const CONNECT_TIMEOUT_MS = 30_000
 const MAX_PAGES = 100
 
 /**
- * The longest time after the start that a search waits for servers still
- * connecting. Later searches answer at once, so a server that hangs costs
- * this wait one time, not on each search.
+ * The longest time after the start that a search, or a run that does not name
+ * its servers, waits for servers still connecting. A run that names only some
+ * servers waits for those only, with the same cap. Later waits end at once, so
+ * a server that hangs costs this wait one time.
  */
 export const FIRST_WAIT_MS = 10_000
 
@@ -214,6 +215,12 @@ export type Downstream = {
    * start, whichever comes first. Never rejects.
    */
   readonly settled: Promise<void>
+  /**
+   * Like `settled`, but for the servers in `keys` only: settles when the first connect attempt of each ended, or
+   * FIRST_WAIT_MS after the start, the same cap. A key that is not a valid entry of the config (unknown, or with
+   * config errors) makes it the full `settled`. After `settled`, it returns at once. Never rejects.
+   */
+  settledFor(keys: readonly ServerKey[]): Promise<void>
   /** The state of each server now, in config order. */
   states(): readonly ServerState[]
   /**
@@ -395,6 +402,8 @@ export type ConnectOptions = {
   readonly refreshTimeoutMs?: number
   /** The least time in ms from the start of one list of a server to the start of its next: a test sets it. */
   readonly listFloorMs?: number
+  /** The longest wait in ms of `settled` and `settledFor` after the start: a test sets it. */
+  readonly firstWaitMs?: number
   /**
    * Gets what each stdio child writes to stderr. The running server passes it on to its own stderr, the log of the
    * client. `toolscript-mcp tools` drops it, so it prints only its own lines. No reason holds that text: `redact` hides
@@ -415,6 +424,7 @@ export const connectAll = (
     now = Date.now,
     refreshTimeoutMs = REFRESH_TIMEOUT_MS,
     listFloorMs = LIST_FLOOR_MS,
+    firstWaitMs = FIRST_WAIT_MS,
     childStderr = chunk => void process.stderr.write(chunk),
     unshown = UNSHOWN,
   }: ConnectOptions = {},
@@ -584,16 +594,28 @@ export const connectAll = (
   }
 
   // Its errors name keys and variables, never values.
-  const ready = Promise.all(
-    [...servers].map(async ([key, server]) => {
-      if (server.kind !== 'invalid') return attempt(key, server)
-      const reason = invalidReason(server.errors)
-      log(`${key}: failed: ${reason}`)
-      links.set(key, { status: 'failed', reason, sealed: reason })
-    }),
-  )
+  // The first attempt of each valid server, kept so that `settledFor` can wait for some of them.
+  const first = new Map<ServerKey, Promise<void>>()
+  const starts = [...servers].map(async ([key, server]) => {
+    if (server.kind !== 'invalid') {
+      const done = attempt(key, server)
+      first.set(key, done)
+      return done
+    }
+    const reason = invalidReason(server.errors)
+    log(`${key}: failed: ${reason}`)
+    links.set(key, { status: 'failed', reason, sealed: reason })
+  })
+  const ready = Promise.all(starts)
+  const cap = new Promise<void>(r => setTimeout(r, firstWaitMs).unref())
+  const settled = Promise.race([ready, cap]).then(() => {})
   return {
-    settled: Promise.race([ready, new Promise(r => setTimeout(r, FIRST_WAIT_MS).unref())]).then(() => {}),
+    settled,
+    settledFor: keys => {
+      // A key that is not a valid entry of the config keeps the full wait.
+      if (keys.some(key => !first.has(key))) return settled
+      return Promise.race([Promise.all(keys.map(key => first.get(key)!)), cap]).then(() => {})
+    },
     states: () => [...links].map(([key, link]) => stateOf(key, link)),
     retry: async (keys, signal) => {
       const end = deadline(signal)

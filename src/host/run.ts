@@ -48,6 +48,7 @@ import {
   keep,
   limiter,
   literalCalls,
+  maskCode,
   mcpReply,
   notListedText,
   problemReport,
@@ -202,9 +203,14 @@ export const runCode = async (ctx: RunContext, code: string): Promise<RunResult>
 const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   const withNote = (text: string) => (ctx.policyNote === '' ? text : `${text}\n\n${ctx.policyNote}`)
   if (code.trim() === '') return refused(withNote('Error: code is empty.'), new Set(), [])
-  await ctx.downstream.settled
   const named = literalCalls(code)
   const literal = named.filter(c => isCallable(c.tool, SERVER_NAME))
+  // A program whose every call( has a literal name of a server waits for those servers only. A program with a name
+  // that is built at run time, or with no literal name, waits for all of them.
+  const callCount = (maskCode(code).match(/(^|[^\w$.])call\s*\(/g) ?? []).length
+  const fast =
+    literal.length > 0 && literal.length === callCount && literal.every(c => splitToolName(c.tool) !== undefined)
+  await (fast ? ctx.downstream.settledFor(serversOf(literal)) : ctx.downstream.settled)
   const { policy, bridges } = ctx.config
   const refuse = (text: string) => {
     const states = ctx.downstream.states()
