@@ -111,16 +111,18 @@ const holdsNumber = (json: string, n: string): boolean =>
   new RegExp(`(?<![0-9.])${n.replace(/[.+]/g, '\\$&')}(?![0-9.])`).test(json)
 
 // The scan runs in the host's message handler, so these limits bound it: past
-// them, usesResult says true and the calls get no note. The cost is the new
-// values times the length of the result, so many values of a small result scan.
+// them, usesResult says true and the calls get no note. Each new value costs a
+// scan of the result plus a fixed part (the build of a RegExp, about 10 µs), so
+// many values of a small result scan, and at most MAX_SCAN_WORK / VALUE_COST values do.
 export const MAX_SCAN_CHARS = 1_000_000
 export const MAX_SCAN_WORK = 20 * MAX_SCAN_CHARS
+export const VALUE_COST = 10_000
 
 /**
  * True when `args` holds a value that the previous call did not send and that
  * its result (`json`) holds: a cursor, a link or an id taken from that result.
  * Also true for a result of more than MAX_SCAN_CHARS, or when the new values
- * times the result length pass MAX_SCAN_WORK.
+ * times the result length plus VALUE_COST pass MAX_SCAN_WORK.
  */
 export const usesResult = (
   args: Record<string, unknown>,
@@ -130,6 +132,6 @@ export const usesResult = (
   if (json.length > MAX_SCAN_CHARS) return true
   const before = valuesOf(previousArgs, new Set())
   const fresh = [...valuesOf(args, new Set())].filter(v => !before.has(v))
-  if (fresh.length * json.length > MAX_SCAN_WORK) return true
+  if (fresh.length * (json.length + VALUE_COST) > MAX_SCAN_WORK) return true
   return fresh.some(v => (v.startsWith('n') ? holdsNumber(json, v.slice(1)) : json.includes(v.slice(1))))
 }

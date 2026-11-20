@@ -1,6 +1,13 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_SCAN_CHARS, MAX_SCAN_WORK, serialStreak, usesResult, type TimedCall } from '../src/core/serial.ts'
+import {
+  MAX_SCAN_CHARS,
+  MAX_SCAN_WORK,
+  VALUE_COST,
+  serialStreak,
+  usesResult,
+  type TimedCall,
+} from '../src/core/serial.ts'
 
 // Calls of one tool, each sent `gap` ms after the reply before it, as a loop that awaits each call.
 const loop = (ms: readonly number[], gap = 5): TimedCall[] => {
@@ -148,8 +155,15 @@ describe('usesResult', () => {
     assert.equal(usesResult(ids(1), {}, text(MAX_SCAN_CHARS + 1)), true)
     // A batch of 100 ids against a small result scans.
     assert.equal(usesResult(ids(100), {}, text(1000)), false)
-    assert.equal(usesResult(ids(20), {}, text(MAX_SCAN_WORK / 20)), false)
-    assert.equal(usesResult(ids(21), {}, text(MAX_SCAN_WORK / 20)), true)
-    assert.equal(usesResult(ids(21), ids(1), text(MAX_SCAN_WORK / 20)), false)
+    const most20 = MAX_SCAN_WORK / 20 - VALUE_COST
+    assert.equal(usesResult(ids(20), {}, text(most20)), false)
+    assert.equal(usesResult(ids(21), {}, text(most20)), true)
+    assert.equal(usesResult(ids(21), ids(1), text(most20)), false)
+  })
+
+  test('a call with thousands of new values counts as used, even against a tiny result', () => {
+    const numbers = (n: number) => ({ n: Array.from({ length: n }, (_, i) => i) })
+    assert.equal(usesResult(numbers(1000), {}, '{}'), false)
+    assert.equal(usesResult(numbers(MAX_SCAN_WORK / VALUE_COST), {}, '{}'), true)
   })
 })

@@ -1244,8 +1244,8 @@ describe('calls of one tool one after another', () => {
     )
     assert.equal(r.isError, false, r.text)
     // The reply and the 16 new values are inside the scan limits, and one scan takes about 40 ms. The host scans for
-    // the first call sent after the reply only. Without that rule, the 200 ms gap still stops the scans after about 5
-    // calls, so this test cannot see that rule: it bounds the whole cost.
+    // the first call sent after the reply only. Without that rule, the scans still stop within the 200 ms gap, so this
+    // test cannot see that rule: it bounds the whole cost.
     const ms = Number(/^\d+/.exec(r.text)?.[0])
     assert.ok(ms < 2000, r.text)
   })
