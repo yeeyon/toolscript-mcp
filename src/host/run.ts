@@ -591,19 +591,18 @@ const execute = async (
       ok: r.ok,
       ...(r.ok ? {} : { error: failure ?? 'failed' }),
     })
-    await reply(id, r)
-    const repliedAt = performance.now()
-    // The runner can read the reply and send its next call before this line runs. That call then counts as sent
-    // during this one, and the streak misses a link: a note can go missing, never come wrong.
-    inFlight--
-    // A repeat is a call equal to an earlier one that worked. A failed call is
-    // not kept: a new call is the only way to retry it.
+    // The call counts as finished before its reply is written: the runner can read the reply and send its next call
+    // at once, and that call must find this one done. A throw here ends only this run, through `answer`.
     const key = sentKey ?? callKey(tool, args)
-    const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
-    const done = { ...timed.get(id)!, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' }
+    const done = { ...timed.get(id)!, repliedAt: performance.now(), ok: r.ok, plain: decided.get(id) === 'allow' }
+    inFlight--
     timed.set(id, done)
     lastReply = alone === id ? { call: done, args, key, json } : undefined
+    await reply(id, r)
+    // A repeat is a call equal to an earlier one that worked. A failed call is
+    // not kept: a new call is the only way to retry it.
+    const repeatOf = kept.seen.get(key)
     const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
     // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
