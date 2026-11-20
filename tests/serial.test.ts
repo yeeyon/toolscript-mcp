@@ -8,6 +8,7 @@ import {
   usesResult,
   type TimedCall,
 } from '../src/core/serial.ts'
+import { callKey } from '../src/core/protocol.ts'
 
 // Calls of one tool, each sent `gap` ms after the reply before it, as a loop that awaits each call.
 const loop = (ms: readonly number[], gap = 5): TimedCall[] => {
@@ -17,7 +18,6 @@ const loop = (ms: readonly number[], gap = 5): TimedCall[] => {
     calls.push({
       id: i + 1,
       tool: 'mcp__x__get',
-      key: `mcp__x__get\n{"id":"item-${i}"}`,
       sentAt: at,
       repliedAt: at + m,
       ok: true,
@@ -62,11 +62,6 @@ describe('serialStreak', () => {
     assert.equal(serialStreak(paged), undefined)
   })
 
-  test('the same call again is no streak: polling', () => {
-    const polls = loop(SIX).map(c => ({ ...c, key: 'mcp__x__get\n{"id":"job-1"}' }))
-    assert.equal(serialStreak(polls), undefined)
-  })
-
   test('a call the person approved breaks the streak', () => {
     const four = [1600, 1600, 1600, 1600]
     assert.equal(serialStreak(loop(four))?.calls, 4)
@@ -75,9 +70,7 @@ describe('serialStreak', () => {
   })
 
   test('calls of different tools are no streak', () => {
-    const mixed = loop(SIX).map(c =>
-      c.id % 2 === 0 ? { ...c, tool: 'mcp__x__list', key: `mcp__x__list\n${c.id}` } : c,
-    )
+    const mixed = loop(SIX).map(c => (c.id % 2 === 0 ? { ...c, tool: 'mcp__x__list' } : c))
     assert.equal(serialStreak(mixed), undefined)
   })
 
@@ -104,7 +97,6 @@ describe('serialStreak', () => {
       ...c,
       id: c.id + 3,
       tool: 'mcp__x__list',
-      key: `mcp__x__list\n${c.id}`,
       sentAt: c.sentAt + 10_000,
       repliedAt: c.repliedAt! + 10_000,
       previous: { id: c.id + 2, usesResult: false },
@@ -119,59 +111,91 @@ describe('serialStreak', () => {
 })
 
 describe('usesResult', () => {
+  const sent = (args: Record<string, unknown>) => ({ args, key: callKey('mcp__x__get', args) })
+  const uses = (args: Record<string, unknown>, previousArgs: Record<string, unknown>, json: string) =>
+    usesResult(sent(args), { ...sent(previousArgs), json })
+
+  test('the same call again needs the reply: polling', () => {
+    assert.equal(uses({ id: 'job-1' }, { id: 'job-1' }, JSON.stringify({ state: 'running' })), true)
+  })
+
   test('a cursor or link from the previous result', () => {
     const json = JSON.stringify({ items: [1, 2], next_cursor: 'eyJwYWdlIjoyfQ', next: 'https://example.com/a?page=2' })
-    assert.equal(usesResult({ cursor: 'eyJwYWdlIjoyfQ' }, {}, json), true)
-    assert.equal(usesResult({ url: 'https://example.com/a?page=2' }, { url: 'https://example.com/a' }, json), true)
+    assert.equal(uses({ cursor: 'eyJwYWdlIjoyfQ' }, {}, json), true)
+    assert.equal(uses({ url: 'https://example.com/a?page=2' }, { url: 'https://example.com/a' }, json), true)
   })
 
   test('a number from the previous result counts only as a whole number', () => {
     const json = JSON.stringify({ offset: 0, limit: 50, total: 1234 })
-    assert.equal(usesResult({ offset: 50 }, { offset: 0 }, json), true)
-    assert.equal(usesResult({ offset: 123 }, { offset: 0 }, json), false)
-    assert.equal(usesResult({ offset: 5 }, { offset: 0 }, json), false)
+    assert.equal(uses({ offset: 50 }, { offset: 0 }, json), true)
+    assert.equal(uses({ offset: 123 }, { offset: 0 }, json), false)
+    assert.equal(uses({ offset: 5 }, { offset: 0 }, json), false)
   })
 
   test('a value that the previous call also sent does not count', () => {
     const json = JSON.stringify({ repo: 'fake-repo', number: 5, title: 'a fake issue' })
-    assert.equal(usesResult({ repo: 'fake-repo', number: 6 }, { repo: 'fake-repo', number: 5 }, json), false)
+    assert.equal(uses({ repo: 'fake-repo', number: 6 }, { repo: 'fake-repo', number: 5 }, json), false)
   })
 
   test('short strings do not count, and nested values do', () => {
     const json = JSON.stringify({ state: 'ok', parent: { key: 'FAKE-12' } })
-    assert.equal(usesResult({ state: 'ok' }, {}, json), false)
-    assert.equal(usesResult({ filter: { parents: ['FAKE-12'] } }, {}, json), true)
+    assert.equal(uses({ state: 'ok' }, {}, json), false)
+    assert.equal(uses({ filter: { parents: ['FAKE-12'] } }, {}, json), true)
   })
 
   test('a string with a quote matches its JSON text', () => {
     const json = JSON.stringify({ next: 'say "hi"' })
-    assert.equal(usesResult({ after: 'say "hi"' }, {}, json), true)
+    assert.equal(uses({ after: 'say "hi"' }, {}, json), true)
   })
 
   test('a result too large to scan, or too many new values for its length, counts as used: the calls get no note', () => {
     const ids = (n: number) => ({ ids: Array.from({ length: n }, (_, i) => `fake-id-${i}`) })
     const text = (length: number) => JSON.stringify('x'.repeat(length - 2))
-    assert.equal(usesResult(ids(1), {}, text(MAX_SCAN_CHARS)), false)
-    assert.equal(usesResult(ids(1), {}, text(MAX_SCAN_CHARS + 1)), true)
+    assert.equal(uses(ids(1), {}, text(MAX_SCAN_CHARS)), false)
+    assert.equal(uses(ids(1), {}, text(MAX_SCAN_CHARS + 1)), true)
     // A batch of 100 ids against a small result scans.
-    assert.equal(usesResult(ids(100), {}, text(1000)), false)
+    assert.equal(uses(ids(100), {}, text(1000)), false)
     const most20 = MAX_SCAN_WORK / 20 - VALUE_COST
-    assert.equal(usesResult(ids(20), {}, text(most20)), false)
-    assert.equal(usesResult(ids(21), {}, text(most20)), true)
-    assert.equal(usesResult(ids(21), ids(1), text(most20)), false)
+    assert.equal(uses(ids(20), {}, text(most20)), false)
+    assert.equal(uses(ids(21), {}, text(most20)), true)
+    assert.equal(uses(ids(21), ids(1), text(most20)), false)
   })
 
   test('a call with thousands of new values counts as used, even against a tiny result', () => {
     const numbers = (n: number) => ({ n: Array.from({ length: n }, (_, i) => i) })
-    assert.equal(usesResult(numbers(1000), {}, '{}'), false)
-    assert.equal(usesResult(numbers(MAX_SCAN_WORK / VALUE_COST), {}, '{}'), true)
+    assert.equal(uses(numbers(1000), {}, '{}'), false)
+    assert.equal(uses(numbers(MAX_SCAN_WORK / VALUE_COST), {}, '{}'), true)
   })
 
-  test('a call of a million values and a streak of 150,000 calls stay fast and do not throw', () => {
-    const million = { n: Array.from({ length: 1_000_000 }, (_, i) => i) }
-    const began = performance.now()
-    assert.equal(usesResult(million, million, '{}'), true)
-    assert.ok(performance.now() - began < 100)
+  test('arguments of a million values, and a streak of 150,000 calls, stay fast and do not throw', () => {
+    const million = 1_000_000
+    const large = [
+      { n: Array.from({ length: million }, (_, i) => i) },
+      Object.fromEntries(Array.from({ length: million }, (_, i) => [`k${i}`, i])),
+      { s: Array<string>(million).fill('abcd') },
+      { s: Array<null>(million).fill(null) },
+    ].map(sent)
+    // The largest arguments that the check walks: many small values, as many keys as fit.
+    const walked = [
+      Object.fromEntries(Array.from({ length: 65_000 }, (_, i) => [`k${i}`, i])),
+      { s: Array<string>(140_000).fill('abcd') },
+      { s: Array.from({ length: 330_000 }, () => []) },
+      { s: Array.from({ length: 140_000 }, (_, i) => i) },
+    ].map(sent)
+    for (const call of walked) assert.ok(call.key.length <= MAX_SCAN_CHARS, `${call.key.length}`)
+    const timed = (call: ReturnType<typeof sent>, previous: ReturnType<typeof sent>) => {
+      const began = performance.now()
+      const used = usesResult(call, { ...previous, json: '{}' })
+      const ms = performance.now() - began
+      assert.ok(ms < 300, `${call.key.slice(0, 40)}: ${ms} ms`)
+      return used
+    }
+    const small = sent({ id: 'item-1' })
+    for (const call of large) {
+      assert.equal(timed(call, small), true)
+      assert.equal(timed(small, call), true)
+    }
+    for (const call of walked) timed(call, walked.find(w => w !== call)!)
     assert.equal(serialStreak(loop(Array.from({ length: 150_000 }, () => 20)))?.calls, 150_000)
   })
 })

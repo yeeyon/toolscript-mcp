@@ -79,7 +79,14 @@ import {
   type CallLog,
   type RunEnding,
 } from '../core/runlog.ts'
-import { mayFollow, serialStreak, usesResult, type SerialLimits, type TimedCall } from '../core/serial.ts'
+import {
+  mayFollow,
+  serialStreak,
+  usesResult,
+  type SentCall,
+  type SerialLimits,
+  type TimedCall,
+} from '../core/serial.ts'
 import { SERVER_NAME } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
@@ -411,10 +418,12 @@ const execute = async (
   const interactiveNow = () => interactiveTools(downstream.states())
   // When each call was sent and answered, for the note on calls of one tool that ran one after another.
   const timed = new Map<number, TimedCall>()
-  // The call whose reply was written last, and the id of the call sent last: only the
-  // first call sent after a reply can follow it, so the calls of a Promise.all skip the check.
-  let lastReply: { call: TimedCall; args: Record<string, unknown>; json: string } | undefined
-  let lastSent: number | undefined
+  // The reply of a call that ran alone, until the next call is sent: only that call can follow it. So no call of a
+  // Promise.all follows a call, and no call follows one of a Promise.all, as in a loop of batches.
+  let lastReply: (SentCall & { call: TimedCall; json: string }) | undefined
+  let inFlight = 0
+  // The call sent when no other call was in flight, until the next call is sent.
+  let alone: number | undefined
   const recalled: { ref: number; ageMs: number }[] = []
   let recalls = 0
   // Set before the program gets untrusted content, so a saveFile after it marks its file.
@@ -562,7 +571,7 @@ const execute = async (
     }
   }
 
-  const answerCall = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
+  const answerCall = async (id: number, tool: string, args: Record<string, unknown>, key: string): Promise<void> => {
     if (ended) return
     const began = performance.now()
     const { code: failure, untrusted: fromTool, ...r } = await callTool(id, tool, args)
@@ -579,15 +588,14 @@ const execute = async (
     })
     await reply(id, r)
     const repliedAt = performance.now()
+    inFlight--
     // A repeat is a call equal to an earlier one that worked. A failed call is
     // not kept: a new call is the only way to retry it.
-    const sent = timed.get(id)!
-    const key = sent.key
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
-    const done = { ...sent, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' }
+    const done = { ...timed.get(id)!, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' }
     timed.set(id, done)
-    lastReply = { call: done, args, json }
+    lastReply = alone === id ? { call: done, args, key, json } : undefined
     const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
     // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
@@ -620,24 +628,20 @@ const execute = async (
     switch (m.t) {
       case 'call': {
         started.set(m.id, m.tool)
-        const sent: TimedCall = {
-          id: m.id,
-          tool: m.tool,
-          key: callKey(m.tool, m.args),
-          sentAt: performance.now(),
-          ok: false,
-          plain: false,
-        }
-        const prev = lastReply?.call.id === lastSent ? lastReply : undefined
+        const key = callKey(m.tool, m.args)
+        const sent: TimedCall = { id: m.id, tool: m.tool, sentAt: performance.now(), ok: false, plain: false }
+        const prev = lastReply
+        lastReply = undefined
+        alone = inFlight === 0 ? m.id : undefined
+        inFlight++
         timed.set(
           m.id,
           prev !== undefined && mayFollow(prev.call, sent, ctx.serialLimits?.gapMs)
-            ? { ...sent, previous: { id: prev.call.id, usesResult: usesResult(m.args, prev.args, prev.json) } }
+            ? { ...sent, previous: { id: prev.call.id, usesResult: usesResult({ args: m.args, key }, prev) } }
             : sent,
         )
-        lastSent = m.id
         answer(
-          limit(() => answerCall(m.id, m.tool, m.args)),
+          limit(() => answerCall(m.id, m.tool, m.args, key)),
           m.id,
         )
         break

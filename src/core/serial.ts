@@ -2,16 +2,15 @@
 // where Promise.all would have run them at the same time.
 
 /**
- * One nested call as the serial check sees it, in host time (ms). `key` is its
- * callKey. `plain`: a policy rule allowed it, with no approval of the person.
- * `previous`: the call sent just before this one, when this call can follow it
- * (mayFollow), and whether this call's arguments hold a value of its reply
- * (usesResult). `repliedAt` is absent when the call did not finish.
+ * One nested call as the serial check sees it, in host time (ms). `plain`: a
+ * policy rule allowed it, with no approval of the person. `previous`: the call
+ * that ran alone and replied just before this call was sent, when this call can
+ * follow it (mayFollow), and whether this call needs its reply (usesResult).
+ * `repliedAt` is absent when the call did not finish.
  */
 export type TimedCall = {
   readonly id: number
   readonly tool: string
-  readonly key: string
   readonly sentAt: number
   readonly repliedAt?: number
   readonly ok: boolean
@@ -39,23 +38,18 @@ export const SERIAL_MIN_SAVED_MS = 3000
 
 /**
  * True when `call`, sent just after `prev`, can follow it: `prev` worked with no
- * approval of the person, and `call` is of the same tool, with other arguments,
- * sent within `gapMs` of its reply. The host checks this before usesResult, so
- * a call that cannot follow costs no scan of a reply.
+ * approval of the person, and `call` is of the same tool, sent within `gapMs` of
+ * its reply. The host checks this before usesResult, so a call that cannot
+ * follow costs no scan of a reply.
  */
-export const mayFollow = (
-  prev: TimedCall,
-  call: Pick<TimedCall, 'tool' | 'key' | 'sentAt'>,
-  gapMs = SERIAL_GAP_MS,
-): boolean =>
+export const mayFollow = (prev: TimedCall, call: Pick<TimedCall, 'tool' | 'sentAt'>, gapMs = SERIAL_GAP_MS): boolean =>
   prev.ok &&
   prev.plain &&
   prev.repliedAt !== undefined &&
   call.tool === prev.tool &&
-  call.key !== prev.key &&
   call.sentAt - prev.repliedAt <= gapMs
 
-// `call` follows `prev`: it can follow it, takes no value from its result, and the person did not approve it.
+// `call` follows `prev`: it can follow it, does not need its reply, and the person did not approve it.
 const follows = (prev: TimedCall, call: TimedCall, gapMs: number): boolean =>
   mayFollow(prev, call, gapMs) &&
   call.plain &&
@@ -96,7 +90,7 @@ export const serialStreak = (
 
 // The argument values that can come from a result, as their JSON text: strings
 // of 4 or more characters (`s` and the text without quotes) and finite numbers (`n` and the number).
-// Stops past MAX_VALUES, so a call of a million values costs no more than one of a few thousand.
+// Stops past MAX_VALUES, where usesResult says true: a walk of 150,000 numbers took 22 to 38 ms, the early stop 0.1 ms.
 const valuesOf = (v: unknown, out: Set<string>): Set<string> => {
   if (typeof v === 'string') {
     if (v.length >= 4) out.add(`s${JSON.stringify(v).slice(1, -1)}`)
@@ -114,30 +108,35 @@ const holdsNumber = (json: string, n: string): boolean =>
   new RegExp(`(?<![0-9.])${n.replace(/[.+]/g, '\\$&')}(?![0-9.])`).test(json)
 
 // The scan runs in the host's message handler, so these limits bound it: past
-// them, usesResult says true and the calls get no note. Each new value costs a
-// scan of the result plus a fixed part (the build of a RegExp, about 10 µs), so
-// many values of a small result scan, and at most MAX_SCAN_WORK / VALUE_COST values do.
+// them, usesResult says true and the calls get no note. The walk of the arguments
+// takes time by their length, also for repeated or short values, so a key of
+// more than MAX_SCAN_CHARS is not walked. Each new value costs a scan of the
+// result plus a fixed part (the build of a RegExp, about 10 µs), so many values
+// of a small result scan, and at most MAX_SCAN_WORK / VALUE_COST values do.
 export const MAX_SCAN_CHARS = 1_000_000
 export const MAX_SCAN_WORK = 20 * MAX_SCAN_CHARS
 export const VALUE_COST = 10_000
 const MAX_VALUES = MAX_SCAN_WORK / VALUE_COST
 
+/** A call as usesResult reads it: its arguments and its callKey. */
+export type SentCall = { readonly args: Record<string, unknown>; readonly key: string }
+
 /**
- * True when `args` holds a value that the previous call did not send and that
- * its result (`json`) holds: a cursor, a link or an id taken from that result.
- * Also true for a result of more than MAX_SCAN_CHARS, or when the new values
- * times the result length plus VALUE_COST pass MAX_SCAN_WORK.
+ * True when `call` needs the reply (`json`) of `previous`: it is the same call
+ * again, as a poll, or its arguments hold a value that `previous` did not send
+ * and its reply holds: a cursor, a link or an id taken from that reply. Also
+ * true when a key or the reply has more than MAX_SCAN_CHARS, or when the new
+ * values times the reply length plus VALUE_COST pass MAX_SCAN_WORK.
  */
-export const usesResult = (
-  args: Record<string, unknown>,
-  previousArgs: Record<string, unknown>,
-  json: string,
-): boolean => {
-  if (json.length > MAX_SCAN_CHARS) return true
-  const sent = valuesOf(args, new Set())
+export const usesResult = (call: SentCall, previous: SentCall & { readonly json: string }): boolean => {
+  if (call.key === previous.key) return true
+  const { json } = previous
+  if (call.key.length > MAX_SCAN_CHARS || previous.key.length > MAX_SCAN_CHARS || json.length > MAX_SCAN_CHARS)
+    return true
+  const sent = valuesOf(call.args, new Set())
   if (sent.size > MAX_VALUES) return true
   // A cut set of the previous call can only make more values new: the limit below still holds.
-  const before = valuesOf(previousArgs, new Set())
+  const before = valuesOf(previous.args, new Set())
   const fresh = [...sent].filter(v => !before.has(v))
   if (fresh.length * (json.length + VALUE_COST) > MAX_SCAN_WORK) return true
   return fresh.some(v => (v.startsWith('n') ? holdsNumber(json, v.slice(1)) : json.includes(v.slice(1))))

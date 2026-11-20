@@ -1209,6 +1209,15 @@ describe('calls of one tool one after another', () => {
     noNote(r.text)
   })
 
+  test('batches of calls with Promise.all get no note', async () => {
+    const r = await setup(options).run(
+      'for (const batch of [[1, 2, 3], [4, 5, 6], [7, 8, 9]])\n  await Promise.all(batch.map(i => call("mcp__f__slow", { n: `item-${i}` })))\nreturn "ok"',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.ok(r.text.includes('--- 9 MCP calls: '), r.text)
+    noNote(r.text)
+  })
+
   test('a cursor from the previous result gets no note', async () => {
     const r = await setup(options).run(
       'let args = {}\nfor (let i = 0; i < 3; i++) {\n  const page = await call("mcp__f__pages", args)\n  args = { cursor: page.next }\n}\nreturn "ok"',
