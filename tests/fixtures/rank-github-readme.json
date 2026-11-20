@@ -34,7 +34,9 @@
       ["pull_request_read", "Get details for a single pull request"],
       ["pull_request_review_write", "Write operations (create, submit, delete) on pull request reviews"],
       ["search_pull_requests", "Search pull requests"],
-      ["update_pull_request", "Edit pull request"]
+      ["update_pull_request", "Edit pull request"],
+      ["update_pull_request_branch", "Update pull request branch"],
+      ["create_pull_request_with_copilot", "Perform task with GitHub Copilot coding agent"]
     ]
   },
   "queries": []

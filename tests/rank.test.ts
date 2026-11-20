@@ -19,7 +19,7 @@ const catalog = toCatalog(tuning.servers!)
 const heldOutA = load('rank-heldout-a.json')
 const heldOutB = load('rank-heldout-b.json')
 const catalogB = toCatalog(heldOutB.servers!)
-// 34 tools of github/github-mcp-server with the names and descriptions of its README.
+// 36 tools of github/github-mcp-server with the names and descriptions of its README.
 const catalogH = toCatalog(load('rank-github-readme.json').servers!)
 const dotted: ToolEntry[] = [
   ...catalog,
@@ -373,11 +373,13 @@ describe('rankTools on three sets of searches', () => {
 
     test('a name that holds "pr", "mr" or the long form ranks above every tool that holds only the long form', () => {
       const holds = (t: ToolEntry, abbr: string, long: string) => {
-        const s = t.name
+        const words = ` ${t.name
           .replace(/^mcp__.+?__/, '')
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
           .toLowerCase()
-          .replace(/[^a-z]/g, '')
-        return s.includes(abbr) || s.includes(long)
+          .split(/[^a-z0-9]+/)
+          .join(' ')} `
+        return [abbr, long].some(form => words.includes(` ${form} `) || words.includes(` ${form}s `))
       }
       for (const [label, tools] of [
         ['T', catalog],
@@ -386,8 +388,8 @@ describe('rankTools on three sets of searches', () => {
         ['H', catalogH],
       ] as const)
         for (const [abbr, long] of [
-          ['pr', 'pullrequest'],
-          ['mr', 'mergerequest'],
+          ['pr', 'pull request'],
+          ['mr', 'merge request'],
         ] as const)
           for (const query of [abbr, `${abbr}s`]) {
             const found = rankTools(tools, query, tools.length)
@@ -407,6 +409,7 @@ describe('rankTools on three sets of searches', () => {
         ['pr comments', 'add_reply_to_pull_request_comment'],
         ['pr review', 'pull_request_review_write'],
         ['update pr', 'update_pull_request'],
+        ['update pr branch', 'update_pull_request_branch'],
       ])
         assert.equal(short(catalogH, query, 1)[0], wanted, query)
       // Main ranked add_issue_comment 5 and 3: its name holds "comment", so the long form in its description stays 1.
