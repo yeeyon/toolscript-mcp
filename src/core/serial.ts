@@ -66,7 +66,8 @@ const follows = (prev: TimedCall, call: TimedCall, gapMs: number): boolean =>
 // Parallel calls take about as long as the slowest one.
 const streakOf = (calls: readonly TimedCall[]): Streak => {
   const ms = calls.at(-1)!.repliedAt! - calls[0]!.sentAt
-  const savedMs = ms - Math.max(...calls.map(c => c.repliedAt! - c.sentAt))
+  // reduce, not Math.max(...): a spread of 150,000 calls passes the stack limit.
+  const savedMs = ms - calls.reduce((most, c) => Math.max(most, c.repliedAt! - c.sentAt), 0)
   return { tool: calls[0]!.tool, calls: calls.length, ms, savedMs }
 }
 
@@ -95,13 +96,15 @@ export const serialStreak = (
 
 // The argument values that can come from a result, as their JSON text: strings
 // of 4 or more characters (`s` and the text without quotes) and finite numbers (`n` and the number).
+// Stops past MAX_VALUES, so a call of a million values costs no more than one of a few thousand.
 const valuesOf = (v: unknown, out: Set<string>): Set<string> => {
   if (typeof v === 'string') {
     if (v.length >= 4) out.add(`s${JSON.stringify(v).slice(1, -1)}`)
   } else if (typeof v === 'number') {
     if (Number.isFinite(v)) out.add(`n${v}`)
-  } else if (Array.isArray(v)) for (const x of v) valuesOf(x, out)
-  else if (v !== null && typeof v === 'object') for (const x of Object.values(v)) valuesOf(x, out)
+  } else if (v !== null && typeof v === 'object') {
+    for (const x of Array.isArray(v) ? v : Object.values(v)) if (valuesOf(x, out).size > MAX_VALUES) break
+  }
   return out
 }
 
@@ -117,6 +120,7 @@ const holdsNumber = (json: string, n: string): boolean =>
 export const MAX_SCAN_CHARS = 1_000_000
 export const MAX_SCAN_WORK = 20 * MAX_SCAN_CHARS
 export const VALUE_COST = 10_000
+const MAX_VALUES = MAX_SCAN_WORK / VALUE_COST
 
 /**
  * True when `args` holds a value that the previous call did not send and that
@@ -130,8 +134,11 @@ export const usesResult = (
   json: string,
 ): boolean => {
   if (json.length > MAX_SCAN_CHARS) return true
+  const sent = valuesOf(args, new Set())
+  if (sent.size > MAX_VALUES) return true
+  // A cut set of the previous call can only make more values new: the limit below still holds.
   const before = valuesOf(previousArgs, new Set())
-  const fresh = [...valuesOf(args, new Set())].filter(v => !before.has(v))
+  const fresh = [...sent].filter(v => !before.has(v))
   if (fresh.length * (json.length + VALUE_COST) > MAX_SCAN_WORK) return true
   return fresh.some(v => (v.startsWith('n') ? holdsNumber(json, v.slice(1)) : json.includes(v.slice(1))))
 }

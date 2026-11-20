@@ -166,4 +166,12 @@ describe('usesResult', () => {
     assert.equal(usesResult(numbers(1000), {}, '{}'), false)
     assert.equal(usesResult(numbers(MAX_SCAN_WORK / VALUE_COST), {}, '{}'), true)
   })
+
+  test('a call of a million values and a streak of 150,000 calls stay fast and do not throw', () => {
+    const million = { n: Array.from({ length: 1_000_000 }, (_, i) => i) }
+    const began = performance.now()
+    assert.equal(usesResult(million, million, '{}'), true)
+    assert.ok(performance.now() - began < 100)
+    assert.equal(serialStreak(loop(Array.from({ length: 150_000 }, () => 20)))?.calls, 150_000)
+  })
 })

@@ -581,10 +581,11 @@ const execute = async (
     const repliedAt = performance.now()
     // A repeat is a call equal to an earlier one that worked. A failed call is
     // not kept: a new call is the only way to retry it.
-    const key = callKey(tool, args)
+    const sent = timed.get(id)!
+    const key = sent.key
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
-    const done = { ...timed.get(id)!, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' }
+    const done = { ...sent, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' }
     timed.set(id, done)
     lastReply = { call: done, args, json }
     const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
