@@ -310,7 +310,10 @@ const notConnectedText = (states: readonly ServerState[]): string => {
 
 /** Most hits that search_tools shows in full. More hits show one line each, so a broad search stays short. */
 const DETAIL_HITS = 3
-/** Most characters of the hits after the first that show in full, when more than DETAIL_HITS tools match. */
+/**
+ * Most characters of all full blocks, hit 1 included, when more than DETAIL_HITS tools match. Hit 1 shows in full
+ * also when it alone is longer.
+ */
 const DETAIL_BUDGET = 4000
 const MAX_DESCRIPTION = 2000
 const MAX_DECLARATION = 3000
@@ -624,7 +627,11 @@ const NAMES_CAP = 60
  */
 export const namesByServer = (all: readonly CatalogEntry[], cap = NAMES_CAP): string[] => {
   const byServer = new Map<string, string[]>()
-  for (const t of all) byServer.set(t.server, [...(byServer.get(t.server) ?? []), t.tool])
+  for (const t of all) {
+    const names = byServer.get(t.server)
+    if (names === undefined) byServer.set(t.server, [t.tool])
+    else names.push(t.tool)
+  }
   const servers = [...byServer].map(([key, names]) => ({ key, names: names.sort(), shown: 0 }))
   let room = cap
   for (let round = 0; room > 0; round++) {
@@ -646,8 +653,8 @@ export const namesByServer = (all: readonly CatalogEntry[], cap = NAMES_CAP): st
  * are not connected. A query with words shows its first DETAIL_HITS matches in
  * full, with the shape of a result seen earlier in the session (`shapes`, by
  * tool name). With more matches than that, hit 1 shows in full always, and
- * hits 2 and 3 only while their blocks together stay within DETAIL_BUDGET
- * characters. The first hit that does not fit and all later ones show as
+ * hits 2 and 3 only while all full blocks, hit 1 included, total DETAIL_BUDGET
+ * characters or less. The first hit that does not fit and all later ones show as
  * summaries, so the full hits are a prefix of the rank order. A list of all
  * tools shows summaries only, so the check of the servers with limit 1 stays
  * short. With no match, the result lists the tool names by server. `canAsk`:
@@ -668,8 +675,7 @@ export const searchResult = (
     const head = `No MCP tool matches "${shown}". ${all.length} MCP tools are connected.`
     if (all.length === 0) return `${head}${tail}`
     const lines = namesByServer(all)
-    const cut = lines.some(l => l.endsWith(' more)'))
-    const rest = cut ? '\nA narrower word, or `mcp__<key>__` in the query, finds the rest.' : ''
+    const rest = all.length > NAMES_CAP ? '\nA narrower word, or `mcp__<key>__` in the query, finds the rest.' : ''
     return `${head}\n${lines.join('\n')}${rest}${tail}`
   }
   const blocks: string[] = []

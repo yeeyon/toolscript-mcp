@@ -856,7 +856,7 @@ describe('search_tools on a realistic catalog', () => {
       if (blocks.length > 3) {
         const grown = full.reduce((n, b) => n + b.length - summaryOf.get(nameOf(b))!.length, 0)
         assert.ok(grown <= 5500, `grew by ${grown}`)
-        assert.ok(full.slice(1).reduce((n, b) => n + b.length, 0) <= 4000)
+        assert.ok(full.length === 1 || full.reduce((n, b) => n + b.length, 0) <= 4000)
       }
     })
   }
@@ -888,6 +888,14 @@ describe('search_tools with no match, the list of names', () => {
     assert.equal(
       searchResult(two, 'zzzqq', 15),
       'No MCP tool matches "zzzqq". 3 MCP tools are connected.\nmcp__b__: one, two\nmcp__a__: only\n\n## Not connected\n- c: spawn c ENOENT',
+    )
+  })
+
+  test('a name that ends in " more)" does not make the closing sentence show', () => {
+    const odd: ServerState[] = [{ key: serverKey('x')!, status: 'connected', tools: [{ name: 'a more)' }] }]
+    assert.equal(
+      searchResult(odd, 'zzzqq', 15),
+      'No MCP tool matches "zzzqq". 1 MCP tools are connected.\nmcp__x__: a more)',
     )
   })
 
