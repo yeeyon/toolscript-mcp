@@ -90,7 +90,7 @@ export const serialStreak = (
 
 // The argument values that can come from a result, as their JSON text: strings
 // of 4 or more characters (`s` and the text without quotes) and finite numbers (`n` and the number).
-// Stops past MAX_VALUES, where usesResult says true: a walk of 150,000 numbers took 22 to 38 ms, the early stop 0.1 ms.
+// Stops past MAX_VALUES, where usesResult says true.
 const valuesOf = (v: unknown, out: Set<string>): Set<string> => {
   if (typeof v === 'string') {
     if (v.length >= 4) out.add(`s${JSON.stringify(v).slice(1, -1)}`)
@@ -112,10 +112,12 @@ const holdsNumber = (json: string, n: string): boolean =>
 // takes time by their length, also for repeated or short values, so a key of
 // more than MAX_SCAN_CHARS is not walked. Each new value costs a scan of the
 // result plus a fixed part (the build of a RegExp, about 10 µs), so many values
-// of a small result scan, and at most MAX_SCAN_WORK / VALUE_COST values do.
-export const MAX_SCAN_CHARS = 1_000_000
+// of a small result scan, and at most MAX_SCAN_WORK / VALUE_COST values do. A scan
+// of a text of one repeated character costs up to 7 ms per MB for each value, so
+// the limits stay small: the note is a hint, and a large reply can go without it.
+export const MAX_SCAN_CHARS = 250_000
 export const MAX_SCAN_WORK = 20 * MAX_SCAN_CHARS
-export const VALUE_COST = 10_000
+export const VALUE_COST = 2_500
 const MAX_VALUES = MAX_SCAN_WORK / VALUE_COST
 
 /** A call as usesResult reads it: its arguments and its callKey. */

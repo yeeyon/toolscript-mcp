@@ -177,10 +177,10 @@ describe('usesResult', () => {
     ].map(sent)
     // The largest arguments that the check walks: many small values, as many keys as fit.
     const walked = [
-      Object.fromEntries(Array.from({ length: 65_000 }, (_, i) => [`k${i}`, i])),
-      { s: Array<string>(140_000).fill('abcd') },
-      { s: Array.from({ length: 330_000 }, () => []) },
-      { s: Array.from({ length: 140_000 }, (_, i) => i) },
+      Object.fromEntries(Array.from({ length: 16_000 }, (_, i) => [`k${i}`, i])),
+      { s: Array<string>(35_000).fill('abcd') },
+      { s: Array.from({ length: 80_000 }, () => []) },
+      { s: Array.from({ length: 35_000 }, (_, i) => i) },
     ].map(sent)
     for (const call of walked) assert.ok(call.key.length <= MAX_SCAN_CHARS, `${call.key.length}`)
     const timed = (call: ReturnType<typeof sent>, previous: ReturnType<typeof sent>) => {
@@ -196,6 +196,12 @@ describe('usesResult', () => {
       assert.equal(timed(small, call), true)
     }
     for (const call of walked) timed(call, walked.find(w => w !== call)!)
+    // The slowest scan: values that share their start with a reply of one repeated character.
+    const prefixed = sent({ s: Array.from({ length: 19 }, (_, i) => `aaaab${i}`) })
+    const began = performance.now()
+    assert.equal(usesResult(prefixed, { ...small, json: JSON.stringify('a'.repeat(MAX_SCAN_CHARS - 2)) }), false)
+    const ms = performance.now() - began
+    assert.ok(ms < 300, `${ms} ms`)
     assert.equal(serialStreak(loop(Array.from({ length: 150_000 }, () => 20)))?.calls, 150_000)
   })
 })

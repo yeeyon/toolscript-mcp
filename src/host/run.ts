@@ -588,6 +588,8 @@ const execute = async (
     })
     await reply(id, r)
     const repliedAt = performance.now()
+    // The runner can read the reply and send its next call before this line runs. That call then counts as sent
+    // during this one, and the streak misses a link: a note can go missing, never come wrong.
     inFlight--
     // A repeat is a call equal to an earlier one that worked. A failed call is
     // not kept: a new call is the only way to retry it.
