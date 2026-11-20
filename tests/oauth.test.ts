@@ -1138,6 +1138,23 @@ describe('the running server', () => {
     return stored
   }
 
+  test('a store removed during a refresh stays removed, and the link needs a login', async () => {
+    const fake = await startFake()
+    const s = setup(fake)
+    assert.equal(await s.login(), 0, s.lines.join('\n'))
+    const downstream = s.connect()
+    assert.equal(await s.ping(downstream), PONG)
+    let release = () => {}
+    fake.change.gate = new Promise<void>(resolve => (release = resolve))
+    fake.expire()
+    const call = s.ping(downstream)
+    while (fake.refreshRequests() === 0) await new Promise(resolve => setTimeout(resolve, 10))
+    for (const file of s.store()) fs.rmSync(file)
+    release()
+    assert.match(await call, LOGIN_REASON)
+    assert.deepEqual(s.store(), [], 'the refresh did not write the store again')
+  })
+
   test('a login during a refresh keeps its tokens in the store, and the next refresh sends them', async () => {
     const fake = await startFake()
     const s = setup(fake)

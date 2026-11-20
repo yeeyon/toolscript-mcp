@@ -236,7 +236,8 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     // A call that read the tokens before the last refresh saved them sends a refresh token that is used up.
     const now = await current()
     if (now?.refresh_token !== undefined && now.refresh_token !== sent) return now
-    // The refresh token in the store now. A login in another process can save other tokens before the answer comes.
+    // The refresh token that the store must still hold for this refresh to save. A login in another process can save
+    // other tokens before the answer comes.
     const storeHad = unsaved.get(file)?.storeHad ?? sent
     // Every call and link of the server waits for this refresh, so a token endpoint that never answers must not hold it.
     const signal = AbortSignal.timeout(timeoutMs)
