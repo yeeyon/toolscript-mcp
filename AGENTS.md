@@ -53,7 +53,8 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
     and counts how often the model picks `run_code`. `--dry-run` starts no run. Results in `RESULTS.md`.
   - `interactive.mjs`: direct tools, Claude Code Code Mode and toolscript-mcp in the interactive TUI. Results in
     `RESULTS-codemode.md`. `spend.mjs` holds its spend cap.
-  - `CODEX.md`: the test plan for the same arms in Codex. `check.mjs` judges an answer of another agent.
+  - `CODEX.md`: the test plan for the same arms in Codex, and the result of the Codex smoke test. `check.mjs`
+    judges an answer of another agent.
   - `data.mjs` holds the tasks and their checks, `fake-server.mjs` the fake MCP server, and `forget.mjs` removes the
     Claude Code project folder of a run.
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake

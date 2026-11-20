@@ -27,7 +27,7 @@ The goal is a server that works with any MCP client, for example Claude Code, Cl
 | Local development | The optional `claude mcp serve` bridge offers file tools and a shell. See its [policy and risks](#claude-code-as-a-downstream-server). |
 | Policy | Ordered `allow`, `deny` and `ask` rules. Tools marked for user interaction need approval for each run. |
 | Results | Compact output, `await recall(n)` for kept results, and `await saveFile(name, data)` for exports. Images and other non-text blocks become files, and a returned image shows to the model. |
-| Clients | Setup examples for Claude Code, Claude Desktop, Cursor and Codex. Tests cover Claude Code and the MCP TypeScript SDK client. |
+| Clients | Setup examples for Claude Code, Claude Desktop, Cursor and Codex. Tests cover Claude Code and the MCP TypeScript SDK client. A manual smoke test passed in Codex CLI 0.171.0 with `codex exec`. See the [result](bench/CODEX.md#smoke-test-result). |
 
 JavaScript variables do not persist between runs. MCP resources, hint tools and saved-function tools are not available.
 See [Roadmap](#roadmap) for the remaining work.
@@ -209,7 +209,13 @@ Codex (`~/.codex/config.toml`):
 [mcp_servers.toolscript]
 command = "node"
 args = ["/absolute/path/to/toolscript-mcp/dist/host/main.js", "--config", "/absolute/path/to/config.json"]
+default_tools_approval_mode = "approve"
 ```
+
+Keep `default_tools_approval_mode = "approve"` in the Codex entry. Without it, `codex exec` refuses every MCP call.
+toolscript-mcp still checks its own policy on each call of a program.
+In a test on Windows, Codex started toolscript-mcp in the folder where `codex exec` ran. A downstream server with
+no `cwd` in its entry starts in that folder too.
 
 On Windows, use paths such as `C:/tools/toolscript-mcp/dist/host/main.js` in JSON and TOML.
 If you put the config file in the default place, you can omit `--config` and its path.
@@ -519,6 +525,7 @@ of your config.
 - If a `deny` rule matches one of these names, the program does not start.
 - If some names need `ask`, toolscript-mcp asks you one time, with MCP elicitation. Your answer applies to that run only.
 - If your client cannot ask, the program does not start. The result names the `allow` rule to add.
+- `codex exec` declines the approval prompt. A program that needs an `ask` tool does not start there, and an `allow` rule fixes it. The interactive Codex TUI is not tested.
 - toolscript-mcp checks each call again while the program runs. A tool name that the program builds at run time runs
   only with an `allow` rule.
 - A `deny` rule refuses a call before any other check. toolscript-mcp then sends nothing to the server of that call.
