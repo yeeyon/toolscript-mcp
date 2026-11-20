@@ -51,10 +51,12 @@ describe('rankTools on three sets of searches', () => {
   // tuning set one top-1 (68, 0.880). Then the filler gate (#64): 69 (0.894), 111 -> 112 (0.939 -> 0.947), 101 -> 103
   // (0.911 -> 0.932). Then a stem hit of 0.5 instead of 1, below a description hit: 69 (0.894), 112 (0.947),
   // 103 -> 104 (0.932 -> 0.938). A stem that cuts "ies", "es" only after s, x, z, ch or sh, else "s", left all three.
+  // Then "pr", "prs", "mr", "mrs" and a word written together from name words (#67): 69 (0.894), 112 -> 114
+  // (0.947 -> 0.961), 104 -> 107 (0.938 -> 0.961).
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
-    ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 110, 0.94],
-    ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 102, 0.93],
+    ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 112, 0.95],
+    ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 105, 0.95],
   ]
   for (const [label, tools, queries, top1Floor, mrrFloor] of sets)
     test(label, () => {
@@ -206,9 +208,159 @@ describe('rankTools on three sets of searches', () => {
     })
 
     test('when no tool holds the real word of a query, the filler words still list tools', () => {
-      // "prs" and "ticket" are in no tool: the right tool must stay in the list, as before the gate.
-      assert.ok(names('list prs').includes('mcp__github__list_pull_requests'))
+      // "tickets" and "ticket" are in no tool: the right tool must stay in the list, as before the gate.
+      assert.ok(names('list tickets').includes('mcp__github__list_pull_requests'))
       assert.ok(names('get ticket').includes('mcp__github__get_pull_request'))
+    })
+  })
+
+  describe('abbreviations and joined words of a query', () => {
+    const servers: Servers = {
+      'azure-devops': [
+        'repo_list_pull_requests_by_repo_or_project',
+        'repo_get_pull_request_by_id',
+        'core_list_projects',
+        'wit_get_work_item',
+        'wit_create_work_item',
+        'wit_my_work_items',
+      ].map(t => [t, '']),
+      github: ['list_pull_requests', 'pull_request_read', 'create_pull_request'].map(t => [t, '']),
+      gitlab: ['create_merge_request', 'list_merge_requests', 'get_merge_request'].map(t => [t, '']),
+      bitbucket: [['getPullRequest', '']],
+      atlassian: ['getVisibleJiraProjects', 'createJiraIssue'].map(t => [t, '']),
+      grafana: ['query_prometheus', 'get_dashboard_property', 'list_datasources'].map(t => [t, '']),
+      filesystem: ['read_text_file', 'list_directory'].map(t => [t, '']),
+      tracker: [['createWorkitem', '']],
+    }
+    const r = toCatalog(servers)
+    const short = (tools: readonly ToolEntry[], query: string, limit = tools.length) =>
+      rankTools(tools, query, limit).map(t => t.name.replace(/^mcp__.+?__/, ''))
+    const pullRequests = [
+      'repo_list_pull_requests_by_repo_or_project',
+      'repo_get_pull_request_by_id',
+      'list_pull_requests',
+      'pull_request_read',
+      'create_pull_request',
+      'getPullRequest',
+    ]
+    const mergeRequests = ['create_merge_request', 'list_merge_requests', 'get_merge_request']
+    const sameSet = (found: string[], wanted: string[]) => assert.deepEqual([...found].sort(), [...wanted].sort())
+
+    test('"pr" lists the 6 pull request tools and no project tool', () => {
+      sameSet(short(r, 'pr', 20), pullRequests)
+    })
+
+    test('"prs" and "mrs" list the singular names too, the plural names first', () => {
+      const prs = short(r, 'prs', 20)
+      sameSet(prs, pullRequests)
+      sameSet(prs.slice(0, 2), ['repo_list_pull_requests_by_repo_or_project', 'list_pull_requests'])
+      sameSet(short(r, 'mrs', 20), mergeRequests)
+      assert.equal(short(r, 'mrs', 1)[0], 'list_merge_requests')
+      sameSet(short(r, 'mr', 20), mergeRequests)
+    })
+
+    test('an abbreviation with other words ranks the tool of its action first', () => {
+      assert.equal(short(r, 'get pr by id', 1)[0], 'repo_get_pull_request_by_id')
+      assert.equal(short(r, 'create pr', 1)[0], 'create_pull_request')
+      assert.equal(short(r, 'create mr', 1)[0], 'create_merge_request')
+      sameSet(short(r, 'list prs', 2), ['repo_list_pull_requests_by_repo_or_project', 'list_pull_requests'])
+    })
+
+    test('an abbreviation ranks the tool first on the tuning set and the held-out set', () => {
+      for (const [query, wanted] of [
+        ['get pr', 'mcp__github__get_pull_request'],
+        ['merge a pr', 'mcp__github__merge_pull_request'],
+        ['pr comments', 'mcp__azure-devops__repo_pull_request_thread'],
+      ])
+        assert.equal(rankTools(catalog, query, 1)[0]?.name, wanted, query)
+      for (const [query, wanted] of [
+        ['list prs', 'mcp__github__list_pull_requests'],
+        ['pr comments', 'mcp__github__get_pull_request_comments'],
+        ['get mr', 'mcp__gitlab__get_merge_request'],
+        ['list mrs', 'mcp__gitlab__list_merge_requests'],
+      ])
+        assert.equal(rankTools(catalogB, query, 1)[0]?.name, wanted, query)
+    })
+
+    test('"prs" lists all 10 github pull request tools, get_pull_request_status not above get_pull_request', () => {
+      const found = rankTools(catalogB, 'prs', 15).map(t => t.name)
+      const github = catalogB.map(t => t.name).filter(n => n.startsWith('mcp__github__') && n.includes('pull_request'))
+      assert.equal(github.length, 10)
+      for (const n of github) assert.ok(found.includes(n), n)
+      assert.ok(found.indexOf('mcp__github__get_pull_request') < found.indexOf('mcp__github__get_pull_request_status'))
+    })
+
+    test('"pr" lists a tool whose description holds it as a word, below the tools whose name matches', () => {
+      const tools: ToolEntry[] = [
+        { name: 'mcp__x__merge', description: 'Merge a PR into its base' },
+        { name: 'mcp__x__list_projects', description: 'List the projects and the sprint of a team' },
+        { name: 'mcp__x__get_pr', description: 'Read one' },
+      ]
+      assert.deepEqual(
+        rankTools(tools, 'pr', 5).map(t => t.name),
+        ['mcp__x__get_pr', 'mcp__x__merge'],
+      )
+    })
+
+    test('the words that matched before still rank the same', () => {
+      assert.equal(short(r, 'list projects', 1)[0], 'core_list_projects')
+      assert.equal(rankTools(catalogB, 'user profile', 1)[0]?.name, 'mcp__atlassian__jira_get_user_profile')
+      assert.equal(rankTools(catalogB, 'press key', 1)[0]?.name, 'mcp__chrome-devtools__press_key')
+      assert.equal(rankTools(catalogB, 'sprint', 1)[0]?.name.endsWith('jira_get_sprints_from_board'), true)
+      assert.deepEqual(short(r, 'print'), [])
+    })
+
+    test('"workitem" lists the name as written first, then the plural and singular names', () => {
+      assert.deepEqual(short(r, 'workitem', 10), [
+        'createWorkitem',
+        'wit_create_work_item',
+        'wit_get_work_item',
+        'wit_my_work_items',
+      ])
+    })
+
+    test('a word written together finds the tool that splits it', () => {
+      assert.equal(short(r, 'get workitem', 1)[0], 'wit_get_work_item')
+      assert.equal(short(r, 'my workitems', 1)[0], 'wit_my_work_items')
+      assert.equal(short(r, 'textfile', 1)[0], 'read_text_file')
+      sameSet(short(r, 'pullrequest', 20), pullRequests)
+    })
+
+    test('a word written together ranks the tool first on the tuning set and the held-out set', () => {
+      assert.equal(rankTools(catalog, 'workitem', 1)[0]?.name, 'mcp__azure-devops__search_workitem')
+      const top = rankTools(catalog, 'workitem', 5).map(t => t.name)
+      assert.ok(top.filter(n => n.includes('wit_work_item')).length >= 4, top.join(' '))
+      for (const [query, wanted] of [
+        ['create workitem', 'mcp__azure-devops__wit_work_item_write'],
+        ['update workitem', 'mcp__azure-devops__wit_work_item_write'],
+        ['workitem comment', 'mcp__azure-devops__wit_work_item_comment_write'],
+      ])
+        assert.equal(rankTools(catalog, query, 1)[0]?.name, wanted, query)
+      assert.equal(rankTools(catalogB, 'get mergerequest', 1)[0]?.name, 'mcp__gitlab__get_merge_request')
+    })
+
+    test('a joined word starts and ends at the borders of name words', () => {
+      const tools: ToolEntry[] = [
+        { name: 'mcp__x__a_list_schemas', description: 'Schemas' },
+        { name: 'mcp__x__b_notes', description: 'Keeps lists' },
+        { name: 'mcp__x__get_map_items', description: 'Items of a map' },
+      ]
+      // "lists" is not "list" + "schemas" cut in the middle, and a word of 3 letters never joins.
+      assert.equal(rankTools(tools, 'lists', 1)[0]?.name, 'mcp__x__b_notes')
+      assert.deepEqual(rankTools(tools, 'api', 5), [])
+      assert.equal(rankTools(tools, 'mapitems', 1)[0]?.name, 'mcp__x__get_map_items')
+    })
+
+    test('words that already matched through a substring still match', () => {
+      sameSet(short(r, 'work item', 10), [
+        'wit_create_work_item',
+        'wit_get_work_item',
+        'wit_my_work_items',
+        'createWorkitem',
+      ])
+      assert.deepEqual(short(r, 'data source'), ['list_datasources'])
+      assert.deepEqual(short(r, 'datasource'), ['list_datasources'])
+      assert.deepEqual(short(r, 'text file'), ['read_text_file'])
     })
   })
 
@@ -227,7 +379,7 @@ describe('rankTools on three sets of searches', () => {
     rankTools(catalog, 'warm up the regex and the JIT', 10)
     // No tool holds "queries", "attachments" or "qzxes", so each tool is matched by the stem of each word that the
     // 1000-character cut keeps. The fastest of 3 runs counts, so a busy CI machine does not fail the test.
-    for (const unit of ['queries ', 'attachments qzxes ']) {
+    for (const unit of ['queries ', 'attachments qzxes ', 'pr mrs ', 'workitem pullrequests ']) {
       const query = unit.repeat(Math.ceil(50_000 / unit.length))
       let ms = Infinity
       let found: ToolEntry[] = []

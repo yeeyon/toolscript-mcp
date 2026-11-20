@@ -1452,19 +1452,57 @@ const stem = (word: string): string => {
   return cut.length >= 3 ? cut : word
 }
 
+/** Abbreviations that no substring match finds: "pr" is not in "pull_request". "k8s" is not here: it is no word of a name. */
+const ABBREVIATIONS: ReadonlyMap<string, string> = new Map([
+  ['pr', 'pull request'],
+  ['mr', 'merge request'],
+])
+
+/** The words of a tool's short name, split at `_`, `-`, `.`, and camelCase: "getPullRequest" -> get, pull, request. */
+const nameWords = (name: string): string[] =>
+  splitName(name)
+    .short.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(w => w !== '')
+
+/** True when `word` is one name word or consecutive name words written together, with a plural "s" at the end allowed. */
+const joinedIn = (segs: readonly string[], word: string): boolean => {
+  for (const w of [word, `${word}s`])
+    for (let i = 0; i < segs.length; i++)
+      for (let k = i, pos = 0; k < segs.length && w.startsWith(segs[k]!, pos); k++) {
+        pos += segs[k]!.length
+        if (pos === w.length) return true
+      }
+  return false
+}
+
+/** True when `text` holds `word` or its plural as a whole word. */
+const wholeWord = (text: string, word: string): boolean => new RegExp(`(?<![a-z0-9])${word}s?(?![a-z0-9])`).test(text)
+
 /**
  * Ranks tools. A query token that is a tool's full name, `server__tool` or short name ranks it first, in that order.
  * A short name counts only when it is the whole query or holds `_`, `-` or `.`: a plain word such as "search" in a
- * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2 as a
- * word of the server key, else 1 in the description, else 0.5 when the stem of a plural word (`stem`) is in the short
- * name or the description. A stem hit scores less than the full word, so for "builds" a tool whose description holds
- * "builds" ranks above one whose description holds "build". When some tool holds a query word that is not in
- * `FILLER`, a tool that matches only filler words gets no word score. Equal scores rank by name. Only the first `RANK_QUERY_MAX`
+ * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2.5 when
+ * a word of 4 or more characters is written together from consecutive words of the name (`joinedIn`: "workitem" in
+ * "wit_work_items"), else 2 as a word of the server key, else 1 in the description, else 0.5 when the stem of a plural
+ * word (`stem`) is in the short name, joined from its words or in the description. A stem hit scores less than the
+ * full word, so for "builds" a tool whose description holds "builds" ranks above one whose description holds "build".
+ * A word of `ABBREVIATIONS` or its plural ("prs") scores 3 as a name word, or as the long form joined from its words
+ * ("get_pull_request", "getPullRequest"), 2.5 when only the other number matches, else 1 as a whole word or by its
+ * long form in the description. "pr" finds no "project". When some tool holds a query word that is not in `FILLER`, a
+ * tool that matches only filler words gets no word score. Equal scores rank by name. Only the first `RANK_QUERY_MAX`
  * characters of the query count, and a token that the cut splits is dropped.
  */
 export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: string, limit: number): T[] => {
   const q = rankQuery(query)
-  const wanted = words(q).map(word => ({ word, stem: stem(word) }))
+  const wanted = words(q).map(word => {
+    const plural = word.endsWith('s')
+    const abbr = plural ? word.slice(0, -1) : word
+    const phrase = ABBREVIATIONS.get(abbr)
+    const found = phrase === undefined ? undefined : { short: abbr, long: phrase.replace(' ', ''), phrase, plural }
+    return { word, stem: stem(word), abbr: found }
+  })
   const idents = q
     .toLowerCase()
     .split(/[^a-z0-9_.-]+/)
@@ -1486,12 +1524,23 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     else if (idents.includes(short) && (idents.length === 1 || /[_.-]/.test(short))) score += 800
     let real = 0
     let filler = 0
-    for (const { word, stem } of wanted) {
+    let segs: string[] | undefined
+    for (const { word, stem, abbr } of wanted) {
+      segs ??= nameWords(tool.name)
       let hit = 0
-      if (short.includes(word)) hit = 3
+      if (abbr !== undefined) {
+        // joinedIn also takes the plural of its word, so "pr" finds "prs" and "pull_requests".
+        const form = (f: string) => joinedIn(segs!, f)
+        if (form(abbr.plural ? word : abbr.short) || form(abbr.plural ? `${abbr.long}s` : abbr.long)) hit = 3
+        else if (abbr.plural && (form(abbr.short) || form(abbr.long))) hit = 2.5
+        else if (ofServer.has(word)) hit = 2
+        else if (description.includes(abbr.phrase) || wholeWord(description, abbr.short)) hit = 1
+      } else if (short.includes(word)) hit = 3
+      else if (word.length >= 4 && joinedIn(segs, word)) hit = 2.5
       else if (ofServer.has(word)) hit = 2
       else if (description.includes(word)) hit = 1
       else if (stem !== word && (short.includes(stem) || description.includes(stem))) hit = 0.5
+      else if (stem !== word && stem.length >= 4 && joinedIn(segs, stem)) hit = 0.5
       if (FILLER.has(word)) filler += hit
       else real += hit
     }
