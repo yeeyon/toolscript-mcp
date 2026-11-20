@@ -1,6 +1,8 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  MAX_NEEDLE,
+  MAX_REPLY_CHARS,
   MAX_SCAN_CHARS,
   MAX_SCAN_WORK,
   VALUE_COST,
@@ -143,6 +145,12 @@ describe('usesResult', () => {
     assert.equal(uses({ filter: { parents: ['FAKE-12'] } }, {}, json), true)
   })
 
+  test('a long value counts as taken from the reply when its start is in the reply', () => {
+    const body = 'x'.repeat(MAX_NEEDLE)
+    assert.equal(uses({ body: `${body}-new-end` }, {}, JSON.stringify({ body: `${body}-old-end` })), true)
+    assert.equal(uses({ body: `y${body}` }, {}, JSON.stringify({ body })), false)
+  })
+
   test('a string with a quote matches its JSON text', () => {
     const json = JSON.stringify({ next: 'say "hi"' })
     assert.equal(uses({ after: 'say "hi"' }, {}, json), true)
@@ -151,8 +159,8 @@ describe('usesResult', () => {
   test('a result too large to scan, or too many new values for its length, counts as used: the calls get no note', () => {
     const ids = (n: number) => ({ ids: Array.from({ length: n }, (_, i) => `fake-id-${i}`) })
     const text = (length: number) => JSON.stringify('x'.repeat(length - 2))
-    assert.equal(uses(ids(1), {}, text(MAX_SCAN_CHARS)), false)
-    assert.equal(uses(ids(1), {}, text(MAX_SCAN_CHARS + 1)), true)
+    assert.equal(uses(ids(1), {}, text(MAX_REPLY_CHARS)), false)
+    assert.equal(uses(ids(1), {}, text(MAX_REPLY_CHARS + 1)), true)
     // A batch of 100 ids against a small result scans.
     assert.equal(uses(ids(100), {}, text(1000)), false)
     const most20 = MAX_SCAN_WORK / 20 - VALUE_COST
@@ -196,12 +204,23 @@ describe('usesResult', () => {
       assert.equal(timed(small, call), true)
     }
     for (const call of walked) timed(call, walked.find(w => w !== call)!)
-    // The slowest scan: values that share their start with a reply of one repeated character.
-    const prefixed = sent({ s: Array.from({ length: 19 }, (_, i) => `aaaab${i}`) })
-    const began = performance.now()
-    assert.equal(usesResult(prefixed, { ...small, json: JSON.stringify('a'.repeat(MAX_SCAN_CHARS - 2)) }), false)
-    const ms = performance.now() - began
-    assert.ok(ms < 300, `${ms} ms`)
+    // The slowest scans: short values that share their start with a reply of one repeated character, and long
+    // values against a reply of long runs, which V8 scans one character at a time.
+    const scan = (values: string[], text: string) => {
+      const began = performance.now()
+      assert.equal(usesResult(sent({ s: values }), { ...small, json: JSON.stringify(text) }), false)
+      const ms = performance.now() - began
+      assert.ok(ms < 300, `${values[0]!.length} characters: ${ms} ms`)
+    }
+    const letter = (i: number) => String.fromCharCode(99 + i)
+    scan(
+      Array.from({ length: 19 }, (_, i) => `aaaaa${letter(i)}`),
+      'a'.repeat(MAX_SCAN_CHARS - 2),
+    )
+    scan(
+      Array.from({ length: 19 }, (_, i) => `a${letter(i)}${'a'.repeat(12_000)}`),
+      `b${'a'.repeat(11_999)}`.repeat(21).slice(0, MAX_SCAN_CHARS - 2),
+    )
     assert.equal(serialStreak(loop(Array.from({ length: 150_000 }, () => 20)))?.calls, 150_000)
   })
 })

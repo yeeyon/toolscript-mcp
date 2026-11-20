@@ -113,11 +113,14 @@ const holdsNumber = (json: string, n: string): boolean =>
 // more than MAX_SCAN_CHARS is not walked. Each new value costs a scan of the
 // result plus a fixed part (the build of a RegExp, about 10 µs), so many values
 // of a small result scan, and at most MAX_SCAN_WORK / VALUE_COST values do. A scan
-// of a text of one repeated character costs up to 7 ms per MB for each value, so
-// the limits stay small: the note is a hint, and a large reply can go without it.
+// of a text of one repeated character costs up to 7 ms per MB for each value. Past
+// 250 characters, V8 scans repeated text one character at a time, so the cost grows
+// with the value too: only the first MAX_NEEDLE characters of a value are scanned.
 export const MAX_SCAN_CHARS = 250_000
+export const MAX_REPLY_CHARS = 1_000_000
 export const MAX_SCAN_WORK = 20 * MAX_SCAN_CHARS
 export const VALUE_COST = 2_500
+export const MAX_NEEDLE = 200
 const MAX_VALUES = MAX_SCAN_WORK / VALUE_COST
 
 /** A call as usesResult reads it: its arguments and its callKey. */
@@ -126,14 +129,15 @@ export type SentCall = { readonly args: Record<string, unknown>; readonly key: s
 /**
  * True when `call` needs the reply (`json`) of `previous`: it is the same call
  * again, as a poll, or its arguments hold a value that `previous` did not send
- * and its reply holds: a cursor, a link or an id taken from that reply. Also
- * true when a key or the reply has more than MAX_SCAN_CHARS, or when the new
- * values times the reply length plus VALUE_COST pass MAX_SCAN_WORK.
+ * and its reply holds: a cursor, a link or an id taken from that reply. A long
+ * value counts when its first MAX_NEEDLE characters are in the reply. Also true
+ * when a key has more than MAX_SCAN_CHARS, the reply more than MAX_REPLY_CHARS,
+ * or when the new values times the reply length plus VALUE_COST pass MAX_SCAN_WORK.
  */
 export const usesResult = (call: SentCall, previous: SentCall & { readonly json: string }): boolean => {
   if (call.key === previous.key) return true
   const { json } = previous
-  if (call.key.length > MAX_SCAN_CHARS || previous.key.length > MAX_SCAN_CHARS || json.length > MAX_SCAN_CHARS)
+  if (call.key.length > MAX_SCAN_CHARS || previous.key.length > MAX_SCAN_CHARS || json.length > MAX_REPLY_CHARS)
     return true
   const sent = valuesOf(call.args, new Set())
   if (sent.size > MAX_VALUES) return true
@@ -141,5 +145,7 @@ export const usesResult = (call: SentCall, previous: SentCall & { readonly json:
   const before = valuesOf(previous.args, new Set())
   const fresh = [...sent].filter(v => !before.has(v))
   if (fresh.length * (json.length + VALUE_COST) > MAX_SCAN_WORK) return true
-  return fresh.some(v => (v.startsWith('n') ? holdsNumber(json, v.slice(1)) : json.includes(v.slice(1))))
+  return fresh.some(v =>
+    v.startsWith('n') ? holdsNumber(json, v.slice(1)) : json.includes(v.slice(1, 1 + MAX_NEEDLE)),
+  )
 }
