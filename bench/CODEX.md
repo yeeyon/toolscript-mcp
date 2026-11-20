@@ -44,7 +44,10 @@ Do each run in a new empty folder, with a new log file. `<repo>` is the full pat
    command = "node"
    args = ["<repo>/bench/fake-server.mjs"]
    env = { BENCH_LOG = "<run folder>/calls.jsonl" }
+   default_tools_approval_mode = "approve"
    ```
+
+   Keep `default_tools_approval_mode = "approve"` in every arm. Without it, `codex exec` refuses every MCP call.
 
    For `codex-toolscript`, write a toolscript-mcp config file `<run folder>/toolscript.json`:
 
@@ -67,7 +70,10 @@ Do each run in a new empty folder, with a new log file. `<repo>` is the full pat
    [mcp_servers.toolscript]
    command = "node"
    args = ["<repo>/dist/host/main.js", "--config", "<run folder>/toolscript.json"]
+   default_tools_approval_mode = "approve"
    ```
+
+   The toolscript-mcp policy still decides each nested call, so the `allow` rule above stays.
 
 2. Give Codex no other MCP server, no web search and no shell, if your version allows that. Write down what stays on.
 3. Run the task without a person, with JSON events. The run folder is not a Git repository, so add
@@ -119,3 +125,49 @@ login, API keys or any file outside the run folders.
 - The fake server data is fixed and fake. No real account or service is used.
 - Codex and Claude Code use different models, so compare the arms inside one agent first. Compare across agents only
   for the relative change from the direct arm.
+
+## Smoke test result
+
+A manual smoke test passed. It is not a bench run and has no numbers.
+
+- Codex version: Codex CLI 0.171.0.
+- Command form: `codex exec`.
+- toolscript-mcp: a build of commit `4117acb` plus #84.
+- Setup: the bundled `demo` server, added with `-c mcp_servers.<name>...` overrides. No Codex config file changed.
+
+| Item | Result |
+| --- | --- |
+| Tools and instructions | Codex lists `run_code` and `search_tools`. It follows the server instructions and calls `search_tools` first, then `run_code`. |
+| Task | The prompt was "Count the open pull requests per author". Codex wrote one program that paged with `next_cursor` until null and returned only the counts. |
+| Answer | `ada 7, bruno 6, chen 5, dara 4, emil 3, farah 1`. It equals `OPEN_BY_AUTHOR` of `demo/data.mjs`. |
+| Codex approval gate | By default, `codex exec` refuses every MCP call with "MCP tool call requires approval, but approval policy is never". The key `default_tools_approval_mode = "approve"` in the server entry fixes it. The key takes the values `auto`, `prompt`, `writes` and `approve`. Only `approve` was tested. |
+| Approval prompt (`ask` rule) | `codex exec` declines the prompt. The run stops before any call with "the person did not approve the tools that need approval". The model reports the missing `allow` rule. |
+| Working directory | Codex started in the folder `C:\tmp\cx75\run`, a new empty folder. A downstream stdio server with no `cwd` reported the same folder. See "Working directory run". |
+
+### Working directory run
+
+Tested on Windows 11 with Codex CLI 0.171.0, model `gpt-6-luna`, on the built `dist/host/main.js` of commit `4b275c8`. The toolscript config had the `demo` server and a small probe server with one tool, `where`, that returns `process.cwd()`. The probe had no `cwd`. Run from the new empty folder:
+
+```sh
+codex exec --skip-git-repo-check \
+  -c 'mcp_servers.toolscript.command="node"' \
+  -c 'mcp_servers.toolscript.args=["<repo>/dist/host/main.js","--config","<folder>/toolscript.json"]' \
+  -c 'mcp_servers.toolscript.default_tools_approval_mode="approve"' \
+  "<prompt>"
+```
+
+The prompt asked Codex to find `where` with `search_tools`, call it from one program and return the result. The result was `{"cwd":"C:\\tmp\\cx75\\run"}`. Codex printed `workdir: C:\tmp\cx75\run`. A server with no `cwd` starts in the folder where Codex started. A server with its own `cwd` was not tested.
+
+### Runs of the demo task
+
+Same setup, without the probe prompt. The prompt was "Count the open pull requests per author with the toolscript tools. Reply with only the counts."
+
+1. Without `default_tools_approval_mode`: `search_tools` and `run_code` both failed with "MCP tool call requires approval, but approval policy is never". Codex answered "Unable to retrieve counts: toolscript access was blocked."
+2. With `default_tools_approval_mode = "approve"`: `search_tools` found the demo tools. `run_code` called them and Codex answered `ada: 7, bruno: 6, chen: 5, dara: 4, emil: 3, farah: 1`. It equals `OPEN_BY_AUTHOR`.
+
+### Not tested
+
+- The interactive Codex TUI, and its answer to the approval prompt.
+- A project `.codex/config.toml`.
+- A server entry with its own `cwd`, and other systems than Windows.
+- The bench arms of this plan. A follow-up issue on a paid plan will run them.
