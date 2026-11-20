@@ -72,8 +72,10 @@ import {
 } from '../core/protocol.ts'
 import {
   callDecision,
+  classifyCallError,
   runLine,
   runRecord,
+  type CallClass,
   type CallDecision,
   type CallError,
   type CallLog,
@@ -477,7 +479,7 @@ const execute = async (
     id: number,
     tool: string,
     args: Record<string, unknown>,
-  ): Promise<Reply & { code?: CallError; untrusted?: true }> => {
+  ): Promise<Reply & { code?: CallError; cls?: CallClass; untrusted?: true }> => {
     const target = isCallable(tool, SERVER_NAME) ? splitToolName(tool) : undefined
     if (target === undefined) {
       decided.set(id, 'invalid')
@@ -546,7 +548,7 @@ const execute = async (
       )
       if (mark.untrusted === true) downstream.distrust(server)
       const fromServer = fromUntrusted()
-      if (!reply.ok) return { ...reply, code: 'tool-error', ...fromServer }
+      if (!reply.ok) return { ...reply, code: 'tool-error', cls: classifyCallError(reply.error), ...fromServer }
       // After untrusted content, the program can have sent it to this tool, and the tool can send it back.
       if (fromServer.untrusted === true || untrusted)
         for (const { file } of files) ctx.untrustedFiles.add(path.basename(file).toLowerCase())
@@ -570,10 +572,14 @@ const execute = async (
           code: 'timeout',
         }
       // A server can echo a token of its own in an error, as an HTTP error body.
+      const error = link.hide(errorText(err))
       return {
         ok: false,
-        error: link.hide(errorText(err)),
+        error,
         code: own.signal.aborted ? 'cancelled' : 'failed',
+        ...(own.signal.aborted
+          ? {}
+          : { cls: classifyCallError(error, err instanceof McpError ? err.code : undefined) }),
         ...fromUntrusted(),
       }
     } finally {
@@ -589,7 +595,7 @@ const execute = async (
   ): Promise<void> => {
     if (ended) return
     const began = performance.now()
-    const { code: failure, untrusted: fromTool, ...r } = await callTool(id, tool, args)
+    const { code: failure, cls, untrusted: fromTool, ...r } = await callTool(id, tool, args)
     if (closed) return
     if (fromTool === true) untrusted = true
     // A call that returns after untrusted content can hold it: the program can have sent it to the tool.
@@ -600,6 +606,7 @@ const execute = async (
       ms: performance.now() - began,
       ok: r.ok,
       ...(r.ok ? {} : { error: failure ?? 'failed' }),
+      ...(r.ok || cls === undefined ? {} : { class: cls }),
     })
     // The call counts as finished before its reply is written: the runner can read the reply and send its next call
     // at once, and that call must find this one done. A throw here ends only this run, through `answer`.

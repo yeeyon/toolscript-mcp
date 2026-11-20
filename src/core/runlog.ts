@@ -30,12 +30,96 @@ const CALL_ERRORS = [
 /** Why a nested call did not work, as a short code. */
 export type CallError = (typeof CALL_ERRORS)[number]
 
+/** The kind of a downstream error, from a fixed set. A message never reaches the log: only one of these words. */
+export const CALL_CLASSES = ['validation', 'not-found', 'auth', 'rate-limit', 'timeout', 'server', 'other'] as const
+export type CallClass = (typeof CALL_CLASSES)[number]
+
+const CLASS_TEXT_LIMIT = 4096
+// Each pattern is a plain alternation or has a bounded gap, so it runs in linear time on downstream text.
+const VALIDATION = new RegExp(
+  [
+    '-32602',
+    'invalid arguments for tool',
+    'input validation error',
+    // zod 3 and zod 4
+    'invalid_type',
+    'invalid_enum_value',
+    'expected \\w+, received \\w+',
+    'invalid enum value',
+    'invalid input: expected',
+    'invalid option: expected one of',
+    // pydantic
+    'validation errors? for',
+    'input should be',
+    'field required',
+    '\\[type=',
+    // ajv, and the GitHub server (`parameter x is not of type`)
+    'must be (?:string|number|integer|boolean|array|object)',
+    'must be equal to one of the allowed values',
+    'must have required property',
+    'is not of type',
+    // plain forms
+    'missing required (?:parameter|argument|field|property)',
+    'invalid (?:parameter|argument|params|input|value)',
+  ].join('|'),
+)
+const RATE_LIMIT = /rate limit|too many requests|throttl|quota exceeded/
+// A status with a marker, or with its reason phrase. A bare number is not a status.
+const STATUS =
+  /(?:http|status|status code:?) ?([45]\d\d)\b|\b(400 bad request|401 unauthorized|403 forbidden|404 not found|408 request timeout|410 gone|422 validation failed|429 too many requests|500 internal server error|502 bad gateway|503 service unavailable|504 gateway timeout)/
+const STATUS_CLASS: Record<string, CallClass> = {
+  '400': 'validation',
+  '422': 'validation',
+  '401': 'auth',
+  '403': 'auth',
+  '407': 'auth',
+  '404': 'not-found',
+  '410': 'not-found',
+  '408': 'timeout',
+  '504': 'timeout',
+  '429': 'rate-limit',
+}
+const MIXED_NOT_FOUND = /does not exist or.{0,40}(?:permission|access)/
+const AUTH =
+  /unauthorized|unauthenticated|forbidden|permission denied|access denied|not authorized|do not have permission|bad credentials|requires authentication|resource not accessible by|token expired|invalid token|tf400813|tf401027/
+const NOT_FOUND = /not found|does not exist|no such|could not resolve to a/
+const TIMEOUT = /timed out|timeout|deadline exceeded|etimedout/
+const SERVER = /internal server error|internal error|bad gateway|service unavailable/
+
+/**
+ * The class of a downstream error, for the run log. `rpcCode` is the code of an McpError. It reads at most the first
+ * 4096 characters and never throws. The first rule that matches wins.
+ */
+export const classifyCallError = (text: string, rpcCode?: number): CallClass => {
+  try {
+    const t = String(text).slice(0, CLASS_TEXT_LIMIT).toLowerCase()
+    if (rpcCode === -32602 || VALIDATION.test(t)) return 'validation'
+    if (RATE_LIMIT.test(t)) return 'rate-limit'
+    const status = STATUS.exec(t)
+    const code = status?.[1] ?? status?.[2]?.slice(0, 3)
+    // Any other 5xx is a server error. A 4xx without a class here falls through to the text rules.
+    const byStatus =
+      code === undefined ? undefined : (STATUS_CLASS[code] ?? (code.startsWith('5') ? 'server' : undefined))
+    if (byStatus !== undefined) return byStatus
+    if (MIXED_NOT_FOUND.test(t)) return 'not-found'
+    if (AUTH.test(t)) return 'auth'
+    if (NOT_FOUND.test(t)) return 'not-found'
+    if (TIMEOUT.test(t)) return 'timeout'
+    if (rpcCode === -32603 || SERVER.test(t)) return 'server'
+  } catch {
+    // A text that cannot be read is `other`.
+  }
+  return 'other'
+}
+
 export type CallLog = {
   readonly tool: string
   readonly decision: CallDecision
   readonly ms: number
   readonly ok: boolean
   readonly error?: CallError
+  /** Set only for a `tool-error` or a `failed` call that reached its server. */
+  readonly class?: CallClass
 }
 
 export type RunRecord = {
@@ -68,6 +152,9 @@ export const callDecision = (
   return action === 'allow' && !interactive.has(tool) ? 'allow' : 'unapproved'
 }
 
+/** Only a call that reached its server and failed has a class. */
+const classAllowed = (error: CallError | undefined): boolean => error === 'tool-error' || error === 'failed'
+
 export const MAX_CALLS = 200
 export const MAX_LOG_BYTES = 5 * 1024 * 1024
 
@@ -94,6 +181,7 @@ export const runRecord = (input: RunInput): RunRecord => {
       ms: Math.round(c.ms),
       ok: c.ok,
       ...(c.error === undefined ? {} : { error: c.error }),
+      ...(classAllowed(c.error) && oneOf(CALL_CLASSES, c.class) ? { class: c.class } : {}),
     }),
   )
   const omitted = input.calls.length - calls.length
@@ -136,7 +224,19 @@ const readCall = (v: unknown): ReadCall => {
   // runLine writes an ok call only when the policy let it run, and never with an error code.
   if (ok && (error !== undefined || (decision !== 'allow' && decision !== 'ask-approved')))
     return { unreadable: true, ok: false, tool }
-  return { tool, decision, ms, ok, ...(error === undefined ? {} : { error }) }
+  // runLine writes a class only beside tool-error or failed. A string outside the set can come from a later version:
+  // it reads as no class and is never printed.
+  const cls = v.class
+  if (cls !== undefined && (typeof cls !== 'string' || !classAllowed(error)))
+    return { unreadable: true, ok: false, tool }
+  return {
+    tool,
+    decision,
+    ms,
+    ok,
+    ...(error === undefined ? {} : { error }),
+    ...(oneOf(CALL_CLASSES, cls) ? { class: cls } : {}),
+  }
 }
 
 export const parseRunLine = (line: string): LogEntry => {
@@ -272,7 +372,7 @@ export const runsReport = (
   const callText = (c: ReadCall) =>
     'unreadable' in c
       ? `  ${c.tool === undefined ? '-' : shownName(c.tool)} unreadable`
-      : `  ${shownName(c.tool)} ${c.decision} ${c.ok ? 'ok' : (c.error ?? 'not-run')}`
+      : `  ${shownName(c.tool)} ${c.decision} ${c.ok ? 'ok' : (c.error ?? 'not-run')}${c.class === undefined ? '' : ` ${c.class}`}`
   const fixOf = (c: ReadCall): string | undefined => {
     if (!counts(c) || c.ok) return undefined
     if ('unreadable' in c) return UNREADABLE_CALL
@@ -284,6 +384,16 @@ export const runsReport = (
     ...run.calls.map(callText),
     ...(run.omitted === undefined ? [] : [`  ${run.omitted} more calls`]),
   ])
+  // The tool-error and failed calls shown: those with a class count under it, the others under `no class`.
+  const reached = shown
+    .flatMap(({ run }) => run.calls.filter(counts))
+    .filter((c): c is CallLog => !('unreadable' in c) && (c.error === 'tool-error' || c.error === 'failed'))
+  const classCounts = [
+    ...CALL_CLASSES.map(k => [k, reached.filter(c => c.class === k).length] as const),
+    ['no class', reached.filter(c => c.class === undefined).length] as const,
+  ].filter(([, n]) => n > 0)
+  const classLine =
+    classCounts.length === 0 ? [] : [`classes of failed calls: ${classCounts.map(([k, n]) => `${k} ${n}`).join(', ')}`]
   const fixes = shown.flatMap(({ run }) =>
     [...run.calls.map(fixOf), ENDING_FIXES[run.ending]].filter(f => f !== undefined),
   )
@@ -306,5 +416,8 @@ export const runsReport = (
       : [`the newest run called no tool${server === undefined ? '' : ` of ${server}`}. Run a task that calls one.`]
   const ok = !newer && unlogged === 0 && called && newest.run.ending === 'done' && mine.every(c => c.ok)
   const header = cutoff === undefined ? [] : [`runs since ${cutoff}`]
-  return { lines: [...header, ...lines, ...new Set(fixes), ...idle, ...partial, ...skipped, ...warning], ok }
+  return {
+    lines: [...header, ...lines, ...classLine, ...new Set(fixes), ...idle, ...partial, ...skipped, ...warning],
+    ok,
+  }
 }

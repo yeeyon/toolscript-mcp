@@ -167,6 +167,16 @@ const TOOLS: Record<string, Tool> = {
   authfail: () => {
     throw new McpError(ErrorCode.RequestTimeout, 'mcp-remote: Incompatible auth server')
   },
+  // A tool error with a zod 3 issue list, and an MCP error with the code of invalid params.
+  zodfail: () => ({
+    content: [{ type: 'text', text: '[{"code":"invalid_type","expected":"number","received":"string","path":["n"]}]' }],
+    isError: true,
+  }),
+  // Listed only: the fake downstream times `stall` out itself.
+  stall: () => json({}),
+  badparams: () => {
+    throw new McpError(ErrorCode.InvalidParams, 'fake bad arguments')
+  },
 }
 const MARKED = { 'anthropic/requiresUserInteraction': true }
 const SCHEMAS: Record<string, unknown> = {
@@ -187,9 +197,17 @@ const fakeDownstream = (others: readonly ServerState[] = [], servers: Config['se
     callTool: async (
       { name, arguments: args }: { name: string; arguments: Record<string, unknown> },
       _schema: unknown,
-      options: { signal: AbortSignal },
+      options: { signal: AbortSignal; timeout?: number },
     ) => {
       called.push(name)
+      // `stall` never answers: like the SDK, end it at the call limit with the timeout that the SDK puts in `data`.
+      if (name === 'stall')
+        return await new Promise<never>((_r, reject) =>
+          setTimeout(
+            () => reject(new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: options.timeout })),
+            options.timeout,
+          ),
+        )
       most = Math.max(most, ++inFlight)
       try {
         const tool = TOOLS[name]
@@ -253,6 +271,8 @@ type Options = {
   policyNote?: string
   servers?: Config['servers']
   serialLimits?: RunContext['serialLimits']
+  /** The limit of one nested call, when it differs from `timeoutSeconds`. */
+  callSeconds?: number
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -269,7 +289,7 @@ const setup = (o: Options = {}) => {
     sandbox: {
       node: process.execPath,
       timeoutSeconds: o.timeoutSeconds ?? 20,
-      callTimeoutSeconds: o.timeoutSeconds ?? 20,
+      callTimeoutSeconds: o.callSeconds ?? o.timeoutSeconds ?? 20,
     },
     policy: o.policy ?? rules(['mcp__*', 'allow']),
     log: o.log ?? true,
@@ -1889,6 +1909,45 @@ describe('the run log', () => {
     assert.deepEqual(entries(denied.lines()), [['refused', ...named, 'mcp__f__fail denied false 0 denied']])
     assert.deepEqual(entries(declined.lines()), [['refused', ...named]])
     assert.deepEqual(entries(wrong.lines()), [['refused', named[0], 'unknown invalid false 0 invalid']])
+  })
+
+  test('a failed call that reached its server logs a class, and the reply to the program is unchanged', async () => {
+    const { run, lines } = setup()
+    const r = await run(
+      [
+        'const out = []',
+        'for (const t of ["zodfail", "badparams"]) {',
+        '  try { await call("mcp__f__" + t, {}) } catch (e) { out.push(e.message) }',
+        '}',
+        'return out',
+      ].join('\n'),
+    )
+    assert.ok(r.text.includes('invalid_type'), r.text)
+    assert.ok(r.text.includes('fake bad arguments'), r.text)
+    assert.deepEqual(
+      lines()[0]!.calls.map(({ error, class: cls }) => [error, cls]),
+      [
+        ['tool-error', 'validation'],
+        ['failed', 'validation'],
+      ],
+    )
+    assert.equal(JSON.stringify(lines()).includes('invalid_type'), false)
+  })
+
+  test('our own call timeout and a cancelled run log no class', async () => {
+    const slow = setup({ callSeconds: 1 })
+    await slow.run('try { await call("mcp__f__stall", {}) } catch {}\nreturn 1')
+    assert.deepEqual(
+      slow.lines()[0]!.calls.map(({ error, class: cls }) => [error, cls]),
+      [['timeout', undefined]],
+    )
+    const stop = new AbortController()
+    const aborted = setup({ signal: stop.signal })
+    const running = aborted.run('await call("mcp__f__hang", {})')
+    await new Promise(r => setTimeout(r, 500))
+    stop.abort()
+    await running
+    for (const c of aborted.lines().flatMap(l => l.calls)) assert.equal(c.class, undefined, JSON.stringify(c))
   })
 
   test('a run past the time limit ends as timeout, and an abort as cancelled', async () => {
