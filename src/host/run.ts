@@ -571,7 +571,12 @@ const execute = async (
     }
   }
 
-  const answerCall = async (id: number, tool: string, args: Record<string, unknown>, key: string): Promise<void> => {
+  const answerCall = async (
+    id: number,
+    tool: string,
+    args: Record<string, unknown>,
+    sentKey: string | undefined,
+  ): Promise<void> => {
     if (ended) return
     const began = performance.now()
     const { code: failure, untrusted: fromTool, ...r } = await callTool(id, tool, args)
@@ -593,6 +598,7 @@ const execute = async (
     inFlight--
     // A repeat is a call equal to an earlier one that worked. A failed call is
     // not kept: a new call is the only way to retry it.
+    const key = sentKey ?? callKey(tool, args)
     const repeatOf = kept.seen.get(key)
     const json = r.ok ? (JSON.stringify(r.value) ?? 'null') : ''
     const done = { ...timed.get(id)!, repliedAt, ok: r.ok, plain: decided.get(id) === 'allow' }
@@ -630,7 +636,15 @@ const execute = async (
     switch (m.t) {
       case 'call': {
         started.set(m.id, m.tool)
-        const key = callKey(m.tool, m.args)
+        // This runs in the stdout handler, where a throw stops the server. The stack of the runner gives out
+        // before callKey's on deep arguments, but if callKey throws, answerCall builds the key where a throw
+        // ends only this run, and the call gets no link.
+        let key: string | undefined
+        try {
+          key = callKey(m.tool, m.args)
+        } catch {
+          key = undefined
+        }
         const sent: TimedCall = { id: m.id, tool: m.tool, sentAt: performance.now(), ok: false, plain: false }
         const prev = lastReply
         lastReply = undefined
@@ -638,7 +652,7 @@ const execute = async (
         inFlight++
         timed.set(
           m.id,
-          prev !== undefined && mayFollow(prev.call, sent, ctx.serialLimits?.gapMs)
+          key !== undefined && prev !== undefined && mayFollow(prev.call, sent, ctx.serialLimits?.gapMs)
             ? { ...sent, previous: { id: prev.call.id, usesResult: usesResult({ args: m.args, key }, prev) } }
             : sent,
         )
