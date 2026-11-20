@@ -113,17 +113,15 @@ const RENAME_POLL_MS = 10
 
 /**
  * Changes the store: a new 0600 file in a 0700 folder, then a rename, so a reader in another process never sees a
- * part of a file. Windows does not apply the modes. A change that gives undefined leaves the store. Gives the store
- * as the call left it.
+ * part of a file. Windows does not apply the modes. A change that gives undefined leaves the store.
  */
-const updateStore = async (file: string, change: (stored: Stored) => Stored | undefined): Promise<Stored> => {
+const updateStore = async (file: string, change: (stored: Stored) => Stored | undefined): Promise<void> => {
   const dir = path.dirname(file)
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
   // mkdir does not change a folder that exists.
   if (process.platform !== 'win32') await fs.promises.chmod(dir, 0o700)
-  const stored = await readStore(file)
-  const next = change(stored)
-  if (next === undefined) return stored
+  const next = change(await readStore(file))
+  if (next === undefined) return
   const temp = `${file}.${randomUUID()}.tmp`
   try {
     await fs.promises.writeFile(temp, JSON.stringify(next, null, 2), { mode: 0o600, flag: 'wx' })
@@ -131,7 +129,6 @@ const updateStore = async (file: string, change: (stored: Stored) => Stored | un
   } finally {
     await fs.promises.rm(temp, { force: true })
   }
-  return next
 }
 
 /**
@@ -262,12 +259,12 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       // The SDK keeps the refresh token when the answer has none, and stamps the authorization server.
       const tokens = { refresh_token: sent, ...answer, ...(now?.issuer !== undefined && { issuer: now.issuer }) }
       try {
-        const after = await updateStore(file, stored =>
+        // A login in another process can save during the refresh: its client and tokens stay. The SDK reads the
+        // tokens of the next request from the store, not from this answer.
+        await updateStore(file, stored =>
           stored.tokens?.refresh_token === storeHad ? { ...stored, tokens } : undefined,
         )
         unsaved.delete(file)
-        // The store got other tokens during the refresh, as from a login: they are newer, and pair with its client.
-        if (after.tokens !== tokens) return after.tokens ?? needLogin()
       } catch (err) {
         unsaved.set(file, { tokens, storeHad })
         const cause = (err as NodeJS.ErrnoException).code ?? errorText(err)

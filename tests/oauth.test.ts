@@ -1168,7 +1168,7 @@ describe('the running server', () => {
     assert.equal(fake.seen.registrations, 2)
     assert.deepEqual(JSON.parse(s.storeText()), login, 'the refresh left the store of the login')
     fake.expire()
-    assert.equal(await s.ping(s.connect()), PONG, 'the stored client refreshes the stored tokens')
+    assert.equal(await s.ping(downstream), PONG, 'the running link refreshes the stored tokens with the stored client')
   })
 
   test('eight calls of two links at expiry all go on, and the token endpoint gets one refresh', async () => {
