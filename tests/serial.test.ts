@@ -221,6 +221,12 @@ describe('usesResult', () => {
       Array.from({ length: 19 }, (_, i) => `a${letter(i)}${'a'.repeat(12_000)}`),
       `b${'a'.repeat(11_999)}`.repeat(21).slice(0, MAX_SCAN_CHARS - 2),
     )
+    // A batch of numeric ids against a short reply full of their first digit: a RegExp for each takes 200 ms or more.
+    const ids = sent({ ids: Array.from({ length: 1400 }, (_, i) => 1_000_000 + i * 7) })
+    const began = performance.now()
+    assert.equal(usesResult(ids, { ...small, json: JSON.stringify(Array<number>(499).fill(1)) }), false)
+    const ms = performance.now() - began
+    assert.ok(ms < 100, `${ms} ms`)
     assert.equal(serialStreak(loop(Array.from({ length: 150_000 }, () => 20)))?.calls, 150_000)
   })
 })

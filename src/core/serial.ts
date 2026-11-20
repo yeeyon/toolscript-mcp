@@ -104,14 +104,16 @@ const valuesOf = (v: unknown, out: Set<string>): Set<string> => {
 
 // A number counts only as a whole number in the text: 5 is not in 50 or 1.5. One
 // regular expression scans the text: a loop of indexOf took 1.7 s for 20 numbers in 1 MB of digits.
+// The plain search first skips most numbers: V8 runs a new RegExp on a text under
+// 1000 characters in its interpreter, at about 150 µs for each number.
 const holdsNumber = (json: string, n: string): boolean =>
-  new RegExp(`(?<![0-9.])${n.replace(/[.+]/g, '\\$&')}(?![0-9.])`).test(json)
+  json.includes(n) && new RegExp(`(?<![0-9.])${n.replace(/[.+]/g, '\\$&')}(?![0-9.])`).test(json)
 
 // The scan runs in the host's message handler, so these limits bound it: past
 // them, usesResult says true and the calls get no note. The walk of the arguments
 // takes time by their length, also for repeated or short values, so a key of
 // more than MAX_SCAN_CHARS is not walked. Each new value costs a scan of the
-// result plus a fixed part (the build of a RegExp, about 10 µs), so many values
+// result plus a fixed part (for a number found in the text, a RegExp), so many values
 // of a small result scan, and at most MAX_SCAN_WORK / VALUE_COST values do. A scan
 // of a text of one repeated character costs up to 7 ms per MB for each value. Past
 // 250 characters, V8 scans repeated text one character at a time, so the cost grows
