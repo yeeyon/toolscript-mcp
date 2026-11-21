@@ -223,27 +223,38 @@ const classify = (tracker, entry, parent) => {
 const update = (tracker, table) => {
   const alive = []
   const byPid = new Map()
-  for (const e of [...table].sort((a, b) => a.t - b.t)) {
-    const id = `${e.pid}:${e.t}`
-    let info = tracker.known.get(id)
-    if (!info) {
-      const parent = byPid.get(e.ppid)
-      const session = tracker.hosts.get(e.pid)
-      if (session !== undefined && e.ppid === process.pid) {
-        info = { session, role: 'host', key: null }
-      } else if (parent === undefined && norm(e.cmd).includes('/broker.js') && e.t >= tracker.since) {
-        // A broker is its own tree: it is not in the host that started it, and it counts once in the union.
-        info = { session: null, role: 'broker', key: null }
-      } else if (parent !== undefined) {
-        info = { session: parent.session, ...classify(tracker, e, parent) }
-      } else continue
-      info = { ...info, pid: e.pid, ppid: e.ppid, t: e.t, image: e.name }
-      tracker.known.set(id, info)
+  // Creation times tie on macOS (1 s resolution), so a child can come before its parent in this order. A pass that
+  // leaves rows unattached runs again over those rows, until a pass attaches nothing more.
+  let open = [...table].sort((a, b) => a.t - b.t || a.pid - b.pid)
+  while (open.length > 0) {
+    const next = []
+    for (const e of open) {
+      const id = `${e.pid}:${e.t}`
+      let info = tracker.known.get(id)
+      if (!info) {
+        const parent = byPid.get(e.ppid)
+        const session = tracker.hosts.get(e.pid)
+        if (session !== undefined && e.ppid === process.pid) {
+          info = { session, role: 'host', key: null }
+        } else if (parent === undefined && norm(e.cmd).includes('/broker.js') && e.t >= tracker.since) {
+          // A broker is its own tree: it is not in the host that started it, and it counts once in the union.
+          info = { session: null, role: 'broker', key: null }
+        } else if (parent !== undefined) {
+          info = { session: parent.session, ...classify(tracker, e, parent) }
+        } else {
+          next.push(e)
+          continue
+        }
+        info = { ...info, pid: e.pid, ppid: e.ppid, t: e.t, image: e.name }
+        tracker.known.set(id, info)
+      }
+      info.pb = e.pb
+      info.ws = e.ws
+      byPid.set(e.pid, info)
+      alive.push(info)
     }
-    info.pb = e.pb
-    info.ws = e.ws
-    byPid.set(e.pid, info)
-    alive.push(info)
+    if (next.length === open.length) break
+    open = next
   }
   return alive
 }
@@ -362,6 +373,9 @@ class Session {
   }
 }
 
+/** Memory a new process can use, in MB. os.freemem() on macOS counts only free pages, not the cache that is reclaimable. */
+const freeMb = () => (typeof process.availableMemory === 'function' ? process.availableMemory() : os.freemem()) / MB
+
 const ms = t0 => Math.round(performance.now() - t0)
 
 const RUN_FIXTURE = [
@@ -404,6 +418,25 @@ const startSession = async (ctx, n) => {
   return { s, rec }
 }
 
+/**
+ * Reads the "## Not connected" section of a search_tools result into the keys that are still connecting and the keys
+ * that failed. A slow server is the line `- <key>: still connecting. Search again in a moment.` (notConnectedText in
+ * src/core/catalog.ts, which tests/bench.test.ts runs against this); any other line of the section is a failure.
+ */
+export const parseNotConnected = (text, keys) => {
+  const section = text.split('## Not connected\n')[1] ?? ''
+  const lines = section.split('\n').filter(l => l.startsWith('- '))
+  const keyOf = l => keys.find(k => l.startsWith(`- ${k}: `))
+  const slow = l => /^- [^:]+: still connecting\./.test(l)
+  return {
+    connecting: lines.filter(slow).map(keyOf).filter(Boolean),
+    failed: lines
+      .filter(l => !slow(l))
+      .map(keyOf)
+      .filter(Boolean),
+  }
+}
+
 // Calls search_tools until no server is connecting. Records keys only: a failure reason can hold a URL.
 const connect = async (ctx, s, rec) => {
   const keys = new Set(ctx.keys)
@@ -420,17 +453,7 @@ const connect = async (ctx, s, rec) => {
       rec.error = 'search_tools failed'
       return
     }
-    const section = text.split('## Not connected\n')[1] ?? ''
-    const lines = section.split('\n').filter(l => l.startsWith('- '))
-    const keyOf = l => ctx.keys.find(k => l.startsWith(`- ${k}: `))
-    connecting = lines
-      .filter(l => / still connecting\.$/.test(l))
-      .map(keyOf)
-      .filter(Boolean)
-    failed = lines
-      .filter(l => !/ still connecting\.$/.test(l))
-      .map(keyOf)
-      .filter(Boolean)
+    ;({ connecting, failed } = parseNotConnected(text, ctx.keys))
     if (connecting.length === 0 || Date.now() > deadline) break
     await sleep(500)
   }
@@ -443,7 +466,7 @@ const sample = async (ctx, round, phase) => {
   const alive = update(ctx.tracker, await readTable())
   const procs = alive.map(procRow)
   round.samples[phase] = {
-    freeMb: Math.round(os.freemem() / MB),
+    freeMb: Math.round(freeMb()),
     processes: procs.length,
     privateBytes: total(procs, 'pb'),
     workingSetPrivate: total(procs, 'ws'),
@@ -455,7 +478,12 @@ const sample = async (ctx, round, phase) => {
 
 const closeAll = async sessions => {
   for (const s of sessions) s.end()
-  await Promise.race([Promise.all(sessions.map(s => s.exited)), sleep(EXIT_WAIT)])
+  let timer
+  const limit = new Promise(resolve => {
+    timer = setTimeout(resolve, EXIT_WAIT)
+  })
+  await Promise.race([Promise.all(sessions.map(s => s.exited)), limit])
+  clearTimeout(timer)
 }
 
 const runRound = async (ctx, data, count) => {
@@ -465,7 +493,7 @@ const runRound = async (ctx, data, count) => {
   log(`round ${count}: start`)
   const sessions = []
   for (let k = 1; k <= count; k++) {
-    const free = os.freemem() / MB
+    const free = freeMb()
     if (free < ctx.minFree) {
       round.stoppedAt = k - 1
       log(`  stopped at ${k - 1} sessions: free RAM ${Math.round(free)} MB is below ${ctx.minFree} MB`)
@@ -690,6 +718,22 @@ const fixtureConfig = () => {
   }
 }
 
+const DIR_PREFIX = 'toolscript-memory-'
+const STALE_DIR = /^toolscript-memory-(\d+)-(\d+)-/
+
+/** Removes the temp dirs of benches that no longer live: no process has the pid and creation time in the name. */
+const sweepStale = table => {
+  const live = new Set(table.map(r => `${r.pid}:${r.t}`))
+  const base = os.tmpdir()
+  for (const name of fs.readdirSync(base)) {
+    const m = STALE_DIR.exec(name)
+    if (!m || live.has(`${m[1]}:${m[2]}`)) continue
+    try {
+      fs.rmSync(path.join(base, name), { recursive: true, force: true, maxRetries: 5 })
+    } catch {}
+  }
+}
+
 const commitOf = () => {
   const r = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: REPO, encoding: 'utf8', windowsHide: true })
   return r.status === 0 ? r.stdout.trim() : 'unknown'
@@ -745,7 +789,8 @@ const main = async () => {
   const idle = seconds('idle', 60)
   const afterRun = seconds('after-run', 5)
   const closed = seconds('closed', 10)
-  const minFree = seconds('min-free-mb', 2048)
+  const minFree = Number(opts['min-free-mb'] ?? 2048)
+  if (!Number.isFinite(minFree) || minFree < 0) bad('--min-free-mb: a number of megabytes, 0 or more')
   const real = opts.config !== undefined
   if (!fs.existsSync(MAIN)) {
     console.error('dist/host/main.js is missing: run npm run build first')
@@ -765,7 +810,12 @@ const main = async () => {
     }
   } else {
     // A temp home and temp dir, as in tests/server.e2e.mjs: the real run log, shapes file and OAuth store stay out of it.
-    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-memory-')))
+    // The dir name holds this script's pid and creation time. A hard kill leaves the dir, so each start removes the
+    // dirs whose owner no longer lives with that creation time.
+    const table = await readTable()
+    sweepStale(table)
+    const own = table.find(r => r.pid === process.pid)?.t ?? 0
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), `${DIR_PREFIX}${process.pid}-${own}-`)))
     const home = path.join(root, 'home')
     const tmp = path.join(root, 'tmp')
     fs.mkdirSync(home)
@@ -801,7 +851,7 @@ const main = async () => {
       mode: real ? 'real' : 'fixture',
       idleSeconds: idle,
       ramTotalMb: Math.round(os.totalmem() / MB),
-      ramFreeMb: Math.round(os.freemem() / MB),
+      ramFreeMb: Math.round(freeMb()),
       keys: ctx.keys,
       memory: MEMORY_NOTE,
       program: real
@@ -828,9 +878,19 @@ const main = async () => {
         log('the leftovers could not be listed')
       }
     }
-    if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 })
-    if (opts.json) fs.writeFileSync(opts.json, JSON.stringify({ ...data, aborted: true }))
-    process.exit(code)
+    let exit = code
+    try {
+      if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 })
+    } catch {
+      log('the temp dir could not be removed')
+    }
+    try {
+      if (opts.json) fs.writeFileSync(opts.json, JSON.stringify({ ...data, aborted: true }))
+    } catch {
+      log('--json: the file could not be written')
+      exit ||= 1
+    }
+    process.exit(exit)
   }
   for (const [signal, code] of [
     ['SIGINT', 130],
@@ -852,9 +912,19 @@ const main = async () => {
   const started = Date.now()
   for (const count of counts) await runRound(ctx, data, count)
   data.meta.wallSeconds = Math.round((Date.now() - started) / 1000)
-  if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 })
-  if (opts.json) fs.writeFileSync(opts.json, JSON.stringify(data))
+  try {
+    if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 })
+  } catch {
+    log('the temp dir could not be removed')
+  }
+  // The report first: a bad --json path still gives it, and then the exit code is 1.
   console.log(render(data))
+  try {
+    if (opts.json) fs.writeFileSync(opts.json, JSON.stringify(data))
+  } catch {
+    log('--json: the file could not be written')
+    process.exitCode = 1
+  }
   log(`done in ${data.meta.wallSeconds} s`)
 }
 
