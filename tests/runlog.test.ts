@@ -250,6 +250,8 @@ describe('the class of a call error', () => {
     ['validation', 'missing required parameter: owner'],
     ['validation', 'parameter page is not of type float64, is string'],
     ['validation', 'Invalid parameter: repo'],
+    ['validation', "'owner' is a required property"],
+    ['validation', "'merged' is not one of ['open', 'closed']"],
     ['validation', 'failed to create issue: POST https://api.example.com/repos/o/r/issues: 422 Validation Failed []'],
     ['validation', 'request failed (HTTP 400)'],
     // rate-limit, before the status rule
@@ -266,6 +268,9 @@ describe('the class of a call error', () => {
     ['timeout', '408 Request Timeout'],
     ['server', 'HTTP 502'],
     ['server', 'status 500'],
+    ['not-found', 'HTTP error 404'],
+    ['auth', 'statusCode: 403'],
+    ['other', '409 Conflict'],
     ['other', 'a bare 404'],
     ['other', 'issue 404 was closed'],
     // the mixed sentence of Atlassian and Azure DevOps
@@ -275,6 +280,7 @@ describe('the class of a call error', () => {
       'not-found',
       'The Git repository fake-repo does not exist or you do not have permissions for the operation you are attempting.',
     ],
+    ['not-found', 'The resource does not exist, or you do not have permission to access it.'],
     // auth
     ['auth', 'TF400813: The user is not authorized to access this resource.'],
     ['auth', 'TF401027: You need the Git Read permission to perform this action.'],

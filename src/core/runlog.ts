@@ -58,6 +58,9 @@ const VALIDATION = new RegExp(
     'must be equal to one of the allowed values',
     'must have required property',
     'is not of type',
+    // python-jsonschema
+    'is a required property',
+    'is not one of',
     // plain forms
     'missing required (?:parameter|argument|field|property)',
     'invalid (?:parameter|argument|params|input|value)',
@@ -66,7 +69,7 @@ const VALIDATION = new RegExp(
 const RATE_LIMIT = /rate limit|too many requests|throttl|quota exceeded/
 // A status with a marker, or with its reason phrase. A bare number is not a status.
 const STATUS =
-  /(?:http|status|status code:?) ?([45]\d\d)\b|\b(400 bad request|401 unauthorized|403 forbidden|404 not found|408 request timeout|410 gone|422 validation failed|429 too many requests|500 internal server error|502 bad gateway|503 service unavailable|504 gateway timeout)/
+  /(?:http(?: error)?|status ?(?:code)?)[: ]{0,3}([45]\d\d)\b|\b(400 bad request|401 unauthorized|403 forbidden|404 not found|408 request timeout|410 gone|422 validation failed|429 too many requests|500 internal server error|502 bad gateway|503 service unavailable|504 gateway timeout)/
 const STATUS_CLASS: Record<string, CallClass> = {
   '400': 'validation',
   '422': 'validation',
@@ -79,7 +82,7 @@ const STATUS_CLASS: Record<string, CallClass> = {
   '504': 'timeout',
   '429': 'rate-limit',
 }
-const MIXED_NOT_FOUND = /does not exist or.{0,40}(?:permission|access)/
+const MIXED_NOT_FOUND = /does not exist,? or.{0,40}(?:permission|access)/
 const AUTH =
   /unauthorized|unauthenticated|forbidden|permission denied|access denied|not authorized|do not have permission|bad credentials|requires authentication|resource not accessible by|token expired|invalid token|tf400813|tf401027/
 const NOT_FOUND = /not found|does not exist|no such|could not resolve to a/

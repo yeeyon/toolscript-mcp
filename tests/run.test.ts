@@ -1941,13 +1941,18 @@ describe('the run log', () => {
       slow.lines()[0]!.calls.map(({ error, class: cls }) => [error, cls]),
       [['timeout', undefined]],
     )
-    const stop = new AbortController()
-    const aborted = setup({ signal: stop.signal })
-    const running = aborted.run('await call("mcp__f__hang", {})')
-    await new Promise(r => setTimeout(r, 500))
-    stop.abort()
-    await running
-    for (const c of aborted.lines().flatMap(l => l.calls)) assert.equal(c.class, undefined, JSON.stringify(c))
+    // A call whose link comes after the program ended does not start, and the log keeps it as cancelled.
+    const fake = fakeDownstream()
+    const late = {
+      ...fake.downstream,
+      client: async (key: ServerKey) => (await new Promise(r => setTimeout(r, 400)), fake.downstream.client(key)),
+    } as Downstream
+    const left = setup({ downstream: late })
+    await left.run('call("mcp__f__echo", {}).catch(() => {})\nreturn 1')
+    assert.deepEqual(
+      left.lines()[0]!.calls.map(({ error, class: cls }) => [error, cls]),
+      [['cancelled', undefined]],
+    )
   })
 
   test('a run past the time limit ends as timeout, and an abort as cancelled', async () => {
