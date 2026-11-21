@@ -36,6 +36,11 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
     for each problem).
   - `allow.ts`: `toolscript-mcp allow <tool>...`, a dry run that prints its `--apply` command, or with `--apply` the
     write of the policy. `configfile.ts` writes the config for init and allow: a 0600 temp file, then a rename.
+  - `shapes.ts`: the learned result shapes in `~/.toolscript-mcp/learned/shapes.json` (`shapesFile` in `paths.ts`).
+    `loadShapes` reads the file at start as untrusted (`parseShapes`, `isLearnedShape` in `protocol.ts`), and
+    `saveShapes` merges a run's shapes in with the same temp file and rename. `shownShapes` in `catalog.ts` shows a
+    stored shape only when the hash of the tool's `inputSchema` matches. `run.ts` saves after a run that read no
+    untrusted content.
   - `doctor.ts`: `toolscript-mcp doctor`, one pass over the whole setup. Its checks are a table of small async
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.

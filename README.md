@@ -874,6 +874,39 @@ toolscript-mcp writes one line to `~/.toolscript-mcp/runs.jsonl` for each `run_c
 - When the file passes 5 MB, toolscript-mcp renames it to `runs.1.jsonl`. It keeps one old file.
 - To turn the log off, add `"log": false` to the config.
 
+### Learned result shapes
+
+For a tool with no `outputSchema`, `search_tools` shows the shape of its last result as `returned earlier: <shape>`.
+toolscript-mcp keeps these shapes in `~/.toolscript-mcp/learned/shapes.json`, so the next session shows them too. A
+first program then needs no run that only looks at the result.
+
+The files under `~/.toolscript-mcp` include:
+
+- `hints/` and `functions/`: your hint files and saved functions.
+- `runs.jsonl` and `runs.1.jsonl`: the run log.
+- `oauth/`: the tokens of `login`.
+- `files/<session>/`: the files of `saveFile`.
+- `learned/shapes.json`: the learned shapes.
+
+- The file holds tool names and field names, never a value.
+- A shape comes only from a result that worked in a run that read no untrusted content.
+- Each shape has the hash of the tool's input schema. If the schema changes, `search_tools` shows no shape for that tool until the next call.
+- The file holds at most 500 shapes. The oldest change goes first.
+- To forget all shapes, delete the file. This is safe.
+- On Linux and macOS, only your user account can read the file.
+
+The server reads the file at start and treats it as untrusted. An entry loads only when its shape is a full match of
+the shapes that toolscript-mcp makes. A bad entry is dropped. A file that is not valid, is too large or has another
+version gives no shapes and one line on stderr. The next write replaces it.
+
+Several server processes can share the file. Each run that learns a new shape reads the file again, adds its shapes and
+replaces the file. There is no lock, so the last writer wins. An update that another process makes in that moment is
+lost, and it shows again after the next call of its tool. A shape that another process learns shows at the next start.
+
+The model cannot write the file with `saveFile` or in the sandbox. A tool of a bridge, such as `Write` of Claude Code,
+takes any path, and only the policy stands before it. After the entry check, such a write can plant only field names.
+They read as words, as the field names of a result do in a session.
+
 ## Sandbox
 
 | Layer | Linux | macOS | Windows |

@@ -51,10 +51,19 @@ export const oauthFile = (home: string, key: string, urlHash: string): string =>
   `${oauthFolder(home)}/${key}-${urlHash}.json`
 
 /**
+ * The folder of the learned result shapes under HOME. The shapes file is alone in it, so a guard on the folder
+ * covers nothing else.
+ */
+export const shapesFolder = (home: string): string => appPath(home, 'learned')
+
+/** The learned result shapes under HOME: what `search_tools` shows as `returned earlier`, kept across sessions. */
+export const shapesFile = (home: string): string => `${shapesFolder(home)}/shapes.json`
+
+/**
  * The folders whose files steer the model, as written: the person's and the
  * project's hints (the project's even while projectHints is off, so none can
- * be planted to load later), and the person's saved functions. The model's
- * file tools may not write them. An empty root has none.
+ * be planted to load later), the person's saved functions and the person's
+ * learned shapes. The model's file tools may not write them. An empty root has none.
  * The plugin's own folder holds its code and its bundled hints: it is guarded
  * where Claude Code installed it, under HOME. A folder loaded with --plugin-dir
  * is the person's own checkout, which they edit.
@@ -63,7 +72,7 @@ export const guardedDirs = (home: string, project: string, pluginRoot = ''): str
   const plugin = normalizePath(pluginRoot)
   const plugins = normalizePath(`${home}/.claude/plugins`)
   return [
-    ...(home ? [hintsFolder(home), functionsFolder(home)] : []),
+    ...(home ? [hintsFolder(home), functionsFolder(home), shapesFolder(home)] : []),
     ...(project ? [hintsFolder(project)] : []),
     ...(home && plugin.startsWith(`${plugins}/`) ? [plugin] : []),
   ]

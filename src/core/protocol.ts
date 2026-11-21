@@ -865,43 +865,149 @@ export const learnedShape = (v: unknown): string | undefined => {
   return /^(\[\]|\{\}|null)$/.test(shape) ? undefined : shape
 }
 
-/** The learned shapes by tool name, newest change last. */
-export type Shapes = Record<string, string>
+/** The most shapes that a session and the shapes file hold. */
+export const MAX_SHAPES = 500
+/** The shapes file is not read past this size, and its parse starts only below it. */
+export const MAX_SHAPES_BYTES = 1_000_000
+const SHAPES_VERSION = 1
+const MAX_STORED_SHAPE = 240
+const SCALARS = ['string', 'number', 'boolean', 'null']
+const NAME = /[A-Za-z_$][A-Za-z0-9_$]*/y
+const MORE = /…\+[1-9][0-9]{0,8}\}/y
 
-const MAX_SHAPES = 500
-// What learnedShape makes: field names, brackets and punctuation. The file is
-// in ~/.claude, where the model can write too, so other text is dropped.
-const SHAPE = /^[\w$ {}[\]:,.…+]{1,240}$/
-
-/** The shapes file as Shapes, without the entries learnedShape cannot have made. */
-export const parseShapes = (text: string): Shapes => {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return {}
+/**
+ * True when `shape` is a full parse of what `learnedShape` can make, and nothing else. The shapes file is read as
+ * written by an attacker, so this grammar is the check that decides what `search_tools` can show from it:
+ *
+ *     shape  = "text" | "string" | "number" | "boolean" | "null" | value
+ *     value  = "{}" | "{…}" | "{" field {", " field} [", …+N"] "}" | "[]" | "[…]" | "[" item "]"
+ *     field  = name | name ": " value
+ *     item   = "string" | "number" | "boolean" | "null" | value
+ *
+ * A name passes `isFieldName`. An object has 1 to MAX_KEYS fields, and `…+N` follows exactly MAX_KEYS of them.
+ * Fields and items show only to the depth that `shapeAt` makes: deeper values are `{…}` and `[…]`. A shape that
+ * `shapeOf` cut at MAX_SHAPE_CHARS has open brackets and a trailing `…`, so it is not a shape here and is never
+ * stored. One edge is wider than `shapeAt`: an object in an array that also holds other items can show its fields
+ * one level deeper. The text stays inside this grammar, so it holds only field names.
+ */
+export const isLearnedShape = (shape: string): boolean => {
+  if (shape.length === 0 || shape.length > MAX_STORED_SHAPE) return false
+  if (shape === 'text' || SCALARS.includes(shape)) return true
+  let at = 0
+  const eat = (s: string): boolean => shape.startsWith(s, at) && ((at += s.length), true)
+  const sticky = (re: RegExp): string | undefined => {
+    re.lastIndex = at
+    const found = re.exec(shape)?.[0]
+    if (found !== undefined) at += found.length
+    return found
   }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  const field = (depth: number): boolean => {
+    const name = sticky(NAME)
+    if (name === undefined || !isFieldName(name)) return false
+    return !eat(': ') || value(depth + 1)
+  }
+  const object = (depth: number): boolean => {
+    if (!eat('{')) return false
+    if (eat('}') || eat('…}')) return true
+    if (depth > 1) return false
+    for (let fields = 1; ; fields++) {
+      if (!field(depth)) return false
+      if (eat('}')) return true
+      if (!eat(', ')) return false
+      if (fields === MAX_KEYS) return sticky(MORE) !== undefined
+    }
+  }
+  const array = (depth: number): boolean => {
+    if (!eat('[')) return false
+    if (eat(']') || eat('…]')) return true
+    if (depth > 1) return false
+    return (SCALARS.some(eat) || object(depth) || array(depth + 1)) && eat(']')
+  }
+  const value = (depth: number): boolean => object(depth) || array(depth)
+  return value(0) && at === shape.length
+}
+
+/** The shape of a tool's result, and the hash of the `inputSchema` it was learned under. */
+export type StoredShape = { readonly shape: string; readonly schema: string }
+
+/** The learned shapes by tool name, newest change last. */
+export type Shapes = Record<string, StoredShape>
+
+const SCHEMA_HASH = /^[0-9a-f]{16,64}$/
+const MAX_JSON_DEPTH = 64
+
+const sortedKeys = (v: unknown, depth: number): unknown => {
+  if (v === null || typeof v !== 'object') return v
+  if (depth >= MAX_JSON_DEPTH) return null
+  if (Array.isArray(v)) return v.map(x => sortedKeys(x, depth + 1))
   return Object.fromEntries(
-    Object.entries(parsed).filter(
-      ([tool, shape]) =>
-        splitToolName(tool) !== undefined && tool.length <= 200 && typeof shape === 'string' && SHAPE.test(shape),
-    ),
+    Object.keys(v)
+      .sort()
+      .map(k => [k, sortedKeys((v as Record<string, unknown>)[k], depth + 1)]),
   )
 }
 
 /**
- * The shapes with the ones a run learned, or undefined when nothing changed.
- * A shape with an empty array does not replace a known one: it hides the
- * fields of the array's items. The oldest change goes first past the limit.
+ * A value as JSON with the keys of each object sorted: the same schema in another key order gives the same text.
+ * Nesting past MAX_JSON_DEPTH reads as null, so a hostile schema cannot overflow the stack.
  */
-export const mergeShapes = (current: Shapes, learned: ReadonlyMap<string, string>): Shapes | undefined => {
+export const canonicalJson = (v: unknown): string => JSON.stringify(sortedKeys(v, 0)) ?? 'null'
+
+/** The shapes in `text`: the entries that pass the checks, how many did not, and `problem` when the file is unusable. */
+export type ParsedShapes = { readonly shapes: Shapes; readonly dropped: number; readonly problem?: string }
+
+const unusable = (problem: string): ParsedShapes => ({ shapes: {}, dropped: 0, problem })
+
+/**
+ * The shapes file as Shapes. An entry loads only when its tool name, its shape (`isLearnedShape`) and its schema
+ * hash pass: the other entries are dropped and the rest stay. A file that is too large, is not JSON, is not an
+ * object of this version or has no `shapes` object gives no shapes and a `problem`. The newest MAX_SHAPES stay.
+ */
+export const parseShapes = (text: string): ParsedShapes => {
+  if (text.length > MAX_SHAPES_BYTES) return unusable('the file is too large')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return unusable('the file is not JSON')
+  }
+  const isObject = (x: unknown): x is Record<string, unknown> =>
+    x !== null && typeof x === 'object' && !Array.isArray(x)
+  if (!isObject(parsed) || parsed.version !== SHAPES_VERSION || !isObject(parsed.shapes))
+    return unusable('the file is not a shapes file of version 1')
+  const all = Object.entries(parsed.shapes)
+  const kept = all.flatMap(([tool, entry]): [string, StoredShape][] =>
+    splitToolName(tool) !== undefined &&
+    tool.length <= 200 &&
+    isObject(entry) &&
+    typeof entry.shape === 'string' &&
+    isLearnedShape(entry.shape) &&
+    typeof entry.schema === 'string' &&
+    SCHEMA_HASH.test(entry.schema)
+      ? [[tool, { shape: entry.shape, schema: entry.schema }]]
+      : [],
+  )
+  return { shapes: Object.fromEntries(kept.slice(-MAX_SHAPES)), dropped: all.length - kept.length }
+}
+
+/** The text of the shapes file. */
+export const shapesText = (shapes: Shapes): string => JSON.stringify({ version: SHAPES_VERSION, shapes })
+
+/**
+ * The shapes with the ones a run learned, or undefined when nothing changed. A shape with an empty array does not
+ * replace a known one under the same schema: it hides the fields of the array's items. A shape that is not a
+ * `learnedShape` (a cut one) is not stored. The oldest change goes first past MAX_SHAPES.
+ */
+export const mergeShapes = (current: Shapes, learned: ReadonlyMap<string, StoredShape>): Shapes | undefined => {
   const next = { ...current }
   let changed = false
-  for (const [tool, shape] of learned) {
-    if (next[tool] === shape || (next[tool] !== undefined && shape.includes('[]'))) continue
+  for (const [tool, entry] of learned) {
+    const known = next[tool]
+    if (!isLearnedShape(entry.shape)) continue
+    if (known?.shape === entry.shape && known.schema === entry.schema) continue
+    if (known !== undefined && known.schema === entry.schema && entry.shape.includes('[]')) continue
     delete next[tool]
-    next[tool] = shape
+    next[tool] = entry
     changed = true
   }
   if (!changed) return undefined
