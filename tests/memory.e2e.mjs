@@ -1,5 +1,6 @@
 // Test of bench/memory.mjs in fixture mode, on Linux, macOS and Windows: the smoke run (2 rounds, 3 stdio servers
-// each), the secrets rule and the hard kill of the bench. It asserts no memory threshold. Run `npm run build` first.
+// each), the secrets rule, the bad --json path and the hard kill of the bench. It asserts no memory threshold. Run
+// `npm run build` first.
 //
 //   node tests/memory.e2e.mjs
 
@@ -19,7 +20,9 @@ const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolsc
 const env = { ...process.env, TMPDIR: dir, TEMP: dir, TMP: dir }
 after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
 
-const SMOKE = ['--counts', '1,2', '--idle', '1', '--after-run', '1', '--closed', '3']
+// No free-RAM floor: a small runner (macOS counts only free pages) must not stop round 1 at 0 sessions.
+const FAST = ['--min-free-mb', '0']
+const SMOKE = [...FAST, '--counts', '1,2', '--idle', '1', '--after-run', '1', '--closed', '3']
 const KEYS = ['bench1', 'bench2', 'bench3']
 
 test('an unknown flag exits 2 before any spawn', () => {
@@ -102,6 +105,24 @@ test('the smoke run: N hosts, N copies of each server, timings, no leftovers, no
   )
 })
 
+test('--min-free-mb names megabytes when its value is bad', () => {
+  const r = spawnSync(process.execPath, [BENCH, '--min-free-mb', 'lots'], { encoding: 'utf8', env, windowsHide: true })
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /--min-free-mb: a number of megabytes/)
+})
+
+test('a bad --json path still prints the report and exits non-zero', () => {
+  const bad = path.join(dir, 'no-such-dir', 'm.json')
+  const r = spawnSync(
+    process.execPath,
+    [BENCH, ...FAST, '--counts', '1', '--idle', '0', '--after-run', '0', '--closed', '1', '--json', bad],
+    { encoding: 'utf8', env, windowsHide: true, timeout: 120_000 },
+  )
+  assert.notEqual(r.status, 0, r.stderr)
+  assert.match(r.stdout, /## Memory bench/)
+  assert.match(r.stderr, /--json: the file could not be written/)
+})
+
 const waitFor = (child, pattern, ms) =>
   new Promise((resolve, reject) => {
     let seen = ''
@@ -115,26 +136,31 @@ const waitFor = (child, pattern, ms) =>
     })
   })
 
-const alive = async hosts => {
+const idOf = p => `${p.pid}:${p.t}`
+/** Rows of the given hosts (pid and creation time) and of every process whose command line holds the marker. */
+const alive = async hostIds => {
   const table = await readTable()
-  return table.filter(p => hosts.includes(p.pid) || p.cmd.includes(MARKER))
+  return table.filter(p => hostIds.has(idOf(p)) || p.cmd.includes(MARKER))
 }
+const benchDirs = () => fs.readdirSync(dir).filter(f => f.startsWith('toolscript-memory-'))
 
-test('a hard kill of the bench leaves no host and no fake server', async () => {
-  const child = spawn(process.execPath, [BENCH, '--counts', '2', '--idle', '60'], {
+test('a hard kill of the bench leaves no host and no fake server, and the next start removes its temp dir', async () => {
+  const child = spawn(process.execPath, [BENCH, ...FAST, '--counts', '2', '--idle', '60'], {
     env,
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   })
   const seen = await waitFor(child, /idle: 60 s/, 120_000)
-  const hosts = [...seen.matchAll(/host pid (\d+)/g)].map(m => Number(m[1]))
-  assert.equal(hosts.length, 2)
-  assert.ok((await alive(hosts)).length >= 8, 'the hosts and their servers run')
+  const pids = [...seen.matchAll(/host pid (\d+)/g)].map(m => Number(m[1]))
+  assert.equal(pids.length, 2)
+  const hostIds = new Set((await readTable()).filter(p => pids.includes(p.pid)).map(idOf))
+  assert.equal(hostIds.size, 2)
+  assert.ok((await alive(hostIds)).length >= 8, 'the hosts and their servers run')
   child.kill('SIGKILL')
   await new Promise(resolve => child.on('exit', resolve))
   await new Promise(resolve => setTimeout(resolve, 10_000))
-  const left = await alive(hosts)
-  // Do not leave them running if the assertion fails.
+  const left = await alive(hostIds)
+  // Do not leave them running if the assertion fails: only rows that matched by pid and creation time.
   for (const p of left) {
     try {
       process.kill(p.pid, 'SIGKILL')
@@ -144,5 +170,16 @@ test('a hard kill of the bench leaves no host and no fake server', async () => {
     left.map(p => `${p.name} ${p.pid}`),
     [],
   )
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 })
+  // The hard kill leaves the temp dir of the killed bench, named with its pid.
+  const stale = benchDirs()
+  assert.equal(stale.length, 1, 'the killed bench left its dir')
+  assert.ok(stale[0].startsWith(`toolscript-memory-${child.pid}-`), stale[0])
+  // The next bench start sweeps it.
+  const next = spawnSync(
+    process.execPath,
+    [BENCH, ...FAST, '--counts', '1', '--idle', '0', '--after-run', '0', '--closed', '1'],
+    { encoding: 'utf8', env, windowsHide: true, timeout: 120_000 },
+  )
+  assert.equal(next.status, 0, next.stderr)
+  assert.deepEqual(benchDirs(), [], 'the stale dir is gone and the next bench left none')
 })

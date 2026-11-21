@@ -9,6 +9,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TOOL } from '../src/core/tools.ts'
+import { searchResult } from '../src/core/catalog.ts'
+import { parseNotConnected } from '../bench/memory.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const ROOT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-bench-test-')))
@@ -221,4 +223,18 @@ test('forget.mjs removes the project folder of a run when given a relative out d
   assert.equal(run.status, 0, run.stdout + run.stderr)
   assert.equal(fs.existsSync(project), false)
   assert.match(run.stdout, /removed /)
+})
+
+test('memory.mjs reads the Not connected lines that search_tools prints', () => {
+  const text = searchResult(
+    [
+      { key: 'slow', status: 'connecting' },
+      { key: 'dead', status: 'failed', reason: 'spawn ENOENT' },
+      { key: 'fine', status: 'connected', tools: [] },
+    ],
+    '',
+    10,
+  )
+  assert.match(text, /^- slow: still connecting\. Search again in a moment\.$/m)
+  assert.deepEqual(parseNotConnected(text, ['slow', 'dead', 'fine']), { connecting: ['slow'], failed: ['dead'] })
 })
