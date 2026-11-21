@@ -46,8 +46,11 @@ enforces; the others rely on discipline.
   and in the sandbox table of `README.md`. `[test: runner.integration.mjs checks each layer that LAYERS names]`
 - Imports between files use the `.ts` extension, so Node can run the sources and `tsc` rewrites them. Use only
   syntax that Node can strip: no enums, no parameter properties, no namespaces. `[test: tsc, erasableSyntaxOnly]`
-- Make each path into `.toolscript-mcp` with a helper from `src/core/paths.ts`: `hintsFolder`, `functionsFolder`
-  or `appPath`. `[test: code.check.mjs]`
+- Make each path into `.toolscript-mcp` with a helper from `src/core/paths.ts`: `hintsFolder`, `functionsFolder`,
+  `shapesFile` or `appPath`. `[test: code.check.mjs]`
+- The learned shapes file is alone in its own folder, which `guardedDirs` lists. Read it as written by an attacker:
+  an entry loads only when `isLearnedShape` accepts its shape. Never widen that grammar to free text. A run that read
+  untrusted content saves no shape. `[test: code-mode.test.ts, run.test.ts, shapes.test.ts]`
 - Make a hint ref with `hintRef` or `bundledRef`, and read one with `refTarget` (all in `src/core/hints.ts`).
   `[test: code.check.mjs fails when a file outside hints.ts types out the bundled: prefix]`
 - Add or change a tool in `TOOLS` in `src/core/tools.ts`: the registration, the full ids (`TOOL`) and the typed

@@ -378,7 +378,7 @@ describe('the hint-file guard', () => {
 
   test('guardedDirs skips an empty root', () => {
     assert.deepEqual(guardedDirs('', '/repo'), ['/repo/.toolscript-mcp/hints'])
-    assert.equal(guardedDirs(HOME, '').length, 2)
+    assert.equal(guardedDirs(HOME, '').length, 3)
   })
 
   test('the Write and Edit guard covers the plugin folder only where Claude Code installed it', () => {
@@ -418,6 +418,7 @@ describe('the hint-file guard', () => {
     assert.deepEqual(guardedDirs('/home//u/', '/repo/', `${plugin}/`), [
       '/home/u/.toolscript-mcp/hints',
       '/home/u/.toolscript-mcp/functions',
+      '/home/u/.toolscript-mcp/learned',
       '/repo/.toolscript-mcp/hints',
       plugin,
     ])

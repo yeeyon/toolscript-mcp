@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { searchResult } from '../core/catalog.ts'
+import { searchResult, shownShapes, type ServerState } from '../core/catalog.ts'
 import { policyOf, type Config } from '../core/config.ts'
 import { appPath } from '../core/paths.ts'
 import {
@@ -27,6 +27,7 @@ import { errorText, newKept, serverInstructions, type Written } from '../core/pr
 import { SEARCH_LIMIT, SERVED, parseInput, registration, type ServedName } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { runCode, type Approval, type RunContext } from './run.ts'
+import { loadShapes, schemaHash } from './shapes.ts'
 
 const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], isError })
 
@@ -37,7 +38,8 @@ type Extra = { readonly signal: AbortSignal; readonly requestId: string | number
 
 type Context = {
   readonly downstream: Downstream
-  readonly shapes: ReadonlyMap<string, string>
+  /** The shapes that `search_tools` shows now: the session's, and the stored ones that match their tool's schema. */
+  readonly shapes: (states: readonly ServerState[]) => Promise<ReadonlyMap<string, string>>
   readonly canAsk: () => boolean
   readonly run: (code: string, extra: Extra) => Promise<CallToolResult>
   readonly extra: Extra
@@ -51,7 +53,8 @@ const HANDLERS: Record<ServedName, Handler> = {
     const limit = Math.min(100, Math.max(1, asked || SEARCH_LIMIT))
     await downstream.settled
     await downstream.retry()
-    return text(searchResult(downstream.states(), query, limit, shapes, canAsk()))
+    const states = downstream.states()
+    return text(searchResult(states, query, limit, await shapes(states), canAsk()))
   },
   run_code: async (args, { run, extra }) => run(parseInput('run_code', args).code, extra),
 }
@@ -79,8 +82,12 @@ export const createServer = (
   const kept = newKept()
   const written: Written = new Map()
   const untrustedFiles = new Set<string>()
+  const home = os.homedir()
   const shapes = new Map<string, string>()
-  const filesDir = path.resolve(appPath(os.homedir(), 'files', randomUUID()))
+  // The shapes of earlier sessions load in the background: tools/list does not wait for them. A search waits.
+  const stored = loadShapes(home, log)
+  const shownNow: Context['shapes'] = async states => shownShapes(states, shapes, await stored, schemaHash)
+  const filesDir = path.resolve(appPath(home, 'files', randomUUID()))
   const stopping = new AbortController()
   const runs = new Set<Promise<unknown>>()
 
@@ -173,7 +180,7 @@ export const createServer = (
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
       log,
-      home: os.homedir(),
+      home,
     }
     const running = runCode(ctx, code)
     runs.add(running)
@@ -190,7 +197,7 @@ export const createServer = (
   mcp.server.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     const { name, arguments: args = {} } = req.params
     return isServed(name)
-      ? HANDLERS[name](args, { downstream, shapes, canAsk, run, extra })
+      ? HANDLERS[name](args, { downstream, shapes: shownNow, canAsk, run, extra })
       : text(`Unknown tool: ${name}`, true)
   })
   return {

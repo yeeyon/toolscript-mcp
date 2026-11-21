@@ -958,6 +958,40 @@ test('run (u) a policy that an untrusted run writes into the config reaches the 
   }
 })
 
+test('shapes: a shape that one session learned shows in the next session, with no probe run', async () => {
+  const home = fs.mkdtempSync(path.join(dir, 'shapes-home-'))
+  const session = async use => {
+    const c = new Client({ name: 'e2e-shapes', version: '0' })
+    await c.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [MAIN, '--config', configFile],
+        env: { ...SERVER_ENV, HOME: home, USERPROFILE: home },
+        stderr: 'ignore',
+      }),
+    )
+    try {
+      return await use(c)
+    } finally {
+      await c.close()
+    }
+  }
+  const shapeLine = async c => {
+    const r = await c.callTool({ name: 'search_tools', arguments: { query: 'mcp__bench__list_issues' } })
+    return r.content[0].text.split('\n').find(l => l.startsWith('returned earlier: '))
+  }
+  const first = await session(async c => {
+    assert.equal(await shapeLine(c), undefined)
+    const r = await run('return (await call("mcp__bench__list_issues", { project: "OPS" })).issues.length', c)
+    assert.equal(r.isError, false, r.text)
+  })
+  assert.equal(first, undefined)
+  const file = path.join(home, '.toolscript-mcp', 'learned', 'shapes.json')
+  assert.ok(fs.existsSync(file), 'the first session wrote the shapes file')
+  const second = await session(shapeLine)
+  assert.match(second ?? '', /^returned earlier: \{.+\}$/)
+})
+
 test('(f) stdout holds only JSON-RPC, and (h) the server and its children end when stdin closes', async () => {
   // A run in flight at shutdown gets its sandbox killed and its exchange dir removed.
   const inFlight = run('while (true) {}').catch(err => err)

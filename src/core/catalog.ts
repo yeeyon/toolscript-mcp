@@ -3,7 +3,7 @@
 
 import type { ServerKey } from './config.ts'
 import { decide, shownName, type Action, type Bridges, type Policy } from './policy.ts'
-import { learnedShape, listsAll, rankTools, type ArgSpec, type ToolEntry } from './protocol.ts'
+import { MAX_SHAPES, learnedShape, listsAll, rankTools, type ArgSpec, type Shapes, type ToolEntry } from './protocol.ts'
 
 /** A tool as a downstream server lists it. */
 export type DownstreamTool = {
@@ -334,7 +334,6 @@ const MAX_LEVEL = 3
 // Unions, arrays and refs nested in each other with no object between them.
 const MAX_NEST = 12
 const MAX_REF_HOPS = 8
-const MAX_SHAPES = 500
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/
 
@@ -619,6 +618,28 @@ export const learnShape = (shapes: Map<string, string>, tool: string, value: unk
   if (shape === undefined || (shapes.has(tool) && shape.includes('[]'))) return
   if (!shapes.has(tool) && shapes.size >= MAX_SHAPES) return
   shapes.set(tool, shape)
+}
+
+/**
+ * The shapes that `search_tools` shows: the ones this session learned, and the stored ones (from the shapes file)
+ * of the tools that are listed now, when the hash of the tool's `inputSchema` is the one stored with the shape.
+ * A tool whose schema changed shows no stored shape, also when its server connected again after the start. A
+ * stored shape of a server that is not connected is not shown and not removed. `hash` is the host's, because
+ * core has no Node module.
+ */
+export const shownShapes = (
+  states: readonly ServerState[],
+  learned: ReadonlyMap<string, string>,
+  stored: Shapes,
+  hash: (inputSchema: unknown) => string,
+): Map<string, string> => {
+  const shown = new Map<string, string>()
+  for (const t of catalogOf(states)) {
+    const entry = Object.hasOwn(stored, t.name) ? stored[t.name] : undefined
+    if (entry !== undefined && entry.schema === hash(t.inputSchema)) shown.set(t.name, entry.shape)
+  }
+  for (const [tool, shape] of learned) shown.set(tool, shape)
+  return shown
 }
 
 const ECHO_MAX = 200

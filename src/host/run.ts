@@ -93,6 +93,7 @@ import { SERVER_NAME } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
 import { appendRunLog } from './runlog.ts'
+import { saveShapes, schemaHash } from './shapes.ts'
 
 const MAX_RESULT_CHARS = 20_000
 // Nested calls of one run that wait for a reply at one time: a program that
@@ -138,7 +139,7 @@ export type RunContext = {
   /** Aborts when the server shuts down or the client cancels the call: the sandbox is killed. */
   readonly signal: AbortSignal
   readonly log: (line: string) => void
-  /** HOME, where the run log goes. */
+  /** HOME, where the run log and the learned shapes file go. */
   readonly home: string
   /** Tests only: lower limits of the note on calls that ran one after another, so a test stays short. */
   readonly serialLimits?: SerialLimits
@@ -403,6 +404,20 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
+/**
+ * Saves the shapes of a run to the shapes file, with the hash of each tool's input schema as its server lists it
+ * now. At most one file write for a run, and none when the file already holds them. A tool that no server lists
+ * any more (its server closed) keeps no shape.
+ */
+const persistShapes = async (ctx: RunContext, learned: ReadonlyMap<string, string>): Promise<void> => {
+  if (learned.size === 0) return
+  const schemas = new Map(catalogOf(ctx.downstream.states()).map(t => [t.name, t.inputSchema]))
+  const entries = new Map<string, { shape: string; schema: string }>()
+  for (const [tool, shape] of learned)
+    if (schemas.has(tool)) entries.set(tool, { shape, schema: schemaHash(schemas.get(tool)) })
+  if (entries.size > 0) await saveShapes(ctx.home, entries, ctx.log)
+}
+
 /** `written`: the tool names that the program writes as strings. `known`: the tool names before the run. */
 const execute = async (
   ctx: RunContext,
@@ -440,6 +455,8 @@ const execute = async (
   let recalls = 0
   // Set before the program gets untrusted content, so a saveFile after it marks its file.
   let untrusted = false
+  // The shape that the session holds for each tool whose result worked in this run, for the shapes file.
+  const learned = new Map<string, string>()
   const answers: Promise<void>[] = []
   const limit = limiter(MAX_PARALLEL_CALLS)
   const fileFor = runFiles(extension => path.join(ctx.filesDir, `${randomUUID()}${extension}`))
@@ -623,7 +640,11 @@ const execute = async (
     const ref = r.ok ? keep(kept, json, Date.now(), tainted) : undefined
     if (r.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
     // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
-    if (r.ok && !tainted) learnShape(ctx.shapes, tool, r.value)
+    if (r.ok && !tainted) {
+      learnShape(ctx.shapes, tool, r.value)
+      const shape = ctx.shapes.get(tool)
+      if (shape !== undefined) learned.set(tool, shape)
+    }
     records.set(id, {
       ref,
       tool,
@@ -814,6 +835,8 @@ const execute = async (
   )
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
+  // A run that read untrusted content at any point saves no shape, also from its calls before that content.
+  if (!untrusted) await persistShapes(ctx, learned)
   const result = { text, isError: outcome?.t !== 'done', images: shown.images }
   return {
     result,

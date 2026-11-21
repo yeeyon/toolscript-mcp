@@ -178,6 +178,7 @@ CLI usage and printed commands:
 - A path with a space or a shell character in these commands is quoted for the shell of the system. PowerShell on Windows gets `node` directly in the Claude Code step of a clone, with no `cmd /c`.
 - On Windows, each path in these commands has forward slashes, and a quoted word has double quotes. So the login command and the Claude Code step of a clone work in cmd.exe, PowerShell 5.1, PowerShell 7 and Git Bash. The Claude Code step of an npm install keeps `cmd /c` for PowerShell, and Git Bash turns `/c` into a path. Only a word with `$`, a backtick or a double quote gets single quotes, which only PowerShell and bash read.
 - The login line that `init` prints names the config file with `--config`.
+- `search_tools` shows `returned earlier` shapes across sessions. They live in `~/.toolscript-mcp/learned/shapes.json`, a folder that the model cannot write. Each entry has the hash of the tool's input schema. The server reads the file by a strict grammar, and a run that read untrusted content saves nothing (#69).
 
 Runner fixes (inherited from claude-code-mode at eea4077):
 
