@@ -181,6 +181,12 @@ CLI usage and printed commands:
 - `search_tools` shows `returned earlier` shapes across sessions. They live in `~/.toolscript-mcp/learned/shapes.json`, a folder that the model cannot write. Each entry has the hash of the tool's input schema. The server reads the file by a strict grammar, and a run that read untrusted content saves nothing (#69).
 - A nested call is refused when a string in its arguments names a guarded folder: `~/.toolscript-mcp/hints`, `functions`, `learned` or `oauth`, or the project `hints`. The check covers paths (also `..`, letter case, symlinks, junctions and 8.3 names) and the name of a folder in text, such as a shell command. No allow rule or approval lifts it. The run log code is `guarded`. `oauth/` is now a guarded folder (#99).
 
+Shared servers (issue #63, preparation):
+
+- Added the `share` keys: `"share": true` or `false` at the top level, `true`, `false` or `"folder"` on a stdio server, and `TOOLSCRIPT_SHARE=0` or `1`. Sharing is off by default and not active yet: each server still starts one time per session.
+- Added `src/core/mux.ts`, the pure router of a child process that several sessions share, with a seeded property test, and `src/core/share.ts`, the class and the share key of a stdio server.
+- Added the `doctor` check `share`: the switch, and the class of each stdio server with the rule that decided.
+
 Runner fixes (inherited from claude-code-mode at eea4077):
 
 - A failed call that the program awaits later no longer crashes the sandbox.

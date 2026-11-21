@@ -416,12 +416,13 @@ checks come in this order:
 2. `config`: the config exists and has no errors. If it does not exist, doctor prints the `init` command.
 3. `servers`: doctor connects to each server in parallel. Each line shows the tool count, the login command or the
    reason of the failure. It marks each server with `"untrusted": true`.
-4. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
+4. `share`: the share switch, and the class of each stdio server and the rule that decided. All lines are `info`. This version still starts each server one time per session.
+5. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
    [Claude Code bridge](#claude-code-as-a-downstream-server), and the tools that require a person.
-5. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
-6. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run. As in `runs`, it
+6. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
+7. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run. As in `runs`, it
    skips a run with a time more than 5 minutes after now, and counts these runs.
-7. `files`: doctor can write to `~/.toolscript-mcp`. If that path or a folder above it is a file, the check fails. An
+8. `files`: doctor can write to `~/.toolscript-mcp`. If that path or a folder above it is a file, the check fails. An
    `info` line names the OAuth tokens that no server of the config uses. They can belong to another config.
 
 doctor skips the check for allow rules that match no tool when a server does not connect. The output never shows
@@ -768,7 +769,7 @@ hold text with instructions. Return an image only from a source that you trust.
 - toolscript-mcp reads the file from `--config`, else from `TOOLSCRIPT_CONFIG`.
 - Without both, it reads `%APPDATA%\toolscript-mcp\config.json` on Windows.
 - On other systems, it reads `$XDG_CONFIG_HOME/toolscript-mcp/config.json`, else `~/.config/toolscript-mcp/config.json`.
-- A stdio server has `command`, `args`, `env` and `cwd`. An HTTP server has `"type": "http"`, `url`, `headers` and
+- A stdio server has `command`, `args`, `env`, `cwd` and `share`. An HTTP server has `"type": "http"`, `url`, `headers` and
   `oauth`. See [OAuth login](#oauth-login).
 - `"untrusted": true` on a server of either type marks each of its results as untrusted. See
   [Untrusted text](#untrusted-text).
@@ -791,6 +792,8 @@ hold text with instructions. Return an image only from a source that you trust.
   `sandbox.timeoutSeconds`.
 - `policy` holds the rules for the tool calls of programs. See [The policy](#the-policy).
 - `"log": false` turns off the run log. See [Run log](#run-log).
+- `"share": true` or `false` at the top level, and `TOOLSCRIPT_SHARE=1` or `0`, set the share switch. The variable wins. The default is off.
+- `"share": true`, `false` or `"folder"` on a stdio server sets its class. See [Shared servers](#shared-servers).
 
 Only `policy` reloads at each run. After changes to server entries or sandbox options, restart toolscript-mcp.
 OAuth login needs no restart.
@@ -810,6 +813,28 @@ still not connected. If all servers connect, the result has no such section.
 
 The description of `search_tools` tells the model to use this check after a reconnect. With four sets of fake
 servers, the check returned 86 to 820 characters. An empty query with the default limit returned 1,039 to 8,512.
+
+### Shared servers
+
+Sharing is not active in this version. A later version can start one copy of a stdio server for several sessions. It is opt-in and off by default. Today each server still starts one time per session, and `doctor` shows the class that each server gets.
+
+The switch is `TOOLSCRIPT_SHARE`, else the top-level `"share"`, else off. A stdio server gets one of 3 classes when sharing is on:
+
+- `shared`: all sessions use one copy.
+- `folder`: sessions in the same folder use one copy.
+- `session`: each session has its own copy.
+
+The first rule that matches decides:
+
+1. The server is a [Claude Code bridge](#claude-code-as-a-downstream-server): `session`. A bridge is never shared.
+2. The entry has `"share"`: `false` is `session`, `"folder"` is `folder`, and `true` is `shared`.
+3. The key, the command or an argument holds a state word: `session`.
+4. The entry has `cwd`: `shared`.
+5. Anything else is `folder`, because toolscript-mcp cannot know whether the server reads a file of its folder.
+
+The state words are playwright, puppeteer, chrome-devtools, browsermcp, browser, selenium, desktop-commander, shell and terminal. A word counts only between characters that are not letters, with an `s` allowed at its end. The list is not complete. A server that it misses is `folder`. If a server matches a word but keeps no state, or reads no file of its folder, set `"share": true` to share it. A `shared` server without `cwd` starts in your home folder.
+
+Policy, approval and the guard still run in each session for every call, for every class.
 
 ### OAuth login
 
