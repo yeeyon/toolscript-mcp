@@ -253,3 +253,17 @@ test('memory.mjs counts no older process whose dead parent left its pid to a hos
     ['5000 host', '5001 other'],
   )
 })
+
+test('memory.mjs counts as a broker only the broker.js of this build', () => {
+  const tracker = newTracker([], 0)
+  const ours = path.join(REPO, 'dist', 'host', 'broker.js')
+  const row = { name: 'node.exe', pb: 1, ws: 1, ppid: 1, t: 10 }
+  const table = [
+    { ...row, pid: 8000, cmd: `node "${ours}"` },
+    { ...row, pid: 8001, cmd: 'node /unrelated-service/broker.js' },
+  ]
+  assert.deepEqual(
+    update(tracker, table).map(i => `${i.pid} ${i.role}`),
+    ['8000 broker'],
+  )
+})

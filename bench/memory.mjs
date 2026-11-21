@@ -23,6 +23,9 @@ import { ISSUES } from './data.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = path.join(REPO, 'dist', 'host', 'main.js')
+// The broker of slice 3 of #63, if this build has one. A process counts as a broker only when its command line names
+// this exact file, so an unrelated `broker.js` is never counted or ended.
+const BROKER = path.join(REPO, 'dist', 'host', 'broker.js')
 const FAKE_SERVER = path.join(REPO, 'bench', 'fake-server.mjs')
 const MB = 1048576
 /** In the arg, an env value, a header and the URL of the fixture: no output may hold it. tests/memory.e2e.mjs checks that. */
@@ -236,7 +239,7 @@ export const update = (tracker, table) => {
         const session = tracker.hosts.get(e.pid)
         if (session !== undefined && e.ppid === process.pid) {
           info = { session, role: 'host', key: null }
-        } else if (parent === undefined && norm(e.cmd).includes('/broker.js') && e.t >= tracker.since) {
+        } else if (parent === undefined && norm(e.cmd).includes(norm(BROKER)) && e.t >= tracker.since) {
           // A broker is its own tree: it is not in the host that started it, and it counts once in the union.
           info = { session: null, role: 'broker', key: null }
         } else if (parent !== undefined && parent.t <= e.t) {
