@@ -109,7 +109,10 @@ This works once 1.0.0 is published. Until then, use the GitHub clone or the Clau
 npx -y toolscript-mcp init
 ```
 
-Next, follow [Client setup](#client-setup) and [Configure downstream servers](#configure-downstream-servers).
+`init` prints the entry of each client it finds, with `npx -y toolscript-mcp` as the command. For Codex, which init
+does not read, use the Codex entry in [Client setup](#client-setup) with `command = "npx"` and
+`args = ["-y", "toolscript-mcp", "--config", "/absolute/path/to/config.json"]`. Then follow
+[Configure downstream servers](#configure-downstream-servers).
 
 ### From GitHub (beta)
 
@@ -934,7 +937,9 @@ code. Read [SECURITY.md](SECURITY.md).
 
 ## Limits
 
-- From 1.0.0, semantic versioning covers `call()`, the CLI commands, the config keys and the file formats.
+- From 1.0.0, semantic versioning covers the program API (`call()`, `saveFile`, `readFile`, `recall`, `sleep`), the
+  CLI commands, the config keys, hint files and saved functions. The run log and `learned/shapes.json` can change in
+  a minor release.
 - On Windows, the sandbox has no network block and no CPU limit. The host stops the process at the time limit.
 - `ask` rules need a client with MCP elicitation. Without it, only tools with `allow` rules and no user-interaction mark can run.
 - Elicitation is tested with the client of the MCP TypeScript SDK. It is not yet tested in the user interface of each
