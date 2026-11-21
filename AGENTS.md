@@ -15,9 +15,9 @@ project claude-code-mode (see `NOTICE`). The server lists `run_code` and `search
   a bridge only when its match starts with `mcp__<key>__` (`counts` in `policy.ts`). `doctor.ts` holds the line shape
   of `toolscript-mcp doctor` and the pure parts of its checks, such as `hiddenBy` (one glob covers another).
   `guard.ts` holds the guard of the folders in `guardedDirs` at each nested call: the walk of the arguments, the
-  markers, the path candidates and the compare. It takes `realpath` as a parameter. `commands.ts` holds the commands that the CLI prints for a person or an agent to run: the allowlist of names and
-  paths (`PLAIN_NAME`, `PLAIN_PATH`), the label lines, and the plan and lines of `toolscript-mcp allow`. Imports
-  between them use `.ts` extensions.
+  markers, the path candidates and the compare. It takes `realpath` as a parameter. `commands.ts` holds the commands
+  that the CLI prints for a person or an agent to run: the allowlist of names and paths (`PLAIN_NAME`, `PLAIN_PATH`),
+  the label lines, and the plan and lines of `toolscript-mcp allow`. Imports between them use `.ts` extensions.
 - `src/host/` holds the host code, which runs in Node. `tsconfig.host.json` checks its types. `scripts/build.mjs`
   bundles it with the SDK into `dist/host/main.js`, the one file that the package runs.
   - `main.ts`: the `toolscript-mcp` command. It reads the config, starts the server and closes the children.

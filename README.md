@@ -947,6 +947,10 @@ The guard stops a confused model and a simple injected program. It is not contai
 - A hard link, and a change between the check and the write.
 - A server on another machine, which sees its own disk.
 - More than 16 paths in one call.
+- A path in a string of more than 4096 characters, such as a shell heredoc that writes a long hint.
+- A path split across two arguments.
+- A path nested deeper than 16 levels.
+- Windows path forms beyond the prefixes `\\?\` and `\\.\` with a drive, such as trailing dots and spaces.
 
 The guard also refuses a short argument that only mentions a name, such as a search pattern for
 `.toolscript-mcp/hints`. This is a known false positive. Do not name the folder in a call. If a person must change a

@@ -248,6 +248,20 @@ describe('guardHit', () => {
     assert.equal(counted.asked.length, LIST.length + GUARD_REALPATHS)
   })
 
+  test('reads \\\\?\\C:\\ and \\\\.\\C:\\ as the local path, and still sends no UNC path to realpath', async () => {
+    const list = guardedList('C:/Users/u', '')
+    const f = fake()
+    const at = (p: string) =>
+      guardHit(
+        { p },
+        { home: 'C:/Users/u', cwd: 'C:/w', list, forms: () => resolveGuarded(list, f.realpath), realpath: f.realpath },
+      )
+    assert.equal(await at('\\\\?\\C:\\Users\\u\\.toolscript-mcp\\files\\..\\hints\\a.md'), '~/.toolscript-mcp/hints')
+    assert.equal(await at('\\\\.\\C:\\Users\\u\\.toolscript-mcp\\files\\..\\oauth\\a.json'), '~/.toolscript-mcp/oauth')
+    assert.equal(await at('\\\\?\\C:\\Users\\u\\.toolscript-mcp\\files\\a.json'), undefined)
+    assert.equal(await at('\\\\?\\UNC\\fake-host\\share\\a'), undefined)
+  })
+
   test('gives a UNC path the lexical check only, so no connection opens to its host', async () => {
     const f = fake()
     assert.equal(await hit({ p: '\\\\fake-host\\share\\a.png', q: '//fake-host/share/b.png' }, f), undefined)

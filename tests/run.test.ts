@@ -2595,6 +2595,34 @@ describe('the guarded folders', () => {
     ])
   })
 
+  test('refuses a name with doubled separators, a dot part, escaped backslashes or a JSON string', async () => {
+    const home = dir('home-')
+    await expectRefused({ home }, [
+      { command: String.raw`echo x > "C:\\Users\\me\\.toolscript-mcp\\hints\\a.md"` },
+      { json: JSON.stringify({ path: String.raw`C:\Users\me\.toolscript-mcp\hints\a.md` }) },
+      { command: 'echo x > ~/.toolscript-mcp/./hints/a.md' },
+      { command: 'echo x > $HOME/.toolscript-mcp//hints/a.md' },
+    ])
+    await expectSent({ home }, [
+      { command: 'ls ~/.toolscript-mcp//files/' },
+      { command: 'ls my.toolscript-mcp//hints' },
+      { command: 'ls ~/.toolscript-mcp//hints-old' },
+    ])
+  })
+
+  test(
+    'refuses a path with the prefix \\\\?\\ or \\\\.\\ and a drive',
+    { skip: process.platform !== 'win32' && 'only Windows has drives' },
+    async () => {
+      const home = dir('home-')
+      fs.mkdirSync(path.join(home, '.toolscript-mcp', 'hints'), { recursive: true })
+      await expectRefused({ home }, [
+        { path: `\\\\?\\${home}\\.toolscript-mcp\\files\\..\\hints\\a.md` },
+        { path: `\\\\.\\${home}\\.toolscript-mcp\\files\\..\\hints\\a.md` },
+      ])
+    },
+  )
+
   test('refuses a nested argument, in an object or an array', async () => {
     const home = dir('home-')
     const target = `${fwd(home)}/.toolscript-mcp/hints/x.md`

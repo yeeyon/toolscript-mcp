@@ -54,7 +54,8 @@ const WORD = /^[\p{L}\p{N}_.-]$/u
  * `my.toolscript-mcp/hints` pass.
  */
 export const markerIn = (text: string): string | undefined => {
-  const folded = foldCase(text.replaceAll('\\', '/'))
+  // A doubled separator or a `/./` does not change the path, so it must not hide the marker.
+  const folded = foldCase(text.replaceAll('\\', '/').replace(/\/(?:\.?\/)+/g, '/'))
   for (const marker of GUARD_MARKERS) {
     for (let at = folded.indexOf(marker); at >= 0; at = folded.indexOf(marker, at + 1)) {
       const before = at > 0 ? folded.charAt(at - 1) : ''
@@ -146,10 +147,12 @@ export type GuardSetup = {
 export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string | undefined> => {
   const lexical = setup.list.map(({ label, dir }) => ({ label, dirs: [dir] }))
   const paths: { abs: string; remote: boolean }[] = []
-  for (const text of stringsOf(args, 0)) {
-    const marker = markerIn(text)
+  for (const raw of stringsOf(args, 0)) {
+    const marker = markerIn(raw)
     if (marker !== undefined) return `~/${marker}`
-    if (!isPathLike(text)) continue
+    if (!isPathLike(raw)) continue
+    // `\\?\C:\x` and `\\.\C:\x` are the local path `C:\x`: Node writes through them.
+    const text = raw.replace(/^[\\/]{2}[?.][\\/](?=[A-Za-z]:)/, '')
     const abs = absolutePath(text, setup.home, setup.cwd)
     const hit = hitIn(abs, lexical)
     if (hit !== undefined) return hit
