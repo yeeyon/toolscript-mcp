@@ -20,6 +20,7 @@ import {
   ok,
   policyFindings,
   serverFinding,
+  shareFindings,
   staleStoreKeys,
   warn,
   type CheckName,
@@ -220,6 +221,8 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
       return serverFinding(s, entry !== undefined && entry.kind !== 'invalid' && entry.untrusted === true, login(s.key))
     })
   },
+
+  share: async ({ loaded }) => (loaded.ok ? shareFindings(loaded.config) : []),
 
   policy: async ({ loaded, states }) => {
     if (!loaded.ok || states === undefined) return [info('skipped, because the config did not load')]

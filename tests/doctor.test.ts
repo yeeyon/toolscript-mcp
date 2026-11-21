@@ -8,7 +8,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { NPX_LAUNCH, type ServerKey } from '../src/core/config.ts'
-import { checkLine, hiddenBy, nodeFinding, policyFindings, staleStoreKeys } from '../src/core/doctor.ts'
+import { checkLine, hiddenBy, nodeFinding, policyFindings, shareFindings, staleStoreKeys } from '../src/core/doctor.ts'
+import { parseConfig } from '../src/core/config.ts'
 import { appPath, oauthFolder, runLogFile } from '../src/core/paths.ts'
 import type { Rule } from '../src/core/policy.ts'
 import { runLine, type RunRecord } from '../src/core/runlog.ts'
@@ -239,7 +240,7 @@ describe('doctor', () => {
     assert.equal(s.of('config')[0], `ok    config   ${s.config}`)
     // The checks print in this order.
     const names = [...new Set(s.printed.map(l => l.slice(6, 14).trim()))]
-    assert.deepEqual(names, ['node', 'config', 'servers', 'policy', 'sandbox', 'run-log', 'files'])
+    assert.deepEqual(names, ['node', 'config', 'servers', 'share', 'policy', 'sandbox', 'run-log', 'files'])
     assert.ok(
       s.printed.every(l => /^(ok|info|warn|fail) +\S+ +\S/.test(l) && /^[\x20-\x7e]*$/.test(l)),
       s.printed.join('\n'),
@@ -448,5 +449,81 @@ describe('doctor', () => {
     s.printed.length = 0
     assert.equal(await runDoctor(['--help'], s.io), 0)
     assert.deepEqual(s.printed, ['usage: toolscript-mcp doctor [--config <path>] [--help]'])
+  })
+})
+
+describe('shareFindings', () => {
+  const FAKE_ENV = 'fake-env-value-0123456789'
+  const entries = {
+    grafana: {
+      command: 'docker',
+      args: ['run', '--token', SECRET, 'mcp/grafana'],
+      env: { TOKEN: FAKE_ENV },
+      share: true,
+    },
+    azure: { command: 'node', args: ['/opt/fake/index.js'], env: { TOKEN: FAKE_ENV } },
+    github: { command: 'docker', args: ['run', 'ghcr.io/github/github-mcp-server'], cwd: '/work/app' },
+    files: { command: 'npx', args: ['server-filesystem', '.'], share: 'folder' },
+    'claude-code': { command: 'claude', args: ['mcp', 'serve'] },
+    keeper: { command: 'node', args: ['x.js'], share: false },
+    playwright: { command: 'npx', args: ['@playwright/mcp@latest'], env: { TOKEN: FAKE_ENV } },
+    atlassian: { type: 'http', url: 'https://mcp.example.com/mcp' },
+  }
+  const findings = (json: object, env: Record<string, string> = {}) => {
+    const parsed = parseConfig(JSON.stringify(json), env, '/usr/bin/node', 'linux')
+    assert.ok(parsed.ok)
+    return shareFindings(parsed.config)
+  }
+
+  test('prints the switch, then one line per stdio server in config order, all info', () => {
+    const found = findings({ mcpServers: entries })
+    assert.ok(found.every(f => f.status === 'info'))
+    assert.deepEqual(
+      found.map(f => f.detail),
+      [
+        'sharing is off (the default). This version starts each server one time per session in any case',
+        'grafana: "share": true, so it starts in the home folder',
+        'azure: one copy per folder: no cwd and no "share" key. Set "share": true when it reads no file of its folder',
+        'github: shared by all sessions: it has a cwd',
+        'files: one copy per folder: "share": "folder"',
+        'claude-code: one copy per session: it is a Claude Code bridge',
+        'keeper: one copy per session: "share": false',
+        'playwright: one copy per session: it keeps state between calls (playwright). Set "share": true to share it',
+      ],
+    )
+  })
+
+  test('names the switch and its source', () => {
+    const first = (json: object, env?: Record<string, string>) =>
+      findings({ mcpServers: entries, ...json }, env)[0]!.detail
+    const tail = '. This version starts each server one time per session in any case'
+    assert.equal(first({ share: true }), 'sharing is on ("share": true)' + tail)
+    assert.equal(first({ share: false }), 'sharing is off ("share": false)' + tail)
+    assert.equal(first({}, { TOOLSCRIPT_SHARE: '1' }), 'sharing is on (TOOLSCRIPT_SHARE=1)' + tail)
+    assert.equal(first({ share: true }, { TOOLSCRIPT_SHARE: '0' }), 'sharing is off (TOOLSCRIPT_SHARE=0)' + tail)
+  })
+
+  test('prints nothing without a stdio server', () => {
+    assert.deepEqual(findings({ mcpServers: { atlassian: entries.atlassian } }), [])
+    assert.deepEqual(findings({ mcpServers: {} }), [])
+  })
+
+  test('no line holds an argument, an env value or a path', () => {
+    const all = JSON.stringify(findings({ mcpServers: entries, share: true }))
+    for (const secret of [SECRET, FAKE_ENV, '/opt/fake', '/work/app', 'mcp/grafana'])
+      assert.ok(!all.includes(secret), secret)
+  })
+
+  test('doctor prints the share lines after servers, and the exit code stays 0', async () => {
+    const s = setup({ mcpServers: { demo: { ...demoEntry, share: true, env: { TOKEN: SECRET } } } })
+    assert.equal(await s.doctor(), 0)
+    assert.deepEqual(s.of('share'), [
+      'info  share    sharing is off (the default). This version starts each server one time per session in any case',
+      'info  share    demo: "share": true, so it starts in the home folder',
+    ])
+    assert.ok(
+      s.printed.findIndex(l => l.startsWith('info  share')) > s.printed.findIndex(l => l.slice(6, 13) === 'servers'),
+    )
+    assert.ok(!s.printed.join('\n').includes(SECRET))
   })
 })
