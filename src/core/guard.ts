@@ -118,11 +118,12 @@ const plain = (real: string): string =>
  * The real path of `path`: the real path of its deepest part that exists, then the rest. A folder that does not exist
  * yet gets the real path of its parent. Undefined when no part within GUARD_PARENT_STEPS exists. Pass a path with its
  * `..` parts kept (`rawPath`): the file system resolves each link before the `..` that follows it. The parent steps cut
- * the text at the last `/`, so they never fold a `..` by name.
+ * the text at the last `/`, so they never fold a `..` by name. A doubled `/` and a `/./` go first, as they change no
+ * path, so they cannot spend the parent steps. A leading `//` stays: it starts a UNC path.
  */
 export const realPathOf = async (path: string, realpath: Realpath): Promise<string | undefined> => {
   const rest: string[] = []
-  let current = path
+  let current = path.replace(/(?<=.)\/(?:\.?\/)+/g, '/')
   for (let step = 0; step <= GUARD_PARENT_STEPS; step++) {
     try {
       const real = plain(await realpath(current))

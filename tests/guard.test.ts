@@ -246,6 +246,18 @@ describe('guardHit', () => {
     assert.equal(await hit({ p: '/work/alias/../elsewhere/t.json' }, f), undefined)
   })
 
+  test('spends no parent step on a doubled separator or a /./ after a link', async () => {
+    const links = fake({ '/work/alias': '/home/u/.toolscript-mcp/hints' })
+    // the folder `new` does not exist yet, so the walk steps up to the link
+    const f = {
+      asked: links.asked,
+      realpath: (p: string) => (/\/new(?:\/|$)/.test(p) ? Promise.reject(new Error('missing')) : links.realpath(p)),
+    }
+    const many = `/work/alias/new${'/'.repeat(40)}token.json`
+    assert.equal(await hit({ p: many }, f), '~/.toolscript-mcp/hints')
+    assert.equal(await hit({ p: `/work/alias/new${'/.'.repeat(40)}/token.json` }, f), '~/.toolscript-mcp/hints')
+  })
+
   test('realPathOf keeps the .. parts as written when it steps up for a path that does not exist', async () => {
     const asked: string[] = []
     const real: Realpath = async p => {
