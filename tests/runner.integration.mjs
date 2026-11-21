@@ -4,7 +4,7 @@
 //
 //   node tests/runner.integration.mjs
 
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
@@ -26,10 +26,10 @@ process.env.TOOLSCRIPT_TEST_SECRET = SECRET
 // The host reads stdout with takeMessages and starts the runner with launch.
 // Node 22.13 runs this file with no type stripping, so ask for it once and
 // load the real modules.
-let takeMessages, launch, makeExchangeDir, removeExchangeDir, LAYERS, KILL_GRACE_MS, RUNNER
+let takeMessages, launch, sandboxCommand, makeExchangeDir, removeExchangeDir, LAYERS, KILL_GRACE_MS, RUNNER
 try {
   ;({ takeMessages } = await import('../src/core/protocol.ts'))
-  ;({ launch, makeExchangeDir, removeExchangeDir, LAYERS, KILL_GRACE_MS, RUNNER } = await import(
+  ;({ launch, sandboxCommand, makeExchangeDir, removeExchangeDir, LAYERS, KILL_GRACE_MS, RUNNER } = await import(
     '../src/host/launch.ts'
   ))
 } catch (err) {
@@ -390,9 +390,30 @@ const cases = {
 
   ...(LAYERS.cpuLimit
     ? {
+        // The command of launch with no host kill timer, so only ulimit -t can end the loop.
+        // The guard only stops a broken layer from hanging CI: nothing races it.
         'the CPU limit stops a busy loop (ulimit -t)': async () => {
-          const { ending } = await busyLoop()
-          assert.ok(ending.kind === 'exit' && ['SIGXCPU', 'SIGKILL'].includes(ending.signal), JSON.stringify(ending))
+          const xdir = await makeExchangeDir()
+          try {
+            const command = sandboxCommand({
+              node: process.execPath,
+              runner: RUNNER,
+              xdir,
+              timeoutMs: 1000,
+              code: '',
+            })
+            const child = spawn(command.file, command.args, { env: command.env, stdio: 'pipe' })
+            child.stdin.on('error', () => {})
+            child.stdin.end(JSON.stringify({ code: 'while (true) {}', lib: {}, timeoutMs: 1000 }))
+            let hung = false
+            const guard = setTimeout(() => (hung = child.kill('SIGKILL')), 30_000)
+            const [code, signal] = await new Promise(resolve => child.on('close', (c, s) => resolve([c, s])))
+            clearTimeout(guard)
+            assert.ok(!hung, 'the CPU limit did not stop the busy loop within 30 s')
+            assert.ok(['SIGXCPU', 'SIGKILL'].includes(signal), `ended with code ${code}, signal ${signal}`)
+          } finally {
+            await removeExchangeDir(xdir)
+          }
         },
       }
     : {
