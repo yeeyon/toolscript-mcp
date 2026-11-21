@@ -209,7 +209,7 @@ const stdioGroups = servers => {
 // started, a new broker (a process of broker.js created after the round began), or the child of a process that
 // joined (parents are older than children, so one pass in creation order is enough).
 
-const newTracker = (groups, since) => ({ groups, since, known: new Map(), hosts: new Map() })
+export const newTracker = (groups, since) => ({ groups, since, known: new Map(), hosts: new Map() })
 
 const classify = (tracker, entry, parent) => {
   const cmd = norm(entry.cmd)
@@ -220,7 +220,7 @@ const classify = (tracker, entry, parent) => {
   return { role: parent.role === 'broker' ? 'broker' : 'other', key: null }
 }
 
-const update = (tracker, table) => {
+export const update = (tracker, table) => {
   const alive = []
   const byPid = new Map()
   // Creation times tie on macOS (1 s resolution), so a child can come before its parent in this order. A pass that
@@ -239,7 +239,8 @@ const update = (tracker, table) => {
         } else if (parent === undefined && norm(e.cmd).includes('/broker.js') && e.t >= tracker.since) {
           // A broker is its own tree: it is not in the host that started it, and it counts once in the union.
           info = { session: null, role: 'broker', key: null }
-        } else if (parent !== undefined) {
+        } else if (parent !== undefined && parent.t <= e.t) {
+          // A child is never older than its parent. An older row only holds a stale ppid that a new process reused.
           info = { session: parent.session, ...classify(tracker, e, parent) }
         } else {
           next.push(e)
@@ -373,7 +374,7 @@ class Session {
   }
 }
 
-/** Memory a new process can use, in MB. os.freemem() on macOS counts only free pages, not the cache that is reclaimable. */
+/** Memory a new process can use, in MB: process.availableMemory() where Node has it, else os.freemem(). */
 const freeMb = () => (typeof process.availableMemory === 'function' ? process.availableMemory() : os.freemem()) / MB
 
 const ms = t0 => Math.round(performance.now() - t0)
@@ -844,7 +845,7 @@ const main = async () => {
   }
   const data = {
     meta: {
-      date: new Date().toISOString().slice(0, 10),
+      date: new Date().toLocaleDateString('sv'), // the local date as YYYY-MM-DD
       os: `${os.type()} ${os.release()} ${os.arch()}`,
       node: process.version,
       commit: commitOf(),

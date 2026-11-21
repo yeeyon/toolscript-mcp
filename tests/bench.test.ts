@@ -10,7 +10,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TOOL } from '../src/core/tools.ts'
 import { searchResult } from '../src/core/catalog.ts'
-import { parseNotConnected } from '../bench/memory.mjs'
+import { newTracker, parseNotConnected, update } from '../bench/memory.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const ROOT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-bench-test-')))
@@ -237,4 +237,19 @@ test('memory.mjs reads the Not connected lines that search_tools prints', () => 
   )
   assert.match(text, /^- slow: still connecting\. Search again in a moment\.$/m)
   assert.deepEqual(parseNotConnected(text, ['slow', 'dead', 'fine']), { connecting: ['slow'], failed: ['dead'] })
+})
+
+test('memory.mjs counts no older process whose dead parent left its pid to a host', () => {
+  const tracker = newTracker([], 0)
+  tracker.hosts.set(5000, 1)
+  const row = { name: 'node.exe', cmd: 'node main.js', pb: 1, ws: 1 }
+  const table = [
+    { ...row, pid: 7000, ppid: 5000, t: 100, name: 'Unrelated.exe', cmd: 'Unrelated.exe' },
+    { ...row, pid: 5000, ppid: process.pid, t: 900 },
+    { ...row, pid: 5001, ppid: 5000, t: 900 },
+  ]
+  assert.deepEqual(
+    update(tracker, table).map(i => `${i.pid} ${i.role}`),
+    ['5000 host', '5001 other'],
+  )
 })
