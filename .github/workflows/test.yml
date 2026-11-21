@@ -33,6 +33,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node tests/server.e2e.mjs
+      - run: node tests/memory.e2e.mjs
       - run: node scripts/pack-check.mjs
 
   sandbox:
