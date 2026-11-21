@@ -9,13 +9,14 @@ import {
   absolutePath,
   guardHit,
   guardedList,
+  isFileName,
   isPathLike,
   markerIn,
   realPathOf,
   resolveGuarded,
   type Realpath,
 } from '../src/core/guard.ts'
-import { GUARD_MARKERS } from '../src/core/paths.ts'
+import { GUARD_MARKERS, normalizePath } from '../src/core/paths.ts'
 
 const HOME = '/home/u'
 const PROJECT = '/work/app'
@@ -27,7 +28,8 @@ const fake = (links: Record<string, string> = {}) => {
   const realpath: Realpath = async p => {
     asked.push(p)
     const link = Object.keys(links).find(l => p === l || p.startsWith(`${l}/`))
-    return link === undefined ? p : links[link] + p.slice(link.length)
+    // As a POSIX file system does: a link is replaced by its target before a `..` after it.
+    return normalizePath(link === undefined ? p : links[link] + p.slice(link.length))
   }
   return { asked, realpath }
 }
@@ -234,6 +236,47 @@ describe('guardHit', () => {
     assert.equal(await hit({ a: 'word', b: 5, c: ['x', 'y'], d: 'https://example.com/a', e: null }, f), undefined)
     assert.equal(await hit({ list: Array.from({ length: 1000 }, (_, i) => `s${i}`) }, f), undefined)
     assert.deepEqual(f.asked, [])
+  })
+
+  test('resolves a link before the .. that follows it, also for a file that does not exist yet', async () => {
+    const f = fake({ '/work/alias': '/home/u/.toolscript-mcp/hints' })
+    // the link points into hints, so `..` leaves hints for the folder beside it
+    assert.equal(await hit({ p: '/work/alias/../oauth/token.json' }, f), '~/.toolscript-mcp/oauth')
+    assert.equal(await hit({ p: '/work/alias/../oauth/new/deeper/t.json' }, f), '~/.toolscript-mcp/oauth')
+    assert.equal(await hit({ p: '/work/alias/../elsewhere/t.json' }, f), undefined)
+  })
+
+  test('realPathOf keeps the .. parts as written when it steps up for a path that does not exist', async () => {
+    const asked: string[] = []
+    const real: Realpath = async p => {
+      asked.push(p)
+      if (p === '/work/alias/../oauth') return '/home/u/.toolscript-mcp/oauth'
+      throw new Error('missing')
+    }
+    assert.equal(await realPathOf('/work/alias/../oauth/new.md', real), '/home/u/.toolscript-mcp/oauth/new.md')
+    assert.deepEqual(asked, ['/work/alias/../oauth/new.md', '/work/alias/../oauth'])
+  })
+
+  test('checks a bare file name in the folder of the server, and no word of prose', async () => {
+    const f = fake({ '/work/app/notes.json': '/home/u/.toolscript-mcp/oauth/f.json' })
+    assert.equal(await hit({ file: 'notes.json' }, f), '~/.toolscript-mcp/oauth')
+    assert.equal(await hit({ file: 'other.json' }, f), undefined)
+    const prose = fake()
+    assert.equal(
+      await hit({ a: 'hello', b: 'running', c: 'two words.txt', d: 'v1.2 notes', e: 'end.' }, prose),
+      undefined,
+    )
+    assert.deepEqual(prose.asked, [])
+    for (const text of ['notes.json', 'a.b', 'x_y-z.tar.gz']) assert.equal(isFileName(text), true, text)
+    for (const text of ['notes', 'a b.txt', `${'x'.repeat(256)}.txt`, 'a.', 'a/b.txt', 'https://e.com']) {
+      assert.equal(isFileName(text), false, text.slice(0, 20))
+    }
+  })
+
+  test('gives only 16 bare file names a real path', async () => {
+    const counted = fake()
+    await hit({ names: Array.from({ length: 40 }, (_, i) => `f${i}.txt`) }, counted)
+    assert.equal(counted.asked.length, LIST.length + GUARD_REALPATHS)
   })
 
   test('gives only the first 16 candidates a real path', async () => {

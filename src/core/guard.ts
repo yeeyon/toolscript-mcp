@@ -76,16 +76,35 @@ export const isPathLike = (text: string): boolean =>
   !SCHEME_URL.test(text) &&
   /^(?:[/~\\.]|[A-Za-z]:[\\/])|[/\\]/.test(text)
 
-/** `text` as an absolute, normalized path: `~` is `home`, a relative path is under `cwd`. `\` counts as `/`. */
-export const absolutePath = (text: string, home: string, cwd: string): string => {
+/**
+ * `text` as an absolute path with its `..` parts kept: `~` is `home`, a relative path is under `cwd`. `\` counts as
+ * `/`. The real path needs the parts as written: a `..` after a symlink leaves the folder that the link points to.
+ */
+export const rawPath = (text: string, home: string, cwd: string): string => {
   const path = text.replaceAll('\\', '/')
-  const full =
-    path === '~' || path.startsWith('~/')
-      ? home + path.slice(1)
-      : path.startsWith('/') || /^[A-Za-z]:(?:\/|$)/.test(path)
-        ? path
-        : `${cwd}/${path}`
-  return normalizePath(full)
+  return path === '~' || path.startsWith('~/')
+    ? home + path.slice(1)
+    : path.startsWith('/') || /^[A-Za-z]:(?:\/|$)/.test(path)
+      ? path
+      : `${cwd}/${path}`
+}
+
+/**
+ * True for a bare file name that can be a link in the folder of the server: no separator or space (so no URL), at
+ * most 255 characters, and an extension. A word of prose has none, so it costs no file system call.
+ */
+export const isFileName = (text: string): boolean => text.length <= 255 && /^[^\s/\\]+\.[A-Za-z0-9]{1,10}$/.test(text)
+
+/** `text` as an absolute, normalized path: the lexical form, with `..` resolved by name. */
+export const absolutePath = (text: string, home: string, cwd: string): string => normalizePath(rawPath(text, home, cwd))
+
+// The folder that holds `path`, as written, or undefined at the root.
+const parentOf = (path: string): string | undefined => {
+  const cut = path.lastIndexOf('/')
+  if (cut < 0) return undefined
+  const head = path.slice(0, cut)
+  const parent = head === '' ? '/' : /^[A-Za-z]:$/.test(head) ? `${head}/` : head
+  return parent === path ? undefined : parent
 }
 
 // What realpath returns on Windows can start with the prefix of a long path.
@@ -96,12 +115,14 @@ const plain = (real: string): string =>
     .replace(/^\/\/\?\//, '')
 
 /**
- * The real path of `abs`: the real path of its deepest part that exists, then the rest. A folder that does not exist
- * yet gets the real path of its parent. Undefined when no part within GUARD_PARENT_STEPS exists.
+ * The real path of `path`: the real path of its deepest part that exists, then the rest. A folder that does not exist
+ * yet gets the real path of its parent. Undefined when no part within GUARD_PARENT_STEPS exists. Pass a path with its
+ * `..` parts kept (`rawPath`): the file system resolves each link before the `..` that follows it. The parent steps cut
+ * the text at the last `/`, so they never fold a `..` by name.
  */
-export const realPathOf = async (abs: string, realpath: Realpath): Promise<string | undefined> => {
+export const realPathOf = async (path: string, realpath: Realpath): Promise<string | undefined> => {
   const rest: string[] = []
-  let current = abs
+  let current = path
   for (let step = 0; step <= GUARD_PARENT_STEPS; step++) {
     try {
       const real = plain(await realpath(current))
@@ -109,8 +130,8 @@ export const realPathOf = async (abs: string, realpath: Realpath): Promise<strin
     } catch {
       // not there yet: try its parent
     }
-    const parent = normalizePath(`${current}/..`)
-    if (parent === current) return undefined
+    const parent = parentOf(current)
+    if (parent === undefined) return undefined
     rest.unshift(current.slice(current.lastIndexOf('/') + 1))
     current = parent
   }
@@ -142,33 +163,43 @@ export type GuardSetup = {
 /**
  * The guarded folder that the arguments of a call name, as the refusal gives it, or undefined. A call with no path
  * candidate makes no file system call. The first GUARD_REALPATHS candidates get a real path, the others the lexical
- * check.
+ * check. A bare file name with an extension, such as `notes.json`, can be a link in the folder of the server: the
+ * first GUARD_REALPATHS of them get one `realpath` each, with no parent steps.
  */
 export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string | undefined> => {
   const lexical = setup.list.map(({ label, dir }) => ({ label, dirs: [dir] }))
-  const paths: { abs: string; remote: boolean }[] = []
-  for (const raw of stringsOf(args, 0)) {
-    const marker = markerIn(raw)
+  const paths: { abs: string; raw: string; remote: boolean }[] = []
+  const names: string[] = []
+  for (const original of stringsOf(args, 0)) {
+    const marker = markerIn(original)
     if (marker !== undefined) return `~/${marker}`
-    if (!isPathLike(raw)) continue
+    if (!isPathLike(original)) {
+      if (names.length < GUARD_REALPATHS && isFileName(original)) names.push(`${setup.cwd}/${original}`)
+      continue
+    }
     // `\\?\C:\x` and `\\.\C:\x` are the local path `C:\x`: Node writes through them.
-    const text = raw.replace(/^[\\/]{2}[?.][\\/](?=[A-Za-z]:)/, '')
+    const text = original.replace(/^[\\/]{2}[?.][\\/](?=[A-Za-z]:)/, '')
     const abs = absolutePath(text, setup.home, setup.cwd)
     const hit = hitIn(abs, lexical)
     if (hit !== undefined) return hit
     // A UNC path (`\\host\share`) gets the lexical check only: a real path would open a connection to that host.
-    paths.push({ abs, remote: /^[\\/]{2}/.test(text) })
+    paths.push({ abs, raw: rawPath(text, setup.home, setup.cwd), remote: /^[\\/]{2}/.test(text) })
   }
-  if (paths.length === 0 || setup.list.length === 0) return undefined
+  if ((paths.length === 0 && names.length === 0) || setup.list.length === 0) return undefined
   const forms = await setup.forms()
   for (const { abs } of paths) {
     const hit = hitIn(abs, forms)
     if (hit !== undefined) return hit
   }
-  for (const { abs, remote } of paths.slice(0, GUARD_REALPATHS)) {
+  for (const { raw, remote } of paths.slice(0, GUARD_REALPATHS)) {
     if (remote) continue
-    const real = await realPathOf(abs, setup.realpath)
+    const real = await realPathOf(raw, setup.realpath)
     const hit = real === undefined ? undefined : hitIn(real, forms)
+    if (hit !== undefined) return hit
+  }
+  for (const name of names) {
+    const real = await setup.realpath(name).then(plain, () => undefined)
+    const hit = real === undefined ? undefined : hitIn(normalizePath(real), forms)
     if (hit !== undefined) return hit
   }
   return undefined

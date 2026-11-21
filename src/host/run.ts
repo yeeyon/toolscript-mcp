@@ -518,6 +518,21 @@ const execute = async (
       callDecision(config.policy, config.bridges, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
+    // A guarded folder in the arguments is refused under any rule or approval. The guard waits on the file system, so
+    // it runs before the link and the policy check: no wait sits between that check and the call, and a mark that a
+    // server adds during the wait is in the list that the check reads. The log keeps what the policy says of the tool.
+    const entry = config.servers.get(server)
+    const folder = await guardHit(args, {
+      home: ctx.home,
+      cwd: entry?.kind === 'stdio' && entry.cwd !== undefined ? entry.cwd : project,
+      list: guarded,
+      forms: guardForms,
+      realpath: fs.promises.realpath,
+    })
+    if (folder !== undefined) {
+      decided.set(id, callDecision(config.policy, config.bridges, approved, tool, interactiveNow()))
+      return { ok: false, error: guardedText(tool, folder), code: 'guarded' }
+    }
     const fromUntrusted = (): { untrusted?: true } => (downstream.untrusted(server) ? { untrusted: true } : {})
     // The link comes with the list after the last change of the server, so the check sees each new mark.
     const listed = (tools: readonly DownstreamTool[]) =>
@@ -540,16 +555,6 @@ const execute = async (
     }
     const refused = check(interactiveTools([{ key: server, status: 'connected', tools: link.tools }]))
     if (refused !== undefined) return refused
-    // A guarded folder in the arguments is refused under any rule or approval: `decided` keeps what the policy said.
-    const entry = config.servers.get(server)
-    const folder = await guardHit(args, {
-      home: ctx.home,
-      cwd: entry?.kind === 'stdio' && entry.cwd !== undefined ? entry.cwd : project,
-      list: guarded,
-      forms: guardForms,
-      realpath: fs.promises.realpath,
-    })
-    if (folder !== undefined) return { ok: false, error: guardedText(tool, folder), code: 'guarded' }
     // A reconnect can outlast the sandbox: then the call has no reader and does not start.
     if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }
     // The SDK keeps its abort listener after the answer and then sends a

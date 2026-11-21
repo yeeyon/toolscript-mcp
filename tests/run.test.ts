@@ -2714,6 +2714,59 @@ return [a.put, b]`,
   })
 
   test(
+    'refuses a path with .. after a symlink into a guarded folder',
+    { skip: process.platform === 'win32' && 'Windows folds .. before it follows a link' },
+    async t => {
+      const home = dir('home-')
+      const here = dir('links-')
+      const alias = path.join(here, 'alias')
+      fs.mkdirSync(path.join(home, '.toolscript-mcp', 'oauth'), { recursive: true })
+      if (!link(t, path.join(home, '.toolscript-mcp', 'hints'), alias)) return
+      await expectRefused({ home }, [
+        { path: `${alias}/../oauth/token.json` },
+        { path: `${alias}/../oauth/new/deeper/token.json` },
+      ])
+      await expectSent({ home }, [{ path: `${alias}/../elsewhere/token.json` }])
+    },
+  )
+
+  test('refuses a bare file name that is a link to a guarded folder, in the folder of the server', async t => {
+    const home = dir('home-')
+    const project = dir('project-')
+    // a junction on Windows needs a folder as its target
+    if (!link(t, path.join(home, '.toolscript-mcp', 'oauth'), path.join(project, 'notes.json'), 'junction')) return
+    await expectRefused({ home, project }, [{ file: 'notes.json' }])
+    await expectSent({ home, project }, [{ file: 'other.json' }, { file: 'plain' }, { text: 'two words.txt' }])
+  })
+
+  test('a mark that the server adds during the wait of the guard still needs the approval', async () => {
+    const home = dir('home-')
+    const s = setup({ home })
+    const saved = fs.promises.realpath
+    // The first real path takes 100 ms. In that time the server lists `put` with the mark, as after `tools/list_changed`.
+    let marked = false
+    ;(fs.promises as Record<string, unknown>).realpath = async (p: string, ...rest: unknown[]) => {
+      if (!marked) {
+        marked = true
+        const state = s.downstream.states().find(x => x.key === 'f')
+        if (state?.status !== 'connected') throw new Error('f is not connected')
+        ;(state as { tools: unknown }).tools = state.tools.map(x => (x.name === 'put' ? { ...x, _meta: MARKED } : x))
+        await new Promise(r => setTimeout(r, 100))
+      }
+      return (saved as (...a: unknown[]) => Promise<string>)(p, ...rest)
+    }
+    try {
+      const r = await s.run(
+        `try { await call("mcp__f__put", { path: ${JSON.stringify(path.join(home, 'x', 'y.md'))} }); return "sent" } catch (e) { return e.message }`,
+      )
+      assert.ok(r.text.includes('needs the person'), r.text)
+      assert.deepEqual(s.called, [])
+    } finally {
+      ;(fs.promises as Record<string, unknown>).realpath = saved
+    }
+  })
+
+  test(
     'refuses a junction to a guarded folder',
     { skip: process.platform !== 'win32' && 'a junction is a Windows link' },
     async t => {

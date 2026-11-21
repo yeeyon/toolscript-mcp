@@ -926,7 +926,10 @@ refused call. It covers reads and writes, because `oauth/` holds tokens.
 - A path is refused when it is in a guarded folder. This holds for an absolute path, `~`, and a relative path. A
   relative path counts from the `cwd` of the server entry, or from the folder where toolscript-mcp started. It also
   holds for `..`, another letter case, and a symlink, a junction or an 8.3 short name. A folder that does not exist
-  yet is guarded, so a new file is refused as well as an edit.
+  yet is guarded, so a new file is refused as well as an edit. On Linux and macOS, a `..` after a symlink leaves the
+  folder that the link points to, and the check follows it.
+- A bare file name with an extension, such as `notes.json`, is refused when it is a link in that folder to a guarded
+  folder. A word of prose costs no file system call.
 - A text is refused when it holds the name of a folder, such as `.toolscript-mcp/hints`, with `/` or `\`. This
   catches `~` and `$HOME` in a shell command. The name must not go on in a letter, a digit, `_`, `-` or `.`, so
   `.toolscript-mcp/hints-old` and `.toolscript-mcp/files/` pass.
