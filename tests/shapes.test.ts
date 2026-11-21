@@ -94,7 +94,9 @@ describe('the shapes file with several processes', () => {
     const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
     const file = shapesFile(home)
     const children = Array.from({ length: WRITERS }, (_, id) => {
-      const child = childProcess.spawn(process.execPath, [WRITER, home, String(id)], {
+      // Node 22.13 runs a .ts file only with this flag.
+      const args = ['--experimental-strip-types', '--no-warnings', WRITER, home, String(id)]
+      const child = childProcess.spawn(process.execPath, args, {
         stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true,
       })

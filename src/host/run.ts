@@ -45,6 +45,7 @@ import {
   holdsImage,
   isCallable,
   isEmpty,
+  learnedShape,
   keep,
   limiter,
   literalCalls,
@@ -64,6 +65,7 @@ import {
   type Kept,
   type PendingFile,
   type Reply,
+  type StoredShape,
   type RunnerDone,
   type RunnerError,
   type RunnerMessage,
@@ -404,20 +406,6 @@ const endingText = (ending: Ending, node: string): string =>
       ? `the sandbox ended with ${ending.signal ?? `exit code ${ending.code}`}`
       : ''
 
-/**
- * Saves the shapes of a run to the shapes file, with the hash of each tool's input schema as its server lists it
- * now. At most one file write for a run, and none when the file already holds them. A tool that no server lists
- * any more (its server closed) keeps no shape.
- */
-const persistShapes = async (ctx: RunContext, learned: ReadonlyMap<string, string>): Promise<void> => {
-  if (learned.size === 0) return
-  const schemas = new Map(catalogOf(ctx.downstream.states()).map(t => [t.name, t.inputSchema]))
-  const entries = new Map<string, { shape: string; schema: string }>()
-  for (const [tool, shape] of learned)
-    if (schemas.has(tool)) entries.set(tool, { shape, schema: schemaHash(schemas.get(tool)) })
-  if (entries.size > 0) await saveShapes(ctx.home, entries, ctx.log)
-}
-
 /** `written`: the tool names that the program writes as strings. `known`: the tool names before the run. */
 const execute = async (
   ctx: RunContext,
@@ -456,7 +444,7 @@ const execute = async (
   // Set before the program gets untrusted content, so a saveFile after it marks its file.
   let untrusted = false
   // The shape that the session holds for each tool whose result worked in this run, for the shapes file.
-  const learned = new Map<string, string>()
+  const learned = new Map<string, StoredShape>()
   const answers: Promise<void>[] = []
   const limit = limiter(MAX_PARALLEL_CALLS)
   const fileFor = runFiles(extension => path.join(ctx.filesDir, `${randomUUID()}${extension}`))
@@ -642,8 +630,13 @@ const execute = async (
     // The key names of untrusted content are its text: the footer and search_tools are outside the wrapper.
     if (r.ok && !tainted) {
       learnShape(ctx.shapes, tool, r.value)
-      const shape = ctx.shapes.get(tool)
-      if (shape !== undefined) learned.set(tool, shape)
+      // The file gets the shape of this result alone, with the hash of the schema listed now. The session's own
+      // shape can be an older one that an empty array kept, from before the schema changed.
+      const shape = learnedShape(r.value)
+      if (shape !== undefined && learned.get(tool)?.shape !== shape) {
+        const listed = catalogOf(downstream.states()).find(t => t.name === tool)
+        if (listed !== undefined) learned.set(tool, { shape, schema: schemaHash(listed.inputSchema) })
+      }
     }
     records.set(id, {
       ref,
@@ -836,7 +829,7 @@ const execute = async (
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
   // A run that read untrusted content at any point saves no shape, also from its calls before that content.
-  if (!untrusted) await persistShapes(ctx, learned)
+  if (!untrusted && learned.size > 0) await saveShapes(ctx.home, learned, ctx.log)
   const result = { text, isError: outcome?.t !== 'done', images: shown.images }
   return {
     result,

@@ -2105,6 +2105,19 @@ describe('learned shapes across sessions', () => {
     assert.notEqual(after.schema, before.schema)
   })
 
+  test('a new schema with an empty-array result stores that result, not the stale shape of the session', async () => {
+    const a = setup()
+    await a.run(ECHO)
+    const [f] = a.downstream.states()
+    const echo = (f as Extract<ServerState, { status: 'connected' }>).tools.find(t => t.name === 'echo')!
+    const next = { type: 'object', properties: { n: {}, a: {}, b: {}, x: {}, y: {} } }
+    ;(echo as { inputSchema: unknown }).inputSchema = next
+    await a.run('return await call("mcp__f__echo", { a: [] })')
+    const stored = (await loadShapes(a.ctx.home, () => {})).mcp__f__echo!
+    assert.equal(stored.schema, schemaHash(next))
+    assert.equal(stored.shape, '{echoed: {a: []}}')
+  })
+
   test('a tool with an outputSchema shows no stored shape', async () => {
     const a = setup()
     await a.run(ECHO)
