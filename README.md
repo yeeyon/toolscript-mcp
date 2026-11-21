@@ -914,9 +914,64 @@ Several server processes can share the file. Each run that learns a new shape re
 replaces the file. There is no lock, so the last writer wins. An update that another process makes in that moment is
 lost, and it shows again after the next call of its tool. A shape that another process learns shows at the next start.
 
-The model cannot write the file with `saveFile` or in the sandbox. A tool of a bridge, such as `Write` of Claude Code,
-takes any path, and only the policy stands before it. After the entry check, such a write can plant only field names.
-They read as words, as the field names of a result do in a session.
+The model cannot write the file with `saveFile` or in the sandbox. A nested call that names the folder is refused: see
+[Guarded folders](#guarded-folders). A write by another way can plant only field names after the entry check. They
+read as words, as the field names of a result do in a session.
+
+### Guarded folders
+
+Four folders under `~/.toolscript-mcp/` hold files that steer the model, or hold its secrets:
+
+- `hints/`: the hint files.
+- `functions/`: the saved functions.
+- `learned/`: the learned result shapes.
+- `oauth/`: the OAuth tokens.
+
+The `hints/` folder in the project folder is guarded too. The project folder is the folder where toolscript-mcp
+started. The plugin folder is not guarded yet.
+
+toolscript-mcp refuses a nested call when a string in its arguments names one of these folders. The check runs for the
+tools of every server, also for a tool of a bridge, such as `Write` of Claude Code. The server gets no request for a
+refused call. It covers reads and writes, because `oauth/` holds tokens.
+
+- A path is refused when it is in a guarded folder. This holds for an absolute path, `~`, and a relative path. A
+  relative path counts from the `cwd` of the server entry, or from the folder where toolscript-mcp started. It also
+  holds for `..`, another letter case, and a symlink, a junction or an 8.3 short name. A folder that does not exist
+  yet is guarded, so a new file is refused as well as an edit. On Linux and macOS, a `..` after a symlink leaves the
+  folder that the link points to, and the check follows it.
+- A bare file name with an extension, such as `notes.json`, is refused when it is a link in that folder to a guarded
+  folder. A word of prose costs no file system call.
+- A text is refused when it holds the name of a folder, such as `.toolscript-mcp/hints`, with `/` or `\`. This
+  catches `~` and `$HOME` in a shell command. The name must not go on in a letter, a digit, `_`, `-` or `.`, so
+  `.toolscript-mcp/hints-old` and `.toolscript-mcp/files/` pass.
+
+The check reads each string of at most 4096 characters, in values and array items down to 16 levels. A longer string is
+file content. At most 16 paths of one call are resolved through the file system. The others get the check of the text
+only.
+
+No allow rule and no approval lifts the refusal. The call throws an error that the program can catch. The error names
+the tool and the folder, and never the argument. The run log shows the error code `guarded`, and
+`toolscript-mcp runs` prints the next step. The other calls of the run continue.
+
+The guard stops a confused model and a simple injected program. It is not containment. It does not prevent:
+
+- A shell command that no name matches, such as `cd ~/.tool*`, a variable or base64 text.
+- The native tools of the client, and any other process of your user.
+- A tool that writes a file from an id, a URL or an archive, so its arguments hold no path.
+- A hard link, and a change between the check and the write.
+- A server on another machine, which sees its own disk.
+- More than 16 paths in one call.
+- A path in a string of more than 4096 characters, such as a shell heredoc that writes a long hint.
+- A path split across two arguments.
+- A path nested deeper than 16 levels.
+- Windows path forms beyond the prefixes `\\?\` and `\\.\` with a drive, such as trailing dots and spaces.
+
+The guard also refuses a short argument that only mentions a name, such as a search pattern for
+`.toolscript-mcp/hints`. This is a known false positive. Do not name the folder in a call. If a person must change a
+file there, they edit it outside `run_code`.
+
+Treat each file in a guarded folder as written by an attacker, because the guard does not stop every writer. The check
+when toolscript-mcp reads a file is the boundary. The shapes file loads only by a strict grammar.
 
 ## Sandbox
 

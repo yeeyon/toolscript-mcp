@@ -387,6 +387,23 @@ describe('runs', () => {
     ])
   })
 
+  test('a guarded call prints its next step, with no path and no class', async () => {
+    const guarded = runLine(
+      record({
+        time: '2026-01-01T00:00:06.000Z',
+        ending: 'error',
+        calls: [{ tool: 'mcp__claude-code__Write', decision: 'allow', ms: 0, ok: false, error: 'guarded' }],
+      }),
+    )
+    const s = setupLog([done, guarded])
+    assert.equal(await s.runs(), 1)
+    assert.deepEqual(s.printed.slice(0, 3), [
+      '2026-01-01T00:00:06.000Z error 100 ms',
+      '  mcp__claude-code__Write allow guarded',
+      'guarded: an argument of the call names a folder that toolscript-mcp guards (hints, functions, learned or oauth). No rule or approval lifts it. Take the path out of the call, or let the person edit the file.',
+    ])
+  })
+
   test('with --config, the tools command names the same config', async () => {
     const s = setupLog([done, noServer])
     assert.equal(await s.runs('--server', 'other', '--config', s.config), 1)

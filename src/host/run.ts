@@ -17,10 +17,12 @@ import {
   type ServerState,
 } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
+import { guardHit, guardedList, resolveGuarded, type GuardForm } from '../core/guard.ts'
 import {
   approvalNote,
   checkCall,
   deniedReport,
+  guardedText,
   interactiveNote,
   planRun,
   refusedReport,
@@ -143,6 +145,8 @@ export type RunContext = {
   readonly log: (line: string) => void
   /** HOME, where the run log and the learned shapes file go. */
   readonly home: string
+  /** The project root, for the project hint folder and relative paths: the cwd of the server. Tests set it. */
+  readonly project?: string
   /** Tests only: lower limits of the note on calls that ran one after another, so a test stays short. */
   readonly serialLimits?: SerialLimits
 }
@@ -479,6 +483,12 @@ const execute = async (
     await fs.promises.writeFile(path.join(xdir, `r${id}.json`), typeof r === 'string' ? r : JSON.stringify(r))
   }
 
+  // The guarded folders and their real paths, resolved at the first call with a path candidate: one time per run.
+  const project = ctx.project ?? process.cwd()
+  const guarded = guardedList(ctx.home, project)
+  let forms: Promise<readonly GuardForm[]> | undefined
+  const guardForms = () => (forms ??= resolveGuarded(guarded, fs.promises.realpath))
+
   // `error` is the short code for the run log: a message from a server can hold data.
   const callTool = async (
     id: number,
@@ -508,6 +518,21 @@ const execute = async (
       callDecision(config.policy, config.bridges, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
+    // A guarded folder in the arguments is refused under any rule or approval. The guard waits on the file system, so
+    // it runs before the link and the policy check: no wait sits between that check and the call, and a mark that a
+    // server adds during the wait is in the list that the check reads. The log keeps what the policy says of the tool.
+    const entry = config.servers.get(server)
+    const folder = await guardHit(args, {
+      home: ctx.home,
+      cwd: entry?.kind === 'stdio' && entry.cwd !== undefined ? entry.cwd : project,
+      list: guarded,
+      forms: guardForms,
+      realpath: fs.promises.realpath,
+    })
+    if (folder !== undefined) {
+      decided.set(id, callDecision(config.policy, config.bridges, approved, tool, interactiveNow()))
+      return { ok: false, error: guardedText(tool, folder), code: 'guarded' }
+    }
     const fromUntrusted = (): { untrusted?: true } => (downstream.untrusted(server) ? { untrusted: true } : {})
     // The link comes with the list after the last change of the server, so the check sees each new mark.
     const listed = (tools: readonly DownstreamTool[]) =>

@@ -8,7 +8,7 @@ enforces; the others rely on discipline.
   pinned version. Turn on the pre-commit hook one time per clone: `git config core.hooksPath .githooks`.
   `[test: code.check.mjs]`
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
-  `config.ts`, `catalog.ts`, `policy.ts` and `serial.ts`. They import no Node module and no host package, so tests call them directly.
+  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts` and `guard.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
 - `src/host/` holds the code that runs in Node. `tsconfig.host.json` checks it with the Node types.
 - The package runs one file: `scripts/build.mjs` bundles `src/host/main.ts` and the packages it imports into
@@ -94,6 +94,14 @@ quotes and the `^` of cmd dropped, hold the
   there and to the README list, and keep the docs saying to use the key `claude-code` for any other. An allow rule allows a tool of a bridge only when its match starts with
   `mcp__<key>__` (`counts` in `src/core/policy.ts`). Never keep a list of the tools of a bridge: a later version adds
   tools. `[test: policy.test.ts and run.test.ts]`
+- `guardedDirs` is enforced at each nested call (`callTool` in `src/host/run.ts`, `src/core/guard.ts`), after the
+  policy check and before the call leaves for its server, for every server and with no list of tool names. A string in
+  the arguments is refused when its path, or its real path (`realpath` of the deepest part that exists), is in a
+  guarded folder, or when it holds a marker (`GUARD_MARKERS`) at a name boundary. No allow rule or approval lifts it.
+  The log code is `guarded`, and the refusal text (`guardedText`) never holds the argument. Keep the caps: depth 16,
+  4096 characters, 16 `realpath` calls for a call, 32 parent steps, and no file system call for a call with no path
+  candidate. A path under `files/`, the run log and the config must never be refused.
+  `[test: guard.test.ts and run.test.ts, describe the guarded folders]`
 - A command that the CLI prints for a person or an agent to run (init, tools, allow) holds a name from a client file
   or a server only when it fits `PLAIN_NAME`, and a path only when it fits `PLAIN_PATH` (`src/core/commands.ts`). Any
   other name or path gets no command, and the text says why. Never quote a hostile word for the shells instead: a

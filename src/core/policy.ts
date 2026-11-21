@@ -355,6 +355,13 @@ export const checkCall = (
   return { ok: false, error: `not approved: ${missing}, and the person did not approve it for this run`, needs: 'rule' }
 }
 
+/**
+ * Why a call was refused because its arguments name a guarded folder. One fixed shape: it names the tool and the
+ * folder, never the argument. No allow rule or approval lifts it, so the only next step is the person's edit.
+ */
+export const guardedText = (tool: string, folder: string): string =>
+  `refused: an argument of ${tool} names ${folder}, a folder that toolscript-mcp guards. No allow rule or approval lifts this. The person can edit the file outside run_code.`
+
 // Why `*` or `mcp__*__Bash` does not allow a tool of the bridge `bridge`.
 const bridgeRule = (bridge: string): string =>
   `allow rule for a tool of the Claude Code bridge ${bridge} must start with mcp__${bridge}__`
