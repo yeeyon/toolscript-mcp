@@ -90,3 +90,28 @@ for the connect touches each real server.
 Paste the Markdown block from stdout here. Do not paste the JSON: it holds pids and server keys of your setup. For the
 "after" numbers, run the same command once the sharing switch exists (`"share"` in the config or `TOOLSCRIPT_SHARE`).
 The bench passes both through and has no switch of its own.
+
+### Owner's config, 2026-11-22, before sharing
+
+Windows 11, Node 22.23.3, commit 726eab2, 60 s idle, 32 GB RAM. 8 servers: 4 stdio (one `node` server through `npx`,
+and 3 entries of one native binary with another environment each), 3 over HTTP, and the `claude mcp serve` bridge.
+Server keys are replaced by kinds here. All 8 servers connected in every session, and no process was left after
+close.
+
+| sessions | private bytes total (MB) | per session (MB) | private working set total (MB) | processes |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 670.3 | 670.3 | 225.9 | 12 |
+| 3 | 2,074.9 | 691.6 | 704.3 | 36 |
+| 6 | 4,036.5 | 672.8 | 1,353.6 | 72 |
+
+Per role at 6 sessions, idle, private bytes each as a median:
+
+| role | copies | each (MB) | total (MB) |
+| --- | ---: | ---: | ---: |
+| `claude mcp serve` bridge | 6 | 315.3 | 1,909.6 |
+| native binary, 3 entries | 18 | 67.7 | 1,240.9 |
+| `node` server | 6 | 78.3 | 477.4 |
+| toolscript-mcp host | 6 | 66.7 | 408.7 |
+
+Totals include each process's `conhost.exe` (about 1.2 MB). The 4 stdio servers cost about 286 MB a session. Those are
+what sharing can save. The bridge and the host stay per session.
