@@ -1941,11 +1941,12 @@ describe('the run log', () => {
       slow.lines()[0]!.calls.map(({ error, class: cls }) => [error, cls]),
       [['timeout', undefined]],
     )
-    // A call whose link comes after the program ended does not start, and the log keeps it as cancelled.
+    // A call whose link comes after the program ended does not start, and the log keeps it as cancelled. The delay
+    // stays under SETTLE_MS (1000 ms), and 900 ms leaves room for a slow sandbox exit on a loaded CI machine.
     const fake = fakeDownstream()
     const late = {
       ...fake.downstream,
-      client: async (key: ServerKey) => (await new Promise(r => setTimeout(r, 400)), fake.downstream.client(key)),
+      client: async (key: ServerKey) => (await new Promise(r => setTimeout(r, 900)), fake.downstream.client(key)),
     } as Downstream
     const left = setup({ downstream: late })
     await left.run('call("mcp__f__echo", {}).catch(() => {})\nreturn 1')
