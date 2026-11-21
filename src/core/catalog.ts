@@ -42,8 +42,13 @@ export type CatalogEntry = ToolEntry & {
 /** The full name of a downstream tool, as splitToolName reads it. */
 export const toolName = (server: ServerKey, tool: string): `mcp__${string}__${string}` => `mcp__${server}__${tool}`
 
-const CONTROL = /[\u0000-\u001f\u007f]/
-const CONTROLS = new RegExp(CONTROL.source, 'g')
+// C0, DEL, and the 3 line separators that C0 does not hold: NEL (U+0085), LS (U+2028) and PS (U+2029).
+const CONTROL = /[\u0000-\u001f\u007f\u0085\p{Zl}\p{Zp}]/u
+const CONTROLS = new RegExp(CONTROL.source, 'gu')
+
+/** JSON.stringify writes NEL, LS and PS raw, and they start a line. The escape is the same JSON value on one line. */
+const json = (v: unknown): string | undefined =>
+  JSON.stringify(v)?.replace(/[\u0085\p{Zl}\p{Zp}]/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
 
 /** Downstream text on one line, so it cannot start a block of its own, and at most `max` characters. */
 const oneLine = (text: string, max: number): string => text.replace(CONTROLS, ' ').slice(0, max)
@@ -51,7 +56,7 @@ const oneLine = (text: string, max: number): string => text.replace(CONTROLS, ' 
 /** The mark that Claude Code documents: only the JSON true counts. */
 const REQUIRES_USER_INTERACTION = 'anthropic/requiresUserInteraction'
 
-/** Every tool of every connected server. A tool whose name is empty or holds a control character is left out: no call can name it. */
+/** Every tool of every connected server. A tool whose name is empty or holds a control character or a line separator is left out: no call can name it. */
 export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
   states.flatMap(s =>
     s.status === 'connected'
@@ -233,7 +238,7 @@ const plainParts = (schema: unknown, nest: number, untyped: (schema: unknown, ne
   const unknown = asType('unknown')
   if (!isObject(schema) || nest > MAX_NEST) return [unknown]
   if (Array.isArray(schema.enum))
-    return schema.enum.length === 0 ? [asType('never')] : schema.enum.map(v => asType(JSON.stringify(v)))
+    return schema.enum.length === 0 ? [asType('never')] : schema.enum.map(v => asType(json(v) ?? 'unknown'))
   if (schema.type === undefined) return untyped(schema, nest)
   const types = new Set<unknown>(Array.isArray(schema.type) ? schema.type.flat(MAX_NEST) : [schema.type])
   const parts = [...types].map(t =>
@@ -349,7 +354,7 @@ const literal = (v: unknown): string =>
 
 const LITERALS = new WeakMap<object, string>()
 const written = (v: unknown): string => {
-  const text = JSON.stringify(v) ?? 'unknown'
+  const text = json(v) ?? 'unknown'
   return text.length <= MAX_LITERAL ? text : `${jsonType(v)} /* long value left out */`
 }
 
@@ -543,7 +548,7 @@ const objectType = (schema: Record<string, unknown>, r: Render, level: number, n
   }
   const pad = '  '.repeat(level)
   const lines = properties.map(([name, s, required]) => {
-    const key = `${IDENTIFIER.test(name) ? name : JSON.stringify(name)}${required ? '' : '?'}`
+    const key = `${IDENTIFIER.test(name) ? name : json(name)}${required ? '' : '?'}`
     const [first, ...rest] = typeText(s, r, level, nest + 1).split('\n')
     return [`${pad}${key}: ${first}${r.notes ? noteOf(s, r.root) : ''}`, ...rest].join('\n')
   })
@@ -623,7 +628,7 @@ const NAMES_CAP = 60
 /**
  * The short tool names of each server, one line each, in the order of the servers: `mcp__<key>__: a, b (+N more)`.
  * The servers take one name each in turn until NAMES_CAP names are listed, so a large server does not hide the
- * others. The names of a server are sorted. `all` comes from catalogOf, which drops names with control characters.
+ * others. The names of a server are sorted. `all` comes from catalogOf, which drops names with control characters or line separators.
  */
 export const namesByServer = (all: readonly CatalogEntry[], cap = NAMES_CAP): string[] => {
   const byServer = new Map<string, string[]>()

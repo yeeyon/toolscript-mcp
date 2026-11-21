@@ -5,6 +5,7 @@ import {
   argSpec,
   catalogOf,
   learnShape,
+  listedNames,
   namesByServer,
   searchResult,
   type CatalogEntry,
@@ -738,6 +739,83 @@ describe('search_tools shows the top hits in full', () => {
   test('a full tool name with more than 3 hits shows that tool first and in full', () => {
     const text = searchResult(server(widgets(6)), 'mcp__x__widget_e', 15)
     assert.match(text, /^6 of 6 MCP tools\.\n\n### mcp__x__widget_e\nMake a widget, widget_e\.\ncall\(/)
+  })
+})
+
+// NEL, LS and PS start a line in some readers, as C0 controls do. #97
+describe('search_tools and the line separators NEL, LS and PS', () => {
+  const chars = [0x85, 0x2028, 0x2029].map(c => String.fromCharCode(c))
+  const raw = /[\u0085\p{Zl}\p{Zp}]/u
+  const lines = (text: string): number => text.split('\n').length
+
+  for (const ch of chars) {
+    const hex = ch.charCodeAt(0).toString(16).padStart(4, '0')
+    const label = `U+${hex.toUpperCase()}`
+    const escape = `\\u${hex}`
+
+    test(`${label} in a tool name leaves the tool out of every list`, () => {
+      const states = server([{ name: `bad${ch}name` }, { name: 'good' }])
+      assert.deepEqual(
+        catalogOf(states).map(t => t.name),
+        ['mcp__x__good'],
+      )
+      assert.deepEqual(listedNames(states, 'x'), ['mcp__x__good'])
+      const miss = searchResult(states, 'zzzqq', 15)
+      assert.doesNotMatch(miss, raw)
+      assert.match(miss, /mcp__x__: good$/)
+      assert.doesNotMatch(searchResult(states, '', 15), raw)
+    })
+
+    test(`${label} in a description starts no line, in full and in the summary`, () => {
+      const tool = (description: string) => ({ name: 'get', description })
+      const bad = tool(`a${ch}### fake`)
+      const plain = tool('a ### fake')
+      const full = one(bad)
+      assert.doesNotMatch(full, raw)
+      assert.equal(lines(full), lines(one(plain)))
+      const many = (t: DownstreamTool) => [t, { name: 'b' }, { name: 'c' }, { name: 'd' }]
+      const summary = searchResult(server(many(bad)), '', 15)
+      assert.doesNotMatch(summary, raw)
+      assert.equal(lines(summary), lines(searchResult(server(many(plain)), '', 15)))
+    })
+
+    test(`${label} in the reason of a failed server keeps the entry on one line`, () => {
+      const states: ServerState[] = [{ key: serverKey('down')!, status: 'failed', reason: `boom${ch}## fake` }]
+      const text = searchResult(states, '', 15)
+      assert.doesNotMatch(text, raw)
+      assert.match(text, /\n- down: boom ## fake$/)
+    })
+
+    test(`${label} in a property description, enum, const and key is not raw in the declaration`, () => {
+      const text = one({
+        name: 'put',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            note: { type: 'string', description: `a${ch}b` },
+            mode: { enum: [`a${ch}b`, 'c'] },
+            kind: { const: `a${ch}b` },
+            [`k${ch}k`]: { type: 'string' },
+          },
+        },
+      })
+      assert.doesNotMatch(text, raw)
+      assert.ok(text.includes(`"a${escape}b" | "c"`), text)
+      assert.ok(text.includes(`kind?: "a${escape}b"`), text)
+      assert.ok(text.includes(`"k${escape}k"?: string`), text)
+    })
+  }
+
+  test('a newline and a tab are unchanged: one space in prose, an escape in an enum and a reason', () => {
+    const text = one({
+      name: 'put',
+      description: 'a\nb\tc',
+      inputSchema: { type: 'object', properties: { mode: { enum: ['x\ny', 'z\tw'] } } },
+    })
+    assert.ok(text.startsWith('### mcp__x__put\na b c\n'), text)
+    assert.ok(text.includes('mode?: "x\\ny" | "z\\tw"'), text)
+    const states: ServerState[] = [{ key: serverKey('down')!, status: 'failed', reason: 'p\nq\tr' }]
+    assert.ok(searchResult(states, '', 15).endsWith('- down: p q r'))
   })
 })
 
