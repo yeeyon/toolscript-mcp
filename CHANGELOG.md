@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0
+## 1.0.0
 
-The first release on npm. Install it with `npx -y toolscript-mcp --config <path>`. toolscript-mcp is derived from claude-code-mode by Gabriele Pavanello at commit eea4077 (MIT).
+Not released yet. The first release on npm. Install it with `npx -y toolscript-mcp --config <path>`. toolscript-mcp is derived from claude-code-mode by Gabriele Pavanello at commit eea4077 (MIT).
 
 The package skeleton:
 

@@ -5,9 +5,8 @@ servers in a sandbox. The program filters and joins the data there. Only the res
 
 The goal is a server that works with any MCP client, for example Claude Code, Claude Desktop, Cursor and Codex.
 
-> **Status: beta, before the npm release.** The package version is `0.1.0`. The npm package is not published as of
-> 16 November 2026. Use the [beta clone](#from-github-beta) or the [Claude Code plugin](#with-the-claude-code-plugin).
-> Read [Limits](#limits) before you use it.
+> **Status: 1.0.0 is the first npm release.** Until it is published, use the [beta clone](#from-github-beta) or the
+> [Claude Code plugin](#with-the-claude-code-plugin). Read [Limits](#limits) before you use it.
 
 - [Features](#features)
 - [Measured](#measured)
@@ -52,7 +51,7 @@ directly. The other arm used toolscript-mcp.
 
 The saving comes from tasks with large tool results: 27% to 69% lower cost. On the 2 tasks with small results,
 toolscript-mcp cost more (38% and 91%), because it adds a search step. Only one model, one operating system and 5
-tools were measured. The bench ran at commit `cce6ea0`, before the changes of 0.1.0 to the text and the search output. Read [bench/RESULTS.md](bench/RESULTS.md) for the method and the limits.
+tools were measured. The bench ran at commit `cce6ea0`, before the later changes to the text and the search output. Read [bench/RESULTS.md](bench/RESULTS.md) for the method and the limits.
 
 ### Comparison with native Code Mode
 
@@ -100,8 +99,17 @@ The model sees a short list of keys and titles, not every full issue.
 
 ## Install
 
-You need Node 22.13 or later, npm and git. For the current beta, use the clone below or the Claude Code plugin.
-The npm install command is not available yet.
+You need Node 22.13 or later and npm. The GitHub clone also needs git.
+
+### From npm
+
+This works once 1.0.0 is published. Until then, use the GitHub clone or the Claude Code plugin below.
+
+```sh
+npx -y toolscript-mcp init
+```
+
+Next, follow [Client setup](#client-setup) and [Configure downstream servers](#configure-downstream-servers).
 
 ### From GitHub (beta)
 
@@ -926,6 +934,7 @@ code. Read [SECURITY.md](SECURITY.md).
 
 ## Limits
 
+- From 1.0.0, semantic versioning covers `call()`, the CLI commands, the config keys and the file formats.
 - On Windows, the sandbox has no network block and no CPU limit. The host stops the process at the time limit.
 - `ask` rules need a client with MCP elicitation. Without it, only tools with `allow` rules and no user-interaction mark can run.
 - Elicitation is tested with the client of the MCP TypeScript SDK. It is not yet tested in the user interface of each
@@ -1121,7 +1130,7 @@ Code 2.1.325.
 - [x] Run Claude Code tools through the optional stdio bridge, with a project `cwd`.
 - [x] Require per-run approval for tools marked for user interaction.
 - [x] Keep images and other non-text results as files, and show the images that a program returns.
-- [ ] Publish 0.1.0 to npm.
+- [ ] Publish 1.0.0 to npm.
 - [ ] Run the Codex comparison and publish its results.
 - [ ] Keep state between `run_code` calls, as an option.
 - [ ] Serve hint files and saved functions as tools.
