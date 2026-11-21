@@ -535,3 +535,34 @@ describe('rankTools on three sets of searches', () => {
     assert.equal(listsAll('jira issue'), false)
   })
 })
+
+// Each server of the tuning set twice, as `<key>` and `<key>-b` with the same tools (#104). A copy ranks like its
+// original, so a query counts as top-1 when rank 1 is the wanted tool or its copy, and the MRR uses the rank among
+// different tools. Measured: top-1 69 of 84, MRR 0.894, as with one copy.
+describe('rankTools with each server of the tuning set twice', () => {
+  const twice = toCatalog(
+    Object.fromEntries(
+      Object.entries(tuning.servers!).flatMap(([key, tools]) => [
+        [key, tools],
+        [`${key}-b`, tools],
+      ]),
+    ),
+  )
+  const baseOf = (name: string): string => {
+    const [, key, tool] = /^mcp__(.+?)__(.+)$/.exec(name)!
+    return `mcp__${key!.endsWith('-b') && tuning.servers![key!.slice(0, -2)] ? key!.slice(0, -2) : key}__${tool}`
+  }
+  test('top-1 and MRR keep the floors of the tuning set', () => {
+    const ranks = tuning.queries.map(([query, wanted]) => {
+      const seen = new Set<string>()
+      for (const t of rankTools(twice, query, twice.length)) {
+        seen.add(baseOf(t.name))
+        if (baseOf(t.name) === wanted) return seen.size
+      }
+      return Infinity
+    })
+    const top1 = ranks.filter(r => r === 1).length
+    const mrr = ranks.reduce((sum, r) => sum + 1 / r, 0) / ranks.length
+    assert.ok(top1 >= 67 && mrr >= 0.88, `top-1 ${top1} of ${ranks.length}, MRR ${mrr.toFixed(3)}, floors 67 and 0.88`)
+  })
+})

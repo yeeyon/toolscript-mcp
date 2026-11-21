@@ -742,6 +742,137 @@ describe('search_tools shows the top hits in full', () => {
   })
 })
 
+// The same tool on 2 or 3 servers shows in full one time. #104
+describe('search_tools and twin tools on equal servers', () => {
+  const twinsOf = (keys: string[], tools: DownstreamTool[]): ServerState[] =>
+    keys.map(k => ({ key: serverKey(k)!, status: 'connected', tools }))
+  const blocksOf = (text: string): string[] =>
+    text.replace(/^\d+ of \d+ MCP tools\.\n\n/, '').split(/\n\n(?=### mcp__)/)
+  const nameOf = (block: string): string => /^### (\S+)/.exec(block)![1]!
+  const isFull = (b: string): boolean => b.includes('call(')
+  const isTwinLine = (b: string): boolean => /^### \S+\nthe same description and arguments as mcp__\S+$/.test(b)
+  const short = (name: string): string => name.replace(/^mcp__[^_]+(?:-[^_]+)*__/, '')
+  const schema = (extra = 0): unknown => ({
+    type: 'object',
+    properties: {
+      ...Object.fromEntries(
+        Array.from({ length: 6 + extra }, (_, i) => [
+          `field_${i}`,
+          { type: 'string', description: 'A field of the item, with a note of about sixty characters.' },
+        ]),
+      ),
+    },
+    required: ['field_0'],
+  })
+  const item = (name: string, extra = 0): DownstreamTool => ({
+    name,
+    description: `Make an item, ${name}. It is the same on each server.`,
+    inputSchema: schema(extra) as DownstreamTool['inputSchema'],
+  })
+  const six = 'abcdef'.split('').map(c => item(`item_${c}`))
+
+  test('a: 3 equal servers give 3 different tools in full, and the copies are twin lines', () => {
+    const text = searchResult(twinsOf(['gf-a', 'gf-b', 'gf-c'], six), 'item', 18)
+    const blocks = blocksOf(text)
+    assert.equal(blocks.length, 18)
+    const fulls = blocks.filter(isFull)
+    assert.equal(fulls.length, 3)
+    assert.equal(new Set(fulls.map(b => short(nameOf(b)))).size, 3)
+    for (const b of blocks.filter(isTwinLine)) {
+      const above = fulls.map(nameOf).find(n => short(n) === short(nameOf(b)))
+      assert.ok(above !== undefined && b.endsWith(`as ${above}`))
+    }
+    assert.equal(new Set(blocks.map(nameOf)).size, 18)
+  })
+
+  test('b: 2 equal servers with a long tool: hit 2 is a twin line, the full blocks stay in the budget', () => {
+    const tools = [item('create_pull_request', 20), ...six.slice(0, 4)]
+    const text = searchResult(twinsOf(['gh-a', 'gh-b'], tools), 'mcp__gh-a__create_pull_request', 15)
+    const blocks = blocksOf(text)
+    assert.ok(isFull(blocks[0]!) && nameOf(blocks[0]!) === 'mcp__gh-a__create_pull_request')
+    assert.equal(nameOf(blocks[1]!), 'mcp__gh-b__create_pull_request')
+    assert.ok(isTwinLine(blocks[1]!))
+    assert.ok(blocks.filter(isFull).length > 1)
+    assert.ok(
+      blocks
+        .filter(isFull)
+        .map(b => b.length)
+        .reduce((a, b) => a + b, 0) <= 4000,
+    )
+  })
+
+  test('c: a schema with one more argument is not a twin', () => {
+    const states: ServerState[] = [
+      { key: serverKey('gf-a')!, status: 'connected', tools: [item('item_a')] },
+      { key: serverKey('gf-b')!, status: 'connected', tools: [item('item_a', 1)] },
+    ]
+    assert.deepEqual(blocksOf(searchResult(states, 'mcp__gf-a__item_a', 15)).map(isFull), [true, true])
+  })
+
+  test('d: another description, or the mark on one, is not a twin', () => {
+    const other = { ...item('item_a'), description: 'Another description.' }
+    const marked = { ...item('item_a'), _meta: { 'anthropic/requiresUserInteraction': true } }
+    for (const second of [other, marked]) {
+      const states: ServerState[] = [
+        { key: serverKey('gf-a')!, status: 'connected', tools: [item('item_a')] },
+        { key: serverKey('gf-b')!, status: 'connected', tools: [second] },
+      ]
+      assert.deepEqual(blocksOf(searchResult(states, 'mcp__gf-a__item_a', 15)).map(isFull), [true, true])
+    }
+  })
+
+  test('e: 2 hits on 2 equal servers are 1 full block and 1 twin line', () => {
+    const text = searchResult(twinsOf(['gh-a', 'gh-b'], [item('x')]), 'mcp__gh-a__x', 15)
+    const blocks = blocksOf(text)
+    assert.equal(blocks.length, 2)
+    assert.ok(isFull(blocks[0]!))
+    assert.equal(blocks[1], '### mcp__gh-b__x\nthe same description and arguments as mcp__gh-a__x')
+  })
+
+  test('f: a first hit longer than the budget is full, its twin a line, the others summaries', () => {
+    const long = {
+      ...item('item_a'),
+      description: `Make an item.\n${'More about the item.\n'.repeat(300)}`,
+      inputSchema: {
+        type: 'object',
+        properties: Object.fromEntries(
+          Array.from({ length: 30 }, (_, i) => [
+            `group_${i}`,
+            { type: 'object', description: 'A group of fields, with a note of 60 chars.' },
+          ]),
+        ),
+      },
+    }
+    const tools = [long, item('item_b'), item('item_c')]
+    const blocks = blocksOf(searchResult(twinsOf(['gh-a', 'gh-b'], tools), 'mcp__gh-a__item_a', 15))
+    assert.ok(isFull(blocks[0]!) && blocks[0]!.length > 4000)
+    assert.equal(blocks.filter(isFull).length, 1)
+    const twin = blocks.filter(isTwinLine)
+    assert.deepEqual(twin.map(nameOf), ['mcp__gh-b__item_a'])
+    assert.ok(twin[0]!.endsWith('as mcp__gh-a__item_a'))
+    for (const b of blocks.slice(1).filter(b => !isTwinLine(b))) assert.ok(b.includes('args:') && !isFull(b))
+  })
+
+  test('g: the twin line shows no learned shape, the full hit shows its own', () => {
+    const states = twinsOf(['gh-a', 'gh-b'], [item('x')])
+    const shapes = new Map([
+      ['mcp__gh-a__x', '{ a: string }'],
+      ['mcp__gh-b__x', '{ b: string }'],
+    ])
+    const text = searchResult(states, 'mcp__gh-a__x', 15, shapes)
+    assert.ok(text.includes('returned earlier: { a: string }'))
+    assert.ok(!text.includes('{ b: string }'))
+  })
+
+  test('h: an empty query shows summaries only, with no twin line', () => {
+    for (const limit of [1, 15]) {
+      const blocks = blocksOf(searchResult(twinsOf(['gf-a', 'gf-b', 'gf-c'], six), '', limit))
+      assert.equal(blocks.length, limit)
+      for (const b of blocks) assert.ok(b.includes('args:') && !isTwinLine(b))
+    }
+  })
+})
+
 // NEL, LS and PS start a line in some readers, as C0 controls do. #97
 describe('search_tools and the line separators NEL, LS and PS', () => {
   const chars = [0x85, 0x2028, 0x2029].map(c => String.fromCharCode(c))
@@ -927,10 +1058,13 @@ describe('search_tools on a realistic catalog', () => {
       const text = searchResult(states, query, 15)
       const blocks = split(text)
       assert.ok(text.startsWith(`${blocks.length} of ${all.length} MCP tools.\n\n### mcp__`))
+      // The fixture holds one real twin pair (the dashboard tools of gf1 and gf4, #104): a twin line is neither.
+      const twin = (b: string): boolean => /\nthe same description and arguments as mcp__\S+$/.test(b)
       const full = blocks.filter(b => b.includes('call('))
       assert.ok(full.length >= 1 && full.length <= 3)
-      assert.ok(blocks.slice(0, full.length).every(b => b.includes('call(')))
-      assert.ok(blocks.slice(full.length).every(b => b.includes('args:') && !b.includes('call(')))
+      const rest = blocks.filter(b => !twin(b))
+      assert.ok(rest.slice(0, full.length).every(b => b.includes('call(')))
+      assert.ok(rest.slice(full.length).every(b => b.includes('args:') && !b.includes('call(')))
       if (blocks.length > 3) {
         const grown = full.reduce((n, b) => n + b.length - summaryOf.get(nameOf(b))!.length, 0)
         assert.ok(grown <= 5500, `grew by ${grown}`)
