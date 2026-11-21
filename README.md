@@ -880,8 +880,9 @@ For a tool with no `outputSchema`, `search_tools` shows the shape of its last re
 toolscript-mcp keeps these shapes in `~/.toolscript-mcp/learned/shapes.json`, so the next session shows them too. A
 first program then needs no run that only looks at the result.
 
-The files under `~/.toolscript-mcp` are:
+The files under `~/.toolscript-mcp` include:
 
+- `hints/` and `functions/`: your hint files and saved functions.
 - `runs.jsonl` and `runs.1.jsonl`: the run log.
 - `oauth/`: the tokens of `login`.
 - `files/<session>/`: the files of `saveFile`.

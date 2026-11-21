@@ -27,7 +27,7 @@ import { errorText, newKept, serverInstructions, type Written } from '../core/pr
 import { SEARCH_LIMIT, SERVED, parseInput, registration, type ServedName } from '../core/tools.ts'
 import type { Downstream } from './downstream.ts'
 import { runCode, type Approval, type RunContext } from './run.ts'
-import { loadShapes, schemaHash } from './shapes.ts'
+import { SHAPES_WAIT_MS, loadShapes, removeOrphans, schemaHash, within } from './shapes.ts'
 
 const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], isError })
 
@@ -86,7 +86,10 @@ export const createServer = (
   const shapes = new Map<string, string>()
   // The shapes of earlier sessions load in the background: tools/list does not wait for them. A search waits.
   const stored = loadShapes(home, log)
-  const shownNow: Context['shapes'] = async states => shownShapes(states, shapes, await stored, schemaHash)
+  void removeOrphans(home)
+  // A read that sticks costs a search at most SHAPES_WAIT_MS, and the search then shows no stored shape.
+  const shownNow: Context['shapes'] = async states =>
+    shownShapes(states, shapes, await within(stored, SHAPES_WAIT_MS, {}), schemaHash)
   const filesDir = path.resolve(appPath(home, 'files', randomUUID()))
   const stopping = new AbortController()
   const runs = new Set<Promise<unknown>>()

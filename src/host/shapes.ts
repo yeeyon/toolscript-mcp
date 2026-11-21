@@ -46,8 +46,31 @@ const retried = async <T>(op: () => Promise<T>): Promise<T> => {
   }
 }
 
-/** The text of the file, undefined when it is absent. A file over MAX_SHAPES_BYTES is not read past that. */
+/** How long a search or a run waits for the file before it goes on with no shapes: a stuck read never blocks a reply. */
+export const SHAPES_WAIT_MS = 2000
+
+/** The value of `promise`, or `fallback` when it takes longer than `ms`. */
+export const within = async <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined
+  const late = new Promise<T>(resolve => (timer = setTimeout(() => resolve(fallback), ms)))
+  try {
+    return await Promise.race([promise, late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * The text of the file, undefined when it is absent. Only a regular file is opened: a FIFO or a device at the
+ * path would block `open` for ever. A file over MAX_SHAPES_BYTES is not read past that.
+ */
 const readText = async (file: string): Promise<string | undefined> => {
+  const found = await fs.promises.lstat(file).catch(err => {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw err
+  })
+  if (found === undefined) return undefined
+  if (!found.isFile()) throw new Error('it is not a regular file')
   const handle = await retried(() => fs.promises.open(file, 'r')).catch(err => {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw err
@@ -74,17 +97,42 @@ const readText = async (file: string): Promise<string | undefined> => {
  * unreadable file gives none and one log line. Never throws. `search_tools` shows a shape only after `shownShapes`
  * checks it against the schema of the listed tool.
  */
-export const loadShapes = async (home: string, log: (line: string) => void): Promise<Shapes> => {
+export const loadShapes = async (home: string, log: (line: string) => void): Promise<Shapes> =>
+  (await readShapes(home, log)).shapes
+
+/**
+ * `readable` false: the file exists and could not be read (EPERM, EBUSY, EACCES, not a regular file). Its content is
+ * unknown, so a write must not replace it. A file that is read and is unusable is readable: the next write replaces it.
+ */
+const readShapes = async (
+  home: string,
+  log: (line: string) => void,
+): Promise<{ shapes: Shapes; readable: boolean }> => {
   try {
     const text = await readText(shapesFile(home))
-    if (text === undefined) return {}
+    if (text === undefined) return { shapes: {}, readable: true }
     const { shapes, dropped, problem } = parseShapes(text)
     if (problem !== undefined) log(`the learned shapes were not loaded: ${problem}`)
     else if (dropped > 0) log(`${dropped} learned shapes were dropped: they are not a shape of a tool result`)
-    return shapes
+    return { shapes, readable: true }
   } catch (err) {
     log(`the learned shapes were not loaded: ${errorText(err)}`)
-    return {}
+    return { shapes: {}, readable: false }
+  }
+}
+
+const ORPHAN_AGE_MS = 10 * 60_000
+
+/** Removes the temp files of a writer that died between the write and the rename, when they are old. Best effort. */
+export const removeOrphans = async (home: string): Promise<void> => {
+  const folder = shapesFolder(home)
+  const names = await fs.promises.readdir(folder).catch(() => [])
+  for (const name of names) {
+    if (!/^shapes\.json\..+\.tmp$/.test(name)) continue
+    const file = `${folder}/${name}`
+    const info = await fs.promises.lstat(file).catch(() => undefined)
+    if (info?.isFile() === true && Date.now() - info.mtimeMs > ORPHAN_AGE_MS)
+      await fs.promises.rm(file, { force: true }).catch(() => {})
   }
 }
 
@@ -95,13 +143,22 @@ export const loadShapes = async (home: string, log: (line: string) => void): Pro
  * lost. That update shows again when its tool is next called. A failure logs one line and never throws, so a run
  * never fails or waits on the file for more than a short retry.
  */
-export const saveShapes = async (
+export const saveShapes = (
+  home: string,
+  learned: ReadonlyMap<string, StoredShape>,
+  log: (line: string) => void,
+): Promise<void> => within(write(home, learned, log), SHAPES_WAIT_MS, undefined).then(() => undefined)
+
+// A file that exists and cannot be read is not replaced: the write would drop the shapes that it holds.
+const write = async (
   home: string,
   learned: ReadonlyMap<string, StoredShape>,
   log: (line: string) => void,
 ): Promise<void> => {
   try {
-    const next = mergeShapes(await loadShapes(home, log), learned)
+    const current = await readShapes(home, log)
+    if (!current.readable) return
+    const next = mergeShapes(current.shapes, learned)
     if (next === undefined) return
     await fs.promises.mkdir(shapesFolder(home), { recursive: true, mode: 0o700 })
     await retried(() => writeConfig(shapesFile(home), shapesText(next), true))

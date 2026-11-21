@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { shapesFile } from '../src/core/paths.ts'
 import { parseShapes } from '../src/core/protocol.ts'
+import { loadShapes, removeOrphans, saveShapes, within } from '../src/host/shapes.ts'
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-shapes-test-'))
 after(() => fs.rmSync(ROOT, { recursive: true, force: true, maxRetries: 5 }))
@@ -30,6 +31,63 @@ const readFile = async (file: string): Promise<string | undefined> => {
   }
   throw new Error('the file stayed busy')
 }
+
+describe('a shapes file that cannot be read', () => {
+  const entry = new Map([['mcp__x__a', { shape: '{a}', schema: '0123456789abcdef' }]])
+  const prepare = () => {
+    const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
+    fs.mkdirSync(path.dirname(shapesFile(home)), { recursive: true })
+    return { home, file: shapesFile(home), lines: [] as string[] }
+  }
+
+  test('is not replaced by a write, and one line says why', async () => {
+    const { home, file, lines } = prepare()
+    fs.mkdirSync(file)
+    await saveShapes(home, entry, line => lines.push(line))
+    assert.equal(fs.statSync(file).isDirectory(), true)
+    assert.equal(lines.length, 1, lines.join('\n'))
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(file)).filter(f => f.endsWith('.tmp')),
+      [],
+    )
+  })
+
+  test('a file that is not JSON is still replaced (S5)', async () => {
+    const { home, file } = prepare()
+    fs.writeFileSync(file, 'not json')
+    await saveShapes(home, entry, () => {})
+    assert.deepEqual(Object.keys(await loadShapes(home, () => {})), ['mcp__x__a'])
+  })
+
+  test('a FIFO at the path does not block a load or a save', { skip: process.platform === 'win32' }, async () => {
+    const { home, file, lines } = prepare()
+    const made = childProcess.spawnSync('mkfifo', [file], { windowsHide: true })
+    if (made.status !== 0) return
+    const began = Date.now()
+    assert.deepEqual(await loadShapes(home, line => lines.push(line)), {})
+    await saveShapes(home, entry, line => lines.push(line))
+    assert.ok(Date.now() - began < 1500, 'the FIFO was not opened')
+    assert.equal(fs.lstatSync(file).isFIFO(), true, 'the FIFO stays')
+  })
+
+  test('within ends a wait that is too long, and takes a fast one', async () => {
+    assert.equal(await within(new Promise<string>(() => {}), 20, 'late'), 'late')
+    assert.equal(await within(Promise.resolve('fast'), 1000, 'late'), 'fast')
+  })
+
+  test('removeOrphans removes only old temp files of the writer', async () => {
+    const { home, file } = prepare()
+    const dir = path.dirname(file)
+    const old = path.join(dir, 'shapes.json.old.tmp')
+    const young = path.join(dir, 'shapes.json.young.tmp')
+    for (const f of [old, young, file]) fs.writeFileSync(f, 'x')
+    const past = new Date(Date.now() - 3_600_000)
+    fs.utimesSync(old, past, past)
+    fs.utimesSync(file, past, past)
+    await removeOrphans(home)
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['shapes.json', 'shapes.json.young.tmp'])
+  })
+})
 
 describe('the shapes file with several processes', () => {
   test('6 writers and a reader: every read parses in full, no temp file stays, one writer keeps its keys (C3)', async () => {
