@@ -17,10 +17,12 @@ import {
   type ServerState,
 } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
+import { guardHit, guardedList, resolveGuarded, type GuardForm } from '../core/guard.ts'
 import {
   approvalNote,
   checkCall,
   deniedReport,
+  guardedText,
   interactiveNote,
   planRun,
   refusedReport,
@@ -143,6 +145,8 @@ export type RunContext = {
   readonly log: (line: string) => void
   /** HOME, where the run log and the learned shapes file go. */
   readonly home: string
+  /** The project root, for the project hint folder and relative paths: the cwd of the server. Tests set it. */
+  readonly project?: string
   /** Tests only: lower limits of the note on calls that ran one after another, so a test stays short. */
   readonly serialLimits?: SerialLimits
 }
@@ -479,6 +483,12 @@ const execute = async (
     await fs.promises.writeFile(path.join(xdir, `r${id}.json`), typeof r === 'string' ? r : JSON.stringify(r))
   }
 
+  // The guarded folders and their real paths, resolved at the first call with a path candidate: one time per run.
+  const project = ctx.project ?? process.cwd()
+  const guarded = guardedList(ctx.home, project)
+  let forms: Promise<readonly GuardForm[]> | undefined
+  const guardForms = () => (forms ??= resolveGuarded(guarded, fs.promises.realpath))
+
   // `error` is the short code for the run log: a message from a server can hold data.
   const callTool = async (
     id: number,
@@ -530,6 +540,16 @@ const execute = async (
     }
     const refused = check(interactiveTools([{ key: server, status: 'connected', tools: link.tools }]))
     if (refused !== undefined) return refused
+    // A guarded folder in the arguments is refused under any rule or approval: `decided` keeps what the policy said.
+    const entry = config.servers.get(server)
+    const folder = await guardHit(args, {
+      home: ctx.home,
+      cwd: entry?.kind === 'stdio' && entry.cwd !== undefined ? entry.cwd : project,
+      list: guarded,
+      forms: guardForms,
+      realpath: fs.promises.realpath,
+    })
+    if (folder !== undefined) return { ok: false, error: guardedText(tool, folder), code: 'guarded' }
     // A reconnect can outlast the sandbox: then the call has no reader and does not start.
     if (ended) return { ok: false, error: 'the program ended before the call started', code: 'cancelled' }
     // The SDK keeps its abort listener after the answer and then sends a

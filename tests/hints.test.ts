@@ -36,7 +36,7 @@ import {
   withReview,
   withoutReview,
 } from '../src/core/hints.ts'
-import { guardedDirs } from '../src/core/paths.ts'
+import { guardedDirs, oauthFolder } from '../src/core/paths.ts'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.toolscript-mcp/hints`
@@ -378,7 +378,11 @@ describe('the hint-file guard', () => {
 
   test('guardedDirs skips an empty root', () => {
     assert.deepEqual(guardedDirs('', '/repo'), ['/repo/.toolscript-mcp/hints'])
-    assert.equal(guardedDirs(HOME, '').length, 3)
+    assert.equal(guardedDirs(HOME, '').length, 4)
+  })
+
+  test('guardedDirs lists the OAuth folder, so a program cannot read a token file', () => {
+    assert.ok(guardedDirs(HOME, '/repo').includes(oauthFolder(HOME)))
   })
 
   test('the Write and Edit guard covers the plugin folder only where Claude Code installed it', () => {
@@ -419,6 +423,7 @@ describe('the hint-file guard', () => {
       '/home/u/.toolscript-mcp/hints',
       '/home/u/.toolscript-mcp/functions',
       '/home/u/.toolscript-mcp/learned',
+      '/home/u/.toolscript-mcp/oauth',
       '/repo/.toolscript-mcp/hints',
       plugin,
     ])

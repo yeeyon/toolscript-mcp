@@ -6,6 +6,8 @@
 const APP = '.toolscript-mcp'
 const HINTS = 'hints'
 const FUNCTIONS = 'functions'
+const LEARNED = 'learned'
+const OAUTH = 'oauth'
 
 /**
  * An absolute path with empty, `.` and `..` parts resolved. A Windows path
@@ -41,7 +43,7 @@ export const runLogFile = (home: string): string => appPath(home, 'runs.jsonl')
 export const oldRunLogFile = (home: string): string => appPath(home, 'runs.1.jsonl')
 
 /** The folder of the OAuth stores under HOME. */
-export const oauthFolder = (home: string): string => appPath(home, 'oauth')
+export const oauthFolder = (home: string): string => appPath(home, OAUTH)
 
 /**
  * The OAuth store of one HTTP server under HOME. `urlHash` is a hash of its URL, so a changed URL never gets the
@@ -54,16 +56,24 @@ export const oauthFile = (home: string, key: string, urlHash: string): string =>
  * The folder of the learned result shapes under HOME. The shapes file is alone in it, so a guard on the folder
  * covers nothing else.
  */
-export const shapesFolder = (home: string): string => appPath(home, 'learned')
+export const shapesFolder = (home: string): string => appPath(home, LEARNED)
 
 /** The learned result shapes under HOME: what `search_tools` shows as `returned earlier`, kept across sessions. */
 export const shapesFile = (home: string): string => `${shapesFolder(home)}/shapes.json`
 
 /**
- * The folders whose files steer the model, as written: the person's and the
+ * The text that names a guarded folder in any root: `.toolscript-mcp/hints` and the three others, never the bare
+ * `.toolscript-mcp`, which also holds `files/`, the run log and the config. `src/core/guard.ts` looks for them in
+ * the text of a call, where `~`, `$HOME` or a relative path hides the root.
+ */
+export const GUARD_MARKERS: readonly string[] = [HINTS, FUNCTIONS, LEARNED, OAUTH].map(name => `${APP}/${name}`)
+
+/**
+ * The folders whose files steer the model, or hold its secrets, as written: the person's and the
  * project's hints (the project's even while projectHints is off, so none can
- * be planted to load later), the person's saved functions and the person's
- * learned shapes. The model's file tools may not write them. An empty root has none.
+ * be planted to load later), the person's saved functions, the person's
+ * learned shapes and the person's OAuth stores. A nested call may not name them
+ * (`src/core/guard.ts`). An empty root has none.
  * The plugin's own folder holds its code and its bundled hints: it is guarded
  * where Claude Code installed it, under HOME. A folder loaded with --plugin-dir
  * is the person's own checkout, which they edit.
@@ -72,7 +82,7 @@ export const guardedDirs = (home: string, project: string, pluginRoot = ''): str
   const plugin = normalizePath(pluginRoot)
   const plugins = normalizePath(`${home}/.claude/plugins`)
   return [
-    ...(home ? [hintsFolder(home), functionsFolder(home), shapesFolder(home)] : []),
+    ...(home ? [hintsFolder(home), functionsFolder(home), shapesFolder(home), oauthFolder(home)] : []),
     ...(project ? [hintsFolder(project)] : []),
     ...(home && plugin.startsWith(`${plugins}/`) ? [plugin] : []),
   ]

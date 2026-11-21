@@ -504,7 +504,7 @@ export const isUnder = (path: string, dir: string): boolean =>
 
 // A path as a case-insensitive volume (the macOS default) compares it: one
 // letter case, and one Unicode form, as APFS also ignores the form of a name.
-const foldCase = (path: string): string => path.normalize('NFD').toUpperCase().toLowerCase().normalize('NFD')
+export const foldCase = (path: string): string => path.normalize('NFD').toUpperCase().toLowerCase().normalize('NFD')
 
 /**
  * isUnder for any letter case: on a case-insensitive volume, `~/.claude/Code-Mode/hints`

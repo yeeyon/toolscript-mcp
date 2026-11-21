@@ -15,7 +15,7 @@ import path from 'node:path'
 import { catalogOf, searchResult, shownShapes, type ServerState } from '../src/core/catalog.ts'
 import type { Config, ServerConfig, ServerKey } from '../src/core/config.ts'
 import { runLogFile, shapesFile } from '../src/core/paths.ts'
-import type { Rule } from '../src/core/policy.ts'
+import { guardedText, type Rule } from '../src/core/policy.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
 import { newKept, type Kept } from '../src/core/protocol.ts'
 import { TOOL } from '../src/core/tools.ts'
@@ -129,6 +129,8 @@ const TOOLS: Record<string, Tool> = {
     ],
   }),
   echo: args => json({ echoed: args }),
+  // A tool with no schema: it takes any argument, as a file or shell tool of a bridge does.
+  put: args => json({ put: Object.keys(args).length }),
   // A text block and `n` images (1 when absent), as a dashboard server renders panels.
   render: args => ({
     content: [
@@ -276,6 +278,8 @@ type Options = {
   callSeconds?: number
   /** An existing temp home, to start a second context on the files of a first one. */
   home?: string
+  /** The project root of the guard, when it differs from the cwd of the test process. */
+  project?: string
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
@@ -315,6 +319,7 @@ const setup = (o: Options = {}) => {
     signal: o.signal ?? new AbortController().signal,
     log: () => {},
     home,
+    ...(o.project === undefined ? {} : { project: o.project }),
     ...(o.serialLimits === undefined ? {} : { serialLimits: o.serialLimits }),
   }
   const run = async (code: string) => runCode(ctx, code)
@@ -2445,5 +2450,306 @@ describe('a run waits only for the servers that it names', () => {
     } finally {
       await downstream.close()
     }
+  })
+})
+
+describe('the guarded folders', () => {
+  const OWN = '~/.toolscript-mcp/'
+  // The refusal of any guarded folder: the home ones have `~/`, a link into the project hints does not.
+  const REFUSAL = String.raw`^refused: an argument of mcp__f__put names (~/)?\.toolscript-mcp/(hints|functions|learned|oauth), a folder that toolscript-mcp guards\. `
+  const dir = (prefix: string) => fs.mkdtempSync(path.join(ROOT, prefix))
+  const fwd = (p: string) => p.replaceAll('\\', '/')
+  // A program that sends each of `argList` to echo, and returns one word for each: `refused`, `sent` or the text.
+  const verdicts = async (o: Options, argList: unknown[]) => {
+    const s = setup(o)
+    const program = [
+      `const out = []`,
+      `const refusal = new RegExp(${JSON.stringify(REFUSAL)})`,
+      `for (const args of ${JSON.stringify(argList)}) {`,
+      `  try { await call("mcp__f__put", args); out.push("sent") }`,
+      `  catch (e) { out.push(refusal.test(e.message) ? "refused" : "other") }`,
+      `}`,
+      `return out.join(",")`,
+    ].join('\n')
+    const r = await s.run(program)
+    assert.equal(r.isError, false, r.text)
+    return { ...s, words: /^"([^"]*)"/.exec(r.text)![1]!.split(',') }
+  }
+  const expectRefused = async (o: Options, argList: unknown[]) => {
+    const s = await verdicts(o, argList)
+    assert.deepEqual(
+      s.words,
+      argList.map(() => 'refused'),
+    )
+    assert.deepEqual(s.called, [], 'a refused call sends nothing to its server')
+    const calls = s.lines().at(-1)!.calls
+    assert.equal(calls.length, argList.length)
+    for (const c of calls)
+      assert.deepEqual(
+        { ok: c.ok, error: c.error, decision: c.decision, class: c.class },
+        {
+          ok: false,
+          error: 'guarded',
+          decision: 'allow',
+          class: undefined,
+        },
+      )
+    return s
+  }
+  const expectSent = async (o: Options, argList: unknown[]) => {
+    const s = await verdicts(o, argList)
+    assert.deepEqual(
+      s.words,
+      argList.map(() => 'sent'),
+    )
+    assert.equal(s.called.length, argList.length)
+    return s
+  }
+  const guardedIn = (home: string, project: string) => [
+    ...['hints', 'functions', 'learned', 'oauth'].map(f => path.join(home, '.toolscript-mcp', f)),
+    path.join(project, '.toolscript-mcp', 'hints'),
+  ]
+  // A link to `target` that the OS can make: the test ends when it cannot (a symlink on Windows needs a privilege).
+  const link = (t: { skip: (why?: string) => void }, target: string, at: string, type: 'dir' | 'junction' = 'dir') => {
+    fs.mkdirSync(target, { recursive: true })
+    try {
+      fs.symlinkSync(target, at, type)
+      return true
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EPERM') throw err
+      t.skip('the OS did not allow a symlink')
+      return false
+    }
+  }
+
+  test('refuses a literal absolute path into each guarded folder, under an allow rule', async () => {
+    const home = dir('home-')
+    const project = dir('project-')
+    const paths = guardedIn(home, project).flatMap(d => [path.join(d, 'x.md'), `${fwd(d)}/x.md`])
+    const s = await expectRefused(
+      { home, project },
+      paths.map(p => ({ path: p })),
+    )
+    assert.equal(s.asked.length, 0)
+  })
+
+  test('refuses a path that the program computes', async () => {
+    const home = dir('home-')
+    const s = setup({ home })
+    const r = await s.run(
+      [
+        `const home = ${JSON.stringify(fwd(home))}`,
+        `try { await call("mcp__f__put", { path: [home, ".toolscript-mcp", "hints", "x.md"].join("/") }); return "sent" }`,
+        'catch (e) { return e.message }',
+      ].join('\n'),
+    )
+    assert.ok(r.text.startsWith(`"refused: an argument of mcp__f__put names ${OWN}hints,`), r.text)
+    assert.deepEqual(s.called, [])
+  })
+
+  test('refuses a path with .., whose parts are not the name of the folder', async () => {
+    const home = dir('home-')
+    const project = dir('project-')
+    await expectRefused({ home, project }, [
+      { path: `${fwd(home)}/.toolscript-mcp/files/../hints/x.md` },
+      { path: `${home}${path.sep}.toolscript-mcp${path.sep}files${path.sep}..${path.sep}oauth${path.sep}f.json` },
+      { path: `${fwd(project)}/.toolscript-mcp/files/../hints/x.md` },
+    ])
+  })
+
+  test('refuses a path in another letter case', async () => {
+    const home = dir('home-')
+    await expectRefused({ home }, [
+      { path: `${fwd(home)}/.TOOLSCRIPT-MCP/Hints/x.md` },
+      { path: `${fwd(home).toUpperCase()}/.toolscript-mcp/files/../LEARNED/shapes.json` },
+    ])
+  })
+
+  test('refuses ~/.toolscript-mcp/hints/x.md, and a relative path against the cwd of the server entry', async () => {
+    const home = dir('home-')
+    const project = dir('project-')
+    await expectRefused({ home, project }, [
+      { path: '~/.toolscript-mcp/hints/x.md' },
+      { path: '~\\.toolscript-mcp\\oauth\\x' },
+    ])
+    const cwd = path.join(home, '.toolscript-mcp')
+    fs.mkdirSync(cwd, { recursive: true })
+    const entry = { kind: 'stdio', command: 'fake', args: [], env: {}, cwd } as const
+    const servers = new Map([['f' as ServerKey, entry]])
+    await expectRefused({ home, project, servers }, [
+      { path: 'hints/x.md' },
+      { path: './oauth/f.json' },
+      { path: 'learned/shapes.json' },
+    ])
+    // the same text under the cwd of the host is a path in the project
+    await expectSent({ home, project }, [{ path: 'hints/x.md' }, { path: 'oauth/f.json' }])
+  })
+
+  test('refuses a command that holds the name of a folder, also with $HOME', async () => {
+    const home = dir('home-')
+    await expectRefused({ home }, [
+      { command: 'echo x >> ~/.toolscript-mcp/hints/a.md' },
+      { command: 'echo x >> $HOME/.toolscript-mcp/functions/a.md' },
+      { command: `cat ${fwd(home)}/.toolscript-mcp/learned/shapes.json` },
+      { command: 'type %USERPROFILE%\\.toolscript-mcp\\oauth\\f.json' },
+    ])
+  })
+
+  test('refuses a nested argument, in an object or an array', async () => {
+    const home = dir('home-')
+    const target = `${fwd(home)}/.toolscript-mcp/hints/x.md`
+    await expectRefused(
+      { home },
+      [{ edits: [{ file: { path: target } }] }, { a: { b: { c: [[target]] } } }, [target]].map(a =>
+        Array.isArray(a) ? { list: a } : a,
+      ),
+    )
+  })
+
+  test('refuses a folder that does not exist yet, and a tool that the person approved', async () => {
+    const home = dir('home-')
+    assert.equal(fs.existsSync(path.join(home, '.toolscript-mcp')), false)
+    const args = [{ path: `${fwd(home)}/.toolscript-mcp/files/../functions/new.md` }]
+    await expectRefused({ home }, args)
+    const s = setup({ home, policy: rules(['mcp__*', 'ask']) })
+    const r = await s.run(
+      `try { await call("mcp__f__put", ${JSON.stringify(args[0])}); return "sent" } catch (e) { return e.message }`,
+    )
+    assert.deepEqual(s.asked, [['mcp__f__put']])
+    assert.ok(r.text.startsWith('"refused: an argument of mcp__f__put names'), r.text)
+    assert.deepEqual(s.called, [])
+    const [call] = s.lines().at(-1)!.calls
+    assert.deepEqual({ decision: call!.decision, error: call!.error }, { decision: 'ask-approved', error: 'guarded' })
+  })
+
+  test('the refusal is one fixed text with no argument, no mark and no path in the log', async () => {
+    const home = dir('home-')
+    const s = setup({ home })
+    const r = await s.run(
+      `try { await call("mcp__f__put", { path: ${JSON.stringify(`${fwd(home)}/.toolscript-mcp/hints/zz-secret-name.md`)} }) } catch (e) { return e.message }`,
+    )
+    const text = JSON.parse(/^("[^"]*")/.exec(r.text)![1]!) as string
+    assert.equal(text, guardedText('mcp__f__put', '~/.toolscript-mcp/hints'))
+    assert.ok(text.length <= 300, String(text.length))
+    assert.match(text, /No allow rule or approval lifts this/)
+    assert.ok(!r.text.includes('zz-secret-name') && !r.text.includes('UNTRUSTED'), r.text)
+    assert.equal(fs.readFileSync(runLogFile(home), 'utf8').includes('zz-secret-name'), false)
+    assert.equal(fs.readFileSync(runLogFile(home), 'utf8').includes(fwd(home)), false)
+  })
+
+  test('a program that catches the refusal ends done, and one that does not ends error', async () => {
+    const home = dir('home-')
+    const bad = `{ path: ${JSON.stringify(`${fwd(home)}/.toolscript-mcp/hints/x.md`)} }`
+    const caught = setup({ home })
+    const r = await caught.run(`try { await call("mcp__f__put", ${bad}) } catch { return "caught" }`)
+    assert.equal(r.isError, false, r.text)
+    assert.ok(r.text.startsWith('"caught"'), r.text)
+    assert.equal(caught.lines().at(-1)!.ending, 'done')
+    const uncaught = setup({ home })
+    const u = await uncaught.run(`await call("mcp__f__put", ${bad})`)
+    assert.equal(u.isError, true, u.text)
+    assert.equal(uncaught.lines().at(-1)!.ending, 'error')
+  })
+
+  test('the other calls of a Promise.all still run, and a refused call is not kept or learned', async () => {
+    const home = dir('home-')
+    const s = setup({ home })
+    const r = await s.run(
+      `const bad = { path: ${JSON.stringify(`${fwd(home)}/.toolscript-mcp/hints/x.md`)} }
+const [a, b] = await Promise.all([call("mcp__f__put", { n: 1 }), call("mcp__f__put", bad).catch(() => "refused")])
+return [a.put, b]`,
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(s.called, ['put'])
+    assert.equal(s.ctx.kept.seen.size, 1, 'only the call that worked')
+    const refused = setup({ home })
+    await refused.run(`try { await call("mcp__f__put", { path: "~/.toolscript-mcp/oauth/f.json" }) } catch {}`)
+    assert.equal(refused.ctx.kept.seen.size, 0)
+    assert.equal(refused.ctx.kept.results.size, 0)
+    assert.equal(refused.ctx.shapes.size, 0)
+  })
+
+  test('refuses a symlink to a guarded folder, and a new file under it', async t => {
+    const home = dir('home-')
+    const project = dir('project-')
+    const here = dir('links-')
+    const toHints = path.join(here, 'to-hints')
+    const toProject = path.join(here, 'to-project')
+    if (!link(t, path.join(home, '.toolscript-mcp', 'hints'), toHints)) return
+    if (!link(t, path.join(project, '.toolscript-mcp', 'hints'), toProject)) return
+    await expectRefused({ home, project }, [
+      { path: path.join(toHints, 'x.md') },
+      { path: path.join(toHints, 'new', 'deeper', 'x.md') },
+      { path: toHints },
+      { path: path.join(toProject, 'x.md') },
+    ])
+  })
+
+  test(
+    'refuses a junction to a guarded folder',
+    { skip: process.platform !== 'win32' && 'a junction is a Windows link' },
+    async t => {
+      const home = dir('home-')
+      const here = dir('links-')
+      const junction = path.join(here, 'junction')
+      if (!link(t, path.join(home, '.toolscript-mcp', 'oauth'), junction, 'junction')) return
+      await expectRefused({ home }, [{ path: path.join(junction, 'f.json') }, { path: `${fwd(junction)}/new/f.json` }])
+    },
+  )
+
+  test(
+    'refuses an 8.3 short name of a long folder name',
+    { skip: process.platform !== 'win32' && 'only Windows has 8.3 names' },
+    async t => {
+      const home = dir('home-with-a-long-folder-name-')
+      fs.mkdirSync(path.join(home, '.toolscript-mcp', 'hints'), { recursive: true })
+      const shown = childProcess.spawnSync('cmd', ['/d', '/s', '/c', `"for %I in ("${home}") do @echo %~sI"`], {
+        encoding: 'utf8',
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      })
+      const short = shown.stdout.trim()
+      if (short === '' || short.toLowerCase() === home.toLowerCase()) return t.skip('the volume makes no 8.3 names')
+      await expectRefused({ home }, [
+        { path: `${short}\\.toolscript-mcp\\files\\..\\hints\\x.md` },
+        { path: `${fwd(short)}/.toolscript-mcp/files/../hints/new/x.md` },
+      ])
+    },
+  )
+
+  test('does not refuse a file under files/, the run log, a longer name, a link beside a folder or the project', async t => {
+    const home = dir('home-')
+    const project = dir('project-')
+    const outside = dir('outside-')
+    const app = path.join(home, '.toolscript-mcp')
+    fs.mkdirSync(path.join(app, 'files', 'id'), { recursive: true })
+    const side = path.join(app, 'side')
+    const linked = link(t, outside, side, 'junction')
+    const sent: unknown[] = [
+      { path: path.join(app, 'files', 'id', 'out.json') },
+      { path: `${fwd(app)}/files/${randomBytes(4).toString('hex')}/out.json` },
+      { path: runLogFile(home) },
+      { path: `${fwd(app)}/hints-old/x.md` },
+      { path: `${fwd(app)}/hints.bak` },
+      { path: `${fwd(app)}/learned-2/x.json` },
+      { path: path.join(project, 'src', 'hints', 'x.md') },
+      { path: path.join(project, 'README.md') },
+      { path: `${fwd(project)}/.toolscript-mcp-notes/hints/x.md` },
+      { path: `${fwd(project)}/my.toolscript-mcp/hints/x.md` },
+      ...(linked ? [{ path: path.join(side, 'x.md') }] : []),
+    ]
+    await expectSent({ home, project }, sent)
+  })
+
+  test('does not refuse a long string, a URL, a plain word or many short strings', async () => {
+    const home = dir('home-')
+    const long = `${'x'.repeat(2500)} ~/.toolscript-mcp/hints/a.md ${'x'.repeat(2500)}`
+    assert.ok(long.length > 4096)
+    await expectSent({ home }, [
+      { text: long },
+      { url: 'https://example.com/a/b?q=1' },
+      { query: 'plain word', n: 5, flag: true, none: null },
+      { items: Array.from({ length: 1000 }, (_, i) => `s${i}`) },
+    ])
   })
 })

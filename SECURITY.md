@@ -34,6 +34,13 @@ Include:
   after the person approves it in a prompt. If the client cannot ask, it applies only after a restart of
   toolscript-mcp. A declined policy is not asked again until the config file changes. A changed policy that lets a
   tool run with less approval and applies without the person's approval is in scope.
+- The server refuses a nested call when a string in its arguments names a guarded folder: `~/.toolscript-mcp/hints`,
+  `functions`, `learned` and `oauth`, and the `hints` folder of the project. It checks paths and the text of the
+  call, also through `..`, letter case, symlinks, junctions and 8.3 names. No allow rule or approval lifts it. This is
+  a net for a confused model and the simple injected program. It is not containment. A shell command that no name
+  matches, the native tools of the client, another process, a tool that writes from an id or a URL, a hard link and a
+  change between the check and the write pass it. So each file in a guarded folder is read as written by an attacker.
+  A call that reaches a guarded folder in the cases it names is in scope.
 - `saveFile` writes only in the session folder under `~/.toolscript-mcp/files/`, and `readFile` reads only files there.
   The files stay after the session, with read access for your user only on Linux and macOS.
 - `toolscript-mcp login` writes the OAuth tokens and the registered client of a server to
