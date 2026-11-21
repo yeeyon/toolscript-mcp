@@ -471,9 +471,13 @@ your client starts toolscript-mcp, the log of the client also holds that text.
 is 1. Without `--server`, it shows the newest runs of all servers.
 
 - For each run, it shows the time, the ending and the duration.
-- For each call, it shows the tool, the policy decision, and `ok` or the error code. A call that `runs` cannot read
+- For each call, it shows the tool, the policy decision, and `ok` or the error code. A `tool-error` or `failed` call
+  that reached its server also shows its error class after the code. A call that `runs` cannot read
   shows as `unreadable`. A call with `ok` is also `unreadable` when it has an error code, or the decision `denied`, `unapproved` or `invalid`.
-- After the runs, it gives one next step for each problem.
+- After the runs, one line counts the classes of the failed calls shown, such as
+  `classes of failed calls: validation 2, not-found 1, no class 3`. `no class` counts the `tool-error` and `failed`
+  calls that have none, such as the calls that an older version logged.
+- Then it gives one next step for each problem.
 - It counts the lines of the log that are not runs, and skips them.
 - It skips a run with a time more than 5 minutes after now, and counts these runs.
 
@@ -862,6 +866,9 @@ toolscript-mcp writes one line to `~/.toolscript-mcp/runs.jsonl` for each `run_c
 
 - Each line shows the time, a run id, the duration and how the run ended. It also shows the size of the result.
 - For each call of the program, the line shows the tool name, the policy decision, the duration and a short error code.
+- A `tool-error` or `failed` call that reached its server also has an error class, one word of this set:
+  `validation`, `not-found`, `auth`, `rate-limit`, `timeout`, `server` or `other`. toolscript-mcp picks it from the
+  error text and the JSON-RPC code, and writes only the word.
 - The log never holds arguments, results, program text or error messages.
 - On Linux and macOS, only your user account can read the file.
 - When the file passes 5 MB, toolscript-mcp renames it to `runs.1.jsonl`. It keeps one old file.

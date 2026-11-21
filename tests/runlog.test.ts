@@ -11,7 +11,10 @@ import { oldRunLogFile, runLogFile } from '../src/core/paths.ts'
 import {
   MAX_CALLS,
   MAX_LOG_BYTES,
+  CALL_CLASSES,
   callDecision,
+  classifyCallError,
+  parseRunLine,
   parseSince,
   rotates,
   runLine,
@@ -222,5 +225,165 @@ describe('the time of runs --since', () => {
       'yesterday',
     ])
       assert.equal(since(text), undefined, JSON.stringify(text))
+  })
+})
+
+describe('the class of a call error', () => {
+  // Hand-written texts in the shape of public servers, with made-up names.
+  const TABLE: ReadonlyArray<[string, string, number?]> = [
+    // validation
+    ['validation', 'MCP error -32602: Invalid arguments for tool fake_tool'],
+    ['validation', 'Input validation error: Invalid arguments for tool fake: [{"code":"invalid_type"}]'],
+    ['validation', 'anything at all', -32602],
+    [
+      'validation',
+      '[{"code":"invalid_enum_value","options":["a","b"],"message":"Invalid enum value. Expected \'a\' | \'b\'"}]',
+    ],
+    ['validation', 'Expected number, received string'],
+    ['validation', 'Invalid input: expected string, received number'],
+    ['validation', 'Invalid option: expected one of "open"|"closed"'],
+    ['validation', '1 validation error for FakeToolArguments\nowner\n  Field required [type=missing, input_value={}]'],
+    ['validation', "2 validation errors for FakeArgs\nstate\n  Input should be 'open' or 'closed'"],
+    ['validation', 'data/count must be integer'],
+    ['validation', "data must have required property 'owner'"],
+    ['validation', 'data/state must be equal to one of the allowed values'],
+    ['validation', 'missing required parameter: owner'],
+    ['validation', 'parameter page is not of type float64, is string'],
+    ['validation', 'Invalid parameter: repo'],
+    ['validation', "'owner' is a required property"],
+    ['validation', "'merged' is not one of ['open', 'closed']"],
+    ['validation', 'failed to create issue: POST https://api.example.com/repos/o/r/issues: 422 Validation Failed []'],
+    ['validation', 'request failed (HTTP 400)'],
+    // rate-limit, before the status rule
+    ['rate-limit', 'GET https://api.example.com/search: 403 API rate limit exceeded for user ID 1 []'],
+    ['rate-limit', 'Too Many Requests'],
+    ['rate-limit', 'request throttled, retry later'],
+    ['rate-limit', 'status 429'],
+    // status with a marker
+    ['not-found', 'failed to get issue: GET https://api.example.com/repos/o/r/issues/1: 404 Not Found []'],
+    ['not-found', 'status code: 410'],
+    ['auth', 'transport failed (HTTP 401)'],
+    ['auth', 'GET https://api.example.com/user: 403 Forbidden []'],
+    ['timeout', 'HTTP 504'],
+    ['timeout', '408 Request Timeout'],
+    ['server', 'HTTP 502'],
+    ['server', 'status 500'],
+    ['not-found', 'HTTP error 404'],
+    ['auth', 'statusCode: 403'],
+    ['other', '409 Conflict'],
+    ['other', 'a bare 404'],
+    ['other', 'issue 404 was closed'],
+    // the mixed sentence of Atlassian and Azure DevOps
+    ['not-found', 'Issue does not exist or you do not have permission to see it.'],
+    ['not-found', '{"errorMessages":["Issue does not exist or you do not have permission to see it."],"errors":{}}'],
+    [
+      'not-found',
+      'The Git repository fake-repo does not exist or you do not have permissions for the operation you are attempting.',
+    ],
+    ['not-found', 'The resource does not exist, or you do not have permission to access it.'],
+    // auth
+    ['auth', 'TF400813: The user is not authorized to access this resource.'],
+    ['auth', 'TF401027: You need the Git Read permission to perform this action.'],
+    ['auth', 'Bad credentials'],
+    ['auth', 'Resource not accessible by personal access token'],
+    ['auth', 'access denied for this project'],
+    // not-found
+    ['not-found', 'Could not resolve to a Repository with the name o/r.'],
+    ['not-found', 'no such file: notes.md'],
+    ['not-found', 'work item 7 not found'],
+    // timeout
+    ['timeout', 'request timed out'],
+    ['timeout', 'connect ETIMEDOUT 192.0.2.1:443'],
+    // server
+    ['server', 'upstream failed', -32603],
+    ['server', 'Internal Server Error'],
+    ['server', 'service unavailable'],
+    // other
+    ['other', 'mcp-remote: Incompatible auth server', -32001],
+    ['other', 'something odd happened'],
+    ['other', ''],
+  ]
+
+  for (const [want, text, code] of TABLE)
+    test(`${want}: ${JSON.stringify(text.slice(0, 60))}${code === undefined ? '' : ` (code ${code})`}`, () => {
+      assert.equal(classifyCallError(text, code), want)
+    })
+
+  test('only the first 4096 characters count, and case does not', () => {
+    assert.equal(classifyCallError(`${'x'.repeat(4096)} 404 Not Found`), 'other')
+    assert.equal(classifyCallError('RATE LIMIT'), 'rate-limit')
+  })
+
+  test('make it fail: a text of 1 MB and one built to backtrack classify at once', () => {
+    assert.equal(classifyCallError('a'.repeat(1_000_000)), 'other')
+    assert.equal(classifyCallError(`${'a'.repeat(50_000)}does not exist or`), 'other')
+    assert.equal(classifyCallError(`${'a'.repeat(50_000)} http `), 'other')
+    assert.equal(classifyCallError(`does not exist or ${'a'.repeat(50_000)}`), 'not-found')
+  })
+
+  test('never throws on a value that is not text', () => {
+    assert.equal(classifyCallError(undefined as unknown as string), 'other')
+    assert.equal(classifyCallError({ toString: () => 'rate limit' } as unknown as string), 'rate-limit')
+  })
+
+  test('make it fail: the line holds the class and none of the error text, status or code', () => {
+    const text = `${SECRET}: 404 Not Found -32602`
+    const cls = classifyCallError(text, -32602)
+    const line = runLine(runRecord(input([call({ ok: false, error: 'tool-error', class: cls })])))
+    assert.ok(line.includes('"class":"validation"'), line)
+    for (const leak of [SECRET, '404', '32602', 'Not Found']) assert.equal(line.includes(leak), false, line)
+  })
+
+  test('runRecord writes a class only from the set and only beside tool-error or failed', () => {
+    const cast = (o: Record<string, unknown>) => call(o as Partial<CallLog>)
+    const written = (c: CallLog) => runRecord(input([c])).calls[0]!.class
+    assert.equal(written(cast({ ok: false, error: 'tool-error', class: 'validation' })), 'validation')
+    assert.equal(written(cast({ ok: false, error: 'failed', class: 'other' })), 'other')
+    assert.equal(written(cast({ ok: false, error: 'tool-error', class: SECRET })), undefined)
+    assert.equal(written(cast({ ok: false, error: 'tool-error', class: 5 })), undefined)
+    for (const error of ['denied', 'timeout', 'cancelled', 'no-server', 'unfinished'])
+      assert.equal(written(cast({ ok: false, error, class: 'auth' })), undefined, error)
+    assert.equal(written(cast({ class: 'auth' })), undefined, 'an ok call')
+    assert.deepEqual(Object.keys(runRecord(input([call()])).calls[0]!).sort(), ['decision', 'ms', 'ok', 'tool'])
+    assert.equal(CALL_CLASSES.length, 7)
+  })
+
+  test('reads an old line as before, a later class as no class, and a wrong place as unreadable', () => {
+    const line = (c: Record<string, unknown>) =>
+      parseRunLine(
+        JSON.stringify({ ...runRecord(input([])), calls: [{ tool: 'mcp__f__echo', decision: 'allow', ms: 1, ...c }] }),
+      )
+    const first = (c: Record<string, unknown>) => {
+      const run = line(c)
+      return run === 'unreadable' ? run : run.calls[0]
+    }
+    assert.deepEqual(first({ ok: false, error: 'tool-error' }), {
+      tool: 'mcp__f__echo',
+      decision: 'allow',
+      ms: 1,
+      ok: false,
+      error: 'tool-error',
+    })
+    assert.deepEqual(first({ ok: false, error: 'failed', class: 'auth' }), {
+      tool: 'mcp__f__echo',
+      decision: 'allow',
+      ms: 1,
+      ok: false,
+      error: 'failed',
+      class: 'auth',
+    })
+    // A string outside the set is a class of a later version.
+    assert.deepEqual(first({ ok: false, error: 'tool-error', class: 'quota' }), {
+      tool: 'mcp__f__echo',
+      decision: 'allow',
+      ms: 1,
+      ok: false,
+      error: 'tool-error',
+    })
+    const unreadable = { unreadable: true, ok: false, tool: 'mcp__f__echo' }
+    assert.deepEqual(first({ ok: true, class: 'auth' }), unreadable)
+    assert.deepEqual(first({ ok: false, error: 'denied', class: 'auth' }), unreadable)
+    assert.deepEqual(first({ ok: false, error: 'tool-error', class: 5 }), unreadable)
+    assert.deepEqual(first({ ok: false, error: 'tool-error', class: null }), unreadable)
   })
 })

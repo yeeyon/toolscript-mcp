@@ -284,6 +284,65 @@ describe('runs', () => {
   const SKIPPED_NEWER =
     'A skipped line is newer than the newest run shown, so runs does not confirm that run. Run the task again.'
 
+  test('shows the class after the code and counts the classes of the failed calls shown', async () => {
+    const fail = (tool: string, error: 'tool-error' | 'failed', cls?: 'validation' | 'not-found' | 'auth') => ({
+      tool,
+      decision: 'allow' as const,
+      ms: 1,
+      ok: false,
+      error,
+      ...(cls === undefined ? {} : { class: cls }),
+    })
+    const line = runLine(
+      record({
+        time: '2026-01-01T00:00:05.000Z',
+        ending: 'done',
+        calls: [
+          fail('mcp__demo__a', 'tool-error', 'validation'),
+          fail('mcp__demo__b', 'tool-error', 'validation'),
+          fail('mcp__demo__c', 'failed', 'not-found'),
+          fail('mcp__demo__d', 'tool-error'),
+          fail('mcp__other__e', 'failed', 'auth'),
+          { tool: 'mcp__demo__f', decision: 'allow', ms: 1, ok: true },
+        ],
+      }),
+    )
+    const all = setupLog([line])
+    await all.runs()
+    assert.ok(all.printed.includes('  mcp__demo__a allow tool-error validation'), all.printed.join('\n'))
+    assert.ok(all.printed.includes('  mcp__demo__d allow tool-error'), all.printed.join('\n'))
+    assert.ok(all.printed.includes('  mcp__demo__f allow ok'), all.printed.join('\n'))
+    assert.deepEqual(
+      all.printed.filter(l => l.startsWith('classes of failed calls')),
+      ['classes of failed calls: validation 2, not-found 1, auth 1, no class 1'],
+    )
+    // The count line comes after the calls and before the next steps.
+    const at = all.printed.findIndex(l => l.startsWith('classes of failed calls'))
+    assert.ok(all.printed[at - 1]!.startsWith('  mcp__demo__f'), all.printed.join('\n'))
+    assert.ok(all.printed[at + 1]!.startsWith('tool-error:'), all.printed.join('\n'))
+    const demo = setupLog([line])
+    await demo.runs('--server', 'demo')
+    assert.deepEqual(
+      demo.printed.filter(l => l.startsWith('classes of failed calls')),
+      ['classes of failed calls: validation 2, not-found 1, no class 1'],
+    )
+  })
+
+  test('prints no count line when no call failed, and never prints a class outside the set', async () => {
+    const quiet = setupLog([done])
+    await quiet.runs()
+    assert.equal(
+      quiet.printed.some(l => l.startsWith('classes of failed calls')),
+      false,
+    )
+    const call = { tool: 'mcp__demo__a', decision: 'allow', ms: 1, ok: false, error: 'tool-error' }
+    const later = setupLog([forged({ calls: [{ ...call, class: 'future-class' }] })])
+    await later.runs()
+    assert.ok(later.printed.includes('  mcp__demo__a allow tool-error'), later.printed.join('\n'))
+    assert.equal(later.printed.join('\n').includes('future-class'), false)
+    assert.ok(later.printed.includes('classes of failed calls: no class 1'), later.printed.join('\n'))
+  })
+
   test('with no log, says no run yet and exits 1', async () => {
     const s = setup({ mcpServers: {} })
     assert.equal(await runRuns([], s.io), 1)
