@@ -12,7 +12,7 @@ import { GUARD_MARKERS, guardedDirs, normalizePath } from './paths.ts'
 export const GUARD_DEPTH = 16
 /** A longer string is file content, not a path or a command. */
 export const GUARD_STRING_CHARS = 4096
-/** The paths of one call that get a `realpath`. The later ones get the lexical check only. */
+/** The real path walks of one call: a path with `..` or a doubled `/` takes 2. The later ones get the lexical check only. */
 export const GUARD_REALPATHS = 16
 /** The parent steps of one `realpath` for a path that does not exist yet. */
 export const GUARD_PARENT_STEPS = 32
@@ -163,7 +163,7 @@ export type GuardSetup = {
 
 /**
  * The guarded folder that the arguments of a call name, as the refusal gives it, or undefined. A call with no path
- * candidate makes no file system call. The first GUARD_REALPATHS candidates get a real path, the others the lexical
+ * candidate makes no file system call. The first GUARD_REALPATHS walks get a real path, the others the lexical
  * check. A bare file name with an extension, such as `notes.json`, can be a link in the folder of the server: the
  * first GUARD_REALPATHS of them get one `realpath` each, with no parent steps.
  */
@@ -192,9 +192,11 @@ export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string
     const hit = hitIn(abs, forms)
     if (hit !== undefined) return hit
   }
-  for (const { raw, remote } of paths.slice(0, GUARD_REALPATHS)) {
-    if (remote) continue
-    const real = await realPathOf(raw, setup.realpath)
+  // The form as written resolves a link before a `..` after it (POSIX). The form with `..` folded by name resolves a
+  // link name after a `..`, as a server that calls `path.resolve` first writes it. Both count, to GUARD_REALPATHS.
+  const walks = paths.flatMap(({ raw, abs, remote }) => (remote ? [] : raw === abs ? [raw] : [raw, abs]))
+  for (const path of walks.slice(0, GUARD_REALPATHS)) {
+    const real = await realPathOf(path, setup.realpath)
     const hit = real === undefined ? undefined : hitIn(real, forms)
     if (hit !== undefined) return hit
   }

@@ -246,6 +246,21 @@ describe('guardHit', () => {
     assert.equal(await hit({ p: '/work/alias/../elsewhere/t.json' }, f), undefined)
   })
 
+  test('also resolves the path with its .. folded by name, so a .. before a link name cannot hide it', async () => {
+    const links = fake({ '/work/alias': '/home/u/.toolscript-mcp/hints' })
+    const f = {
+      asked: links.asked,
+      realpath: (p: string) =>
+        /\/(?:new|nope)(?:\/|$)/.test(p) ? Promise.reject(new Error('missing')) : links.realpath(p),
+    }
+    for (const p of [
+      '/work/alias/../alias/x.md',
+      '/work/nope/../alias/x.md',
+      `/work/alias/new${'/x/..'.repeat(20)}/t.json`,
+    ])
+      assert.equal(await hit({ p }, f), '~/.toolscript-mcp/hints', p)
+  })
+
   test('spends no parent step on a doubled separator or a /./ after a link', async () => {
     const links = fake({ '/work/alias': '/home/u/.toolscript-mcp/hints' })
     // the folder `new` does not exist yet, so the walk steps up to the link
