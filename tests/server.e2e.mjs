@@ -52,6 +52,8 @@ const HOME = path.join(dir, 'home')
 fs.mkdirSync(HOME)
 const SERVER_ENV = {
   ...process.env,
+  // Sharing on, with valid share keys in the config: this version still starts each server as a direct child.
+  TOOLSCRIPT_SHARE: '1',
   TOOLSCRIPT_E2E_MARKER: MARKER,
   TOOLSCRIPT_E2E_BAD_URL: BAD_URL,
   TMPDIR: TMP,
@@ -66,6 +68,7 @@ const LOCKED_URL = `http://127.0.0.1:${locked.address().port}`
 fs.writeFileSync(
   configFile,
   JSON.stringify({
+    share: true,
     sandbox: { timeoutSeconds: 5, callTimeoutSeconds: 2 },
     // query_logs matches no rule, so it is ask.
     policy: [
@@ -84,9 +87,9 @@ fs.writeFileSync(
     ],
     mcpServers: {
       // `node` from PATH, not process.execPath: the SDK's short environment must still find it.
-      bench: { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG } },
+      bench: { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG }, share: true },
       missing: { command: 'toolscript-e2e-no-such-command' },
-      probe: { command: process.execPath, args: [PROBE, probeFile] },
+      probe: { command: process.execPath, args: [PROBE, probeFile], share: 'folder' },
       passed: {
         command: process.execPath,
         args: [PROBE, passedFile],
