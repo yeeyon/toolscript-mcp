@@ -341,7 +341,7 @@ describe('the class of a call error', () => {
     assert.equal(written(cast({ ok: false, error: 'failed', class: 'other' })), 'other')
     assert.equal(written(cast({ ok: false, error: 'tool-error', class: SECRET })), undefined)
     assert.equal(written(cast({ ok: false, error: 'tool-error', class: 5 })), undefined)
-    for (const error of ['denied', 'timeout', 'cancelled', 'no-server', 'unfinished'])
+    for (const error of ['denied', 'timeout', 'cancelled', 'no-server', 'guarded', 'unfinished'])
       assert.equal(written(cast({ ok: false, error, class: 'auth' })), undefined, error)
     assert.equal(written(cast({ class: 'auth' })), undefined, 'an ok call')
     assert.deepEqual(Object.keys(runRecord(input([call()])).calls[0]!).sort(), ['decision', 'ms', 'ok', 'tool'])

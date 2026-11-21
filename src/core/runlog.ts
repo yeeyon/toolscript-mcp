@@ -21,6 +21,7 @@ export type CallDecision = (typeof CALL_DECISIONS)[number]
 const CALL_ERRORS = [
   ...CALL_DECISIONS,
   'no-server',
+  'guarded',
   'tool-error',
   'timeout',
   'cancelled',
@@ -271,6 +272,8 @@ const CALL_FIXES: Record<CallError, ((tools: string | undefined) => string) | un
     'unapproved: approve the tool in the prompt, or add an allow rule with its exact name. A tool that needs a person each run needs the prompt.',
   invalid: () =>
     'invalid: the tool name is wrong, or its server does not list it. Find the listed name with search_tools.',
+  guarded: () =>
+    'guarded: an argument of the call names a folder that toolscript-mcp guards (hints, functions, learned or oauth). No rule or approval lifts it. Take the path out of the call, or let the person edit the file.',
   'tool-error': () => 'tool-error: the server returned an error. Check the arguments of the call.',
   timeout: () => 'timeout: the call got no answer within sandbox.callTimeoutSeconds.',
   cancelled: () => 'cancelled: the run stopped before the call ended.',
