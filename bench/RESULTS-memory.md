@@ -78,6 +78,36 @@ The run took 267 s. Timing noise at 3 and 6 sessions is not a trend: the bench r
 - Private working set is about half of the private bytes: idle servers hold commit that is not resident.
 - Leftovers are 0 at every count, 10 s after the hosts closed.
 
+## Fixture, sharing off against on (slice 3 of #63)
+
+The fixture has 4 stdio servers, one of each share class: `bench1` has `"share": true`, `bench2` has a `cwd`, `bench3`
+has no key (one copy for each folder), and `bench4` has `"share": false`. Sessions run in 2 folders. Windows 11, Node
+22.23.3, commit 207d576, 20 s idle, `--closed` 10 s (off) and 20 s (on), `TOOLSCRIPT_BROKER_IDLE_MS=5000`. The commands:
+
+    TOOLSCRIPT_SHARE=0 node bench/memory.mjs --folders a,b --idle 20 --closed 10
+    TOOLSCRIPT_SHARE=1 TOOLSCRIPT_BROKER_IDLE_MS=5000 node bench/memory.mjs --folders a,b --idle 20 --closed 20
+
+Private bytes in the idle phase, in MB, the process of the broker and its children included:
+
+| sessions | off | on | saved | copies on (`bench1`, `bench2`, `bench3`, `bench4`) | copies off |
+| ---: | ---: | ---: | ---: | --- | --- |
+| 1 | 123.6 | 140.6 | -17.0 | 1, 1, 1, 1 | 1 each |
+| 3 | 375.8 | 314.5 | 61.3 | 1, 1, 2, 3 | 3 each |
+| 6 | 752.5 | 543.7 | 208.8 | 1, 1, 2, 6 | 6 each |
+
+- One broker at every count, 15.8 MB of private bytes (the limit is 60 MB). Its children belong to no session.
+- One session alone pays 17.0 MB: the broker (15.8 MB) and its console host (1.2 MB).
+- Each added session costs `(T(6) - T(1)) / 5`: 125.8 MB off, 80.6 MB on. The difference, 45.2 MB, is the 3 shared
+  copies that a session no longer starts (15 to 16 MB each with a console host) minus the extra copy of `bench3` in
+  the second folder.
+- The median host is 59.7 MB on and 60.0 MB off (the limit is 10 MB over off). All 4 servers connected and
+  4 `list_issues` calls gave the right result in every session, on and off. Each server has 5 tools.
+- Leftovers are 0 after the hosts closed, on and off: the broker ended at its idle time, and with it its children.
+- `tools/list` of session 1 took 499 ms on and 553 ms off, a difference inside the noise of one run.
+
+The fixture saves 209 MB at 6 sessions because a fake server costs 15 MB. The owner's saving is a number of the owner's
+own config: section 11 of the slice bar measures it.
+
 ## Real config
 
 Real mode is for the owner only. It uses the config file as given and the real home, so no agent or test runs it.
