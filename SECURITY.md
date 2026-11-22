@@ -85,9 +85,9 @@ Include:
 - Sharing does not keep apart the state inside one server copy: set `"share": false` on a server that keeps state. It
   does not keep apart its stderr either. The stderr text of a shared copy goes to the client log of each session
   attached to it, as with a direct copy. It never goes to a model, a reason, `search_tools` or `broker.log`.
-- The broker drops stderr text above 256 KB in 10 s, and a frame holds at most 8 KB. It holds at most 64 links and 32
-  copies, closes a session that has more than 64 MB unsent, and fails one request of more than 10 MB without
-  ending the link.
+- The broker drops stderr text above 256 KB in 10 s, and a frame holds at most 8 KB. It holds at most 256 links (one for
+  each shared server of each session) and 32 copies, closes a link that has more than 64 MB unsent, and fails one
+  request of more than 10 MB without ending the link.
 - No line that a server writes can pass as a frame of the broker: each frame of the broker starts with a byte that no
   JSON text starts with.
 - In scope: a result, progress line, elicitation or stderr text that reaches the model of another session, a link

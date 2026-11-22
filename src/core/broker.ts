@@ -198,8 +198,8 @@ export const STDERR_BACKLOG = 256 * 1024
 export const STDERR_TAIL = 8 * 1024
 /** A host connection with more than this unsent is closed (its link only), and so is a child stdin that holds it. */
 export const UNSENT_MAX = 64 * 1024 * 1024
-/** At most this many links and this many children in one broker. */
-export const LINKS_MAX = 64
+/** At most this many links (one for each shared server of each session) and this many children in one broker. */
+export const LINKS_MAX = 256
 export const CHILDREN_MAX = 32
 
 /** A frame with stderr text of a child, which the host encoded in base64 (at most STDERR_CHUNK bytes before that). */

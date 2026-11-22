@@ -6,7 +6,7 @@ Sharing (issue #63), slice 4:
 
 - The stderr text of a shared server goes to every session attached to it, into the same log as a direct copy's, never into a reason or a result. A failed attach gets the last 8 KB of the copy that failed. The broker drops stderr above 256 KB in 10 s and counts it.
 - Broker frames to a host carry a mark byte that no JSON starts with, so a server line can no longer pass as one. The wire is version 2.
-- A request of more than 10 MB fails by itself. The broker holds at most 64 links and 32 copies, and closes a link with more than 64 MB unsent or a copy that does not read its input.
+- A request of more than 10 MB fails by itself. The broker holds at most 256 links (one for each shared server of each session) and 32 copies, and closes a link with more than 64 MB unsent or a copy that does not read its input.
 - A stale recovery lock is broken by rename, a future time in it counts as old, and a socket that a kill left is linked back or swept at the next start.
 - `doctor` names the way out for a taken broker name and, on Windows, reads the access rules of the broker folder.
 - SECURITY.md gets the threat model of the broker. `scripts/start-time.mjs` checks that a pid is still the broker before it ends it.

@@ -854,7 +854,7 @@ Two sessions share a copy only when the command, the arguments, the whole enviro
 
 The stderr text of a shared server goes to the log of each session that is attached to it. A direct copy does the same for its client. A session that attaches to a running copy gets no earlier text. A session whose attach fails gets the last 8 KB of the copy that failed. The text never goes to the model. The broker drops stderr text above 256 KB in 10 s and counts what it dropped.
 
-A broker holds at most 64 sessions and 32 copies. Above that, the attach fails with a reason that names `"share": false`. A request of more than 10 MB fails by itself, and the session goes on. A session that does not read what the broker sends ends at 64 MB unsent, and the other sessions go on.
+A broker holds at most 256 links and 32 copies. A session has one link for each shared server, so with 4 shared servers that is 64 sessions. Above that, the attach fails with a reason that names `"share": false`. A request of more than 10 MB fails by itself, and the session goes on. A link whose session does not read what the broker sends closes at 64 MB unsent. The session, its other links and the other sessions go on.
 
 Sharing does not keep apart the state inside one copy of a server, or its stderr. Set `"share": false` on a server that keeps state. [SECURITY.md](SECURITY.md) says what the broker protects and what it does not.
 
