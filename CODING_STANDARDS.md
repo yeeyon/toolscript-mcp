@@ -8,7 +8,7 @@ enforces; the others rely on discipline.
   pinned version. Turn on the pre-commit hook one time per clone: `git config core.hooksPath .githooks`.
   `[test: code.check.mjs]`
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
-  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts` and `broker.ts`. They import no Node module and no host package, so tests call them directly.
+  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts` and `lock.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
 - `src/host/` holds the code that runs in Node. `tsconfig.host.json` checks it with the Node types.
 - The package runs `dist/host/main.js`, and starts `dist/host/broker.js` on demand when sharing is on (issue #63).
@@ -37,7 +37,13 @@ enforces; the others rely on discipline.
   reason. Only `toolscript-mcp login` does them. The provider answers each refresh in its `fetch`: a 4xx other than
   408 and 429 is a refusal and throws `LoginNeeded`. No answer, none within `REFRESH_TIMEOUT_MS`, a 5xx, 408 or 429 throws `RefreshFailed`: the tokens
   stay, and the next use tries again. One refresh of a store file runs at a time in a process (`refreshes`): a
-  rotating refresh token works once, so every other caller waits for that refresh and gets its tokens. Both are an `OAuthError`, so the SDK passes them on and starts no login.
+  rotating refresh token works once, so every other caller waits for that refresh and gets its tokens. Across
+  processes, a refresh holds `<store>.lock` (`src/host/oauthlock.ts`, made with `wx`, in the `oauth` folder, never a
+  secret in it). It reads the store again after it takes the lock, and returns the tokens of the winner when the store
+  holds a refresh token other than the one it holds, or an access token that no server refused in this process. The
+  lock wait and the request share `refreshTimeoutMs`. A lock is stale when its pid is dead, or when it is older than
+  the refresh time plus the rename wait plus a margin. Only the waiter that makes the claim file of a stale lock removes
+  it. `login` takes no lock. A lock that cannot be made (a full disk) lets the refresh run without it. Both are an `OAuthError`, so the SDK passes them on and starts no login.
   A refresh saves its tokens only when the store still holds the refresh token that it held when the refresh started: a login in
   another process can save during the refresh, and then the refresh leaves the store to that login. A login that
   saves between the read and the rename of the refresh is still lost. No log line, printed line, reason or nested-call error holds a token, code,
