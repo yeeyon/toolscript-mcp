@@ -458,6 +458,27 @@ describe('a lazy server', () => {
     assert.equal(starts(), 1)
   })
 
+  test('close ends the tree of a wrapper that ignores EOF before the 2 s that a client gives the host', async () => {
+    const win = process.platform === 'win32'
+    const wrapper = win
+      ? { command: 'cmd', args: ['/c', 'node', PID_SERVER, '--ignore-eof'] }
+      : { command: 'sh', args: ['-c', 'node "$0" --ignore-eof; true', PID_SERVER] }
+    const config: StdioServer = { kind: 'stdio', command: wrapper.command, args: wrapper.args, env: {} }
+    const id = JSON.stringify([config.command, config.args])
+    const { store } = memoryStore([[id, { at: 1, tools: [{ name: 'pid', inputSchema: { type: 'object' } }] }]])
+    const d = connectAll(new Map<ServerKey, ServerConfig>([[KEY, config]]), '0', () => {}, {
+      lazy: { bridges: new Set([KEY]), idleMs: 60_000, cache: store },
+    })
+    opened.push(d)
+    await d.settled
+    const pid = await pidOf(d, 'pid')
+    assert.ok(alive(pid))
+    const began = Date.now()
+    await d.close()
+    assert.ok(Date.now() - began < 2000, 'the close took less than 2 s')
+    await until(() => !alive(pid), 'the end of the grandchild', 5000)
+  })
+
   test('a wrapper launch that ignores EOF leaves no process of its tree after the idle stop', async () => {
     const win = process.platform === 'win32'
     // The wrapper stays the parent of the server, and the server ignores the end of its stdin.

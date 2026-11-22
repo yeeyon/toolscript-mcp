@@ -524,6 +524,8 @@ export const connectAll = (
     lazy !== undefined && isLazy(key, server, lazy.bridges, true)
   // The keys whose current attempt is a wake: a caller waits up to CONNECT_TIMEOUT_MS for it.
   const waking = new Set<ServerKey>()
+  // The children of lazy servers: a shutdown hurries their stop.
+  const children = new Set<ChildTransport>()
 
   const connect = async (key: ServerKey, server: ServerConfig, woke = false): Promise<void> => {
     const began = performance.now()
@@ -604,6 +606,11 @@ export const connectAll = (
       if (closing) throw new OwnError('toolscript-mcp is shutting down')
       const made = transportOf(key, server, sessionEnded, auth, childStderr, share, lazily)
       lastError = made.lastError
+      if (made.child !== undefined) {
+        children.add(made.child)
+        // A shutdown that began before this child started hurries it at once.
+        if (closing) made.child.hurry()
+      }
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const first = await list()
       // The old list can lack a new mark, so lists that stop fail the link, and the next use connects and lists anew.
@@ -637,6 +644,7 @@ export const connectAll = (
       else log(`${key}: connected, ${first.length} tools`)
       client.onclose = () => {
         clearTimeout(idle)
+        if (made.child !== undefined) children.delete(made.child)
         opened.delete(client)
         const stderr = lastError()
         if (stderr === '') lost('the connection closed')
@@ -809,6 +817,10 @@ export const connectAll = (
     },
     untrusted,
     distrust: key => void distrusted.add(key),
-    close: () => (closing ??= Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})),
+    close: () =>
+      (closing ??= (() => {
+        for (const child of children) child.hurry()
+        return Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})
+      })()),
   }
 }
