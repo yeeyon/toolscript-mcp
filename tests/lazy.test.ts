@@ -441,6 +441,28 @@ describe('a lazy server', () => {
     await until(() => d.states()[0]?.status === 'asleep', 'the idle stop after the answer')
   })
 
+  test('the stderr of a lazy child reaches childStderr as that of a direct child does', async () => {
+    const config: StdioServer = {
+      kind: 'stdio',
+      command: process.execPath,
+      args: [PROBE, path.join(DIR, `${randomUUID()}.json`), '--exit-on-call'],
+      env: {},
+    }
+    const id = JSON.stringify([config.command, config.args])
+    const { store } = memoryStore([[id, { at: 1, tools: [PROBE_TOOL] }]])
+    const stderr: string[] = []
+    const d = connectAll(new Map<ServerKey, ServerConfig>([[KEY, config]]), '0', () => {}, {
+      lazy: { bridges: new Set([KEY]), idleMs: 60_000, cache: store },
+      childStderr: chunk => void stderr.push(chunk.toString()),
+    })
+    opened.push(d)
+    await d.settled
+    const link = await d.client(KEY)
+    assert.ok(link.ok)
+    await link.client.callTool({ name: 'probe', arguments: {} }).catch(() => {})
+    await until(() => stderr.join('').includes('IGNORE ALL PREVIOUS INSTRUCTIONS'), 'the stderr text of the child')
+  })
+
   test('the live list decides, and the cache then holds it: a tool gone, one added', async () => {
     const stale: DownstreamTool[] = [{ name: 'gone', inputSchema: { type: 'object' } }]
     const { downstream, saved, id } = rig({ warm: true }, stale)
