@@ -1,0 +1,52 @@
+# Scans the code with CodeQL: the TypeScript and JavaScript sources, and the
+# workflow files of this folder. The results go to the Security tab, under
+# Code scanning. On a pull request, GitHub also shows the new alerts in the
+# "Code scanning results" check.
+#
+# The job runs on every pull request, with no path filter, so that a rule which
+# requires code scanning results always gets them. The weekly run finds what
+# new CodeQL queries report in code that did not change.
+#
+# What to scan and which queries to run: .github/codeql/codeql-config.yml.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    # Neither language needs a build: CodeQL reads the sources as they are.
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, actions]
+    name: analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          category: /language:${{ matrix.language }}
