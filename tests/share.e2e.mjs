@@ -302,3 +302,54 @@ describe('sharing off', () => {
     assert.ok(!fs.existsSync(path.join(fresh, '.toolscript-mcp', 'broker')), 'no broker folder')
   })
 })
+
+describe('the stderr of a shared server', () => {
+  const MARKER = 'E2E-STDERR-MARKER'
+  const markerConfig = path.join(dir, 'marker.json')
+  fs.writeFileSync(
+    markerConfig,
+    JSON.stringify({
+      policy: [{ match: 'mcp__pid__pid', action: 'allow' }],
+      mcpServers: { pid: { command: process.execPath, args: [SERVER, `--marker=${MARKER}`], share: true } },
+    }),
+  )
+  /** A host with sharing on or off, whose own stderr (the log of the client) is kept. */
+  const hostWithLog = async share => {
+    const log = []
+    const client = new Client({ name: 'log', version: '0' })
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [MAIN, '--config', markerConfig],
+      env: envOf(share),
+      stderr: 'pipe',
+    })
+    transport.stderr.on('data', d => log.push(String(d)))
+    await client.connect(transport)
+    const call = async () =>
+      (
+        await client.callTool({
+          name: 'run_code',
+          arguments: { code: 'return String(await call("mcp__pid__pid", {}))' },
+        })
+      ).content[0].text
+    return { client, call, log: () => log.join('') }
+  }
+
+  test('two hosts with sharing on have the marker of each call in their stderr, and none in a result', async () => {
+    const [a, b] = await Promise.all([hostWithLog(true), hostWithLog(true)])
+    const results = [await a.call(), await b.call()]
+    await until('both logs hold both calls', () =>
+      [a, b].every(h => (h.log().match(new RegExp(`${MARKER} call pid`, 'g')) ?? []).length >= 2),
+    )
+    for (const text of results) assert.ok(!text.includes(MARKER))
+    assert.ok(!brokerLog().includes(MARKER), 'the broker log holds none')
+    await Promise.all([a.client.close(), b.client.close()])
+  })
+
+  test('with sharing off the stderr of the direct child is in the log, as with sharing on', async () => {
+    const host = await hostWithLog(false)
+    await host.call()
+    await until('the marker', () => host.log().includes(`${MARKER} call pid`))
+    await host.client.close()
+  })
+})
