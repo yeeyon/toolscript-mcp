@@ -557,17 +557,33 @@ describe('the gaps of issue 107', () => {
     assert.ok(g.asked.includes('/work/app/there./a.md'), String(g.asked))
   })
 
-  test('(e) on POSIX a trailing dot or space is part of a name: a home part that ends in a dot is guarded, through a link too', async () => {
-    const home = '/home/d.'
-    const list = guardedList(home, '')
-    const f = fake({ '/work/link': `${home}/.toolscript-mcp/learned` })
-    const at = (p: string, windows: boolean) =>
-      guardHit(
-        { p },
-        { home, cwd: '/work', list, forms: () => resolveGuarded(list, f.realpath), realpath: f.realpath, windows },
-      )
-    assert.equal(await at('/work/link/shapes.json', false), '~/.toolscript-mcp/learned')
-    assert.equal(await at(`${home}/.toolscript-mcp/oauth/t.json`, false), '~/.toolscript-mcp/oauth')
+  test('(e) a home part that ends in a dot or a space is guarded, on every OS, by path and by link', async () => {
+    for (const [home, windows] of [
+      ['/home/u.', false],
+      ['/home/u.', true],
+      ['/home/u ', false],
+      ['C:/Users/u.', true],
+      ['C:/Users/u.', false],
+    ] as const) {
+      const list = guardedList(home, '')
+      const f = fake({ '/work/link': `${home}/.toolscript-mcp/hints` })
+      const at = (p: string) =>
+        guardHit(
+          { p },
+          { home, cwd: '/work', list, forms: () => resolveGuarded(list, f.realpath), realpath: f.realpath, windows },
+        )
+      const name = `${home} ${windows}`
+      assert.equal(await at(`${home}/.toolscript-mcp/x/../hints/a.md`), '~/.toolscript-mcp/hints', name)
+      assert.equal(await at(`${home}/.toolscript-mcp/x/../oauth/t`), '~/.toolscript-mcp/oauth', name)
+      assert.equal(await at('/work/link/a.md'), '~/.toolscript-mcp/hints', name)
+      assert.equal(await at(`${home}/.toolscript-mcp/files./a.json`), undefined, name)
+    }
+  })
+
+  test('(e) a percent escape that makes a boundary or a letter of the name is still read, other text with % is not', () => {
+    for (const text of ['a%20.toolscript-mcp/hints', '.%74oolscript-mcp/hints', '.toolscript%2Dmcp/oauth'])
+      assert.notEqual(markerIn(text), undefined, text)
+    for (const text of ['%3Cpath d=%22M0 0%22/%3E', 'a%2Fb', "LIKE '%x'"]) assert.equal(markerIn(text), undefined, text)
   })
 
   test('(6) the project folder at a root gets its own label', () => {
