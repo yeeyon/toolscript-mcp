@@ -49,7 +49,10 @@ enforces; the others rely on discipline.
   syntax that Node can strip: no enums, no parameter properties, no namespaces. `[test: tsc, erasableSyntaxOnly]`
 - Make each path into `.toolscript-mcp` with a helper from `src/core/paths.ts`: `hintsFolder`, `functionsFolder`,
   `shapesFile` or `appPath`. `[test: code.check.mjs]`
-- The learned shapes file is alone in its own folder, which `guardedDirs` lists. Read it as written by an attacker:
+- The learned shapes file and the tool lists of lazy servers (`learned/tools.json`) are alone in their folder, which
+  `guardedDirs` lists. The tool lists are for display only: no policy decision, approval prompt, argument check or
+  `requiresUserInteraction` check reads them, and only a hash of the launch is on disk. `[test: lazy.test.ts, run.test.ts]`
+  Read the shapes file as written by an attacker:
   an entry loads only when `isLearnedShape` accepts its shape. Never widen that grammar to free text. A run that read
   untrusted content saves no shape. `[test: code-mode.test.ts, run.test.ts, shapes.test.ts]`
 - Make a hint ref with `hintRef` or `bundledRef`, and read one with `refTarget` (all in `src/core/hints.ts`).
