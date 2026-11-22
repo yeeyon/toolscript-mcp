@@ -344,6 +344,17 @@ describe('attach and routing', () => {
     )
   })
 
+  test('an entry that spawn refuses at once refuses the attach with the code, and the broker keeps serving', async () => {
+    const rig = await startRig()
+    // A NUL byte in an env value: spawn throws before any process starts.
+    await assert.rejects(connect(rig, entryOf({ BAD: 'a\0b' })), (err: Error) => {
+      assert.ok(err instanceof BrokerError)
+      assert.match(err.message, /could not start \(ERR_INVALID_ARG_VALUE\).*by hand/)
+      return true
+    })
+    assert.match(await text(await connect(rig), 'pid'), /^\d+$/)
+  })
+
   test('a child with no link stops at the idle time, then the broker leaves', async () => {
     const rig = await startRig(1000)
     const client = await connect(rig)
