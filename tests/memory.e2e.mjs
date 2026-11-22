@@ -215,6 +215,13 @@ const benchDirs = () => fs.readdirSync(dir).filter(f => f.startsWith('toolscript
 
 test('a hard kill of the bench leaves no host and no fake server, and the next start removes its temp dir', async () => {
   const since = Date.now() - 2000
+  // A process of another run whose command line names the broker of this build: the test must neither count nor end it.
+  const named = path.join(ROOT, 'dist', 'host', 'broker.js')
+  const other = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', named], {
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  after(() => other.kill())
   const child = spawn(process.execPath, [BENCH, ...FAST, '--counts', '2', '--idle', '60'], {
     env: shared,
     stdio: ['ignore', 'ignore', 'pipe'],
@@ -236,6 +243,11 @@ test('a hard kill of the bench leaves no host and no fake server, and the next s
       process.kill(p.pid, 'SIGKILL')
     } catch {}
   }
+  const ended = await Promise.race([
+    new Promise(resolve => other.once('exit', () => resolve(true))),
+    new Promise(resolve => setTimeout(() => resolve(false), 1000)),
+  ])
+  assert.equal(ended, false, 'the process of another run still lives')
   assert.deepEqual(
     left.map(p => `${p.name} ${p.pid}`),
     [],
