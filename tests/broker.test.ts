@@ -12,6 +12,7 @@ import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import {
   brokerSide,
+  endpointOf,
   entryText,
   hostSide,
   idleMs,
@@ -20,6 +21,8 @@ import {
   PROOF_BYTES,
   PROOF_CONNECTIONS,
   resolvePath,
+  SOCKET_MAX_BYTES,
+  utf8Length,
   type Crypto,
   type Entry,
 } from '../src/core/broker.ts'
@@ -33,6 +36,26 @@ const closers: (() => Promise<void> | void)[] = []
 after(async () => {
   for (const close of closers.reverse()) await close()
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 })
+})
+
+describe('the endpoint', () => {
+  const mac = 'ab12cd34ef56'.repeat(5)
+  test('a normal home keeps the socket in the broker folder, a long one moves it to a short folder of the user', () => {
+    const near = endpointOf('linux', '/Users/someone', mac, 501)
+    assert.equal(near, '/Users/someone/.toolscript-mcp/broker/tsm-ab12cd34ef56.sock')
+    const far = endpointOf(
+      'darwin',
+      '/var/folders/7h/k3gr5wsx5d1ftd7rz5j0nsbr0000gn/T/toolscript-memory-test-AbCdEf/home',
+      mac,
+      501,
+    )
+    assert.equal(far, '/tmp/tsm-501/tsm-ab12cd34ef56.sock')
+    assert.ok(Buffer.byteLength(far) <= SOCKET_MAX_BYTES)
+    assert.equal(utf8Length('aé€😀'), Buffer.byteLength('aé€😀'))
+  })
+  test('Windows has a pipe whatever the home', () => {
+    assert.equal(endpointOf('win32', 'C:\\x'.repeat(40), mac, 0), '\\\\.\\pipe\\toolscript-mcp-ab12cd34ef56')
+  })
 })
 
 describe('the pure wire', () => {

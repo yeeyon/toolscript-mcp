@@ -27,7 +27,7 @@ import {
 } from '../core/broker.ts'
 import { childEnv, type StdioServer } from '../core/config.ts'
 import type { Keyed, Place } from '../core/share.ts'
-import { buildId, endpointFor, loadKey, makeCrypto } from './brokerwire.ts'
+import { BAD_KEY, buildId, endpointFor, loadKey, makeCrypto } from './brokerwire.ts'
 
 /** An error whose text toolscript-mcp wrote: it holds no text of a server and no value of the config. */
 export class BrokerError extends Error {}
@@ -179,8 +179,13 @@ export const openLink = async ({
     wire = makeCrypto(key)
     endpoint = endpointFor(home, key, idOf(brokerFile))
   } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? 'error'
     throw new BrokerError(
-      unusable(`could not read its key or its build (${(err as NodeJS.ErrnoException).code ?? 'error'})`),
+      unusable(
+        code === BAD_KEY
+          ? 'its key file is damaged. Delete the file "key" in the folder .toolscript-mcp/broker of your home folder, then try again'
+          : `could not read its key or its build (${code})`,
+      ),
     )
   }
   if (process.platform !== 'win32' && Buffer.byteLength(endpoint) > SOCKET_MAX_BYTES)

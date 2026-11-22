@@ -7,6 +7,8 @@ import { endpointOf, type Crypto } from '../core/broker.ts'
 import { brokerFolder } from '../core/paths.ts'
 
 const KEY_BYTES = 32
+/** The error code of a key file of the wrong length, which a person fixes by deleting it. */
+export const BAD_KEY = 'EBADKEY'
 
 /** The HMAC-SHA-256 of the key over the text, the random nonce, and the comparison in constant time. */
 export const makeCrypto = (key: Buffer): Crypto => ({
@@ -40,7 +42,7 @@ export const loadKey = (home: string): Buffer => {
   }
   const have = read()
   if (have !== undefined) return have
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  privateFolder(dir)
   const temp = `${dir}/key.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`
   try {
     fs.writeFileSync(temp, crypto.randomBytes(KEY_BYTES), { flag: 'wx', mode: 0o600 })
@@ -53,10 +55,23 @@ export const loadKey = (home: string): Buffer => {
     fs.rmSync(temp, { force: true })
   }
   const key = read()
-  if (key === undefined) throw new Error('the broker key file is not 32 bytes long')
+  if (key === undefined) throw Object.assign(new Error('the broker key file is not 32 bytes long'), { code: BAD_KEY })
   return key
 }
 
 /** The endpoint of the broker of this key and build. `home` is the folder of the key file. */
 export const endpointFor = (home: string, key: Buffer, id: string, platform = process.platform): string =>
-  endpointOf(platform, home, makeCrypto(key).mac(`toolscript-mcp build ${id}`))
+  endpointOf(platform, home, makeCrypto(key).mac(`toolscript-mcp build ${id}`), process.getuid?.() ?? 0)
+
+/**
+ * Makes a folder for sockets or keys that only this user can enter, and tightens one that exists with wider modes.
+ * Outside Windows it must be a real folder (no link) that this user owns, else it throws: a folder of another user
+ * in `/tmp` is no place for a socket.
+ */
+export const privateFolder = (dir: string): void => {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  if (process.platform === 'win32') return
+  const info = fs.lstatSync(dir)
+  if (!info.isDirectory() || info.uid !== process.getuid?.()) throw new Error('the folder is not owned by this user')
+  if ((info.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700)
+}

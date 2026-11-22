@@ -86,9 +86,10 @@ describe('a real broker', () => {
     await until('the child stops', () => !alive(child), 8000)
     await until('the broker leaves', () => !alive(broker!), 8000)
     if (process.platform !== 'win32')
-      assert.deepEqual(
-        fs.readdirSync(brokerFolder(home)).filter(f => f.endsWith('.sock')),
-        [],
+      assert.ok(
+        !fs.existsSync(
+          endpointFor(home, loadKey(home), crypto.createHash('sha256').update(fs.readFileSync(BROKER)).digest('hex')),
+        ),
       )
     assert.match(logOf(home), / exit$/m)
   })

@@ -7,6 +7,7 @@ import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
+import path from 'node:path'
 import crossSpawn from 'cross-spawn'
 import {
   attachedFrame,
@@ -25,7 +26,7 @@ import {
 } from '../core/broker.ts'
 import { createRouter, type Effect, type Router } from '../core/mux.ts'
 import { brokerFolder } from '../core/paths.ts'
-import { buildId, endpointFor, loadKey, makeCrypto } from './brokerwire.ts'
+import { buildId, endpointFor, loadKey, makeCrypto, privateFolder } from './brokerwire.ts'
 
 export type BrokerOptions = {
   readonly home: string
@@ -111,11 +112,12 @@ export const startBroker = async ({
   initMs = CHILD_INIT_MS,
 }: BrokerOptions): Promise<Broker | undefined> => {
   const dir = brokerFolder(home)
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  privateFolder(dir)
   const log = makeLog(`${dir}/broker.log`)
   const key = loadKey(home)
   const wire = makeCrypto(key)
   const endpoint = endpointFor(home, key, buildId(file))
+  if (process.platform !== 'win32') privateFolder(path.dirname(endpoint))
   const children = new Map<string, Child>()
   const sockets = new Set<net.Socket>()
   let seq = 0

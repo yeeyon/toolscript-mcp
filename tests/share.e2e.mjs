@@ -8,11 +8,13 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { after, describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { endpointFor, loadKey } from '../src/host/brokerwire.ts'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = path.join(ROOT, 'dist', 'host', 'main.js')
@@ -247,11 +249,13 @@ describe('sharing on', () => {
     await closeAll(six)
     await until('the child ends', () => !alive(child), 10_000)
     await until('the broker ends', () => !alive(broker), 10_000)
-    if (process.platform !== 'win32')
-      assert.deepEqual(
-        fs.readdirSync(BROKER_DIR).filter(f => f.endsWith('.sock')),
-        [],
-      )
+    if (process.platform !== 'win32') {
+      const id = crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(path.join(ROOT, 'dist', 'host', 'broker.js')))
+        .digest('hex')
+      assert.ok(!fs.existsSync(endpointFor(HOME, loadKey(HOME), id)), 'no socket file')
+    }
   })
 })
 

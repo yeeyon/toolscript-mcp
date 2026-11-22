@@ -29,11 +29,29 @@ export const idleMs = (text: string | undefined): number => {
   return n >= 1000 ? n : CHILD_IDLE_MS
 }
 
-/** The pipe or socket for the first 12 hex digits of HMAC(key, build id). A short name keeps a socket path short. */
-export const endpointOf = (platform: string, home: string, mac: string): string =>
-  platform === 'win32'
-    ? `\\\\.\\pipe\\toolscript-mcp-${mac.slice(0, 12)}`
-    : `${brokerFolder(home)}/tsm-${mac.slice(0, 12)}.sock`
+/** The length of a text in UTF-8 bytes, which is what `sun_path` counts. */
+export const utf8Length = (text: string): number => {
+  let n = 0
+  for (const ch of text) {
+    const c = ch.codePointAt(0)!
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4
+  }
+  return n
+}
+
+/** The folder of the socket when the broker folder is too deep for `sun_path`: one short folder of the user. */
+export const shortSocketFolder = (uid: number): string => `/tmp/tsm-${uid}`
+
+/**
+ * The pipe or socket for the first 12 hex digits of HMAC(key, build id). A short name keeps a socket path short, and a
+ * socket whose path in the broker folder would not fit (a temp home under a long macOS TMPDIR) goes to the short folder.
+ */
+export const endpointOf = (platform: string, home: string, mac: string, uid: number): string => {
+  const name = `tsm-${mac.slice(0, 12)}.sock`
+  if (platform === 'win32') return `\\\\.\\pipe\\toolscript-mcp-${mac.slice(0, 12)}`
+  const near = `${brokerFolder(home)}/${name}`
+  return utf8Length(near) <= SOCKET_MAX_BYTES ? near : `${shortSocketFolder(uid)}/${name}`
+}
 
 /** What the host sends after the proof: the server entry as resolved, with the folder in place of any rule. */
 export type Entry = {
