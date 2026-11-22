@@ -253,6 +253,19 @@ describe('plugin config helper', () => {
     }
   })
 
+  it('keeps the share keys, at the top level and on a server', () => {
+    const shared = {
+      ...FIXTURE,
+      share: true,
+      mcpServers: { ...FIXTURE.mcpServers, local: { ...FIXTURE.mcpServers.local, share: 'folder' } },
+    }
+    const file = makeConfig(JSON.stringify(shared))
+    assert.equal(run(file, 'untrusted', 'local', 'true').code, 0)
+    const saved = JSON.parse(read(file))
+    assert.equal(saved.share, true)
+    assert.equal(saved.mcpServers.local.share, 'folder')
+  })
+
   it('refuses untrusted for a missing server or a bad value and leaves the file as it was', () => {
     const file = makeConfig()
     const before = read(file)

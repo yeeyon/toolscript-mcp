@@ -29,6 +29,8 @@ export type StdioServer = Trust & {
   readonly env: Readonly<Record<string, string>>
   /** The absolute folder that the child starts in. Without it, the child starts in the folder of toolscript-mcp. */
   readonly cwd?: string
+  /** `"share"` as written. Without a key, the class comes from the rules in `share.ts`. */
+  readonly share?: boolean | 'folder'
 }
 
 /** How an HTTP server logs in with OAuth: `toolscript-mcp login <key>` gets the tokens. */
@@ -151,6 +153,11 @@ export type Config = {
   readonly policy: Policy
   /** False when the config says `"log": false`: no run log. */
   readonly log: boolean
+  /**
+   * The share switch: `TOOLSCRIPT_SHARE`, else the top-level `"share"`, else off (decision 026). When it is off, every
+   * server starts one time per session, also one with `"share": true`.
+   */
+  readonly share: { readonly on: boolean; readonly source: 'default' | 'config' | 'env' }
 }
 
 /** The time limit of a run without `sandbox.timeoutSeconds`, and the least it can be, as in the plugin. */
@@ -318,6 +325,15 @@ const parseTrust = (raw: unknown, path: string, errors: string[]): Trust => {
   return {}
 }
 
+/** `TOOLSCRIPT_SHARE` (0 or 1), else the top-level `"share"`, else off. No text repeats a bad value. */
+const parseShare = (raw: unknown, env: Env, errors: string[]): Config['share'] => {
+  if (raw !== undefined && typeof raw !== 'boolean') errors.push('share: must be true or false')
+  const fromEnv = env.TOOLSCRIPT_SHARE
+  if (fromEnv === '0' || fromEnv === '1') return { on: fromEnv === '1', source: 'env' }
+  if (fromEnv !== undefined && fromEnv !== '') errors.push('TOOLSCRIPT_SHARE: must be 0 or 1')
+  return typeof raw === 'boolean' ? { on: raw, source: 'config' } : { on: false, source: 'default' }
+}
+
 const parseServer = (
   raw: unknown,
   path: string,
@@ -331,7 +347,7 @@ const parseServer = (
   }
   const type = raw.type ?? 'stdio'
   if (type === 'stdio') {
-    unknownKeys(raw, ['type', 'command', 'args', 'env', 'cwd', 'untrusted'], path, errors)
+    unknownKeys(raw, ['type', 'command', 'args', 'env', 'cwd', 'share', 'untrusted'], path, errors)
     const command = nonEmpty(raw.command, `${path}.command`, errors)
     let args: string[] = []
     if (raw.args !== undefined) {
@@ -344,12 +360,16 @@ const parseServer = (
       else errors.push(`${path}.args: must be an array of strings`)
     }
     const cwd = parseCwd(raw.cwd, `${path}.cwd`, env, platform, errors)
+    const share = raw.share
+    if (share !== undefined && share !== true && share !== false && share !== 'folder')
+      errors.push(`${path}.share: must be true, false or "folder"`)
     return {
       kind: 'stdio',
       command,
       args,
       env: stringMap(raw.env, `${path}.env`, env, errors),
       ...(cwd && { cwd }),
+      ...((share === true || share === false || share === 'folder') && { share }),
       ...parseTrust(raw.untrusted, `${path}.untrusted`, errors),
     }
   }
@@ -503,7 +523,7 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
   const raw = json.value
   if (!isObject(raw)) return { ok: false, errors: ['the config must be a JSON object with an mcpServers object'] }
   const errors: string[] = []
-  unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox', 'policy', 'log'], 'config', errors)
+  unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox', 'policy', 'log', 'share'], 'config', errors)
 
   const servers = new Map<ServerKey, ServerEntry>()
   if (!isObject(raw.mcpServers)) errors.push('mcpServers: must be an object')
@@ -528,8 +548,22 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
     errors.push(`log: must be true or false, not ${JSON.stringify(raw.log)}`)
   const log = raw.log !== false
   const bridges = new Set([...servers].flatMap(([key, server]) => (isBridge(key, server) ? [key] : [])))
+  // A bridge is never shared. Only its entry is invalid, and the key stays a bridge.
+  for (const key of bridges) {
+    const server = servers.get(key)
+    if (server?.kind === 'stdio' && (server.share === true || server.share === 'folder'))
+      servers.set(key, {
+        kind: 'invalid',
+        errors: [
+          `${at('mcpServers', key)}.share: a Claude Code bridge is never shared: remove "share" or set it to false`,
+        ],
+      })
+  }
+  const share = parseShare(raw.share, env, errors)
 
-  return errors.length > 0 ? { ok: false, errors } : { ok: true, config: { servers, bridges, sandbox, policy, log } }
+  return errors.length > 0
+    ? { ok: false, errors }
+    : { ok: true, config: { servers, bridges, sandbox, policy, log, share } }
 }
 
 /**

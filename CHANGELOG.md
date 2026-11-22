@@ -182,6 +182,12 @@ CLI usage and printed commands:
 - `search_tools` shows equal tools on twin servers in full one time (#104). A hit with the same short name, description, input schema, output schema and approval mark as a full hit above is a heading and one line that names that hit. It takes no full place and no part of the 4,000 character budget, so the full places go to other tools. Before, 3 equal servers gave 3 full copies of one tool. A catalog without twins gives the same text. With fake data, 4 searches on 2 and 3 equal servers went from 15,689 to 14,142 characters in total. That holds for tools with input schemas. For tools with no arguments, a twin line is longer than a one-line summary, so a result can grow by a few percent.
 - A nested call is refused when a string in its arguments names a guarded folder: `~/.toolscript-mcp/hints`, `functions`, `learned` or `oauth`, or the project `hints`. The check covers paths (also `..`, letter case, symlinks, junctions and 8.3 names) and the name of a folder in text, such as a shell command. No allow rule or approval lifts it. The run log code is `guarded`. `oauth/` is now a guarded folder (#99).
 
+Shared servers (issue #63, preparation):
+
+- Added the `share` keys: `"share": true` or `false` at the top level, `true`, `false` or `"folder"` on a stdio server, and `TOOLSCRIPT_SHARE=0` or `1`. Sharing is off by default and not active yet: each server still starts one time per session.
+- Added `src/core/mux.ts`, the pure router of a child process that several sessions share, with a seeded property test, and `src/core/share.ts`, the class and the share key of a stdio server.
+- Added the `doctor` check `share`: the switch, and the class of each stdio server with the rule that decided.
+
 Runner fixes (inherited from claude-code-mode at eea4077):
 
 - A failed call that the program awaits later no longer crashes the sandbox.

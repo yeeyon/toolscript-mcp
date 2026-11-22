@@ -3,14 +3,15 @@
 // the policy against the listed tools and the stale OAuth stores. src/host/doctor.ts runs the checks.
 
 import { catalogOf, interactiveTools, type ServerState, type SettledState } from './catalog.ts'
-import { loginReason } from './config.ts'
+import { loginReason, type Config, type ServerKey } from './config.ts'
+import { classify, type Class } from './share.ts'
 import { decide, matches, printable, ruleText, shownName, type Bridges, type Policy, type Rule } from './policy.ts'
 
 /** `info` is a fact to know, `warn` a problem that leaves the setup working, `fail` a problem that stops it. */
 export type Status = 'ok' | 'info' | 'warn' | 'fail'
 
 /** The checks in the order that doctor prints them. */
-export const CHECK_NAMES = ['node', 'config', 'servers', 'policy', 'sandbox', 'run-log', 'files'] as const
+export const CHECK_NAMES = ['node', 'config', 'servers', 'share', 'policy', 'sandbox', 'run-log', 'files'] as const
 export type CheckName = (typeof CHECK_NAMES)[number]
 
 /** What one check found. A check gives one finding or more. */
@@ -156,3 +157,36 @@ const STORE_FILE = /^(.+)-[0-9a-f]{16}\.json$/
 export const staleStoreKeys = (files: readonly string[], used: ReadonlySet<string>): string[] => [
   ...new Set(files.flatMap(f => (used.has(f) ? [] : (STORE_FILE.exec(f)?.slice(1, 2) ?? [])))),
 ]
+
+/** The first line of the share check: the switch, its source, and that this version starts no shared server. */
+const shareSwitch = ({ on, source }: Config['share']): string => {
+  const how = { default: ' (the default)', config: ' ("share": ' + on + ')', env: ` (TOOLSCRIPT_SHARE=${on ? 1 : 0})` }
+  return `sharing is ${on ? 'on' : 'off'}${how[source]}. This version starts each server one time per session in any case`
+}
+
+/** The line of one server: the class that it gets when sharing is on, the rule that decided and the way out. */
+const shareLine = (key: ServerKey, c: Class): string => {
+  const name = shownName(key)
+  if (c.class === 'shared')
+    return c.rule === 4
+      ? `${name}: shared by all sessions: it has a cwd`
+      : `${name}: shared by all sessions: "share": true, so it starts in the home folder`
+  if (c.class === 'folder')
+    return c.rule === 2
+      ? `${name}: one copy per folder: "share": "folder"`
+      : `${name}: one copy per folder: no cwd and no "share" key. Set "share": true when it reads no file of its folder`
+  if (c.rule !== 3)
+    return c.rule === 1
+      ? `${name}: one copy per session: it is a Claude Code bridge`
+      : `${name}: one copy per session: "share": false`
+  return `${name}: one copy per session: it keeps state between calls (${c.word}). Set "share": true to share it`
+}
+
+/** The share check, from the config alone: nothing without a stdio server. */
+export const shareFindings = (config: Config): Finding[] => {
+  const lines = [...config.servers].flatMap(([key, server]) => {
+    const c = classify(key, server, config.bridges)
+    return c === undefined ? [] : [info(shareLine(key, c))]
+  })
+  return lines.length === 0 ? [] : [info(shareSwitch(config.share)), ...lines]
+}

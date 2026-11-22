@@ -10,10 +10,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   (saved functions), `paths.ts` (folders and guarded ones), `tools.ts` (the tool table and `SERVED`), `config.ts`
   (config parse, `${VAR}` expansion, config location, self-loop guard, the Claude Code bridges), `catalog.ts`
   (downstream tools, the `search_tools` result, argument specs from input schemas), `policy.ts` (the allow, deny and
-  ask rules: the decision before a run, the check of each call and the refusal texts), `serial.ts` (the calls of one
-  tool that a program awaited one after another, for the footer note on `Promise.all`). An allow rule allows a tool of
-  a bridge only when its match starts with `mcp__<key>__` (`counts` in `policy.ts`). `doctor.ts` holds the line shape
-  of `toolscript-mcp doctor` and the pure parts of its checks, such as `hiddenBy` (one glob covers another).
+  ask rules: the decision before a run, the check of each call and the refusal texts), `mux.ts` (the router of one
+  child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
+  text of its share key), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
+  note on `Promise.all`). An allow rule allows a tool of a bridge only when its match starts with `mcp__<key>__`
+  (`counts` in `policy.ts`). `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
+  checks, such as `hiddenBy` (one glob covers another).
   `guard.ts` holds the guard of the folders in `guardedDirs` at each nested call: the walk of the arguments, the
   markers, the path candidates and the compare. It takes `realpath` as a parameter. `commands.ts` holds the commands
   that the CLI prints for a person or an agent to run: the allowlist of names and paths (`PLAIN_NAME`, `PLAIN_PATH`),

@@ -256,7 +256,7 @@ describe('the config', () => {
   test('an error outside the server entries stops the start, and names the bad key', () => {
     const text = JSON.stringify({ mcpServers: { a: { command: '' } }, sandbox: { node: 3 }, extra: true })
     assert.deepEqual(errors(text), [
-      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy, log)',
+      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy, log, share)',
       'sandbox.node: must be a non-empty string',
     ])
     assert.match(errors('{"mcpServers": ')[0]!, /^the config is not valid JSON/)
@@ -354,6 +354,91 @@ describe('the config', () => {
     assert.equal(found.length, bad.length)
     assert.match(found[0]!, /^mcpServers\["a__b"\]: a server key must be letters, digits and hyphens/)
     assert.match(found[4]!, /^mcpServers\["my server"\]: /)
+  })
+})
+
+describe('the share keys', () => {
+  const stdio = (extra: object) => ({ mcpServers: { a: { command: 'fake', ...extra } } })
+  const entry = (config: Config) => config.servers.get(key('a'))
+
+  test('a stdio entry takes true, false and "folder" as written, and nothing else', () => {
+    for (const share of [true, false, 'folder'] as const)
+      assert.deepEqual(entry(ok(stdio({ share }))), { kind: 'stdio', command: 'fake', args: [], env: {}, share })
+    assert.equal((entry(ok(stdio({}))) as StdioServer).share, undefined)
+    for (const share of ['yes', 'shared', 1, null, [], {}])
+      assert.deepEqual(entry(ok(stdio({ share }))), {
+        kind: 'invalid',
+        errors: ['mcpServers.a.share: must be true, false or "folder"'],
+      })
+  })
+
+  test('a bad entry share makes only that entry invalid', () => {
+    const config = ok({ mcpServers: { a: { command: 'x', share: 'no' }, b: { command: 'y', share: true } } })
+    assert.equal(config.servers.get(key('a'))!.kind, 'invalid')
+    assert.equal(config.servers.get(key('b'))!.kind, 'stdio')
+  })
+
+  test('a bridge takes false, and refuses true and "folder", for its own entry only', () => {
+    const bridge = (share?: unknown) => ({
+      command: 'claude',
+      args: ['mcp', 'serve'],
+      ...(share !== undefined && { share }),
+    })
+    const config = ok({
+      mcpServers: {
+        'claude-code': bridge(true),
+        other: bridge('folder'),
+        third: bridge(false),
+        fourth: bridge(),
+        fine: { command: 'x' },
+      },
+    })
+    const refusal = (k: string) => ({
+      kind: 'invalid',
+      errors: [`mcpServers.${k}.share: a Claude Code bridge is never shared: remove "share" or set it to false`],
+    })
+    assert.deepEqual(config.servers.get(key('claude-code')), refusal('claude-code'))
+    assert.deepEqual(config.servers.get(key('other')), refusal('other'))
+    assert.equal(config.servers.get(key('third'))!.kind, 'stdio')
+    assert.equal(config.servers.get(key('fourth'))!.kind, 'stdio')
+    assert.equal(config.servers.get(key('fine'))!.kind, 'stdio')
+    assert.ok(config.bridges.has(key('claude-code')) && config.bridges.has(key('other')))
+  })
+
+  test('an HTTP entry keeps share as an unknown key', () => {
+    const config = ok({ mcpServers: { a: { type: 'http', url: 'https://mcp.example.com/mcp', share: true } } })
+    assert.deepEqual(entry(config), {
+      kind: 'invalid',
+      errors: ['mcpServers.a.share: unknown key (known: type, url, headers, oauth, untrusted)'],
+    })
+  })
+
+  test('the top-level key takes true and false, else the start stops', () => {
+    assert.equal(ok({ mcpServers: {}, share: true }).share.on, true)
+    assert.equal(ok({ mcpServers: {}, share: false }).share.on, false)
+    for (const share of ['true', 1, null, {}])
+      assert.deepEqual(errors(JSON.stringify({ mcpServers: {}, share })), ['share: must be true or false'])
+  })
+
+  test('the switch is TOOLSCRIPT_SHARE, else the top-level key, else off', () => {
+    const sw = (value: unknown, env: Record<string, string> = {}) => ok({ mcpServers: {}, share: value }, env).share
+    assert.deepEqual(sw(undefined), { on: false, source: 'default' })
+    assert.deepEqual(sw(true), { on: true, source: 'config' })
+    assert.deepEqual(sw(false), { on: false, source: 'config' })
+    assert.deepEqual(sw(false, { TOOLSCRIPT_SHARE: '1' }), { on: true, source: 'env' })
+    assert.deepEqual(sw(true, { TOOLSCRIPT_SHARE: '0' }), { on: false, source: 'env' })
+    assert.deepEqual(sw(undefined, { TOOLSCRIPT_SHARE: '1' }), { on: true, source: 'env' })
+    assert.deepEqual(sw(true, { TOOLSCRIPT_SHARE: '' }), { on: true, source: 'config' })
+  })
+
+  test('a bad TOOLSCRIPT_SHARE stops the start and its text never repeats the value', () => {
+    for (const bad of ['2', 'true', 'fake-secret-value', ' 1'])
+      assert.deepEqual(errors('{"mcpServers": {}}', { TOOLSCRIPT_SHARE: bad }), ['TOOLSCRIPT_SHARE: must be 0 or 1'])
+  })
+
+  test('the keys change nothing else: no share key, no change in the entries', () => {
+    const config = ok({ mcpServers: { a: { command: 'fake' } } })
+    assert.deepEqual(Object.fromEntries(config.servers), { a: { kind: 'stdio', command: 'fake', args: [], env: {} } })
   })
 })
 

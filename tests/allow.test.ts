@@ -206,6 +206,19 @@ describe('toolscript-mcp allow', () => {
     assert.equal(fs.readFileSync(s.config, 'utf8'), s.text)
   })
 
+  test('--apply keeps the share keys', async () => {
+    const config = {
+      ...FAKE_CONFIG,
+      share: true,
+      mcpServers: { fake: { ...FAKE_CONFIG.mcpServers.fake, share: true } },
+    }
+    const s = setup(config)
+    assert.equal(await s.allow('--apply', 'mcp__fake__list_a'), 0)
+    const saved = JSON.parse(fs.readFileSync(s.config, 'utf8'))
+    assert.equal(saved.share, true)
+    assert.equal(saved.mcpServers.fake.share, true)
+  })
+
   test('--apply writes the policy atomically, keeps every other key as it was, and leaves no temp file', async () => {
     const s = setup(FAKE_CONFIG)
     assert.equal(await s.allow('--apply', 'mcp__fake__list_a', 'mcp__fake__list_b'), 0)
