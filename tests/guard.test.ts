@@ -471,6 +471,13 @@ describe('the gaps of issue 107', () => {
     }
   })
 
+  test('(b) a file:// URL of more than 4096 characters is no path candidate', async () => {
+    const p = `file:///home/u/.toolscript-mcp/files/../oauth/${'x'.repeat(4100)}`
+    const g = fake()
+    assert.equal(await hit({ p }, g), undefined)
+    assert.deepEqual(g.asked, [])
+  })
+
   test('(b) a file:// path on Windows: /C:/x is C:/x, and another host is UNC with no call', async () => {
     const f = fake()
     const at = winGuard(f)
