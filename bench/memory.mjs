@@ -33,19 +33,27 @@ const MB = 1048576
 export const MARKER = 'bench-marker-7c1e9a52'
 // One server of each class of the share rules (src/core/share.ts): "share": true, a cwd, no key, "share": false.
 const FIXTURE_KEYS = ['bench1', 'bench2', 'bench3', 'bench4']
+// Slice 5 of #63: a fake Claude Code bridge (the key makes it a bridge, so it is lazy by default), and "lazy": true on
+// bench4, the "share": false server. Both start on the first call of a program and stop after the idle time.
+const BRIDGE_KEY = 'claude-code'
+const ALL_KEYS = [...FIXTURE_KEYS, BRIDGE_KEY]
+// The line of a host that a lazy server logs when a call starts it: <key>: started on first use, <ms> ms, <n> tools.
+const WAKE_LINE = /^toolscript-mcp: ([A-Za-z0-9_-]+): started on first use, (\d+) ms, \d+ tools$/
 /** The longest wait for a start, a connect and a table read, in ms. */
 const LIMIT = 120_000
 const EXIT_WAIT = 15_000
 const STDIN_WAIT = 5_000
 
 const USAGE = `usage: node bench/memory.mjs [--counts 1,3,6] [--idle SECONDS] [--after-run SECONDS] [--closed SECONDS]
-       [--min-free-mb MB] [--folders A,B,...] [--call TOOL]... [--json FILE] [--config FILE]
+       [--after-idle SECONDS] [--min-free-mb MB] [--folders A,B,...] [--call TOOL]... [--json FILE] [--config FILE]
        node bench/memory.mjs --report FILE
-Fixture mode (default) starts hosts with 4 fake stdio servers, one of each share class, and a temp home. --config FILE is real mode: the owner's
+Fixture mode (default) starts hosts with 5 fake stdio servers (one of each share class, and a fake Claude Code bridge) and a temp home. --config FILE is real mode: the owner's
 config and home, a run_code that only returns 1, and no tool call. Run \`npm run build\` first.
 --counts       sessions per round, one fresh round each (default 1,3,6)
 --idle         seconds without traffic before the first sample (default 60)
 --after-run    seconds from the last run_code result to the second sample (default 5)
+--after-idle   seconds from the second sample to the third, the phase after-idle, and then one run_code that must
+               still work. Default: TOOLSCRIPT_LAZY_IDLE_MS in seconds plus 5 when that variable is set, else no phase
 --closed       seconds from the end of every host to the list of leftovers (default 10)
 --min-free-mb  a session does not start when free RAM is below this (default 2048)
 --folders      session k starts in folder k modulo the count. Real mode: the folders must exist. Fixture mode makes
@@ -352,8 +360,11 @@ class Session {
     this.pending = new Map()
     this.nextId = 1
     this.buffer = ''
+    // The wake lines of the host, as {key, ms}: nothing else of its stderr is kept.
+    this.wakes = []
+    this.errBuffer = ''
     this.exited = new Promise(resolve => {
-      this.child = spawn(command, args, { env, cwd, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
+      this.child = spawn(command, args, { env, cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
       this.pid = this.child.pid
       this.child.on('error', err => {
         this.exit ??= { code: null, error: err.code ?? 'spawn' }
@@ -367,6 +378,18 @@ class Session {
       })
     })
     this.child.stdin.on('error', () => {})
+    this.child.stderr.on('error', () => {})
+    this.child.stderr.on('data', d => {
+      this.errBuffer += d
+      let i
+      while ((i = this.errBuffer.indexOf('\n')) >= 0) {
+        const m = WAKE_LINE.exec(this.errBuffer.slice(0, i).replace(/\r$/, ''))
+        this.errBuffer = this.errBuffer.slice(i + 1)
+        if (m) this.wakes.push({ key: m[1], ms: Number(m[2]) })
+      }
+      // A line that never ends is not kept.
+      if (this.errBuffer.length > 65536) this.errBuffer = ''
+    })
     this.child.stdout.on('data', d => {
       this.buffer += d
       let i
@@ -421,7 +444,7 @@ const ms = t0 => Math.round(performance.now() - t0)
 
 const RUN_FIXTURE = [
   'const r = await Promise.all([',
-  ...FIXTURE_KEYS.map(k => `  call("mcp__${k}__list_issues", { project: "OPS" }),`),
+  ...ALL_KEYS.map(k => `  call("mcp__${k}__list_issues", { project: "OPS" }),`),
   '])',
   'return r.map(x => x.total)',
 ].join('\n')
@@ -603,6 +626,41 @@ const closeAll = async sessions => {
   clearTimeout(timer)
 }
 
+/** The entries of the tool cache that the hosts of the home wrote: one for each lazy server that connected. */
+const cachedEntries = home => {
+  try {
+    const file = path.join(home, '.toolscript-mcp', 'learned', 'tools.json')
+    return Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).entries ?? {}).length
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Fixture mode with lazy start on: one host fills the tool cache of the two lazy servers before round 1, as the first
+ * session after an install does. A host with a cache has no lazy child until a call. It runs with sharing off, so it
+ * leaves no broker for the rounds. Nothing of it goes into the data.
+ */
+const warmUp = async (ctx, home) => {
+  log('warm-up: one host fills the tool cache of the lazy servers')
+  ctx.tracker = newTracker(ctx.groups.groups, Date.now() - 2000, () => new Set())
+  const warm = { ...ctx, env: { ...ctx.env, TOOLSCRIPT_SHARE: '0' } }
+  const { s, rec } = await startSession(warm, 0)
+  if (!rec.ok) log('warm-up: the host did not start')
+  if (rec.ok) {
+    await connect(ctx, s, rec)
+    const end = Date.now() + LIMIT
+    while (cachedEntries(home) < 2 && Date.now() < end) await sleep(200)
+    if (cachedEntries(home) < 2) log('warm-up: the tool cache has fewer than 2 entries')
+  }
+  await closeAll([s])
+  ctx.live.delete(s)
+  await sleep(1000)
+  await endAlive(ctx.tracker)
+  ctx.tracker = undefined
+  log(`warm-up: ${cachedEntries(home)} cache entries`)
+}
+
 const runRound = async (ctx, data, count) => {
   const round = { count, sessions: [], samples: {}, leftovers: [] }
   data.rounds.push(round)
@@ -660,6 +718,30 @@ const runRound = async (ctx, data, count) => {
     log(`  after-run: ${ctx.afterRun} s`)
     await sleep(ctx.afterRun * 1000)
     await sample(ctx, round, 'after-run')
+    if (ctx.afterIdle > 0) {
+      log(`  after-idle: ${ctx.afterIdle} s with no traffic`)
+      await sleep(ctx.afterIdle * 1000)
+      await sample(ctx, round, 'after-idle')
+      log('  run: the same program once more')
+      for (const s of sessions) {
+        const rec = round.sessions[s.n - 1]
+        const t0 = performance.now()
+        try {
+          const reply = await s.request(
+            'tools/call',
+            { name: 'run_code', arguments: { code: ctx.program } },
+            ctx.runLimit,
+          )
+          rec.run3Ms = ms(t0)
+          const text = reply.result?.content?.[0]?.text ?? ''
+          rec.afterIdleOk =
+            !reply.result?.isError && (ctx.expect === undefined || text.replace(/\s/g, '').startsWith(ctx.expect))
+        } catch {
+          rec.afterIdleOk = false
+        }
+      }
+    }
+    for (const s of sessions) round.sessions[s.n - 1].wakes = s.wakes
   }
   log('  closed: end of stdin of every host')
   await closeAll(sessions)
@@ -734,7 +816,7 @@ export const render = data => {
     const ok = r.sessions.filter(s => s.ok).length
     const label = r.stoppedAt === undefined ? String(ok) : `${ok} (stopped at ${r.stoppedAt} sessions)`
     const left = r.leftovers.length === 0 ? 'none' : `${r.leftovers.length}: ${countBy(r.leftovers)}`
-    for (const phase of ['idle', 'after-run']) {
+    for (const phase of ['idle', 'after-run', 'after-idle']) {
       const s = r.samples[phase]
       if (!s) continue
       const pb = mbOf(s.privateBytes)
@@ -745,7 +827,9 @@ export const render = data => {
   }
   const failedRounds = data.rounds.flatMap(r =>
     r.sessions
-      .filter(s => !s.ok || s.runOk === false || (s.failed?.length ?? 0) > 0 || s.connectTimeout)
+      .filter(
+        s => !s.ok || s.runOk === false || s.afterIdleOk === false || (s.failed?.length ?? 0) > 0 || s.connectTimeout,
+      )
       .map(s => ({ count: r.count, s })),
   )
   const notes = []
@@ -754,6 +838,8 @@ export const render = data => {
       notes.push(`round ${count} session ${s.n}: failed to start (${s.error}, exit code ${s.exitCode ?? 'none'})`)
     else {
       if (s.runOk === false) notes.push(`round ${count} session ${s.n}: a run_code failed or gave a wrong result`)
+      if (s.afterIdleOk === false)
+        notes.push(`round ${count} session ${s.n}: the run_code after the idle phase failed or gave a wrong result`)
       if (s.connectTimeout)
         notes.push(`round ${count} session ${s.n}: a server was still connecting after ${LIMIT / 1000} s`)
     }
@@ -787,6 +873,25 @@ export const render = data => {
             ? '-'
             : `${called.filter(x => x.calls[key] === 'ok').length} ok, ${called.filter(x => x.calls[key] === 'failed').length} failed`
         lines.push(`| ${ok.length} | ${key} | ${connected.length} | ${failed.length} | ${spread(counts)} | ${calls} |`)
+      }
+    }
+  }
+
+  // The wake time of each lazy server, from the log line of the host: the time of its start for the first call.
+  const woken = data.rounds.filter(r => r.sessions.some(s => (s.wakes?.length ?? 0) > 0))
+  if (woken.length > 0) {
+    lines.push(
+      '',
+      '### Wake time (ms)',
+      '',
+      '| sessions | key | wakes | median (min to max) |',
+      '| ---: | --- | ---: | --- |',
+    )
+    for (const r of woken) {
+      const all = r.sessions.flatMap(s => s.wakes ?? [])
+      for (const key of [...new Set(all.map(w => w.key))].sort()) {
+        const times = all.filter(w => w.key === key).map(w => w.ms)
+        lines.push(`| ${r.sessions.filter(x => x.ok).length} | ${key} | ${times.length} | ${spread(times)} |`)
       }
     }
   }
@@ -850,7 +955,7 @@ export const render = data => {
 // Setup
 
 const fixtureConfig = cwd => {
-  const extra = { bench1: { share: true }, bench2: { cwd }, bench3: {}, bench4: { share: false } }
+  const extra = { bench1: { share: true }, bench2: { cwd }, bench3: {}, bench4: { share: false, lazy: true } }
   const servers = Object.fromEntries(
     FIXTURE_KEYS.map(k => [
       k,
@@ -862,11 +967,16 @@ const fixtureConfig = cwd => {
       },
     ]),
   )
+  servers[BRIDGE_KEY] = {
+    command: process.execPath,
+    args: [FAKE_SERVER, BRIDGE_KEY, `--note=${MARKER}`],
+    env: { BENCH_NOTE: MARKER },
+  }
   // An HTTP entry that nothing answers: it costs no process, and holds a header and a URL for the secrets test.
   servers.down = { type: 'http', url: `http://127.0.0.1:9/${MARKER}`, headers: { 'X-Bench-Note': MARKER } }
   return {
     sandbox: { timeoutSeconds: 30, callTimeoutSeconds: 20 },
-    policy: FIXTURE_KEYS.map(k => ({ match: `mcp__${k}__list_issues`, action: 'allow' })),
+    policy: ALL_KEYS.map(k => ({ match: `mcp__${k}__list_issues`, action: 'allow' })),
     mcpServers: servers,
   }
 }
@@ -901,6 +1011,7 @@ const parseOptions = () => {
         counts: { type: 'string' },
         idle: { type: 'string' },
         'after-run': { type: 'string' },
+        'after-idle': { type: 'string' },
         closed: { type: 'string' },
         'min-free-mb': { type: 'string' },
         json: { type: 'string' },
@@ -943,6 +1054,12 @@ const main = async () => {
   }
   const idle = seconds('idle', 60)
   const afterRun = seconds('after-run', 5)
+  // The phase after-idle runs past the idle time of a lazy server: its seconds come from the variable that shortens it.
+  const idleEnv = Number(process.env.TOOLSCRIPT_LAZY_IDLE_MS)
+  const afterIdle = seconds(
+    'after-idle',
+    Number.isFinite(idleEnv) && idleEnv >= 1000 ? Math.ceil(idleEnv / 1000) + 5 : 0,
+  )
   const closed = seconds('closed', 10)
   const minFree = Number(opts['min-free-mb'] ?? 2048)
   if (!Number.isFinite(minFree) || minFree < 0) bad('--min-free-mb: a number of megabytes, 0 or more')
@@ -1012,6 +1129,7 @@ const main = async () => {
     keys: Object.keys(servers),
     idle,
     afterRun,
+    afterIdle,
     closed,
     minFree,
     folders,
@@ -1023,7 +1141,7 @@ const main = async () => {
       ? brokerPidsOf(path.join(home, '.toolscript-mcp', 'broker', 'broker.log'))
       : () => new Set(),
     program: real ? RUN_REAL : RUN_FIXTURE,
-    expect: real ? undefined : JSON.stringify(FIXTURE_KEYS.map(() => ISSUES.length)),
+    expect: real ? undefined : JSON.stringify(ALL_KEYS.map(() => ISSUES.length)),
     runLimit: 45_000,
   }
   const data = {
@@ -1034,6 +1152,7 @@ const main = async () => {
       commit: commitOf(),
       mode: real ? 'real' : 'fixture',
       idleSeconds: idle,
+      afterIdleSeconds: afterIdle,
       ramTotalMb: Math.round(os.totalmem() / MB),
       ramFreeMb: Math.round(freeMb()),
       keys: ctx.keys,
@@ -1043,7 +1162,7 @@ const main = async () => {
         ? calls.length === 0
           ? 'real: `return 1`, no tool call'
           : `real: \`return 1\`, then ${calls.length} tool call${calls.length === 1 ? '' : 's'} (--call) in each session`
-        : 'fixture: one list_issues call on each of the 4 servers, checked',
+        : 'fixture: one list_issues call on each of the 5 servers, checked',
     },
     rounds: [],
   }
@@ -1096,6 +1215,7 @@ const main = async () => {
     void abort(1)
   })
 
+  if (!real && env.TOOLSCRIPT_LAZY !== '0') await warmUp(ctx, home)
   const started = Date.now()
   for (const count of counts) await runRound(ctx, data, count)
   data.meta.wallSeconds = Math.round((Date.now() - started) / 1000)
