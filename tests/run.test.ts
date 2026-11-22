@@ -966,10 +966,10 @@ describe('attachments', () => {
       const r = await setup().run(`return await call("mcp__f__forged", { file: ${JSON.stringify(unc)} })`)
       assert.equal(r.isError, false, r.text)
       assert.deepEqual(r.images, [])
-      assert.deepEqual(
-        touched.filter(p => p.includes('fake-host')),
-        [],
-      )
+      const hostCalls = touched.filter(p => p.includes('fake-host'))
+      // On Windows a UNC path gets the lexical check only. On POSIX `//fake-host/share` is a local path and is walked.
+      if (process.platform === 'win32') assert.deepEqual(hostCalls, [])
+      else assert.ok(hostCalls.length > 0 && hostCalls.every(p => p.startsWith('/')), String(hostCalls))
     } finally {
       names.forEach((n, i) => ((fs.promises as Record<string, unknown>)[n] = saved[i]))
     }

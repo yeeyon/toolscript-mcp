@@ -557,6 +557,19 @@ describe('the gaps of issue 107', () => {
     assert.ok(g.asked.includes('/work/app/there./a.md'), String(g.asked))
   })
 
+  test('(e) on POSIX a trailing dot or space is part of a name: a home part that ends in a dot is guarded, through a link too', async () => {
+    const home = '/home/d.'
+    const list = guardedList(home, '')
+    const f = fake({ '/work/link': `${home}/.toolscript-mcp/learned` })
+    const at = (p: string, windows: boolean) =>
+      guardHit(
+        { p },
+        { home, cwd: '/work', list, forms: () => resolveGuarded(list, f.realpath), realpath: f.realpath, windows },
+      )
+    assert.equal(await at('/work/link/shapes.json', false), '~/.toolscript-mcp/learned')
+    assert.equal(await at(`${home}/.toolscript-mcp/oauth/t.json`, false), '~/.toolscript-mcp/oauth')
+  })
+
   test('(6) the project folder at a root gets its own label', () => {
     assert.equal(guardedList('/root', '/').at(-1)?.label, '.toolscript-mcp/hints')
     assert.equal(guardedList('C:/Users/u', 'C:/').at(-1)?.label, '.toolscript-mcp/hints')

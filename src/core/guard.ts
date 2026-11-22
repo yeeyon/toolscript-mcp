@@ -199,7 +199,8 @@ export const resolveGuarded = (list: readonly GuardedDir[], realpath: Realpath):
     }),
   )
 
-// Windows drops the dots and spaces at the end of a name, so `oauth.` is `oauth`. `.` and `..` keep their meaning.
+// Windows drops the dots and spaces at the end of a name, so `oauth.` is `oauth`; hitIn applies it only there, as
+// POSIX keeps them in the name. `.` and `..` keep their meaning.
 const dropTrailing = (path: string): string =>
   normalizePath(
     path
@@ -208,8 +209,8 @@ const dropTrailing = (path: string): string =>
       .join('/'),
   )
 
-const hitIn = (path: string, forms: readonly GuardForm[]): string | undefined => {
-  const plainPath = dropTrailing(path)
+const hitIn = (path: string, forms: readonly GuardForm[], windows: boolean): string | undefined => {
+  const plainPath = windows ? dropTrailing(path) : path
   return forms.find(form => form.dirs.some(dir => isUnderAnyCase(plainPath, dir)))?.label
 }
 
@@ -246,7 +247,7 @@ export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string
     // `\\?\C:\x` and `\\.\C:\x` are the local path `C:\x`: Node writes through them.
     const text = (url ?? original).replace(/^[\\/]{2}[?.][\\/](?=[A-Za-z]:)/, '')
     const abs = absolutePath(text, setup.home, setup.cwd)
-    const hit = hitIn(abs, lexical)
+    const hit = hitIn(abs, lexical, setup.windows)
     if (hit !== undefined) return hit
     // On Windows, a UNC path (`\\host\share`) gets the lexical check only: a real path would open a connection to that host.
     paths.push({ abs, raw: rawPath(text, setup.home, setup.cwd), remote: setup.windows && /^[\\/]{2}/.test(text) })
@@ -254,7 +255,7 @@ export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string
   if ((paths.length === 0 && names.length === 0) || setup.list.length === 0) return undefined
   const forms = await setup.forms()
   for (const { abs } of paths) {
-    const hit = hitIn(abs, forms)
+    const hit = hitIn(abs, forms, setup.windows)
     if (hit !== undefined) return hit
   }
   // The form as written resolves a link before a `..` after it (POSIX). The form with `..` folded by name resolves a
@@ -262,12 +263,12 @@ export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string
   const walks = paths.flatMap(({ raw, abs, remote }) => (remote ? [] : raw === abs ? [raw] : [raw, abs]))
   for (const path of walks.slice(0, GUARD_REALPATHS)) {
     const real = await realPathOf(path, setup.realpath)
-    const hit = real === undefined ? undefined : hitIn(real, forms)
+    const hit = real === undefined ? undefined : hitIn(real, forms, setup.windows)
     if (hit !== undefined) return hit
   }
   for (const name of names) {
     const real = await setup.realpath(name).then(plain, () => undefined)
-    const hit = real === undefined ? undefined : hitIn(normalizePath(real), forms)
+    const hit = real === undefined ? undefined : hitIn(normalizePath(real), forms, setup.windows)
     if (hit !== undefined) return hit
   }
   return undefined
