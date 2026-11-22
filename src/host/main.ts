@@ -19,6 +19,8 @@ import { RUNS_USAGE, runRuns, runTools, TOOLS_USAGE } from './diagnose.ts'
 import { DOCTOR_USAGE, runDoctor } from './doctor.ts'
 import { brokerFileBeside } from './brokerlink.ts'
 import { connectAll } from './downstream.ts'
+import { lazyIdleMs } from '../core/lazy.ts'
+import { toolsStore } from './toolscache.ts'
 import { INIT_USAGE, runInit } from './init.ts'
 import { LOGIN_USAGE, runLogin } from './login.ts'
 import { createServer } from './server.ts'
@@ -84,6 +86,14 @@ log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 
 const downstream = connectAll(config.servers, version, log, {
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
+  // Lazy start (decision 028): the bridge starts on its first call and stops when idle. TOOLSCRIPT_LAZY=0 turns it off.
+  ...(config.lazy && {
+    lazy: {
+      bridges: config.bridges,
+      idleMs: lazyIdleMs(process.env.TOOLSCRIPT_LAZY_IDLE_MS),
+      cache: toolsStore(os.homedir(), log),
+    },
+  }),
   ...(config.share.on && {
     share: {
       bridges: config.bridges,

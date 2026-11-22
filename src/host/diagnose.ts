@@ -67,7 +67,7 @@ export const connectStates = async (
     // Each retry waits for the attempts in progress, at most a few seconds: the connect itself has its time limit.
     for (;;) {
       const states = downstream.states()
-      if (states.every((s): s is SettledState => s.status !== 'connecting')) return states
+      if (states.every((s): s is SettledState => s.status === 'connected' || s.status === 'failed')) return states
       await downstream.retry(states.filter(s => s.status === 'connecting').map(s => s.key))
     }
   } finally {
