@@ -54,8 +54,8 @@ export const oauthFile = (home: string, key: string, urlHash: string): string =>
   `${oauthFolder(home)}/${key}-${urlHash}.json`
 
 /**
- * The folder of the learned files under HOME: the result shapes and the tool lists of lazy servers. The guard on the
- * folder covers both, and nothing else.
+ * The folder of the learned files under HOME: the result shapes and the tool lists of lazy servers. They are alone in it,
+ * so the guard on the folder covers nothing else.
  */
 export const shapesFolder = (home: string): string => appPath(home, LEARNED)
 

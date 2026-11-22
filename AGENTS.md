@@ -61,6 +61,11 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `saveShapes` merges a run's shapes in with the same temp file and rename. `shownShapes` in `catalog.ts` shows a
     stored shape only when the hash of the tool's `inputSchema` matches. `run.ts` saves after a run that read no
     untrusted content.
+  - `childtransport.ts`: the stdio transport of a lazy server: it counts open requests, tells the host of each message, and
+    stops the child as the broker does (end stdin, wait 2 s, end the tree). `toolscache.ts`: the display-only tool lists in
+    `~/.toolscript-mcp/learned/tools.json` (`toolsFile` in `paths.ts`; `parseToolsCache` and `isLazy` in `src/core/lazy.ts`).
+    `downstream.ts` holds the `asleep` state, the wake and the idle clock. `TOOLSCRIPT_LAZY=0` turns every lazy start off, and
+    `TOOLSCRIPT_LAZY_IDLE_MS` (at least 1000) shortens the idle time for tests and the bench.
   - `doctor.ts`: `toolscript-mcp doctor`, one pass over the whole setup. Its checks are a table of small async
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.
