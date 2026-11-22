@@ -31,7 +31,7 @@ import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js'
 import { PROBE_VERSION, startBroker, type Broker } from '../src/host/broker.ts'
 import { BrokerError, BrokerTransport, idOf, openLink } from '../src/host/brokerlink.ts'
 import { alive, serverEntry, text, until } from './broker-rig.ts'
-import { endpointFor, loadKey, makeCrypto } from '../src/host/brokerwire.ts'
+import { endpointFor, folderProblem, loadKey, makeCrypto } from '../src/host/brokerwire.ts'
 
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-broker-test-')))
 const closers: (() => Promise<void> | void)[] = []
@@ -57,6 +57,18 @@ describe('the endpoint', () => {
   })
   test('Windows has a pipe whatever the home', () => {
     assert.equal(endpointOf('win32', 'C:\\x'.repeat(40), mac, 0), '\\\\.\\pipe\\toolscript-mcp-ab12cd34ef56')
+  })
+  test('a socket folder that is a file or a link gets a reason with no path, and a missing one none', () => {
+    const base = fs.mkdtempSync(path.join(root, 'sock-'))
+    const file = path.join(base, 'file')
+    fs.writeFileSync(file, '')
+    const link = path.join(base, 'link')
+    fs.symlinkSync(base, link, 'junction')
+    assert.equal(folderProblem(path.join(base, 'missing')), undefined)
+    assert.equal(folderProblem(base), undefined)
+    const want = process.platform === 'win32' ? undefined : 'is a link or a file, not a folder'
+    assert.equal(folderProblem(file), want)
+    assert.equal(folderProblem(link), want)
   })
 })
 

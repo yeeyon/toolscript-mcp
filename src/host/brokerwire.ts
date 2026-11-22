@@ -71,7 +71,25 @@ export const endpointFor = (home: string, key: Buffer, id: string, platform = pr
 export const privateFolder = (dir: string): void => {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   if (process.platform === 'win32') return
-  const info = fs.lstatSync(dir)
-  if (!info.isDirectory() || info.uid !== process.getuid?.()) throw new Error('the folder is not owned by this user')
-  if ((info.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700)
+  const problem = folderProblem(dir)
+  if (problem !== undefined) throw new Error(`the folder ${problem}`)
+  if ((fs.lstatSync(dir).mode & 0o077) !== 0) fs.chmodSync(dir, 0o700)
+}
+
+/**
+ * Why `privateFolder` refuses this folder: it is a link or a file, or another user owns it. Undefined when it may be
+ * used, also when it does not exist yet (the broker makes it) and on Windows. The text holds no path.
+ */
+export const folderProblem = (dir: string): string | undefined => {
+  if (process.platform === 'win32') return undefined
+  let info: fs.Stats
+  try {
+    info = fs.lstatSync(dir)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    return code === 'ENOENT' ? undefined : `cannot be read (${code ?? 'error'})`
+  }
+  if (!info.isDirectory()) return 'is a link or a file, not a folder'
+  if (info.uid !== process.getuid?.()) return 'belongs to another user'
+  return undefined
 }

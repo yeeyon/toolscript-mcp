@@ -30,7 +30,8 @@ import {
 } from '../core/broker.ts'
 import { childEnv, type StdioServer } from '../core/config.ts'
 import type { Keyed, Place } from '../core/share.ts'
-import { BAD_KEY, buildId, endpointFor, loadKey, makeCrypto } from './brokerwire.ts'
+import { brokerFolder } from '../core/paths.ts'
+import { BAD_KEY, buildId, endpointFor, folderProblem, loadKey, makeCrypto } from './brokerwire.ts'
 
 /** An error whose text toolscript-mcp wrote: it holds no text of a server and no value of the config. */
 export class BrokerError extends Error {}
@@ -223,6 +224,15 @@ export const openLink = async ({
   }
   if (process.platform !== 'win32' && Buffer.byteLength(endpoint) > SOCKET_MAX_BYTES)
     throw new BrokerError(unusable('its socket path is too long'))
+  // A broker refuses a socket folder that it cannot trust and exits: say why now, not after the wait for a listen.
+  const problem = folderProblem(path.dirname(endpoint))
+  if (problem !== undefined) {
+    const where =
+      path.dirname(endpoint) === brokerFolder(home)
+        ? 'its folder .toolscript-mcp/broker in your home folder'
+        : 'its short socket folder in /tmp, named tsm- and your user id,'
+    throw new BrokerError(unusable(`${where} ${problem}`))
+  }
   const socket = await dial(endpoint, brokerFile, id)
   const lines = reader(socket)
   try {
