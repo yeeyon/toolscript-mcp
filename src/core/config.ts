@@ -4,6 +4,7 @@
 // file is and the self-loop guard.
 
 import { ACTIONS, type Action, type Bridges, type Policy, type Rule } from './policy.ts'
+import { classify } from './share.ts'
 
 // The WHATWG URL and btoa of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
 declare const URL: {
@@ -31,6 +32,11 @@ export type StdioServer = Trust & {
   readonly cwd?: string
   /** `"share"` as written. Without a key, the class comes from the rules in `share.ts`. */
   readonly share?: boolean | 'folder'
+  /**
+   * `"lazy"` as written (decision 028). The child of a lazy server starts on first use and stops when idle. Without a
+   * key, only a Claude Code bridge is lazy.
+   */
+  readonly lazy?: boolean
 }
 
 /** How an HTTP server logs in with OAuth: `toolscript-mcp login <key>` gets the tokens. */
@@ -159,6 +165,8 @@ export type Config = {
    * server has one child in the broker (`src/host/broker.ts`).
    */
   readonly share: { readonly on: boolean; readonly source: 'default' | 'config' | 'env' }
+  /** The lazy switch: false only with `TOOLSCRIPT_LAZY=0`, which turns every lazy start off (decision 028). */
+  readonly lazy: boolean
 }
 
 /** The time limit of a run without `sandbox.timeoutSeconds`, and the least it can be, as in the plugin. */
@@ -335,6 +343,14 @@ const parseShare = (raw: unknown, env: Env, errors: string[]): Config['share'] =
   return typeof raw === 'boolean' ? { on: raw, source: 'config' } : { on: false, source: 'default' }
 }
 
+/** `TOOLSCRIPT_LAZY`: 0 turns every lazy start off, 1 or nothing leaves it on. No text repeats a bad value. */
+const parseLazy = (env: Env, errors: string[]): boolean => {
+  const value = env.TOOLSCRIPT_LAZY
+  if (value === '0') return false
+  if (value !== undefined && value !== '' && value !== '1') errors.push('TOOLSCRIPT_LAZY: must be 0 or 1')
+  return true
+}
+
 const parseServer = (
   raw: unknown,
   path: string,
@@ -348,7 +364,7 @@ const parseServer = (
   }
   const type = raw.type ?? 'stdio'
   if (type === 'stdio') {
-    unknownKeys(raw, ['type', 'command', 'args', 'env', 'cwd', 'share', 'untrusted'], path, errors)
+    unknownKeys(raw, ['type', 'command', 'args', 'env', 'cwd', 'share', 'lazy', 'untrusted'], path, errors)
     const command = nonEmpty(raw.command, `${path}.command`, errors)
     let args: string[] = []
     if (raw.args !== undefined) {
@@ -364,6 +380,8 @@ const parseServer = (
     const share = raw.share
     if (share !== undefined && share !== true && share !== false && share !== 'folder')
       errors.push(`${path}.share: must be true, false or "folder"`)
+    const lazy = raw.lazy
+    if (lazy !== undefined && typeof lazy !== 'boolean') errors.push(`${path}.lazy: must be true or false`)
     return {
       kind: 'stdio',
       command,
@@ -371,6 +389,7 @@ const parseServer = (
       env: stringMap(raw.env, `${path}.env`, env, errors),
       ...(cwd && { cwd }),
       ...((share === true || share === false || share === 'folder') && { share }),
+      ...(typeof lazy === 'boolean' && { lazy }),
       ...parseTrust(raw.untrusted, `${path}.untrusted`, errors),
     }
   }
@@ -561,10 +580,23 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
       })
   }
   const share = parseShare(raw.share, env, errors)
+  // With sharing on, a shared or per-folder server has its child in the broker, which has its own idle stop.
+  if (share.on)
+    for (const [key, server] of servers) {
+      if (server.kind !== 'stdio' || server.lazy === undefined) continue
+      if (classify(key, server, bridges)?.class !== 'session')
+        servers.set(key, {
+          kind: 'invalid',
+          errors: [
+            `${at('mcpServers', key)}.lazy: a shared or per-folder server has its child in the broker: remove "lazy", or set "share": false`,
+          ],
+        })
+    }
+  const lazy = parseLazy(env, errors)
 
   return errors.length > 0
     ? { ok: false, errors }
-    : { ok: true, config: { servers, bridges, sandbox, policy, log, share } }
+    : { ok: true, config: { servers, bridges, sandbox, policy, log, share, lazy } }
 }
 
 /**
