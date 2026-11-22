@@ -39,9 +39,10 @@ Include:
   call, also through `..`, letter case, symlinks, junctions and 8.3 names. No allow rule or approval lifts it. This is
   a net for a confused model and the simple injected program. It is not containment. A shell command that no name
   matches, the native tools of the client, another process, a tool that writes from an id or a URL, a hard link, a
-  path in a string of more than 4096 characters, a path split across 2 arguments, nesting deeper than 16 levels,
-  some Windows path forms and a change between the check and the write pass it. So each file in a guarded folder is
-  read as written by an attacker.
+  `..` in the middle of a shell command, a path split across 2 arguments, nesting deeper than 16 levels, a name
+  encoded twice, a UNC path to the same machine on Windows and a change between the check and the write pass it. The
+  text check reads a string of any length, and a path candidate has at most 4096 characters. So each file in a
+  guarded folder is read as written by an attacker.
   A call that reaches a guarded folder in the cases it names is in scope.
 - `saveFile` writes only in the session folder under `~/.toolscript-mcp/files/`, and `readFile` reads only files there.
   The files stay after the session, with read access for your user only on Linux and macOS.

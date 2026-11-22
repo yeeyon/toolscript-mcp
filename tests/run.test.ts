@@ -2565,6 +2565,12 @@ describe('the guarded folders', () => {
     ])
   })
 
+  test('refuses a long string that names a folder, and sends a long string that does not', async () => {
+    const home = dir('home-')
+    await expectRefused({ home }, [{ text: `${'x '.repeat(3000)}cat > ~/.toolscript-mcp/hints/x.md <<EOF` }])
+    await expectSent({ home }, [{ text: 'x '.repeat(300_000) }])
+  })
+
   test('refuses ~/.toolscript-mcp/hints/x.md, and a relative path against the cwd of the server entry', async () => {
     const home = dir('home-')
     const project = dir('project-')
@@ -2822,9 +2828,9 @@ return [a.put, b]`,
     await expectSent({ home, project }, sent)
   })
 
-  test('does not refuse a long string, a URL, a plain word or many short strings', async () => {
+  test('does not refuse a long string with no folder name, a URL, a plain word or many short strings', async () => {
     const home = dir('home-')
-    const long = `${'x'.repeat(2500)} ~/.toolscript-mcp/hints/a.md ${'x'.repeat(2500)}`
+    const long = `${'x'.repeat(2500)} ~/.toolscript-mcp/files/a.md ${'x'.repeat(2500)}`
     assert.ok(long.length > 4096)
     await expectSent({ home }, [
       { text: long },

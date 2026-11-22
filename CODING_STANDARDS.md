@@ -99,7 +99,7 @@ quotes and the `^` of cmd dropped, hold the
   the arguments is refused when its path, or its real path (`realpath` of the deepest part that exists), is in a
   guarded folder, or when it holds a marker (`GUARD_MARKERS`) at a name boundary. No allow rule or approval lifts it.
   The log code is `guarded`, and the refusal text (`guardedText`) never holds the argument. Keep the caps: depth 16,
-  4096 characters, 16 `realpath` calls for a call, 32 parent steps, and no file system call for a call with no path
+  4096 characters for a path candidate (the text check reads a string of any length), 16 `realpath` calls for a call, 32 parent steps, and no file system call for a call with no path
   candidate. A path under `files/`, the run log and the config must never be refused.
   `[test: guard.test.ts and run.test.ts, describe the guarded folders]`
 - A command that the CLI prints for a person or an agent to run (init, tools, allow) holds a name from a client file

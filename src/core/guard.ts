@@ -1,8 +1,9 @@
 // The guard of the folders in `guardedDirs`, at each nested call. It refuses a call when a string in its arguments
-// names a guarded folder: as a path (also through `..`, another letter case, a symlink, a junction or an 8.3 name)
-// or as text that holds the name of the folder, such as `~/.toolscript-mcp/hints` in a shell command. It is a net for
-// a confused model and for the simple injected program, not containment: a shell command that no marker matches, a
-// tool that writes from an id or a URL, a hard link and a change between the check and the write pass it.
+// names a guarded folder: as a path (also through `..`, another letter case, a symlink, a junction, an 8.3 name, a
+// `file://` URL or a trailing dot or space on a name) or as text of any length that holds the name of the folder,
+// such as `~/.toolscript-mcp/hints` in a shell command, also with a `%XX` in it. It is a net for a confused model and
+// for the simple injected program, not containment: a shell command that no marker matches, a tool that writes from
+// an id or a URL, a hard link and a change between the check and the write pass it.
 // Pure code: the host passes `realpath`, so a test counts the file system calls with a fake.
 
 import { foldCase, isUnder, isUnderAnyCase } from './hints.ts'
@@ -10,7 +11,7 @@ import { GUARD_MARKERS, guardedDirs, normalizePath } from './paths.ts'
 
 /** The nesting of `args` that the walk reads: a string inside 16 objects or arrays is read, a deeper one is not. */
 export const GUARD_DEPTH = 16
-/** A longer string is file content, not a path or a command. */
+/** A path candidate has at most this many characters. A string of any length gets the text check. */
 export const GUARD_STRING_CHARS = 4096
 /** The real path walks of one call: a path with `..` or a doubled `/` takes 2. The later ones get the lexical check only. */
 export const GUARD_REALPATHS = 16
@@ -32,14 +33,17 @@ export const guardedList = (home: string, project: string): GuardedDir[] => {
   const projectPath = normalizePath(project)
   return guardedDirs(home, project).map(dir => ({
     dir,
-    label: home && isUnder(dir, homePath) ? `~${dir.slice(homePath.length)}` : dir.slice(projectPath.length + 1),
+    label:
+      home && isUnder(dir, homePath)
+        ? `~${dir.slice(homePath.length)}`
+        : dir.slice(projectPath.replace(/\/$/, '').length + 1),
   }))
 }
 
 // Each string of the arguments, in order, to GUARD_DEPTH. Object keys are never read.
 function* stringsOf(value: unknown, level: number): Generator<string> {
   if (typeof value === 'string') {
-    if (value.length <= GUARD_STRING_CHARS) yield value
+    yield value
     return
   }
   if (level >= GUARD_DEPTH || typeof value !== 'object' || value === null) return
@@ -50,23 +54,43 @@ const WORD = /^[\p{L}\p{N}_.-]$/u
 
 /**
  * The marker that `text` holds at a name boundary, case-folded and with `\` as `/`, or undefined. The character before
- * and the character after must not be a letter, a digit, `_`, `-` or `.`: `.toolscript-mcp/hints-old` and
- * `my.toolscript-mcp/hints` pass.
+ * must not be a letter, a digit, `_`, `-` or `.`. A run of `.` after the marker is part of its name, as Windows drops
+ * it: the character after the run must not be a letter, a digit, `_` or `-`. So `.toolscript-mcp/hints-old`,
+ * `.toolscript-mcp/hints.bak` and `my.toolscript-mcp/hints` pass. A trailing dot or space on the state folder does not
+ * hide the marker. A string with `%` is read again with each `%XX` below `%80` decoded one time.
  */
-export const markerIn = (text: string): string | undefined => {
+export const markerIn = (text: string): string | undefined =>
+  markerOf(text) ?? (text.includes('%') ? markerOf(decodeOnce(text)) : undefined)
+
+const STATE = GUARD_MARKERS[0]!.slice(0, GUARD_MARKERS[0]!.indexOf('/'))
+const STATE_TAIL = new RegExp(`${STATE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[. ]+(?=/)`, 'g')
+
+// `%XX` below `%80`, in each letter case. A table lookup is 4 times faster than `parseInt` for a 1 MB string.
+const ESCAPES: Record<string, string> = {}
+for (let code = 0; code < 0x80; code++) {
+  const hex = code.toString(16).padStart(2, '0')
+  for (const spelling of [hex, hex.toUpperCase(), hex[0] + hex[1]!.toUpperCase(), hex[0]!.toUpperCase() + hex[1]])
+    ESCAPES[`%${spelling}`] = String.fromCharCode(code)
+}
+
+// Each `%XX` below `%80` decoded one time. A bad sequence such as `%zz` or `%E0%` stays as written and throws nothing.
+const decodeOnce = (text: string): string => text.replace(/%[0-7][0-9a-fA-F]/g, escape => ESCAPES[escape]!)
+
+const markerOf = (text: string): string | undefined => {
   // A doubled separator or a `/./` does not change the path, so it must not hide the marker.
-  const folded = foldCase(text.replaceAll('\\', '/').replace(/\/(?:\.?\/)+/g, '/'))
+  const folded = foldCase(text.replaceAll('\\', '/').replace(/\/(?:\.?\/)+/g, '/')).replace(STATE_TAIL, STATE)
   for (const marker of GUARD_MARKERS) {
     for (let at = folded.indexOf(marker); at >= 0; at = folded.indexOf(marker, at + 1)) {
-      const before = at > 0 ? folded.charAt(at - 1) : ''
-      const after = folded.charAt(at + marker.length)
-      if (!WORD.test(before) && !WORD.test(after)) return marker
+      let end = at + marker.length
+      while (folded.charAt(end) === '.') end++
+      if (!WORD.test(at > 0 ? folded.charAt(at - 1) : '') && !WORD.test(folded.charAt(end))) return marker
     }
   }
   return undefined
 }
 
-const SCHEME_URL = /^[A-Za-z][A-Za-z0-9+.-]+:\/\//
+// A scheme of 2 or more characters, then `//` or a word (`data:text/plain`): not a path. `C:a` and `C:\a` are drives.
+const SCHEME_URL = /^[A-Za-z][A-Za-z0-9+.-]+:(?:\/\/|[^\s/\\])/
 
 /** True when `text` can be a path: no line break, NUL or URL, and it starts as a path or holds a separator. */
 export const isPathLike = (text: string): boolean =>
@@ -75,6 +99,20 @@ export const isPathLike = (text: string): boolean =>
   !/[\n\r\0]/.test(text) &&
   !SCHEME_URL.test(text) &&
   /^(?:[/~\\.]|[A-Za-z]:[\\/])|[/\\]/.test(text)
+
+/**
+ * The path that a `file://` URL names, in any letter case, with its `%XX` decoded one time, or undefined. An empty host
+ * and `localhost` are local, and `/C:/x` is `C:/x`. Another host gives `//host/path`. A `?` or `#` stays in the path.
+ */
+export const fileUrlPath = (text: string): string | undefined => {
+  const match = /^file:\/\/([^/\\]*)(.*)$/is.exec(text)
+  if (match === null || text.length > GUARD_STRING_CHARS) return undefined
+  const [, host = '', rest = ''] = match
+  const path = decodeOnce(rest)
+  if (/[\n\r\0]/.test(path)) return undefined
+  if (host !== '' && host.toLowerCase() !== 'localhost') return `//${host}${path}`
+  return /^\/[A-Za-z]:(?:\/|$)/.test(path) ? path.slice(1) : path || '/'
+}
 
 /**
  * `text` as an absolute path with its `..` parts kept: `~` is `home`, a relative path is under `cwd`. `\` counts as
@@ -91,9 +129,11 @@ export const rawPath = (text: string, home: string, cwd: string): string => {
 
 /**
  * True for a bare file name that can be a link in the folder of the server: no separator or space (so no URL), at
- * most 255 characters, and an extension. A word of prose has none, so it costs no file system call.
+ * most 255 characters, and an extension. A word of prose has none, so it costs no file system call. A name with `@` or
+ * an extension of digits only (`v2.0`, `10.0.0.1`, `user@example.com`) is a version or an address, not a link.
  */
-export const isFileName = (text: string): boolean => text.length <= 255 && /^[^\s/\\]+\.[A-Za-z0-9]{1,10}$/.test(text)
+export const isFileName = (text: string): boolean =>
+  text.length <= 255 && /^[^\s/\\@]+\.(?!\d+$)[A-Za-z0-9]{1,10}$/.test(text)
 
 /** `text` as an absolute, normalized path: the lexical form, with `..` resolved by name. */
 export const absolutePath = (text: string, home: string, cwd: string): string => normalizePath(rawPath(text, home, cwd))
@@ -148,8 +188,19 @@ export const resolveGuarded = (list: readonly GuardedDir[], realpath: Realpath):
     }),
   )
 
-const hitIn = (path: string, forms: readonly GuardForm[]): string | undefined =>
-  forms.find(form => form.dirs.some(dir => isUnderAnyCase(path, dir)))?.label
+// Windows drops the dots and spaces at the end of a name, so `oauth.` is `oauth`. `.` and `..` keep their meaning.
+const dropTrailing = (path: string): string =>
+  normalizePath(
+    path
+      .split('/')
+      .map(part => (part === '.' || part === '..' ? part : part.replace(/[. ]+$/, '')))
+      .join('/'),
+  )
+
+const hitIn = (path: string, forms: readonly GuardForm[]): string | undefined => {
+  const plainPath = dropTrailing(path)
+  return forms.find(form => form.dirs.some(dir => isUnderAnyCase(plainPath, dir)))?.label
+}
 
 export type GuardSetup = {
   readonly home: string
@@ -159,6 +210,8 @@ export type GuardSetup = {
   /** The guarded folders with their real paths. Called only when a call has a path candidate. */
   readonly forms: () => Promise<readonly GuardForm[]>
   readonly realpath: Realpath
+  /** True on Windows, where `//host/share` and `\\host\share` are UNC paths that a real path would connect to. */
+  readonly windows: boolean
 }
 
 /**
@@ -174,17 +227,18 @@ export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string
   for (const original of stringsOf(args, 0)) {
     const marker = markerIn(original)
     if (marker !== undefined) return `~/${marker}`
-    if (!isPathLike(original)) {
+    const url = fileUrlPath(original)
+    if (url === undefined && !isPathLike(original)) {
       if (names.length < GUARD_REALPATHS && isFileName(original)) names.push(`${setup.cwd}/${original}`)
       continue
     }
     // `\\?\C:\x` and `\\.\C:\x` are the local path `C:\x`: Node writes through them.
-    const text = original.replace(/^[\\/]{2}[?.][\\/](?=[A-Za-z]:)/, '')
+    const text = (url ?? original).replace(/^[\\/]{2}[?.][\\/](?=[A-Za-z]:)/, '')
     const abs = absolutePath(text, setup.home, setup.cwd)
     const hit = hitIn(abs, lexical)
     if (hit !== undefined) return hit
-    // A UNC path (`\\host\share`) gets the lexical check only: a real path would open a connection to that host.
-    paths.push({ abs, raw: rawPath(text, setup.home, setup.cwd), remote: /^[\\/]{2}/.test(text) })
+    // On Windows, a UNC path (`\\host\share`) gets the lexical check only: a real path would open a connection to that host.
+    paths.push({ abs, raw: rawPath(text, setup.home, setup.cwd), remote: setup.windows && /^[\\/]{2}/.test(text) })
   }
   if ((paths.length === 0 && names.length === 0) || setup.list.length === 0) return undefined
   const forms = await setup.forms()
