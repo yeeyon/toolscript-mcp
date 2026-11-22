@@ -8,7 +8,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { NPX_LAUNCH, type ServerKey } from '../src/core/config.ts'
-import { checkLine, hiddenBy, nodeFinding, policyFindings, shareFindings, staleStoreKeys } from '../src/core/doctor.ts'
+import {
+  aclFinding,
+  brokerFail,
+  checkLine,
+  hiddenBy,
+  nodeFinding,
+  policyFindings,
+  shareFindings,
+  staleStoreKeys,
+} from '../src/core/doctor.ts'
 import { parseConfig } from '../src/core/config.ts'
 import { appPath, oauthFolder, runLogFile } from '../src/core/paths.ts'
 import type { Rule } from '../src/core/policy.ts'
@@ -525,6 +534,40 @@ describe('shareFindings', () => {
       s.printed.findIndex(l => l.startsWith('info  share')) > s.printed.findIndex(l => l.slice(6, 13) === 'servers'),
     )
     assert.ok(!s.printed.join('\n').includes(SECRET))
+  })
+})
+
+describe('the broker findings that need no IO', () => {
+  test('a peer that is no broker gets the way out for a taken name, with no path but the broker folder', () => {
+    for (const platform of ['win32', 'linux']) {
+      const line = brokerFail('the shared-server broker is not usable: the peer did not prove the key. Run x', platform)
+      assert.equal(line.status, 'fail')
+      assert.match(line.detail, /delete the file "key" in the folder \.toolscript-mcp\/broker/)
+      assert.match(
+        line.detail,
+        platform === 'win32' ? /new pipe name/ : /remove that folder, or use a shorter home path/,
+      )
+      assert.doesNotMatch(line.detail, /[A-Za-z]:\\|\/home\/|\/Users\//)
+    }
+    assert.equal(brokerFail('its key file is damaged', 'win32').detail, 'its key file is damaged')
+  })
+
+  test('the access rules: the user, SYSTEM and Administrators are fine, another principal warns, a bad read is info', () => {
+    const me = 'S-1-5-21-1-2-3-1001'
+    const rule = (sid: string, type = 'Allow') => `${sid}|${type}|FullControl`
+    const fine = [me, rule(me), rule('S-1-5-18'), rule('S-1-5-32-544')].join('\r\n')
+    assert.equal(aclFinding(fine).status, 'ok')
+    const wide = [me, rule(me), rule('S-1-1-0'), rule('S-1-5-11')].join('\n')
+    const warned = aclFinding(wide)
+    assert.equal(warned.status, 'warn')
+    assert.match(warned.detail, /2 other principal/)
+    assert.match(warned.detail, /icacls/)
+    assert.equal(
+      aclFinding([me, rule(me), rule('S-1-1-0', 'Deny')].join('\n')).status,
+      'ok',
+      'a Deny rule widens nothing',
+    )
+    for (const bad of ['', 'garbage', `${me}\nnot a rule`]) assert.equal(aclFinding(bad).status, 'info', bad)
   })
 })
 
