@@ -14,7 +14,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { endpointFor, loadKey } from '../src/host/brokerwire.ts'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = path.join(ROOT, 'dist', 'host', 'main.js')
@@ -246,16 +245,29 @@ describe('sharing on', () => {
   test('after close and the idle time: no broker, no child, no socket file', async () => {
     const child = await pidOf(six[0])
     const broker = brokerPid()
+    // The socket name of endpointOf (src/core/broker.ts), computed here: Node 22.13 runs no .ts import of a .mjs file.
+    // It sits in the broker folder or, when that path is too long, in the short folder. Windows uses a named pipe.
+    const id = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(path.join(ROOT, 'dist', 'host', 'broker.js')))
+      .digest('hex')
+    const mac = crypto
+      .createHmac('sha256', fs.readFileSync(path.join(BROKER_DIR, 'key')))
+      .update(`toolscript-mcp build ${id}`)
+      .digest('hex')
+    const sockets =
+      process.platform === 'win32'
+        ? []
+        : [BROKER_DIR, `/tmp/tsm-${process.getuid()}`].map(f => path.join(f, `tsm-${mac.slice(0, 12)}.sock`))
+    if (sockets.length > 0)
+      assert.ok(
+        sockets.some(s => fs.existsSync(s)),
+        'the live broker has its socket file',
+      )
     await closeAll(six)
     await until('the child ends', () => !alive(child), 10_000)
     await until('the broker ends', () => !alive(broker), 10_000)
-    if (process.platform !== 'win32') {
-      const id = crypto
-        .createHash('sha256')
-        .update(fs.readFileSync(path.join(ROOT, 'dist', 'host', 'broker.js')))
-        .digest('hex')
-      assert.ok(!fs.existsSync(endpointFor(HOME, loadKey(HOME), id)), 'no socket file')
-    }
+    assert.ok(!sockets.some(s => fs.existsSync(s)), 'no socket file')
   })
 })
 
