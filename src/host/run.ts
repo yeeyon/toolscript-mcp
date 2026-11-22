@@ -528,6 +528,7 @@ const execute = async (
       list: guarded,
       forms: guardForms,
       realpath: fs.promises.realpath,
+      windows: process.platform === 'win32',
     })
     if (folder !== undefined) {
       decided.set(id, callDecision(config.policy, config.bridges, approved, tool, interactiveNow()))

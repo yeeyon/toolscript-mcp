@@ -966,14 +966,17 @@ refused call. It covers reads and writes, because `oauth/` holds tokens.
   yet is guarded, so a new file is refused as well as an edit. On Linux and macOS, a `..` after a symlink leaves the
   folder that the link points to, and the check follows it.
 - A bare file name with an extension, such as `notes.json`, is refused when it is a link in that folder to a guarded
-  folder. A word of prose costs no file system call.
+  folder. A word of prose, a version such as `v2.0` and an address such as `user@example.com` cost no file system call.
+- A `file://` URL is read as the path it names. Any other URL is not a path.
+- On Windows, a dot or a space at the end of a name does not hide a folder, because Windows drops it.
 - A text is refused when it holds the name of a folder, such as `.toolscript-mcp/hints`, with `/` or `\`. This
-  catches `~` and `$HOME` in a shell command. The name must not go on in a letter, a digit, `_`, `-` or `.`, so
-  `.toolscript-mcp/hints-old` and `.toolscript-mcp/files/` pass.
+  catches `~` and `$HOME` in a shell command. The name must not go on in a letter, a digit, `_` or `-`, so
+  `.toolscript-mcp/hints-old` and `.toolscript-mcp/files/` pass. A run of dots after the name counts as part of it.
+- A text with `%` is read a second time, with each `%2F`-style code below `%80` decoded one time.
 
-The check reads each string of at most 4096 characters, in values and array items down to 16 levels. A longer string is
-file content. At most 16 paths of one call are resolved through the file system. The others get the check of the text
-only.
+The check reads each string in values and array items down to 16 levels, of any length. A path candidate has at most
+4096 characters. At most 16 paths of one call are resolved through the file system. The others get the check of the
+text only.
 
 No allow rule and no approval lifts the refusal. The call throws an error that the program can catch. The error names
 the tool and the folder, and never the argument. The run log shows the error code `guarded`, and
@@ -987,13 +990,14 @@ The guard stops a confused model and a simple injected program. It is not contai
 - A hard link, and a change between the check and the write.
 - A server on another machine, which sees its own disk.
 - More than 16 paths in one call.
-- A path in a string of more than 4096 characters, such as a shell heredoc that writes a long hint.
+- A path with `..` in the middle of a shell command. The guard does not parse shell text.
 - A path split across two arguments.
 - A path nested deeper than 16 levels.
-- Windows path forms beyond the prefixes `\\?\` and `\\.\` with a drive, such as trailing dots and spaces.
+- A name that is encoded twice, or in a form other than `%XX`.
+- On Windows, a UNC path to the same machine, such as `\\localhost\C$\...` with a `..`.
 
-The guard also refuses a short argument that only mentions a name, such as a search pattern for
-`.toolscript-mcp/hints`. This is a known false positive. Do not name the folder in a call. If a person must change a
+The guard also refuses an argument of any length that only mentions a name. Examples are a search pattern, a file body
+and a sentence that ends in `.toolscript-mcp/hints`. This is a known false positive. Do not name the folder in a call. If a person must change a
 file there, they edit it outside `run_code`.
 
 Treat each file in a guarded folder as written by an attacker, because the guard does not stop every writer. The check

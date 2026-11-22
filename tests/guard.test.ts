@@ -34,13 +34,14 @@ const fake = (links: Record<string, string> = {}) => {
   return { asked, realpath }
 }
 
-const hit = (args: unknown, f = fake(), cwd = PROJECT) =>
+const hit = (args: unknown, f = fake(), cwd = PROJECT, windows = false) =>
   guardHit(args, {
     home: HOME,
     cwd,
     list: LIST,
     forms: () => resolveGuarded(LIST, f.realpath),
     realpath: f.realpath,
+    windows,
   })
 
 describe('the markers', () => {
@@ -225,10 +226,29 @@ describe('guardHit', () => {
     assert.notEqual(await hit({ edits: [{ file: { path: marked } }] }), undefined)
   })
 
-  test('reads a string of at most 4096 characters, and a longer one is content', async () => {
+  test('reads a string of any length for a marker, and never makes a path of one over 4096 characters', async () => {
     const at = (n: number) => `${' '.repeat(n - 21)}.toolscript-mcp/hints`
     assert.notEqual(await hit({ t: at(4096) }), undefined)
-    assert.equal(await hit({ t: at(4097) }), undefined)
+    assert.notEqual(await hit({ t: at(4097) }), undefined)
+    assert.notEqual(await hit({ t: at(200_000) }), undefined)
+    assert.notEqual(
+      await hit({ t: `cat > ~/.toolscript-mcp/hints/x.md <<EOF\n${'line\n'.repeat(1000)}EOF` }),
+      undefined,
+    )
+    const f = fake()
+    assert.equal(await hit({ t: `/${'x'.repeat(4096)}` }, f), undefined)
+    assert.deepEqual(f.asked, [])
+  })
+
+  test('passes a long text with no folder name and makes no file system call', async () => {
+    const f = fake()
+    const json = JSON.stringify(Array.from({ length: 60000 }, (_, i) => ({ id: i, name: `item ${i}` })))
+    assert.ok(json.length > 1_000_000)
+    assert.equal(
+      await hit({ json, source: 'const a = 1\n'.repeat(20000), shell: 'echo hi\n'.repeat(800) }, f),
+      undefined,
+    )
+    assert.deepEqual(f.asked, [])
   })
 
   test('makes no file system call for a call with no path candidate', async () => {
@@ -324,7 +344,14 @@ describe('guardHit', () => {
     const at = (p: string) =>
       guardHit(
         { p },
-        { home: 'C:/Users/u', cwd: 'C:/w', list, forms: () => resolveGuarded(list, f.realpath), realpath: f.realpath },
+        {
+          home: 'C:/Users/u',
+          cwd: 'C:/w',
+          list,
+          forms: () => resolveGuarded(list, f.realpath),
+          realpath: f.realpath,
+          windows: true,
+        },
       )
     assert.equal(await at('\\\\?\\C:\\Users\\u\\.toolscript-mcp\\files\\..\\hints\\a.md'), '~/.toolscript-mcp/hints')
     assert.equal(await at('\\\\.\\C:\\Users\\u\\.toolscript-mcp\\files\\..\\oauth\\a.json'), '~/.toolscript-mcp/oauth')
@@ -334,9 +361,27 @@ describe('guardHit', () => {
 
   test('gives a UNC path the lexical check only, so no connection opens to its host', async () => {
     const f = fake()
-    assert.equal(await hit({ p: '\\\\fake-host\\share\\a.png', q: '//fake-host/share/b.png' }, f), undefined)
+    const args = {
+      p: '\\\\fake-host\\share\\a.png',
+      q: '//fake-host/share/b.png',
+      r: '\\\\?\\UNC\\fake-host\\share\\c',
+    }
+    assert.equal(await hit(args, f, PROJECT, true), undefined)
     assert.deepEqual(
       f.asked.filter(p => p.includes('fake-host')),
+      [],
+    )
+  })
+
+  test('on Linux and macOS, // and \\\\ are local paths that get the walk', async () => {
+    const f = fake({ '/work/alias': '/home/u/.toolscript-mcp/hints' })
+    assert.equal(await hit({ p: '/work/alias/x.md' }, f), '~/.toolscript-mcp/hints')
+    assert.equal(await hit({ p: '//work/alias/x.md' }, f), '~/.toolscript-mcp/hints')
+    assert.equal(await hit({ p: '\\\\work\\alias\\x.md' }, f), '~/.toolscript-mcp/hints')
+    const w = fake({ '/work/alias': '/home/u/.toolscript-mcp/hints' })
+    assert.equal(await hit({ p: '//work/alias/x.md' }, w, PROJECT, true), undefined)
+    assert.deepEqual(
+      w.asked.filter(p => p.includes('alias')),
       [],
     )
   })
@@ -349,9 +394,219 @@ describe('guardHit', () => {
 
   test('an empty home and project guard no path, and the markers still hold', async () => {
     const f = fake()
-    const none = { home: '', cwd: '/w', list: guardedList('', ''), forms: async () => [], realpath: f.realpath }
+    const none = {
+      home: '',
+      cwd: '/w',
+      list: guardedList('', ''),
+      forms: async () => [],
+      realpath: f.realpath,
+      windows: false,
+    }
     assert.equal(await guardHit({ p: '/x/y' }, none), undefined)
     assert.deepEqual(f.asked, [])
     assert.notEqual(await guardHit({ p: '~/.toolscript-mcp/oauth' }, none), undefined)
+  })
+})
+
+describe('the gaps of issue 107', () => {
+  const winGuard = (f: ReturnType<typeof fake>) => {
+    const list = guardedList('C:/Users/u', '')
+    return (p: string) =>
+      guardHit(
+        { p },
+        {
+          home: 'C:/Users/u',
+          cwd: 'C:/w',
+          list,
+          forms: () => resolveGuarded(list, f.realpath),
+          realpath: f.realpath,
+          windows: true,
+        },
+      )
+  }
+
+  test('(b) a percent-encoded name is read once decoded, and %252F is not decoded twice', () => {
+    for (const text of [
+      'file:///home/u/.toolscript-mcp%2Fhints/x.md',
+      'x/%2Etoolscript-mcp/hints/x.md',
+      'cat ~/.toolscript-mcp%2foauth/t.json',
+      '%2E%74oolscript-mcp/learned',
+    ])
+      assert.notEqual(markerIn(text), undefined, text)
+    for (const text of ['.toolscript-mcp%252Fhints', '.toolscript-mcp%2Fhints-old', '%', '%zz', '100%', 'a%E0%', '%2'])
+      assert.equal(markerIn(text), undefined, text)
+  })
+
+  test('(b) a file:// URL is a path candidate, in any letter case, with its decoded path walked', async () => {
+    const link = { '/work/alias': '/home/u/.toolscript-mcp/hints' }
+    for (const p of [
+      'file:///home/u/.toolscript-mcp/files/../oauth/t.json',
+      'FILE:///home/u/.toolscript-mcp/files/../oauth/t.json',
+      'file://localhost/home/u/.toolscript-mcp/files/..%2Foauth/t.json',
+      'file:///home/u/.toolscript-mcp/files/%2E%2E/oauth/t.json',
+      'file:///work/alias/x.md',
+      'File://work/alias/x.md',
+    ])
+      assert.notEqual(await hit({ p }, fake(link)), undefined, p)
+    const f = fake()
+    assert.equal(await hit({ p: 'file:///work/app/README.md' }, f), undefined)
+    assert.ok(f.asked.includes('/work/app/README.md'), String(f.asked))
+    for (const p of ['https://example.com/a%2Fb?q=1%20x', 's3://bucket/key', 'data:text/plain,a%2Fb', 'ftp://h/a/b']) {
+      const g = fake()
+      assert.equal(await hit({ p }, g), undefined, p)
+      assert.deepEqual(g.asked, [], p)
+    }
+  })
+
+  test('(b) a string that looks like a scheme but holds a .. part is a path, and other scheme text is not', async () => {
+    const inside = '/home/u/.toolscript-mcp/hints/sub'
+    for (const p of ['ab:x/..', 'data:x/..', 'file:x/..', 'a.md:z/..', 'ab:x\\..', 'ab://x/..', 'ab:x/../']) {
+      assert.equal(isPathLike(p), true, p)
+      assert.equal(await hit({ p }, fake(), inside), '~/.toolscript-mcp/hints', p)
+    }
+    for (const p of ['data:text/plain,a%2Fb', 'ab:x/y', 'ab://x/y', 'mailto:a@b.c']) {
+      const g = fake()
+      assert.equal(await hit({ p }, g, inside), undefined, p)
+      assert.deepEqual(g.asked, [], p)
+    }
+  })
+
+  test('(b) a file:// URL of more than 4096 characters is no path candidate', async () => {
+    const p = `file:///home/u/.toolscript-mcp/files/../oauth/${'x'.repeat(4100)}`
+    const g = fake()
+    assert.equal(await hit({ p }, g), undefined)
+    assert.deepEqual(g.asked, [])
+  })
+
+  test('(b) a file:// path on Windows: /C:/x is C:/x, and another host is UNC with no call', async () => {
+    const f = fake()
+    const at = winGuard(f)
+    assert.equal(await at('file:///C:/Users/u/.toolscript-mcp/files/../oauth/t.json'), '~/.toolscript-mcp/oauth')
+    assert.equal(await at('file:///C:/work/a.md'), undefined)
+    assert.equal(await at('file://fake-host/share/a.png'), undefined)
+    assert.deepEqual(
+      f.asked.filter(p => p.includes('fake-host')),
+      [],
+    )
+  })
+
+  test('(d) a version, an address or a package is no file name, and a real name still is', () => {
+    for (const text of ['v2.0', '1.2.3', '10.0.0.1', 'user@example.com', 'lodash@4.17.21', 'app.log.1', 'icon@2x.png'])
+      assert.equal(isFileName(text), false, text)
+    for (const text of ['notes.json', 'a.b', 'x_y-z.tar.gz', 'archive.7z', 'song.mp3', 'example.com'])
+      assert.equal(isFileName(text), true, text)
+  })
+
+  test('(d) versions and addresses cost no real path call, a file name costs one', async () => {
+    const f = fake()
+    const args = { a: 'v2.0', b: '1.2.3', c: '10.0.0.1', d: 'user@example.com', e: 'lodash@4.17.21' }
+    assert.equal(await hit(args, f), undefined)
+    assert.deepEqual(f.asked, [])
+    for (const name of ['example.com', 'notes.json']) {
+      const g = fake()
+      await hit({ a: name }, g)
+      assert.equal(g.asked.filter(p => p === `/work/app/${name}`).length, 1, name)
+    }
+  })
+
+  test('a doubled separator, a /./ and a backslash do not hide a marker', () => {
+    for (const text of [
+      'x/.toolscript-mcp//hints',
+      'x/.toolscript-mcp/./hints',
+      'x/.toolscript-mcp/.//./oauth',
+      'x\\.toolscript-mcp\\\\learned',
+    ])
+      assert.notEqual(markerIn(text), undefined, text)
+  })
+
+  test('(e) a run of dots after a marker is part of its name, and a trailing dot or space on the state folder hides nothing', () => {
+    for (const text of [
+      '.toolscript-mcp/hints.',
+      '.toolscript-mcp/hints./x.md',
+      '.toolscript-mcp/hints..\\x',
+      '.toolscript-mcp/hints. ',
+      '.toolscript-mcp/oauth...',
+      '.toolscript-mcp./hints',
+      '.toolscript-mcp /hints',
+      '.toolscript-mcp. ./oauth',
+      'type %USERPROFILE%\\.toolscript-mcp\\oauth.\\t.json',
+    ])
+      assert.notEqual(markerIn(text), undefined, text)
+    for (const text of [
+      '.toolscript-mcp/hints.bak',
+      '.toolscript-mcp/hints.2',
+      '.toolscript-mcp/hints-old',
+      '.toolscript-mcp/../hints/x.md',
+      '.toolscript-mcp./files/x',
+    ])
+      assert.equal(markerIn(text), undefined, text)
+  })
+
+  test('(e) a part of a path loses its trailing dots and spaces before the compare, in the text and in the real path', async () => {
+    const f = fake({ 'C:/Users/u/link': 'C:/Users/u/.toolscript-mcp/learned. ' })
+    const at = winGuard(f)
+    assert.equal(await at('C:/Users/u/.toolscript-mcp/x/../oauth./t.json'), '~/.toolscript-mcp/oauth')
+    assert.equal(await at('C:/Users/u/.toolscript-mcp/hints. /a.md'), '~/.toolscript-mcp/hints')
+    assert.equal(await at('C:/Users/u/link/shapes.json'), '~/.toolscript-mcp/learned')
+    assert.equal(await at('C:/Users/u/.toolscript-mcp/files./a.json'), undefined)
+    assert.equal(await at('C:/Users/u/.toolscript-mcp/hints.bak/x'), undefined)
+    assert.equal(await at('C:/Users/u/.toolscript-mcp/files/../files/a.json'), undefined)
+    // the text that goes to realpath stays as written
+    const g = fake()
+    await hit({ p: '/work/app/there./a.md' }, g)
+    assert.ok(g.asked.includes('/work/app/there./a.md'), String(g.asked))
+  })
+
+  test('(e) a home part that ends in a dot or a space is guarded, on every OS, by path and by link', async () => {
+    for (const [home, windows] of [
+      ['/home/u.', false],
+      ['/home/u.', true],
+      ['/home/u ', false],
+      ['C:/Users/u.', true],
+      ['C:/Users/u.', false],
+    ] as const) {
+      const list = guardedList(home, '')
+      const f = fake({ '/work/link': `${home}/.toolscript-mcp/hints` })
+      const at = (p: string) =>
+        guardHit(
+          { p },
+          { home, cwd: '/work', list, forms: () => resolveGuarded(list, f.realpath), realpath: f.realpath, windows },
+        )
+      const name = `${home} ${windows}`
+      assert.equal(await at(`${home}/.toolscript-mcp/x/../hints/a.md`), '~/.toolscript-mcp/hints', name)
+      assert.equal(await at(`${home}/.toolscript-mcp/x/../oauth/t`), '~/.toolscript-mcp/oauth', name)
+      assert.equal(await at('/work/link/a.md'), '~/.toolscript-mcp/hints', name)
+      assert.equal(await at(`${home}/.toolscript-mcp/files./a.json`), undefined, name)
+    }
+  })
+
+  test('(e) a percent escape that makes a boundary or a letter of the name is still read, other text with % is not', () => {
+    for (const text of ['a%20.toolscript-mcp/hints', '.%74oolscript-mcp/hints', '.toolscript%2Dmcp/oauth'])
+      assert.notEqual(markerIn(text), undefined, text)
+    for (const text of ['%3Cpath d=%22M0 0%22/%3E', 'a%2Fb', "LIKE '%x'"]) assert.equal(markerIn(text), undefined, text)
+  })
+
+  test('(6) the project folder at a root gets its own label', () => {
+    assert.equal(guardedList('/root', '/').at(-1)?.label, '.toolscript-mcp/hints')
+    assert.equal(guardedList('C:/Users/u', 'C:/').at(-1)?.label, '.toolscript-mcp/hints')
+    assert.equal(guardedList('/home/u', '/home/u/work/app').at(-1)?.label, '~/work/app/.toolscript-mcp/hints')
+    assert.equal(guardedList('/home/u', '/home/u').at(-1)?.label, '~/.toolscript-mcp/hints')
+  })
+
+  test('realistic arguments pass', async () => {
+    const css = `a { width: calc(100% - 2px) } /* 50% */ SELECT * FROM t WHERE x LIKE '%a%'; printf "%s %d" a 1`
+    const args = {
+      css,
+      p1: '/work/app/README.md',
+      p2: './a/b',
+      p3: '~/notes.md',
+      p4: '/home/u/.toolscript-mcp/files/s/out.json',
+      p5: '/home/u/.toolscript-mcp/runs.jsonl',
+      p6: '/home/u/.toolscript-mcp/hints-old/x.md',
+      p7: '/home/u/.toolscript-mcp/hints.bak',
+      p8: 'file:///work/app/README.md',
+    }
+    assert.equal(await hit(args), undefined)
+    assert.equal(await hit({ p: '\\\\fake-host\\share\\a.png' }, fake(), PROJECT, true), undefined)
   })
 })
