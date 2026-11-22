@@ -4,6 +4,7 @@
 
 import { catalogOf, interactiveTools, type ServerState, type SettledState } from './catalog.ts'
 import { loginReason, type Config, type ServerKey } from './config.ts'
+import { LAZY_IDLE_MS, isLazy } from './lazy.ts'
 import { classify, type Class } from './share.ts'
 import { decide, matches, printable, ruleText, shownName, type Bridges, type Policy, type Rule } from './policy.ts'
 
@@ -17,6 +18,7 @@ export const CHECK_NAMES = [
   'servers',
   'share',
   'broker',
+  'lazy',
   'policy',
   'sandbox',
   'run-log',
@@ -190,6 +192,26 @@ const shareLine = (key: ServerKey, c: Class): string => {
       ? `${name}: one copy per session: it is a Claude Code bridge`
       : `${name}: one copy per session: "share": false`
   return `${name}: one copy per session: it keeps state between calls (${c.word}). Set "share": true to share it`
+}
+
+/**
+ * The lazy check: one line for each lazy server, and one line when the switch is off while a server would be lazy.
+ * `cached` gives the number of tools of the cached list of a server, or undefined when none is cached. No path, argument
+ * or env text. Starts no server.
+ */
+export const lazyFindings = (config: Config, cached: (key: ServerKey) => number | undefined): Finding[] => {
+  const lazy = [...config.servers].filter(([key, server]) => isLazy(key, server, config.bridges, true))
+  if (!config.lazy)
+    return lazy.length === 0
+      ? []
+      : [info('lazy start is off (TOOLSCRIPT_LAZY=0): every server starts with the session')]
+  return lazy.map(([key]) => {
+    const tools = cached(key)
+    const list = tools === undefined ? 'not cached yet (starts once at the next session)' : `cached (${tools} tools)`
+    return info(
+      `${shownName(key)}: starts on first use and stops after ${LAZY_IDLE_MS / 60_000} min idle, tool list ${list}`,
+    )
+  })
 }
 
 /** The share check, from the config alone: nothing without a stdio server. */

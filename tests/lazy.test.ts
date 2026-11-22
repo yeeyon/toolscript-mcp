@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { shownStates, type DownstreamTool } from '../src/core/catalog.ts'
+import { lazyFindings } from '../src/core/doctor.ts'
 import { parseConfig, serverKey, type ServerConfig, type ServerKey, type StdioServer } from '../src/core/config.ts'
 import {
   LAZY_IDLE_MS,
@@ -475,5 +476,45 @@ describe('a lazy server', () => {
     assert.ok(alive(pid))
     await until(() => d.states()[0]?.status === 'asleep', 'the idle stop')
     await until(() => !alive(pid), 'the end of the grandchild', 10_000)
+  })
+})
+
+describe('the doctor line', () => {
+  const config = (env: Record<string, string> = {}) => {
+    const parsed = parseConfig(
+      JSON.stringify({
+        mcpServers: {
+          'claude-code': { command: 'claude', args: ['mcp', 'serve', '--token', 'sekret-arg'] },
+          opted: { command: 'node', args: ['/opt/private/x.js'], env: { TOKEN: 'sekret-env' }, lazy: true },
+          plain: { command: 'node', args: ['y.js'] },
+          web: { type: 'http', url: 'https://mcp.example.com/mcp' },
+        },
+      }),
+      env,
+      '/usr/bin/node',
+      'linux',
+    )
+    assert.ok(parsed.ok)
+    return parsed.config
+  }
+
+  test('one line for each lazy server, cached or not, with no argument, env value or path', () => {
+    const found = lazyFindings(config(), key => (key === 'claude-code' ? 12 : undefined))
+    assert.deepEqual(
+      found.map(f => f.detail),
+      [
+        'claude-code: starts on first use and stops after 10 min idle, tool list cached (12 tools)',
+        'opted: starts on first use and stops after 10 min idle, tool list not cached yet (starts once at the next session)',
+      ],
+    )
+    for (const secret of ['sekret-arg', 'sekret-env', '/opt/private'])
+      assert.ok(!JSON.stringify(found).includes(secret), secret)
+  })
+
+  test('with TOOLSCRIPT_LAZY=0 one line says that every server starts with the session', () => {
+    assert.deepEqual(
+      lazyFindings(config({ TOOLSCRIPT_LAZY: '0' }), () => 3).map(f => f.detail),
+      ['lazy start is off (TOOLSCRIPT_LAZY=0): every server starts with the session'],
+    )
   })
 })

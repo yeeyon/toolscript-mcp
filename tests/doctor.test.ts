@@ -240,7 +240,10 @@ describe('doctor', () => {
     assert.equal(s.of('config')[0], `ok    config   ${s.config}`)
     // The checks print in this order.
     const names = [...new Set(s.printed.map(l => l.slice(6, 14).trim()))]
-    assert.deepEqual(names, ['node', 'config', 'servers', 'share', 'policy', 'sandbox', 'run-log', 'files'])
+    assert.deepEqual(names, ['node', 'config', 'servers', 'share', 'lazy', 'policy', 'sandbox', 'run-log', 'files'])
+    assert.deepEqual(s.of('lazy'), [
+      'info  lazy     claude-code: starts on first use and stops after 10 min idle, tool list not cached yet (starts once at the next session)',
+    ])
     assert.ok(
       s.printed.every(l => /^(ok|info|warn|fail) +\S+ +\S/.test(l) && /^[\x20-\x7e]*$/.test(l)),
       s.printed.join('\n'),
