@@ -198,7 +198,7 @@ describe('attach and routing', () => {
     const { tools } = await client.listTools()
     assert.deepEqual(
       tools.map(t => t.name),
-      ['pid', 'env', 'cwd', 'sleep', 'exit'],
+      ['pid', 'env', 'cwd', 'sleep', 'exit', 'grow'],
     )
     assert.match(await text(client, 'pid'), /^\d+$/)
     assert.equal(await text(client, 'cwd'), root)

@@ -52,8 +52,9 @@ const HOME = path.join(dir, 'home')
 fs.mkdirSync(HOME)
 const SERVER_ENV = {
   ...process.env,
-  // Sharing on, with valid share keys in the config: this version still starts each server as a direct child.
-  TOOLSCRIPT_SHARE: '1',
+  // Sharing off by the environment, with valid share keys in the config: each server is a direct child, as before the
+  // broker. tests/share.e2e.mjs runs the same keys with sharing on.
+  TOOLSCRIPT_SHARE: '0',
   TOOLSCRIPT_E2E_MARKER: MARKER,
   TOOLSCRIPT_E2E_BAD_URL: BAD_URL,
   TMPDIR: TMP,

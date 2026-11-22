@@ -1,5 +1,5 @@
 // A small MCP server over stdio for the broker tests. Tools: `pid` (the process id), `env` (one variable), `cwd`,
-// `sleep` (replies after `ms`, or never when its request is cancelled), `exit` (ends the process). With `--ignore-eof`
+// `sleep` (replies after `ms`, or never when its request is cancelled), `exit` (ends the process), `grow` (adds a tool `extra` and sends tools/list_changed). With `--ignore-eof`
 // it keeps running when stdin ends, as a server that ignores EOF does. With `--noinit` it never answers `initialize`.
 // `--list-changed` sends tools/list_changed after each `tools/list`.
 
@@ -14,6 +14,7 @@ const TOOLS = [
   { name: 'cwd', description: 'The folder.', inputSchema: object({}) },
   { name: 'sleep', description: 'Waits.', inputSchema: object({ ms: { type: 'number' } }) },
   { name: 'exit', description: 'Ends the process.', inputSchema: object({}) },
+  { name: 'grow', description: 'Adds a tool.', inputSchema: object({}) },
 ]
 const timers = new Map()
 
@@ -51,6 +52,11 @@ lines.on('line', line => {
   if (name === 'env') return reply(text(process.env[args.name] ?? ''))
   if (name === 'cwd') return reply(text(process.cwd()))
   if (name === 'exit') return process.exit(3)
+  if (name === 'grow') {
+    TOOLS.push({ name: 'extra', description: 'Added by grow.', inputSchema: object({}) })
+    reply(text('grown'))
+    return send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
+  }
   if (name === 'sleep') {
     timers.set(
       msg.id,
