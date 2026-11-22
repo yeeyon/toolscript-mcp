@@ -23,8 +23,9 @@ import { ISSUES } from './data.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = path.join(REPO, 'dist', 'host', 'main.js')
-// The broker of slice 3 of #63, if this build has one. A process counts as a broker only when its command line names
-// this exact file, so an unrelated `broker.js` is never counted or ended.
+// The broker of slice 3 of #63, if this build has one. A process counts as a broker only with the switch on, as a node
+// process whose argv[1] is this exact file and whose pid the broker.log of the bench home names (see `isBroker`), so an
+// unrelated process that mentions the path is never counted or ended.
 const BROKER = path.join(REPO, 'dist', 'host', 'broker.js')
 const FAKE_SERVER = path.join(REPO, 'bench', 'fake-server.mjs')
 const MB = 1048576
@@ -217,7 +218,37 @@ const stdioGroups = servers => {
 // started, a new broker (a process of broker.js created after the round began), or the child of a process that
 // joined (parents are older than children, so one pass in creation order is enough).
 
-export const newTracker = (groups, since) => ({ groups, since, known: new Map(), hosts: new Map() })
+// `brokerPids` returns the pids that the broker.log of the home of the hosts names (`start pid N`). It is empty with the
+// switch off, so a run with sharing off attributes no broker at all and ends nothing that it did not start.
+export const newTracker = (groups, since, brokerPids = () => new Set()) => ({
+  groups,
+  since,
+  brokerPids,
+  known: new Map(),
+  hosts: new Map(),
+})
+
+const escapeRe = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const BROKER_CMD = new RegExp(`(^|/)node(\\.exe)?\\s+${escapeRe(norm(BROKER))}\\s*$`)
+
+// A broker is a node process whose argv[1] is the broker.js of this build, that this script's hosts started after the
+// round began, and whose pid the broker.log of the bench home names. Nothing else is ever a broker: not a shell whose
+// text names the path, and not the broker of a parallel run.
+const isBroker = (tracker, e) => e.t >= tracker.since && tracker.brokerPids().has(e.pid) && BROKER_CMD.test(norm(e.cmd))
+
+/** The pids of `start pid N` lines in a broker.log, read fresh each time (the file is small and may not exist). */
+export const brokerPidsOf = logFile => () => {
+  try {
+    return new Set([...fs.readFileSync(logFile, 'utf8').matchAll(/start pid (\d+)/g)].map(m => Number(m[1])))
+  } catch {
+    return new Set()
+  }
+}
+
+/** Whether the share switch is on for hosts with this environment and this top-level `share` of the config. */
+export const shareIsOn = (env, configShare) =>
+  env.TOOLSCRIPT_SHARE === '1' ||
+  ((env.TOOLSCRIPT_SHARE === undefined || env.TOOLSCRIPT_SHARE === '') && configShare === true)
 
 const classify = (tracker, entry, parent) => {
   const cmd = norm(entry.cmd)
@@ -244,7 +275,7 @@ export const update = (tracker, table) => {
         const session = tracker.hosts.get(e.pid)
         if (session !== undefined && e.ppid === process.pid) {
           info = { session, role: 'host', key: null }
-        } else if (norm(e.cmd).includes(norm(BROKER)) && e.t >= tracker.since) {
+        } else if (isBroker(tracker, e)) {
           // A broker is its own tree, also while the host that started it lives and is its parent: it belongs to no
           // session, and it counts once in the union.
           info = { session: null, role: 'broker', key: null }
@@ -548,7 +579,7 @@ const closeAll = async sessions => {
 const runRound = async (ctx, data, count) => {
   const round = { count, sessions: [], samples: {}, leftovers: [] }
   data.rounds.push(round)
-  ctx.tracker = newTracker(ctx.groups.groups, Date.now() - 2000)
+  ctx.tracker = newTracker(ctx.groups.groups, Date.now() - 2000, ctx.brokerPids)
   log(`round ${count}: start`)
   const sessions = []
   for (let k = 1; k <= count; k++) {
@@ -904,10 +935,14 @@ const main = async () => {
   let env = process.env
   let servers
   let folders = []
+  let configShare
+  let home = os.homedir()
   if (real) {
     configFile = path.resolve(opts.config)
     try {
-      servers = JSON.parse(fs.readFileSync(configFile, 'utf8')).mcpServers ?? {}
+      const parsed = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+      servers = parsed.mcpServers ?? {}
+      configShare = parsed.share
     } catch {
       return bad('--config: the file is missing or is not JSON')
     }
@@ -925,7 +960,7 @@ const main = async () => {
     sweepStale(table)
     const own = table.find(r => r.pid === process.pid)?.t ?? 0
     root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), `${DIR_PREFIX}${process.pid}-${own}-`)))
-    const home = path.join(root, 'home')
+    home = path.join(root, 'home')
     const tmp = path.join(root, 'tmp')
     fs.mkdirSync(home)
     fs.mkdirSync(tmp)
@@ -939,6 +974,7 @@ const main = async () => {
     servers = config.mcpServers
     configFile = path.join(root, 'config.json')
     fs.writeFileSync(configFile, JSON.stringify(config))
+    configShare = config.share
     env = { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: tmp, TEMP: tmp, TMP: tmp }
   }
   const groups = stdioGroups(servers)
@@ -955,6 +991,10 @@ const main = async () => {
     calls,
     live: new Set(),
     tracker: undefined,
+    // Only with the switch on is a broker attributed, and only a pid that the broker.log of this home names.
+    brokerPids: shareIsOn(env, configShare)
+      ? brokerPidsOf(path.join(home, '.toolscript-mcp', 'broker', 'broker.log'))
+      : () => new Set(),
     program: real ? RUN_REAL : RUN_FIXTURE,
     expect: real ? undefined : JSON.stringify(FIXTURE_KEYS.map(() => ISSUES.length)),
     runLimit: 45_000,

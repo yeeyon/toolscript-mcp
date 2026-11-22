@@ -254,23 +254,26 @@ test('memory.mjs counts no older process whose dead parent left its pid to a hos
   )
 })
 
-test('memory.mjs counts as a broker only the broker.js of this build', () => {
-  const tracker = newTracker([], 0)
+test('memory.mjs counts as a broker only a node process of this build that the bench broker.log names', () => {
   const ours = path.join(REPO, 'dist', 'host', 'broker.js')
   const row = { name: 'node.exe', pb: 1, ws: 1, ppid: 1, t: 10 }
   const table = [
-    { ...row, pid: 8000, cmd: `node "${ours}"` },
+    { ...row, pid: 8000, cmd: `"C:\\Program Files\\nodejs\\node.exe" "${ours}"` },
     { ...row, pid: 8001, cmd: 'node /unrelated-service/broker.js' },
+    // A shell whose text names the file, a node that only reads it, and a broker of a parallel run (not in the log).
+    { ...row, pid: 8002, name: 'bash.exe', cmd: `bash -c "cat ${ours}"` },
+    { ...row, pid: 8003, cmd: `node -e "require('${ours}')"` },
+    { ...row, pid: 8004, cmd: `node "${ours}"` },
+    { ...row, pid: 8005, cmd: `node "${ours}"`, t: 1 },
   ]
-  assert.deepEqual(
-    update(tracker, table).map(i => `${i.pid} ${i.role}`),
-    ['8000 broker'],
-  )
+  const roles = (tracker: ReturnType<typeof newTracker>) => update(tracker, table).map(i => `${i.pid} ${i.role}`)
+  assert.deepEqual(roles(newTracker([], 5, () => new Set([8000, 8002, 8003, 8005]))), ['8000 broker'])
+  assert.deepEqual(roles(newTracker([], 0, () => new Set())), [], 'with the switch off no log names a pid: no broker')
 })
 
 test('memory.mjs counts a broker that a live host started as its own tree, with its servers by key', () => {
   const groups = [{ keys: ['grafana'], needle: 'node', args: ['fake-server.mjs', 'grafana'] }]
-  const tracker = newTracker(groups, 0)
+  const tracker = newTracker(groups, 0, () => new Set([5100]))
   tracker.hosts.set(5000, 1)
   const ours = path.join(REPO, 'dist', 'host', 'broker.js')
   const row = { name: 'node.exe', pb: 1, ws: 1 }
