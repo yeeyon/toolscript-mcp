@@ -78,14 +78,19 @@ type Rig = {
 
 /** One lazy probe server. `warm`: the cache already holds a list for its launch. */
 const rig = (
-  { warm = false, idleMs = IDLE_MS, server }: { warm?: boolean; idleMs?: number; server?: Partial<StdioServer> } = {},
+  {
+    warm = false,
+    idleMs = IDLE_MS,
+    server,
+    mode,
+  }: { warm?: boolean; idleMs?: number; server?: Partial<StdioServer>; mode?: string } = {},
   list: readonly DownstreamTool[] = [PROBE_TOOL],
 ): Rig => {
   const file = path.join(DIR, `${randomUUID()}.json`)
   const config: StdioServer = {
     kind: 'stdio',
     command: process.execPath,
-    args: [PROBE, file],
+    args: [PROBE, file, ...(mode === undefined ? [] : [mode])],
     env: {},
     ...server,
   }
@@ -263,6 +268,13 @@ describe('the tool cache file', () => {
     }
   })
 
+  test('a value nested too deep for JSON.stringify gives no cache with a fixed problem text', () => {
+    const deep = `{"version":1,"entries":{"${id}":{"at":1,"tools":[{"name":"x","inputSchema":{"a":${'['.repeat(500000)}${']'.repeat(500000)}}}]}}}`
+    const { cache, problem } = parseToolsCache(deep)
+    assert.equal(cache.size, 0)
+    assert.match(problem!, /^the file /)
+  })
+
   test('an entry with the wrong types, an odd key or too many tools is skipped, a tool with a bad field loses the field', () => {
     const many = Array.from({ length: MAX_CACHE_TOOLS + 1 }, (_, i) => ({ name: `t${i}` }))
     const { cache } = parseToolsCache(
@@ -301,6 +313,16 @@ describe('the tool cache file', () => {
     const hash = toolsKey(server())
     assert.match(hash, /^[0-9a-f]{64}$/)
     assert.equal(toolsKey(server()), hash)
+    // The inherited env (the PATH of each shell) is not in the key.
+    const pathName = Object.keys(process.env).find(k => k.toUpperCase() === 'PATH') ?? 'PATH'
+    const old = process.env[pathName]
+    process.env[pathName] = `${old ?? ''}${path.delimiter}/per-shell/${randomUUID()}`
+    try {
+      assert.equal(toolsKey(server()), hash)
+    } finally {
+      if (old === undefined) delete process.env[pathName]
+      else process.env[pathName] = old
+    }
     const before = process.cwd()
     process.chdir(DIR)
     try {
@@ -447,6 +469,73 @@ describe('a lazy server', () => {
     assert.ok(saved.has(id), 'the cache entry stays')
   })
 
+  test('a search never starts it again: after a crash it is asleep with its last list, after a failed wake it stays failed', async () => {
+    const crash = rig({ warm: true, mode: '--exit-on-call' })
+    await crash.downstream.settled
+    const link = await crash.downstream.client(KEY)
+    assert.ok(link.ok)
+    await link.client.callTool({ name: 'probe', arguments: {} }).catch(() => {})
+    await until(() => crash.downstream.states()[0]?.status === 'asleep', 'the crash puts the link asleep')
+    const shown = shownStates(crash.downstream.states())[0]
+    assert.equal(shown?.status, 'connected', 'a search shows its last live list')
+    assert.deepEqual(shown?.status === 'connected' ? shown.tools.map(t => t.name) : [], ['probe'])
+    assert.equal(crash.starts(), 1)
+    const before = Date.now()
+    await crash.downstream.retry()
+    await crash.downstream.retry()
+    assert.ok(Date.now() - before < 1000, 'a search does not wait for a start')
+    await sleep(300)
+    assert.equal(crash.starts(), 1, 'a search started no process')
+    assert.equal(crash.downstream.states()[0]?.status, 'asleep')
+    assert.ok(!crash.logs.some(l => l.includes('connecting again')), crash.logs.join(String.fromCharCode(10)))
+    assert.ok((await crash.downstream.client(KEY)).ok, 'a call wakes it')
+    assert.equal(crash.starts(), 2)
+
+    const bad = rig({ warm: true, server: { command: 'toolscript-no-such-command' } })
+    await bad.downstream.settled
+    assert.equal((await bad.downstream.client(KEY)).ok, false)
+    const failures = () => bad.logs.filter(l => l.startsWith(`${KEY}: failed`)).length
+    assert.equal(failures(), 1)
+    await bad.downstream.retry()
+    await bad.downstream.retry()
+    await bad.downstream.retry()
+    assert.equal(failures(), 1, 'a search did not start it again')
+    assert.ok(!bad.logs.some(l => l.includes('connecting again')), bad.logs.join(String.fromCharCode(10)))
+    assert.equal(shownStates(bad.downstream.states())[0]?.status, 'failed')
+    assert.equal((await bad.downstream.client(KEY)).ok, false)
+    assert.equal(failures(), 2, 'a call tries again')
+  })
+
+  test('the cache file is read only when a lazy server exists', async () => {
+    let loads = 0
+    const store: ToolsStore = {
+      key: s => JSON.stringify([s.command, s.args]),
+      load: async () => (loads++, new Map()),
+      save: async () => {},
+    }
+    const plain = (lazy?: boolean): Map<ServerKey, ServerConfig> =>
+      new Map([
+        [
+          KEY,
+          {
+            kind: 'stdio',
+            command: process.execPath,
+            args: [PROBE, path.join(DIR, 'x.json')],
+            env: {},
+            ...(lazy !== undefined && { lazy }),
+          },
+        ],
+      ])
+    const a = connectAll(plain(), '0', () => {}, { lazy: { bridges: new Set(), idleMs: IDLE_MS, cache: store } })
+    opened.push(a)
+    await a.settled
+    assert.equal(loads, 0)
+    const b = connectAll(plain(true), '0', () => {}, { lazy: { bridges: new Set(), idleMs: IDLE_MS, cache: store } })
+    opened.push(b)
+    await b.settled
+    assert.equal(loads, 1)
+  })
+
   test('close ends an awake child, and a wake after close starts nothing', async () => {
     const { downstream, starts } = rig({ warm: true, idleMs: 60_000 })
     await downstream.settled
@@ -564,5 +653,9 @@ describe('the cache file on disk', () => {
     const cache = await loadToolsCache(home, line => lines.push(line))
     assert.equal(cache.size, 0)
     assert.deepEqual(lines, ['the tool cache was not loaded: the file is not JSON'])
+    // A save after it logs nothing more, and replaces the file.
+    await saveToolsEntry(home, 'a'.repeat(64), [{ name: 'one' }], line => lines.push(line))
+    assert.equal(lines.length, 1)
+    assert.deepEqual([...(await loadToolsCache(home, () => {})).keys()], ['a'.repeat(64)])
   })
 })

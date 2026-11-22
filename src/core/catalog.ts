@@ -147,7 +147,7 @@ export const notConnected = (s: ServerState): string | undefined =>
         s.status === 'failed'
           ? s.reason
           : s.status === 'asleep'
-            ? 'it is asleep and did not start. It starts on the next call that names it'
+            ? 'it is asleep and did not start. After 3 starts in 60 s a wait applies, and then it starts on the next call that names it'
             : 'it is still connecting'
       }`
 

@@ -859,7 +859,7 @@ A run from source has no broker, so each shared server fails with that reason. R
 
 The `claude mcp serve` bridge costs about 315 MB of private memory in each session. toolscript-mcp starts it on the first call that a program makes to it, and stops it after 10 minutes with no call. A session that never calls it holds no bridge process.
 
-- `search_tools` never starts it. It lists the tools from the last list that the bridge gave, which toolscript-mcp keeps in `~/.toolscript-mcp/learned/tools.json`. The first session after an install starts it one time, to get that list.
+- `search_tools` never starts it, also after a crash or a failed start: only a call that names it does. It lists the tools from the last list that the bridge gave, which toolscript-mcp keeps in `~/.toolscript-mcp/learned/tools.json`. The first session after an install starts it one time at the session start, to get that list. A change to the command, arguments, `env` or `cwd` of its entry does the same. A different `PATH` in the shell does not.
 - The first call after a start or a stop waits for the start, which takes the time of the start of `claude`. Policy, approval and the argument checks use the live list of the started server, never the kept list.
 - A stop ends the state of the bridge: the files that it read, and the shells that it started in the background. Use `"lazy": false` on its entry, or `TOOLSCRIPT_LAZY=0`, to start it with the session as before.
 - Any other stdio server is lazy only with `"lazy": true`. Do not set it on a server that keeps state between calls, such as a browser or a shell. With sharing on, a server in a broker has no `"lazy"` key.

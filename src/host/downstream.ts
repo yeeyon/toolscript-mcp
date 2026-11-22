@@ -512,9 +512,12 @@ export const connectAll = (
   const missed = new Map<ServerKey, number>()
 
   // The cache on disk, read once at the start, and the lists that this process remembered since.
-  const cache = lazy === undefined ? undefined : lazy.cache.load().then(loaded => new Map(loaded))
   const lazyServer = (key: ServerKey, server: ServerEntry): server is StdioServer =>
     lazy !== undefined && isLazy(key, server, lazy.bridges, true)
+  // The file is read only when a lazy server exists.
+  const cache = [...servers].some(([key, server]) => server.kind !== 'invalid' && lazyServer(key, server))
+    ? lazy!.cache.load().then(loaded => new Map(loaded))
+    : undefined
   // The keys whose current attempt is a wake: a caller waits up to CONNECT_TIMEOUT_MS for it.
   const waking = new Set<ServerKey>()
   // The children of lazy servers: a shutdown hurries their stop.
@@ -526,6 +529,7 @@ export const connectAll = (
     opened.add(client)
     let secrets = (): readonly string[] => []
     const hide: Hide = text => redact(text, server, secrets())
+    const lazily = lazy !== undefined && lazyServer(key, server)
     // `hidden`: the start of the reason without the error text of the server or its child, when it holds such text.
     const fail = (reason: string, hidden?: string) => {
       const safe = hide(reason)
@@ -536,6 +540,14 @@ export const connectAll = (
     const lost = (reason: string, hidden?: string): boolean => {
       const link = links.get(key)
       if (closing || link?.status !== 'connected' || link.client !== client) return false
+      // A lazy server that is lost is asleep again with its last live list: a search does not start it, and the next
+      // call wakes it (the cap of attempts applies). A server that fails to wake stays failed, with its reason.
+      if (lazily) {
+        const stopping = client.close().catch(() => {})
+        links.set(key, { status: 'asleep', tools: link.lists.tools(), stopping })
+        log(`${key}: lost: ${hide(reason)}. It is asleep and starts on the next call that names it`)
+        return true
+      }
       fail(reason, hidden)
       return true
     }
@@ -551,7 +563,6 @@ export const connectAll = (
       // rejects each open request with "Connection closed".
       setImmediate(() => void client.close().catch(() => {}))
     }
-    const lazily = lazy !== undefined && lazyServer(key, server)
     const cacheId = lazily ? lazy.cache.key(server) : undefined
     // Each list that differs from the cached one goes to the cache. The cache is for display only.
     const remember = async (tools: readonly DownstreamTool[]): Promise<void> => {
@@ -567,7 +578,7 @@ export const connectAll = (
       const tools = await listAll(client, () =>
         log(`${key}: the tool list has more than ${MAX_PAGES} pages, so toolscript-mcp uses the first ${MAX_PAGES}`),
       )
-      void remember(tools)
+      remember(tools).catch(() => {})
       return tools
     }
     // A server whose tools change, also in their marks, says so: list again, so the checks of a call see the new list.
@@ -779,12 +790,20 @@ export const connectAll = (
     },
     states: () => [...links].map(([key, link]) => stateOf(key, link)),
     retry: async (keys, signal) => {
-      const end = deadline(signal, keys?.some(longWait) ? CONNECT_TIMEOUT_MS : RETRY_WAIT_MS)
-      const waits =
-        keys === undefined
-          ? [...servers.keys()].flatMap(key => reconnect(key) ?? [])
-          : keys.map(key => settle(key, end))
-      await within(Promise.all(waits), end)
+      // A search (no keys) starts no lazy server: one that failed to wake shows its reason, and a call wakes it.
+      if (keys === undefined) {
+        const waits = [...servers].flatMap(([key, server]) =>
+          server.kind !== 'invalid' && lazyServer(key, server) ? [] : (reconnect(key) ?? []),
+        )
+        return within(Promise.all(waits), deadline(signal))
+      }
+      // Each key has its own deadline: a wake waits longer than a reconnect, and must not give the others its time.
+      await Promise.all(
+        keys.map(key => {
+          const end = deadline(signal, longWait(key) ? CONNECT_TIMEOUT_MS : RETRY_WAIT_MS)
+          return within(settle(key, end), end)
+        }),
+      )
     },
     client: async (key, signal) => {
       if (closing) return { ok: false, reason: 'toolscript-mcp is shutting down' }

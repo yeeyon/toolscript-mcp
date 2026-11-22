@@ -3,16 +3,15 @@
 // sets the clock back), and it stops the child as the broker does: end stdin, wait STOP_WAIT_MS, then end the whole
 // tree (`taskkill /T /F` on Windows, the process group elsewhere), so a wrapper or a grandchild never stays.
 
-import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { PassThrough } from 'node:stream'
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import crossSpawn from 'cross-spawn'
-
-/** The time that a child gets to leave after its stdin ends, before its tree is ended. */
-export const STOP_WAIT_MS = 2000
+import { STOP_WAIT_MS } from '../core/broker.ts'
+import { endTree } from './broker.ts'
 
 /**
  * The same time at the shutdown of the host: the client of the host waits about 2 s before it kills the host, so the
@@ -28,31 +27,11 @@ export type ChildParams = {
   readonly cwd?: string
 }
 
-/** The env that the child gets. The cache key of a launch hashes it too, so a changed PATH is a changed launch. */
+/** The env that the child gets. The cache key of a launch does not hash it: it holds the inherited PATH. */
 export const childEnvironment = (env: Readonly<Record<string, string>>): Record<string, string> => ({
   ...getDefaultEnvironment(),
   ...env,
 })
-
-/** Ends the tree of a child. Windows needs a live top process. Elsewhere the group goes also after the top process left. */
-export const endTree = (proc: ChildProcess): void => {
-  if (proc.pid === undefined) return
-  if (process.platform === 'win32') {
-    if (proc.exitCode !== null || proc.signalCode !== null) return
-    nodeSpawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on(
-      'error',
-      () => {},
-    )
-    return
-  }
-  try {
-    process.kill(-proc.pid, 'SIGKILL')
-  } catch {
-    try {
-      proc.kill('SIGKILL')
-    } catch {}
-  }
-}
 
 export class ChildTransport implements Transport {
   onclose?: () => void
