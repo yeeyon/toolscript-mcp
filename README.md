@@ -931,6 +931,9 @@ server needs a new login, `search_tools` shows the login command. Run the comman
 call connects again, with no restart. If the authorization server does not answer a refresh in 20 s, `search_tools`
 shows the cause. The next search or call tries the refresh again.
 
+Sessions that share one token store refresh one at a time, so a server that revokes a reused refresh token keeps your login.
+A `.lock` file can show beside the store for a moment. If a session waits 20 s for another session, `search_tools` shows the cause. The next call tries again.
+
 ### Run log
 
 toolscript-mcp writes one line to `~/.toolscript-mcp/runs.jsonl` for each `run_code` call.

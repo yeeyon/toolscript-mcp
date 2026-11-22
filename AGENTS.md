@@ -13,7 +13,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   ask rules: the decision before a run, the check of each call and the refusal texts), `mux.ts` (the router of one
   child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
   text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
-  proof of the key, the entry, `PATH` resolve), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
+  proof of the key, the entry, `PATH` resolve), `lock.ts` (the content of the OAuth refresh lock file, its parse and
+  the stale decision), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
   note on `Promise.all`). An allow rule allows a tool of a bridge only when its match starts with `mcp__<key>__`
   (`counts` in `policy.ts`). `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
   checks, such as `hiddenBy` (one glob covers another).
@@ -49,6 +50,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     next use, at most 3 times in 60 s.
   - `oauth.ts`: the token store under `~/.toolscript-mcp/oauth/` and the SDK OAuth provider over it, in login mode
     or in the mode of the running server, which never starts a login.
+  - `oauthlock.ts`: the lock file of one OAuth refresh (`<store>.lock`), taken in `renew` of `oauth.ts`: the create
+    with `wx`, the wait, the takeover of a stale lock through a claim file, and the removal.
   - `login.ts`: `toolscript-mcp login <server>`: the callback listener, the browser and the token exchange.
   - `launch.ts`: starts the runner with the sandbox layers of each OS, the host kill timer and the exchange dir.
   - `diagnose.ts`: `toolscript-mcp tools <server>` (connects to one server and prints each tool with its hint and

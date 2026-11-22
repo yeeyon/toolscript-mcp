@@ -175,6 +175,13 @@ test('nodeFinding passes 22.13 and later, and fails an older or unknown version'
   })
 })
 
+test('staleStoreKeys never names a lock file or a claim file of a refresh as a store', () => {
+  const lock = 'gone-0123456789abcdef.json.lock'
+  const claim = `${lock}.0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f.claim`
+  assert.deepEqual(staleStoreKeys([lock, claim, `${lock}.x1700.claim`], new Set()), [])
+  assert.deepEqual(staleStoreKeys(['gone-0123456789abcdef.json', lock, claim], new Set()), ['gone'])
+})
+
 test('staleStoreKeys names each store file that no server uses, once, by its key', () => {
   const files = ['gone-0123456789abcdef.json', 'gone-fedcba9876543210.json', 'used-0123456789abcdef.json', 'x.tmp']
   assert.deepEqual(staleStoreKeys(files, new Set(['used-0123456789abcdef.json'])), ['gone'])

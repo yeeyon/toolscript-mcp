@@ -29,6 +29,7 @@ import {
 } from '../core/config.ts'
 import { oauthFile } from '../core/paths.ts'
 import { errorText } from '../core/protocol.ts'
+import { dropLock, takeLock, type LockFs } from './oauthlock.ts'
 
 // Both are OAuthErrors: the SDK passes on an OAuthError from a refresh, and starts a login after any other error.
 /** The provider of the running server throws this where a person must log in. Its message is the reason. */
@@ -110,6 +111,8 @@ const renameOver = async (from: string, to: string): Promise<void> => {
 }
 const RENAME_WAIT_MS = 1000
 const RENAME_POLL_MS = 10
+// A lock is stale after one refresh with the longest save, and this margin for a slow disk.
+const LOCK_MARGIN_MS = 10_000
 
 /**
  * Changes the store: a new 0600 file in a 0700 folder, then a rename, so a reader in another process never sees a
@@ -189,7 +192,7 @@ export type Provider = OAuthClientProvider & {
  * The SDK's OAuth provider for one server over its store `file`. In login mode, `tokens` gives only the tokens of
  * this login, so the old tokens stay in the store until the new ones come, and a person can switch accounts.
  */
-export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | ServeMode): Provider => {
+export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | ServeMode, lockFs?: LockFs): Provider => {
   const login = mode.kind === 'login' ? mode : undefined
   const needLogin = (): never => {
     throw new LoginNeeded(mode.kind === 'serve' ? mode.reason : 'no login in progress')
@@ -226,21 +229,57 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     if (login) return client?.redirectUrl === redirectUrl ? client.info : undefined
     return client?.info ?? needLogin()
   }
-  // A refresh of the running server with the refresh token `sent`, which saves the new tokens. The SDK reads a refusal
-  // without an OAuth error code as a server error and starts a login after it, so this decides on each answer.
+  // The access tokens that a server refused: a refresh answers one of them.
+  const rejected = new Set<string>()
+  // True when the store holds tokens that a refresh with `sent` need not replace: another refresh token, which another
+  // process saved, or an access token that no server refused yet. A call in this process can fail with the access token
+  // before another process saves, and then ask for a refresh with the refresh token that the other process saved.
+  const newer = (stored: OAuthTokens | undefined, sent: string): stored is OAuthTokens =>
+    stored?.refresh_token !== undefined && (stored.refresh_token !== sent || !rejected.has(stored.access_token))
+  // A refresh of the running server with the refresh token `sent`, one process at a time (the lock of the store), which
+  // saves the new tokens. The lock wait and the request take `timeoutMs` together.
   const renew = async (
     send: (signal: AbortSignal) => Promise<Response>,
     sent: string,
     timeoutMs: number,
   ): Promise<OAuthTokens> => {
+    const deadline = Date.now() + timeoutMs
     // A call that read the tokens before the last refresh saved them sends a refresh token that is used up.
-    const now = await current()
-    if (now?.refresh_token !== undefined && now.refresh_token !== sent) return now
+    const early = await current()
+    if (newer(early, sent)) return early
+    const busy = () =>
+      new RefreshFailed(
+        refreshReason(
+          `another toolscript-mcp process is refreshing the tokens and did not finish in ${timeoutMs / 1000} s`,
+        ),
+      )
+    const lock = await takeLock(file, deadline, timeoutMs + RENAME_WAIT_MS + LOCK_MARGIN_MS, lockFs)
+    if (lock === 'busy') throw busy()
+    try {
+      // The process that held the lock before this one saved the tokens that this refresh needs.
+      const now = await current()
+      if (newer(now, sent)) return now
+      const left = deadline - Date.now()
+      if (left <= 0) throw busy()
+      return await exchange(send, sent, now, left, timeoutMs)
+    } finally {
+      if (typeof lock === 'object') await dropLock(lock, lockFs)
+    }
+  }
+  // The request of a refresh, and the save of its tokens. The SDK reads a refusal without an OAuth error code as a
+  // server error and starts a login after it, so this decides on each answer.
+  const exchange = async (
+    send: (signal: AbortSignal) => Promise<Response>,
+    sent: string,
+    now: OAuthTokens | undefined,
+    left: number,
+    timeoutMs: number,
+  ): Promise<OAuthTokens> => {
     // The refresh token that the store must still hold for this refresh to save. A login in another process can save
     // other tokens before the answer comes.
     const storeHad = unsaved.get(file)?.storeHad ?? sent
     // Every call and link of the server waits for this refresh, so a token endpoint that never answers must not hold it.
-    const signal = AbortSignal.timeout(timeoutMs)
+    const signal = AbortSignal.timeout(left)
     const silent = () => new RefreshFailed(refreshReason(`the token endpoint did not answer in ${timeoutMs / 1000} s`))
     let response: Response
     try {
@@ -313,11 +352,17 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     fetch: base =>
       mode.kind === 'login'
         ? base
-        : (url, init) => {
+        : async (url, init) => {
             const sent = refreshTokenOf(init)
-            return sent === undefined
-              ? base(url, init)
-              : refresh(signal => base(url, { ...init, signal }), sent, mode.refreshTimeoutMs)
+            if (sent !== undefined)
+              return refresh(signal => base(url, { ...init, signal }), sent, mode.refreshTimeoutMs)
+            const response = await base(url, init)
+            const bearer = /^Bearer (.+)$/i.exec(new Headers(init?.headers).get('authorization') ?? '')?.[1]
+            if (bearer !== undefined && (response.status === 401 || response.status === 403)) {
+              if (rejected.size >= 16) rejected.clear()
+              rejected.add(bearer)
+            }
+            return response
           },
     redirectUrl,
     clientMetadata: {
