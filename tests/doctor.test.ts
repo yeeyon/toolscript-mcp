@@ -482,7 +482,7 @@ describe('shareFindings', () => {
       found.map(f => f.detail),
       [
         'sharing is off (the default). This version starts each server one time per session in any case',
-        'grafana: "share": true, so it starts in the home folder',
+        'grafana: shared by all sessions: "share": true, so it starts in the home folder',
         'azure: one copy per folder: no cwd and no "share" key. Set "share": true when it reads no file of its folder',
         'github: shared by all sessions: it has a cwd',
         'files: one copy per folder: "share": "folder"',
@@ -519,7 +519,7 @@ describe('shareFindings', () => {
     assert.equal(await s.doctor(), 0)
     assert.deepEqual(s.of('share'), [
       'info  share    sharing is off (the default). This version starts each server one time per session in any case',
-      'info  share    demo: "share": true, so it starts in the home folder',
+      'info  share    demo: shared by all sessions: "share": true, so it starts in the home folder',
     ])
     assert.ok(
       s.printed.findIndex(l => l.startsWith('info  share')) > s.printed.findIndex(l => l.slice(6, 13) === 'servers'),

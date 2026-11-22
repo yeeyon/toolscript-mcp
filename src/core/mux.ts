@@ -47,8 +47,8 @@ type Call = {
   readonly kind: 'call'
   readonly link: LinkId
   readonly id: Id
-  /** The token that the router put in place of the progress token of the link, and the token of the link. */
-  readonly token?: { readonly sent: number; readonly original: unknown }
+  /** The progress token of the link. The child sees the router id in its place. */
+  readonly token?: Id
 }
 /** The one initialize that the child sees. Every link that asked while it was open waits in `waiters`. */
 type Init = { readonly kind: 'init'; readonly waiters: Waiter[] }
@@ -56,9 +56,7 @@ type Init = { readonly kind: 'init'; readonly waiters: Waiter[] }
 export const createRouter = (): Router => {
   const links = new Map<LinkId, Held>()
   const open = new Map<number, Call | Init>()
-  const tokens = new Map<number, number>()
   let nextId = 1
-  let nextToken = 1
   let dead = false
   let cached: { readonly result: unknown } | undefined
   let opening: number | undefined
@@ -82,7 +80,6 @@ export const createRouter = (): Router => {
     if (held !== undefined) release(held, id)
     if (entry?.kind === 'call') {
       open.delete(rid)
-      if (entry.token !== undefined) tokens.delete(entry.token.sent)
     } else if (entry !== undefined) {
       const at = entry.waiters.findIndex(w => w.link === link && w.id === id)
       if (at >= 0) entry.waiters.splice(at, 1)
@@ -98,30 +95,22 @@ export const createRouter = (): Router => {
     },
   })
 
-  /** The link gives up the request that it holds under `id`: the child hears of it when no other link waits. */
+  /** The link gives up the request that it holds under `id`. An initialize is never cancelled at the child. */
   const cancel = (link: LinkId, id: Id, reason: unknown): Effect[] => {
     const held = links.get(link)
     const rid = held === undefined ? undefined : holder(held, id)
     const entry = rid === undefined ? undefined : open.get(rid)
     if (rid === undefined || entry === undefined) return []
     close(rid, link, id)
-    if (entry.kind === 'call') return [cancelChild(rid, reason)]
-    if (entry.waiters.length > 0) return []
-    open.delete(rid)
-    opening = undefined
-    return [cancelChild(rid, reason)]
+    return entry.kind === 'call' ? [cancelChild(rid, reason)] : []
   }
 
-  /** The message with its progress token swapped for one that no other request has. */
-  const withToken = (msg: Obj, params: unknown): { msg: Obj; token?: Call['token'] } => {
+  /** The message with its progress token swapped for the router id of the request. */
+  const withToken = (msg: Obj, params: unknown, rid: number): { msg: Obj; token?: Id } => {
     const meta = isObj(params) ? own(params, '_meta') : undefined
     const original = isObj(meta) ? own(meta, 'progressToken') : undefined
     if (!isObj(params) || !isObj(meta) || !isId(original)) return { msg }
-    const sent = nextToken++
-    return {
-      msg: { ...msg, params: { ...params, _meta: { ...meta, progressToken: sent } } },
-      token: { sent, original },
-    }
+    return { msg: { ...msg, params: { ...params, _meta: { ...meta, progressToken: rid } } }, token: original }
   }
 
   const request = (link: LinkId, id: Id, msg: Obj, held: Held): Effect[] => {
@@ -141,14 +130,15 @@ export const createRouter = (): Router => {
       open.set(rid, { kind: 'init', waiters: [{ link, id }] })
       hold(held, id, rid)
       const params = own(msg, 'params')
-      const forwarded = { ...msg, id: rid, params: { ...(isObj(params) ? params : {}), capabilities: {} } }
+      // The _meta of the first initialize is dropped: its progress token could match one that the router gives out.
+      const { _meta, ...rest } = isObj(params) ? params : { _meta: undefined }
+      const forwarded = { ...msg, id: rid, params: { ...rest, capabilities: {} } }
       return [{ to: 'child', msg: forwarded }]
     }
     const rid = nextId++
-    const { msg: changed, token } = withToken(msg, own(msg, 'params'))
+    const { msg: changed, token } = withToken(msg, own(msg, 'params'), rid)
     open.set(rid, { kind: 'call', link, id, ...(token !== undefined && { token }) })
     hold(held, id, rid)
-    if (token !== undefined) tokens.set(token.sent, rid)
     return [{ to: 'child', msg: { ...changed, id: rid } }]
   }
 
@@ -194,7 +184,6 @@ export const createRouter = (): Router => {
     if (entry === undefined) return []
     if (entry.kind === 'init') return answerInit(rid, entry, msg)
     open.delete(rid)
-    if (entry.token !== undefined) tokens.delete(entry.token.sent)
     const held = links.get(entry.link)
     if (held !== undefined) release(held, entry.id)
     return [{ to: 'link', link: entry.link, msg: { ...msg, id: entry.id } }]
@@ -203,10 +192,9 @@ export const createRouter = (): Router => {
   const progress = (msg: Obj): Effect[] => {
     const params = own(msg, 'params')
     const sent = isObj(params) ? own(params, 'progressToken') : undefined
-    const rid = typeof sent === 'number' ? tokens.get(sent) : undefined
-    const entry = rid === undefined ? undefined : open.get(rid)
+    const entry = typeof sent === 'number' ? open.get(sent) : undefined
     if (!isObj(params) || entry?.kind !== 'call' || entry.token === undefined) return []
-    const changed = { ...msg, params: { ...params, progressToken: entry.token.original } }
+    const changed = { ...msg, params: { ...params, progressToken: entry.token } }
     return [{ to: 'link', link: entry.link, msg: changed }]
   }
 
@@ -266,7 +254,6 @@ export const createRouter = (): Router => {
           })),
         )
       open.clear()
-      tokens.clear()
       links.clear()
       return effects
     },

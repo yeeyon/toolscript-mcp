@@ -208,14 +208,36 @@ describe('mux table', () => {
     assert.notEqual(again[0]!.id, first!.id)
   })
 
-  test('(e) a cancel of a waiting initialize goes to the child only when no link still waits', () => {
-    const router = rig('a', 'b')
+  test('(e) the first initialize is never cancelled at the child, and its late result is cached', () => {
+    const router = rig('a', 'b', 'c')
     const [first] = toChild(router.fromLink('a', init(1)))
     router.fromLink('b', init(1))
     assert.deepEqual(router.fromLink('a', note('notifications/cancelled', { requestId: 1 })), [])
-    const out = router.fromLink('b', note('notifications/cancelled', { requestId: 1 }))
-    assert.equal(toChild(out)[0]!.params.requestId, first!.id)
+    assert.deepEqual(router.fromLink('b', note('notifications/cancelled', { requestId: 1 })), [])
     assert.equal(router.open(), 0)
+    assert.deepEqual(router.fromLink('c', init(1)), [], 'it joins the open initialize')
+    assert.deepEqual(router.detach('c'), [])
+    assert.deepEqual(router.fromChild(reply(first!.id, { v: 1 })), [])
+    router.attach('d')
+    assert.deepEqual(router.fromLink('d', init(2)), [
+      { to: 'link', link: 'd', msg: { jsonrpc: '2.0', id: 2, result: { v: 1 } } },
+    ])
+    assert.equal(router.open(), 0)
+  })
+
+  test('(e) the first initialize loses its _meta, so no link token meets a router token', () => {
+    const router = rig('a', 'b')
+    const input = frozen({
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'initialize',
+      params: { protocolVersion: 'v', _meta: { progressToken: 1 } },
+    })
+    const [first] = toChild(router.fromLink('a', input))
+    assert.deepEqual(first!.params, { protocolVersion: 'v', capabilities: {} })
+    router.fromChild(reply(first!.id))
+    router.fromLink('b', call(5, { _meta: { progressToken: 'b-token' } }))
+    assert.deepEqual(router.fromChild(note('notifications/progress', { progressToken: first!.id })), [])
   })
 
   test('(f) notifications/initialized goes to the child once, after the first result', () => {
@@ -299,7 +321,8 @@ describe('mux table', () => {
     const out = router.detach('a')
     assert.deepEqual(
       toChild(out).map(m => m.params.requestId),
-      [first, second, initial!.id],
+      [first, second],
+      'the initialize is not cancelled',
     )
     assert.ok(out.every(e => e.to === 'child'))
     assert.equal(router.open(), 1)

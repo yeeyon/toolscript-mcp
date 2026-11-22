@@ -170,7 +170,7 @@ const shareLine = (key: ServerKey, c: Class): string => {
   if (c.class === 'shared')
     return c.rule === 4
       ? `${name}: shared by all sessions: it has a cwd`
-      : `${name}: "share": true, so it starts in the home folder`
+      : `${name}: shared by all sessions: "share": true, so it starts in the home folder`
   if (c.class === 'folder')
     return c.rule === 2
       ? `${name}: one copy per folder: "share": "folder"`
