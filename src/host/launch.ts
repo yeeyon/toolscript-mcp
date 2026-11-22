@@ -141,16 +141,25 @@ export const removeExchangeDir = (xdir: string): Promise<void> =>
   fs.promises.rm(xdir, { recursive: true, force: true, maxRetries: 5 })
 
 /**
- * Starts the sandbox process and its kill timer, and writes `input` to its stdin.
- * Throws when the runner or the exchange dir does not exist, or when spawn refuses the node path.
+ * The command that `launch` starts for this OS, with no timer. Tests start it to try one layer alone.
+ * Throws when the limit is not a positive whole number, or when the runner or the exchange dir does not exist.
  */
-export const launch = (o: LaunchOptions): Sandbox => {
+export const sandboxCommand = (o: LaunchOptions): Command => {
   // A NaN or Infinity limit would make `ulimit -t` fail, and the launch script goes on without a CPU limit.
   if (!Number.isSafeInteger(o.timeoutMs) || o.timeoutMs <= 0)
     throw new RangeError(`timeoutMs must be a positive whole number, not ${o.timeoutMs}`)
   // --allow-fs-read takes real paths: on macOS the temp dir is under a link, and
   // --permission stops a main script whose path goes through a link before it starts.
-  const command = SANDBOX.command(o, fs.realpathSync(o.runner), fs.realpathSync(o.xdir))
+  return SANDBOX.command(o, fs.realpathSync(o.runner), fs.realpathSync(o.xdir))
+}
+
+/**
+ * Starts the sandbox process and its kill timer, and writes `input` to its stdin.
+ * Throws when the limit is not a positive whole number, when the runner or the exchange dir does not exist, or
+ * when spawn refuses the node path.
+ */
+export const launch = (o: LaunchOptions): Sandbox => {
+  const command = sandboxCommand(o)
   // The runner's timer and the kill timer both count from here: on a busy machine Node can take
   // longer than KILL_GRACE_MS to start the runner. Both processes read the same system clock.
   const deadline = Date.now() + o.timeoutMs
