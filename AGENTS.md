@@ -12,7 +12,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   (downstream tools, the `search_tools` result, argument specs from input schemas), `policy.ts` (the allow, deny and
   ask rules: the decision before a run, the check of each call and the refusal texts), `mux.ts` (the router of one
   child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
-  text of its share key), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
+  text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
+  proof of the key, the entry, `PATH` resolve), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
   note on `Promise.all`). An allow rule allows a tool of a bridge only when its match starts with `mcp__<key>__`
   (`counts` in `policy.ts`). `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
   checks, such as `hiddenBy` (one glob covers another).
@@ -21,8 +22,18 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   that the CLI prints for a person or an agent to run: the allowlist of names and paths (`PLAIN_NAME`, `PLAIN_PATH`),
   the label lines, and the plan and lines of `toolscript-mcp allow`. Imports between them use `.ts` extensions.
 - `src/host/` holds the host code, which runs in Node. `tsconfig.host.json` checks its types. `scripts/build.mjs`
-  bundles it with the SDK into `dist/host/main.js`, the one file that the package runs.
+  bundles it with the SDK into `dist/host/main.js`, the file that the package runs, and the broker of the shared servers into
+  `dist/host/broker.js`, which the host starts on demand (no SDK in it).
   - `main.ts`: the `toolscript-mcp` command. It reads the config, starts the server and closes the children.
+  - `brokerlink.ts`: the host side of sharing (issue #63): `entryOf` (the entry of a server with its `PATH` resolved),
+    `openLink` (find or start the broker, the mutual proof of the key, the entry) and `BrokerTransport`, an SDK
+    `Transport` over one connection. `downstream.ts` uses it for a shared or per-folder server when sharing is on. A
+    broker that cannot be reached fails the link with a reason (decision 024): it starts no direct child.
+    `brokerwire.ts` holds the key file, the build id (SHA-256 of `broker.js`) and the endpoint name.
+  - `broker.ts`: the broker process, built from `brokermain.ts` into `dist/host/broker.js`, a second bundle with Node
+    built-ins and `cross-spawn` only. One router (`src/core/mux.ts`) and one child for each share key. The listen is the
+    lock. `TOOLSCRIPT_BROKER_IDLE_MS` (at least 1000) shortens the 10-minute idle time, for tests and the bench. Log:
+    `~/.toolscript-mcp/broker/broker.log`, lifecycle lines only.
   - `server.ts`: the SDK `McpServer`, with a handler for each tool in `SERVED`, the approval prompt (elicitation),
     the policy read again at each run (a looser one waits for the person or a restart) and the runs in flight, which
     `main.ts` stops at shutdown.

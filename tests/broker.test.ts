@@ -159,11 +159,11 @@ describe('the pure wire', () => {
 type Rig = { home: string; file: string; broker: Broker; stop: () => Promise<void> }
 
 /** A broker in this process, on a temp HOME, whose build is the content of a temp file. */
-const startRig = async (idle = 600_000, build = 'build one'): Promise<Rig> => {
+const startRig = async (idle = 600_000, build = 'build one', initMs?: number): Promise<Rig> => {
   const home = fs.mkdtempSync(path.join(root, 'h-'))
   const file = path.join(home, 'broker.js')
   fs.writeFileSync(file, build)
-  const broker = await startBroker({ home, idleMs: idle, file })
+  const broker = await startBroker({ home, idleMs: idle, file, ...(initMs !== undefined && { initMs }) })
   assert.ok(broker, 'the broker listens')
   const stop = () => broker.stop()
   closers.push(stop)
@@ -261,6 +261,16 @@ describe('attach and routing', () => {
       assert.doesNotMatch(err.message, /SECRET-TEXT/)
       return true
     })
+  })
+
+  test('a child that gives no initialize answer is refused with the wait and stopped', async () => {
+    const rig = await startRig(600_000, 'build one', 700)
+    const err = await connect(rig, entryOf({}, ['--noinit'])).catch((e: Error) => e)
+    assert.ok(err instanceof BrokerError)
+    assert.match(err.message, /no initialize answer in 1 s.*by hand/)
+    await until('the stuck child is stopped', () =>
+      /child \w+ stop/.test(fs.readFileSync(path.join(rig.home, '.toolscript-mcp', 'broker', 'broker.log'), 'utf8')),
+    )
   })
 
   test('a command that does not exist refuses the attach', async () => {

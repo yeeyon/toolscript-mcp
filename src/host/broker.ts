@@ -33,6 +33,8 @@ export type BrokerOptions = {
   readonly idleMs: number
   /** The `broker.js` whose hash is the build id. */
   readonly file: string
+  /** The time that a child has to answer the initialize of the broker: a test sets it. */
+  readonly initMs?: number
 }
 
 export type Broker = {
@@ -102,7 +104,12 @@ const endTree = (proc: ChildProcess): void => {
 }
 
 /** Starts a broker, or returns undefined when another broker of this build already listens. */
-export const startBroker = async ({ home, idleMs, file }: BrokerOptions): Promise<Broker | undefined> => {
+export const startBroker = async ({
+  home,
+  idleMs,
+  file,
+  initMs = CHILD_INIT_MS,
+}: BrokerOptions): Promise<Broker | undefined> => {
   const dir = brokerFolder(home)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const log = makeLog(`${dir}/broker.log`)
@@ -210,9 +217,9 @@ export const startBroker = async ({ home, idleMs, file }: BrokerOptions): Promis
     proc.on('error', err => gone('the server process could not start', (err as NodeJS.ErrnoException).code))
     proc.on('exit', code => gone(`the server process ended with exit code ${String(code)}`, code))
     const timer = setTimeout(() => {
-      settle(`the server gave no initialize answer in ${CHILD_INIT_MS / 1000} s. Run its command by hand`)
+      settle(`the server gave no initialize answer in ${Math.round(initMs / 1000)} s. Run its command by hand`)
       void stopChild(child)
-    }, CHILD_INIT_MS)
+    }, initMs)
     child.conns.set(PROBE, {
       close: () => {},
       send: msg => {

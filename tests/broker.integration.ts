@@ -148,6 +148,17 @@ describe('a real broker', () => {
     await until('the whole tree ends', () => !alive(server), 10_000)
   })
 
+  // Windows has no SIGTERM handler for a process: there the broker ends by its idle time, tested above.
+  test('SIGTERM stops every child first, then the broker ends', { skip: process.platform === 'win32' }, async () => {
+    const home = newHome()
+    const client = await connect(home)
+    const child = Number(await text(client, 'pid'))
+    const [broker] = brokerPids(home)
+    process.kill(broker!, 'SIGTERM')
+    await until('the child ends', () => !alive(child), 8000)
+    await until('the broker ends', () => !alive(broker!), 8000)
+  })
+
   test('a host that is gone leaves the call of the other host alone and the child up', async () => {
     const home = newHome()
     const [a, b] = [await connect(home), await connect(home)]
