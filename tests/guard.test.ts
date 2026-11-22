@@ -458,6 +458,19 @@ describe('the gaps of issue 107', () => {
     }
   })
 
+  test('(b) a string that looks like a scheme but holds a .. part is a path, and other scheme text is not', async () => {
+    const inside = '/home/u/.toolscript-mcp/hints/sub'
+    for (const p of ['ab:x/..', 'data:x/..', 'file:x/..', 'a.md:z/..', 'ab:x\\..', 'ab://x/..', 'ab:x/../']) {
+      assert.equal(isPathLike(p), true, p)
+      assert.equal(await hit({ p }, fake(), inside), '~/.toolscript-mcp/hints', p)
+    }
+    for (const p of ['data:text/plain,a%2Fb', 'ab:x/y', 'ab://x/y', 'mailto:a@b.c']) {
+      const g = fake()
+      assert.equal(await hit({ p }, g, inside), undefined, p)
+      assert.deepEqual(g.asked, [], p)
+    }
+  })
+
   test('(b) a file:// path on Windows: /C:/x is C:/x, and another host is UNC with no call', async () => {
     const f = fake()
     const at = winGuard(f)

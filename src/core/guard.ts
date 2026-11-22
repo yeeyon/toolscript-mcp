@@ -63,6 +63,7 @@ export const markerIn = (text: string): string | undefined =>
   markerOf(text) ?? (text.includes('%') ? markerOf(decodeOnce(text)) : undefined)
 
 const STATE = GUARD_MARKERS[0]!.slice(0, GUARD_MARKERS[0]!.indexOf('/'))
+const STATE_NAME = STATE.slice(1)
 const STATE_TAIL = new RegExp(`${STATE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[. ]+(?=/)`, 'g')
 
 // `%XX` below `%80`, in each letter case. A table lookup is 4 times faster than `parseInt` for a 1 MB string.
@@ -77,8 +78,15 @@ for (let code = 0; code < 0x80; code++) {
 const decodeOnce = (text: string): string => text.replace(/%[0-7][0-9a-fA-F]/g, escape => ESCAPES[escape]!)
 
 const markerOf = (text: string): string | undefined => {
+  // Every marker holds the name of the state folder, and the steps after the fold change no letter: a text without
+  // the name has no marker, so the cheap fold runs first and the separator steps run only for a text that has it.
+  const cased = foldCase(text)
+  if (!cased.includes(STATE_NAME)) return undefined
   // A doubled separator or a `/./` does not change the path, so it must not hide the marker.
-  const folded = foldCase(text.replaceAll('\\', '/').replace(/\/(?:\.?\/)+/g, '/')).replace(STATE_TAIL, STATE)
+  const folded = cased
+    .replaceAll('\\', '/')
+    .replace(/\/(?:\.?\/)+/g, '/')
+    .replace(STATE_TAIL, STATE)
   for (const marker of GUARD_MARKERS) {
     for (let at = folded.indexOf(marker); at >= 0; at = folded.indexOf(marker, at + 1)) {
       let end = at + marker.length
@@ -91,13 +99,15 @@ const markerOf = (text: string): string | undefined => {
 
 // A scheme of 2 or more characters, then `//` or a word (`data:text/plain`): not a path. `C:a` and `C:\a` are drives.
 const SCHEME_URL = /^[A-Za-z][A-Za-z0-9+.-]+:(?:\/\/|[^\s/\\])/
+// A `..` part: a string that has one stays a path candidate, as the file system may read `ab:x/..` as a relative path.
+const DOT_DOT = /(?:^|[\\/])\.\.(?:[\\/]|$)/
 
 /** True when `text` can be a path: no line break, NUL or URL, and it starts as a path or holds a separator. */
 export const isPathLike = (text: string): boolean =>
   text.length > 0 &&
   text.length <= GUARD_STRING_CHARS &&
   !/[\n\r\0]/.test(text) &&
-  !SCHEME_URL.test(text) &&
+  !(SCHEME_URL.test(text) && !DOT_DOT.test(text)) &&
   /^(?:[/~\\.]|[A-Za-z]:[\\/])|[/\\]/.test(text)
 
 /**
@@ -105,8 +115,9 @@ export const isPathLike = (text: string): boolean =>
  * and `localhost` are local, and `/C:/x` is `C:/x`. Another host gives `//host/path`. A `?` or `#` stays in the path.
  */
 export const fileUrlPath = (text: string): string | undefined => {
+  if (text.length > GUARD_STRING_CHARS) return undefined
   const match = /^file:\/\/([^/\\]*)(.*)$/is.exec(text)
-  if (match === null || text.length > GUARD_STRING_CHARS) return undefined
+  if (match === null) return undefined
   const [, host = '', rest = ''] = match
   const path = decodeOnce(rest)
   if (/[\n\r\0]/.test(path)) return undefined
