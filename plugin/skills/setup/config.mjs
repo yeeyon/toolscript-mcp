@@ -7,12 +7,15 @@
 //   node config.mjs <config> prepend <action> <match> [<action> <match>]...
 //   node config.mjs <config> add <name> <entry.json>
 //   node config.mjs <config> untrusted <name> [true|false]
+//   node config.mjs <config> share <name> [true|false]
 // path prints the default config path, as toolscript-mcp finds it without --config.
 // policy writes the rules in order. prepend puts its rules first and drops the old rules with the same match, so a
 // second run changes nothing.
 // policy, prepend and add make the config when it does not exist.
 // untrusted sets "untrusted": true on a server, so each of its results reaches the model as untrusted text. false
 // removes the key.
+// share sets "share": true on a server, so every session uses one copy of it through the broker (when the share switch
+// is on). false removes the key, which leaves the server to the rules of its class.
 // To allow the exact tools of a task, run the lines that `toolscript-mcp tools` prints.
 // Exit 1 is a failure of the config or the entry. Exit 2 is a usage error.
 import fs from 'node:fs'
@@ -131,6 +134,7 @@ function usage() {
       '  node config.mjs <config> prepend <action> <match> [<action> <match>]...',
       '  node config.mjs <config> add <name> <entry.json>',
       '  node config.mjs <config> untrusted <name> [true|false]',
+      '  node config.mjs <config> share <name> [true|false]',
     ].join('\n'),
     2,
   )
@@ -226,6 +230,19 @@ const COMMANDS = {
     }
     if (value === 'true') entry.untrusted = true
     else delete entry.untrusted
+    writeConfig(file, config)
+    return show(config)
+  },
+  share(file, args) {
+    const [name, value = 'true', ...more] = args
+    if (name === undefined || more.length > 0 || !['true', 'false'].includes(value)) usage()
+    const config = readConfig(file)
+    const entry = config.mcpServers?.[name]
+    if (!Object.hasOwn(config.mcpServers ?? {}, name) || !isObject(entry)) {
+      throw new Fail(`The config has no server "${name}". config.mjs wrote nothing.`)
+    }
+    if (value === 'true') entry.share = true
+    else delete entry.share
     writeConfig(file, config)
     return show(config)
   },
