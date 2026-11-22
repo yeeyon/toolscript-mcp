@@ -418,7 +418,7 @@ checks come in this order:
 3. `servers`: doctor connects to each server in parallel. Each line shows the tool count, the login command or the
    reason of the failure. It marks each server with `"untrusted": true`.
 4. `share`: the share switch, and the class of each stdio server and the rule that decided. All lines are `info`.
-5. `broker`: only when sharing is on and a server is `shared` or `folder`. Doctor finds the build of the broker and connects to it. It starts the broker when none runs. It checks the proof of the key in both directions. One line: `ok`, or `fail` with the reason and the ways out. It starts no server.
+5. `broker`: only when sharing is on and a server is `shared` or `folder`. Doctor finds the build of the broker and connects to it. It starts the broker when none runs. It checks the proof of the key in both directions. One line: `ok`, or `fail` with the reason and the ways out. For a peer that is not the broker, the line also names the way out for a taken name. On Windows, a second line shows the access rules of the broker folder. It is `warn` when a principal other than you, SYSTEM and Administrators has access. It starts no server.
 6. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
    [Claude Code bridge](#claude-code-as-a-downstream-server), and the tools that require a person.
 7. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
@@ -851,6 +851,12 @@ If a session cannot start or reach the broker, the server of that session fails 
 - `TOOLSCRIPT_SHARE=0` in the environment.
 
 Two sessions share a copy only when the command, the arguments, the whole environment and the folder are the same. A session that has another value of an `env` variable gets its own copy. Before toolscript-mcp compares `PATH`, it replaces each entry by its real path and drops repeats. Two shells whose `PATH` differs only in a per-shell link to one folder share a copy. Two Node versions do not.
+
+The stderr text of a shared server goes to the log of each session that is attached to it. A direct copy does the same for its client. A session that attaches to a running copy gets no earlier text. A session whose attach fails gets the last 8 KB of the copy that failed. The text never goes to the model. The broker drops stderr text above 256 KB in 10 s and counts what it dropped.
+
+A broker holds at most 64 sessions and 32 copies. Above that, the attach fails with a reason that names `"share": false`. A request of more than 10 MB fails by itself, and the session goes on. A session that does not read what the broker sends ends at 64 MB unsent, and the other sessions go on.
+
+Sharing does not keep apart the state inside one copy of a server, or its stderr. Set `"share": false` on a server that keeps state. [SECURITY.md](SECURITY.md) says what the broker protects and what it does not.
 
 A run from source has no broker, so each shared server fails with that reason. Run the built package to share servers. A server that ignores the end of its input can stay after a broker crash. It can also stay after a session crash.
 

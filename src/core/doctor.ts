@@ -205,9 +205,9 @@ export const shareFindings = (config: Config): Finding[] => {
 export const takenNameWayOut = (platform: string): string =>
   platform === 'win32'
     ? 'Something that is not the broker may hold its pipe name. Close the sessions of toolscript-mcp, then delete the ' +
-      'file "key" in the folder .toolscript-mcp/broker of your home folder: a new key gives a new pipe name'
+      'file "key" in the folder "broker" of the folder ".toolscript-mcp" in your home folder: a new key gives a new pipe name'
     : 'Something that is not the broker may hold its socket. Close the sessions of toolscript-mcp, then delete the ' +
-      'file "key" in the folder .toolscript-mcp/broker of your home folder (a new key gives a new socket name). When ' +
+      'file "key" in the folder "broker" of the folder ".toolscript-mcp" in your home folder (a new key gives a new socket name). When ' +
       'the socket is in /tmp/tsm- and your user id, remove that folder, or use a shorter home path'
 
 /** The failures of the handshake that a squatter on the name causes: the peer is no broker, or it did not answer. */
@@ -246,7 +246,7 @@ export const aclFinding = (text: string): Finding => {
   if (extra.size === 0) return ok('the broker folder is open to you, SYSTEM and Administrators only')
   return warn(
     `${extra.size} other principal(s) can enter the broker folder, so they can read its key. Look at the rules with ` +
-      '`icacls` on the folder .toolscript-mcp/broker of your home folder. Your profile folder normally allows only you, ' +
+      '`icacls` on the folder "broker" of the folder ".toolscript-mcp" in your home folder. Your profile folder normally allows only you, ' +
       'SYSTEM and Administrators: remove the extra rule, or move your home folder to one that does',
   )
 }

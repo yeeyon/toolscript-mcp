@@ -542,7 +542,7 @@ describe('the broker findings that need no IO', () => {
     for (const platform of ['win32', 'linux']) {
       const line = brokerFail('the shared-server broker is not usable: the peer did not prove the key. Run x', platform)
       assert.equal(line.status, 'fail')
-      assert.match(line.detail, /delete the file "key" in the folder \.toolscript-mcp\/broker/)
+      assert.match(line.detail, /delete the file "key" in the folder "broker" of the folder "\.toolscript-mcp"/)
       assert.match(
         line.detail,
         platform === 'win32' ? /new pipe name/ : /remove that folder, or use a shorter home path/,

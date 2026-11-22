@@ -145,3 +145,37 @@ Per role at 6 sessions, idle, private bytes each as a median:
 
 Totals include each process's `conhost.exe` (about 1.2 MB). The 4 stdio servers cost about 286 MB a session. Those are
 what sharing can save. The bridge and the host stay per session.
+
+### Owner's config, DATE PENDING, sharing off against on
+
+PLACEHOLDER: the main session fills this section with numbers that it measured on the owner's machine (section 7 of the
+slice 4 bar). No number is written here until then. No pid, argument, env name, URL, path or organisation name goes in,
+and never the JSON. Server keys become kinds.
+
+OS, Node, commit, idle time, RAM, the servers as kinds: PENDING.
+
+Table 1, at 1, 3 and 6 sessions, off and on:
+
+| sessions | switch | private bytes with the bridge (MB) | without the bridge, `T` (MB) | saved (MB) | private working set (MB) | processes | copies of each shared kind |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | off | PENDING | PENDING | | PENDING | PENDING | PENDING |
+| 1 | on | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| 3 | off | PENDING | PENDING | | PENDING | PENDING | PENDING |
+| 3 | on | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| 6 | off | PENDING | PENDING | | PENDING | PENDING | PENDING |
+| 6 | on | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+
+Table 2, per role at 6 sessions, off against on:
+
+| role | copies off | each off (MB) | total off (MB) | copies on | each on (MB) | total on (MB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| PENDING | | | | | | |
+| broker | 0 | | | 1 | PENDING | PENDING |
+
+`S`, the cost of an added session, off and on: PENDING. G1 to G10, each as pass or miss with its number: PENDING.
+Leftovers, and containers if any (never added to private bytes): PENDING.
+
+Sentence: "sharing saves X MB of Y MB at 6 sessions (Z %); without the bridge, X of W": PENDING.
+
+G10 (2 or more real Claude Code sessions from separate terminals, one process-table read, one read call per shared
+server, M1 in the same sitting): PENDING.

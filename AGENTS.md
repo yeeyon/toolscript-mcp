@@ -33,7 +33,13 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `broker.ts`: the broker process, built from `brokermain.ts` into `dist/host/broker.js`, a second bundle with Node
     built-ins and `cross-spawn` only. One router (`src/core/mux.ts`) and one child for each share key. The listen is the
     lock. `TOOLSCRIPT_BROKER_IDLE_MS` (at least 1000) shortens the 10-minute idle time, for tests and the bench. Log:
-    `~/.toolscript-mcp/broker/broker.log`, lifecycle lines only.
+    `~/.toolscript-mcp/broker/broker.log`, lifecycle lines only. Frames of the broker to a host start with `MARK`
+    (`src/core/broker.ts`), so no server line passes as one (`WIRE` 2). Child stderr goes to the hosts as `stderr`
+    frames (rate, backlog and tail limits in `src/core/broker.ts`), never to the log. The caps `LINKS_MAX`,
+    `CHILDREN_MAX` and `UNSENT_MAX` are options of `startBroker`, which tests make small. A stale recovery lock is
+    broken by rename (`takeLock`), and a socket left by a kill is linked back or swept at the next start. `doctor`
+    names the way out for a taken name and reads the Windows access rules of the broker folder (never the server).
+    `scripts/broker-proc.mjs` is how `scripts/start-time.mjs` checks a pid before it ends the broker.
   - `server.ts`: the SDK `McpServer`, with a handler for each tool in `SERVED`, the approval prompt (elicitation),
     the policy read again at each run (a looser one waits for the person or a restart) and the runs in flight, which
     `main.ts` stops at shutdown.
