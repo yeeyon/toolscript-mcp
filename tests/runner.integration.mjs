@@ -402,12 +402,16 @@ const cases = {
               timeoutMs: 1000,
               code: '',
             })
-            const child = spawn(command.file, command.args, { env: command.env, stdio: 'pipe' })
+            const child = spawn(command.file, command.args, { env: command.env, stdio: 'pipe', windowsHide: true })
             child.stdin.on('error', () => {})
-            child.stdin.end(JSON.stringify({ code: 'while (true) {}', lib: {}, timeoutMs: 1000 }))
+            const deadline = Date.now() + 1000
+            child.stdin.end(JSON.stringify({ code: 'while (true) {}', lib: {}, timeoutMs: 1000, deadline }))
             let hung = false
             const guard = setTimeout(() => (hung = child.kill('SIGKILL')), 30_000)
-            const [code, signal] = await new Promise(resolve => child.on('close', (c, s) => resolve([c, s])))
+            const [code, signal] = await new Promise((resolve, reject) => {
+              child.on('error', reject)
+              child.on('close', (c, s) => resolve([c, s]))
+            })
             clearTimeout(guard)
             assert.ok(!hung, 'the CPU limit did not stop the busy loop within 30 s')
             assert.ok(['SIGXCPU', 'SIGKILL'].includes(signal), `ended with code ${code}, signal ${signal}`)
