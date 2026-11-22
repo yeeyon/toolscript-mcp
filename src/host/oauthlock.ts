@@ -30,16 +30,31 @@ const pidLives = (pid: number): boolean => {
   }
 }
 
-/** The lock file at `file` as one waiter sees it, or undefined when it cannot be read: gone, or being removed. */
+// O_NONBLOCK: a FIFO at the path does not block the open. Windows has no such flag and no FIFO at a file path.
+const READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0)
+
+/**
+ * The lock file at `file` as one waiter sees it, or undefined when it cannot be read: gone, or being removed. The age
+ * and the content come from one open file: another waiter can put a new lock at the path between two calls by name,
+ * and the age of the old file with the id of the new one would take over a live lock.
+ */
 const look = async (file: string, io: LockFs) => {
+  let handle: Awaited<ReturnType<LockFs['open']>>
   try {
-    const stat = await io.stat(file)
-    const text = stat.isFile() && stat.size <= LOCK_MAX_BYTES ? await io.readFile(file, 'utf8') : ''
+    handle = await io.open(file, READ_FLAGS)
+  } catch {
+    return undefined
+  }
+  try {
+    const stat = await handle.stat()
+    const text = stat.isFile() && stat.size <= LOCK_MAX_BYTES ? await handle.readFile('utf8') : ''
     const content = parseLock(text)
     // A file that does not parse has no id: its time stands for it, so a waiter takes over only the file that it saw.
     return { content, ageMs: Date.now() - stat.mtimeMs, identity: content?.id ?? `x${Math.trunc(stat.mtimeMs)}` }
   } catch {
     return undefined
+  } finally {
+    await handle.close().catch(() => {})
   }
 }
 

@@ -234,3 +234,37 @@ describe('one refresh in one process', () => {
     assert.equal(h.sent(), 0)
   })
 })
+
+describe('a lock that changes while a waiter reads it', () => {
+  test('the age and the id come from one file: a new live lock is never taken over with the age of the old one', async () => {
+    const dir = fs.mkdtempSync(path.join(ROOT, 'swap-'))
+    const store = path.join(dir, 'fake-0123456789abcdef.json')
+    const lock = `${store}.lock`
+    const fresh = randomUUID()
+    fs.writeFileSync(lock, lockText({ pid: process.pid, id: ID, at: 0 }))
+    const old = new Date(Date.now() - 60_000)
+    fs.utimesSync(lock, old, old)
+    // Another waiter puts a new lock at the path right after this waiter's first look at the old one.
+    let swapped = false
+    const swap = () => {
+      if (swapped) return
+      swapped = true
+      fs.writeFileSync(lock, lockText({ pid: process.pid, id: fresh, at: Date.now() }))
+    }
+    const io = {
+      ...fs.promises,
+      stat: async (...args: Parameters<typeof fs.promises.stat>) => {
+        const out = await fs.promises.stat(...args)
+        if (args[0] === lock) swap()
+        return out
+      },
+      open: async (...args: Parameters<typeof fs.promises.open>) => {
+        const out = await fs.promises.open(...args)
+        if (args[0] === lock && args[1] !== 'wx') swap()
+        return out
+      },
+    } as LockFs
+    assert.equal(await takeLock(store, Date.now() + 400, 1000, io), 'busy')
+    assert.equal(parseLock(fs.readFileSync(lock, 'utf8'))?.id, fresh)
+  })
+})
