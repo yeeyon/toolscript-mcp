@@ -1,0 +1,25 @@
+# The CodeQL configuration of .github/workflows/codeql.yml.
+name: toolscript-mcp
+
+# security-extended adds queries of lower precision to the default suite. This
+# project is a sandbox and a policy check, so it takes the extra reports.
+queries:
+  - uses: security-extended
+
+# Scanned: src/, runtime/, demo/, plugin/ and scripts/, which is what the
+# package ships and what builds it. Not scanned: the tests and the bench, which
+# start fake servers and child processes on purpose and reach no user.
+paths-ignore:
+  - tests
+  - bench
+# To silence a query that is wrong for this project as a whole, name it here
+# with the reason, and do not dismiss its alerts one at a time:
+#
+#   query-filters:
+#     - exclude:
+#         id: js/example-query-id
+#
+# runtime/runner.mjs runs the program of the model in a `vm` context. That is
+# the purpose of the file, and its guards are the sandbox layers of
+# src/host/launch.ts. Dismiss a code injection alert there as "won't fix" with
+# that reason, so that the same query still reports in the other files.
