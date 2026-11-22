@@ -131,7 +131,7 @@ describe('a path candidate', () => {
 })
 
 describe('the folders', () => {
-  test('are the four of the home and the project hints, each with the name that a refusal gives', () => {
+  test('are the five of the home and the project hints, each with the name that a refusal gives', () => {
     assert.deepEqual(
       LIST.map(l => l.label),
       [
@@ -139,6 +139,7 @@ describe('the folders', () => {
         '~/.toolscript-mcp/functions',
         '~/.toolscript-mcp/learned',
         '~/.toolscript-mcp/oauth',
+        '~/.toolscript-mcp/broker',
         '.toolscript-mcp/hints',
       ],
     )

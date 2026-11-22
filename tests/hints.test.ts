@@ -424,6 +424,7 @@ describe('the hint-file guard', () => {
       '/home/u/.toolscript-mcp/functions',
       '/home/u/.toolscript-mcp/learned',
       '/home/u/.toolscript-mcp/oauth',
+      '/home/u/.toolscript-mcp/broker',
       '/repo/.toolscript-mcp/hints',
       plugin,
     ])

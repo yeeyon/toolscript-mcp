@@ -963,12 +963,13 @@ read as words, as the field names of a result do in a session.
 
 ### Guarded folders
 
-Four folders under `~/.toolscript-mcp/` hold files that steer the model, or hold its secrets:
+Five folders under `~/.toolscript-mcp/` hold files that steer the model, or hold its secrets:
 
 - `hints/`: the hint files.
 - `functions/`: the saved functions.
 - `learned/`: the learned result shapes.
 - `oauth/`: the OAuth tokens.
+- `broker/`: the key of the [shared-server broker](#shared-servers), its log and its socket.
 
 The `hints/` folder in the project folder is guarded too. The project folder is the folder where toolscript-mcp
 started. The plugin folder is not guarded yet.
