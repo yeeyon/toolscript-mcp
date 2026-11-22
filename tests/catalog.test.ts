@@ -772,17 +772,28 @@ describe('search_tools and twin tools on equal servers', () => {
   const six = 'abcdef'.split('').map(c => item(`item_${c}`))
 
   test('a: 3 equal servers give 3 different tools in full, and the copies are twin lines', () => {
-    const text = searchResult(twinsOf(['gf-a', 'gf-b', 'gf-c'], six), 'item', 18)
-    const blocks = blocksOf(text)
-    assert.equal(blocks.length, 18)
-    const fulls = blocks.filter(isFull)
-    assert.equal(fulls.length, 3)
-    assert.equal(new Set(fulls.map(b => short(nameOf(b)))).size, 3)
-    for (const b of blocks.filter(isTwinLine)) {
-      const above = fulls.map(nameOf).find(n => short(n) === short(nameOf(b)))
-      assert.ok(above !== undefined && b.endsWith(`as ${above}`))
+    const states = twinsOf(['gf-a', 'gf-b', 'gf-c'], six)
+    // Query 1 ranks the 3 copies of item_a at hits 1 to 3. Both give 3 tools in full, and the 6 copies of them are twin lines.
+    for (const [query, twinLines] of [
+      ['item_a', 6],
+      ['item_a item_b item_c', 6],
+    ] as const) {
+      const blocks = blocksOf(searchResult(states, query, 18))
+      assert.equal(blocks.length, 18)
+      const fulls = blocks.filter(isFull)
+      assert.equal(fulls.length, 3)
+      assert.equal(new Set(fulls.map(b => short(nameOf(b)))).size, 3)
+      const twins = blocks.filter(isTwinLine)
+      assert.equal(twins.length, twinLines)
+      for (const b of twins) {
+        const above = fulls.map(nameOf).find(n => short(n) === short(nameOf(b)))
+        assert.ok(above !== undefined && b.endsWith(`as ${above}`))
+      }
+      assert.equal(new Set(blocks.map(nameOf)).size, 18)
     }
-    assert.equal(new Set(blocks.map(nameOf)).size, 18)
+    const first = blocksOf(searchResult(states, 'item_a', 18))
+    assert.deepEqual(first.slice(0, 3).map(isFull), [true, false, false])
+    assert.ok(isTwinLine(first[1]!) && isTwinLine(first[2]!))
   })
 
   test('b: 2 equal servers with a long tool: hit 2 is a twin line, the full blocks stay in the budget', () => {
@@ -792,7 +803,7 @@ describe('search_tools and twin tools on equal servers', () => {
     assert.ok(isFull(blocks[0]!) && nameOf(blocks[0]!) === 'mcp__gh-a__create_pull_request')
     assert.equal(nameOf(blocks[1]!), 'mcp__gh-b__create_pull_request')
     assert.ok(isTwinLine(blocks[1]!))
-    assert.ok(blocks.filter(isFull).length > 1)
+    assert.equal(blocks.filter(isFull).length, 3)
     assert.ok(
       blocks
         .filter(isFull)
@@ -809,10 +820,11 @@ describe('search_tools and twin tools on equal servers', () => {
     assert.deepEqual(blocksOf(searchResult(states, 'mcp__gf-a__item_a', 15)).map(isFull), [true, true])
   })
 
-  test('d: another description, or the mark on one, is not a twin', () => {
+  test('d: another description, the mark or an output schema on one is not a twin', () => {
     const other = { ...item('item_a'), description: 'Another description.' }
     const marked = { ...item('item_a'), _meta: { 'anthropic/requiresUserInteraction': true } }
-    for (const second of [other, marked]) {
+    const output = { ...item('item_a'), outputSchema: { type: 'object', properties: { id: { type: 'string' } } } }
+    for (const second of [other, marked, output]) {
       const states: ServerState[] = [
         { key: serverKey('gf-a')!, status: 'connected', tools: [item('item_a')] },
         { key: serverKey('gf-b')!, status: 'connected', tools: [second] },
