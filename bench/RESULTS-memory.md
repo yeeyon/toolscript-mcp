@@ -108,6 +108,36 @@ Private bytes in the idle phase, in MB, the process of the broker and its childr
 The fixture saves 209 MB at 6 sessions because a fake server costs 15 MB. The owner's saving is a number of the owner's
 own config: section 11 of the slice bar measures it.
 
+## Fixture, lazy start on against off (slice 5 of #63)
+
+The fixture now also has a fake Claude Code bridge (`claude-code`) and `"lazy": true` on `bench4`. A warm-up host fills the
+tool cache before round 1. Windows 11, Node 22.23.3, sharing off, `TOOLSCRIPT_LAZY_IDLE_MS=20000`, `--idle 2`,
+`--after-run 1`, `--closed 5`. The phase `after-idle` waits 25 s (the idle time plus 5 s) and then runs the program once
+more. The commands:
+
+    TOOLSCRIPT_SHARE=0 TOOLSCRIPT_LAZY_IDLE_MS=20000 node bench/memory.mjs --counts 1,3,6 --idle 2 --after-run 1 --closed 5
+    TOOLSCRIPT_LAZY=0 TOOLSCRIPT_SHARE=0 TOOLSCRIPT_LAZY_IDLE_MS=20000 node bench/memory.mjs --counts 1,3,6 --idle 2 --after-run 1 --closed 5
+
+Copies of the two lazy servers (`bench4` and `claude-code`, as `bench4` / `claude-code`) and private bytes in MB:
+
+| sessions | switch | copies idle | copies after-run | copies after-idle | MB idle | MB after-run | MB after-idle |
+| ---: | --- | --- | --- | --- | ---: | ---: | ---: |
+| 1 | on | 0 / 0 | 1 / 1 | 0 / 0 | 119 | 165 | 110 |
+| 3 | on | 0 / 0 | 3 / 3 | 0 / 0 | 362 | 491 | 333 |
+| 6 | on | 0 / 0 | 6 / 6 | 0 / 0 | 723 | 929 | 663 |
+| 1 | `TOOLSCRIPT_LAZY=0` | 1 / 1 | 1 / 1 | 1 / 1 | 154 | 165 | 144 |
+| 3 | `TOOLSCRIPT_LAZY=0` | 3 / 3 | 3 / 3 | 3 / 3 | 472 | 505 | 439 |
+| 6 | `TOOLSCRIPT_LAZY=0` | 6 / 6 | 6 / 6 | 6 / 6 | 934 | 925 | 865 |
+
+- The run after the idle phase worked in every session, on and off. Leftovers are 0 in every round.
+- At idle, 6 sessions save 211 MB: the 12 copies that never started (15 to 16 MB each with a console host).
+- Wake time of the fake servers, from the log line `<key>: started on first use, <ms> ms, <n> tools`, median (min to
+  max), 2 wakes per session: 1 session 114 ms (106 to 122) and 127 ms (118 to 136), 6 sessions 155 ms (119 to 277)
+  and 171 ms (134 to 295) for `bench4` and `claude-code`. The first session start of a connected server takes the same
+  order of time (initialize 280 to 350 ms in these runs).
+- A shorter idle time than the runs of one phase would put a server to sleep between the sessions' runs: that is the
+  design, not a leftover.
+
 ## Real config
 
 Real mode is for the owner only. It uses the config file as given and the real home, so no agent or test runs it.
