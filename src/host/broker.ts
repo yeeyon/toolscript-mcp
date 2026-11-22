@@ -131,7 +131,7 @@ type Child = {
  * Elsewhere the group is also ended after the top process exited, so a wrapper that leaves on EOF takes no grandchild
  * that ignores EOF with it. Call it at the exit, when the group id cannot have been reused.
  */
-const endTree = (proc: ChildProcess): void => {
+export const endTree = (proc: ChildProcess): void => {
   if (proc.pid === undefined) return
   if (process.platform === 'win32') {
     if (proc.exitCode !== null || proc.signalCode !== null) return

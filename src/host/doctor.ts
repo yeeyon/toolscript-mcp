@@ -18,6 +18,7 @@ import {
   doctorExit,
   fail,
   info,
+  lazyFindings,
   nodeFinding,
   ok,
   policyFindings,
@@ -33,10 +34,12 @@ import { shownName } from '../core/policy.ts'
 import { errorText, takeMessages, type RunnerDone, type RunnerError } from '../core/protocol.ts'
 import { futureLine, isFuture } from '../core/runlog.ts'
 import { classify } from '../core/share.ts'
+import { isLazy } from '../core/lazy.ts'
 import { brokerFileBeside, idOf, openLink } from './brokerlink.ts'
 import { connectStates, readRunLog, type CheckIo } from './diagnose.ts'
 import { LAYERS, RUNNER, launch, makeExchangeDir, removeExchangeDir } from './launch.ts'
 import { storeFile } from './oauth.ts'
+import { loadToolsCache, toolsKey } from './toolscache.ts'
 import { loadConfig, loginFor, otherConfig, type Loaded } from './start.ts'
 
 export const DOCTOR_USAGE = 'usage: toolscript-mcp doctor [--config <path>] [--help]'
@@ -272,6 +275,19 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
     // Only here, never in the server: one hidden read of the access rules of the broker folder.
     const folder = brokerFolder(io.home)
     return io.platform === 'win32' && fs.existsSync(folder) ? [answered, aclFinding(await readAcl(folder))] : [answered]
+  },
+
+  // Reads the cache file only. No server starts for this line.
+  lazy: async ({ io, loaded }) => {
+    if (!loaded.ok) return []
+    const { config } = loaded
+    const cache = await loadToolsCache(io.home, () => {})
+    return lazyFindings(config, key => {
+      const server = config.servers.get(key)
+      return server?.kind === 'stdio' && isLazy(key, server, config.bridges, true)
+        ? cache.get(toolsKey(server))?.tools.length
+        : undefined
+    })
   },
 
   policy: async ({ loaded, states }) => {

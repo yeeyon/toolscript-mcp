@@ -54,13 +54,19 @@ export const oauthFile = (home: string, key: string, urlHash: string): string =>
   `${oauthFolder(home)}/${key}-${urlHash}.json`
 
 /**
- * The folder of the learned result shapes under HOME. The shapes file is alone in it, so a guard on the folder
- * covers nothing else.
+ * The folder of the learned files under HOME: the result shapes and the tool lists of lazy servers. They are alone in it,
+ * so the guard on the folder covers nothing else.
  */
 export const shapesFolder = (home: string): string => appPath(home, LEARNED)
 
 /** The learned result shapes under HOME: what `search_tools` shows as `returned earlier`, kept across sessions. */
 export const shapesFile = (home: string): string => `${shapesFolder(home)}/shapes.json`
+
+/**
+ * The last `tools/list` of each lazy server under HOME (issue #63, slice 5), keyed by a hash of its launch. It is for
+ * display only: `search_tools` shows a server that is asleep with it, and no check reads it.
+ */
+export const toolsFile = (home: string): string => `${shapesFolder(home)}/tools.json`
 
 /**
  * The folder of the shared-server broker under HOME (issue #63): its key file, its log and, outside Windows, its

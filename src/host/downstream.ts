@@ -4,6 +4,8 @@
 // work. A failed server connects again on next use (a search or a call), at
 // most MAX_ATTEMPTS times in ATTEMPT_WINDOW_MS, and never after close. Every wait
 // for a connect or a list ends at RETRY_WAIT_MS or at the abort of the caller's signal.
+// A lazy server (issue #63, slice 5) with a cached tool list starts asleep, with no process. A nested call wakes it,
+// and it sleeps again after the idle time with no open request. A wake waits up to CONNECT_TIMEOUT_MS.
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -13,6 +15,7 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontex
 import type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
+import { cachedTools, isLazy, sameTools, type ToolsCache } from '../core/lazy.ts'
 import {
   childEnv,
   invalidReason,
@@ -24,11 +27,13 @@ import {
   type ServerConfig,
   type ServerEntry,
   type ServerKey,
+  type StdioServer,
 } from '../core/config.ts'
 import type { Bridges } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
+import { ChildTransport } from './childtransport.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 
 /** The time that one server gets for its connect, and for its whole tool list. */
@@ -87,7 +92,7 @@ class OwnError extends Error {}
 /** The end of a wait: RETRY_WAIT_MS after its start, or the abort of the caller's signal, whichever comes first. */
 type Deadline = { readonly at: number; readonly signal: AbortSignal | undefined }
 
-const deadline = (signal?: AbortSignal): Deadline => ({ at: performance.now() + RETRY_WAIT_MS, signal })
+const deadline = (signal?: AbortSignal, ms = RETRY_WAIT_MS): Deadline => ({ at: performance.now() + ms, signal })
 
 const isPast = ({ at, signal }: Deadline): boolean => signal?.aborted === true || performance.now() >= at
 
@@ -204,7 +209,16 @@ export const startLists = (
  */
 type Link =
   | { readonly status: 'connecting'; readonly done: Promise<void> }
-  | { readonly status: 'connected'; readonly client: Client; readonly hide: Hide; readonly lists: Lists }
+  | {
+      readonly status: 'connected'
+      readonly client: Client
+      readonly hide: Hide
+      readonly lists: Lists
+      /** Sets the idle clock of a lazy server back: a call that reaches the link is activity. */
+      readonly touch?: () => void
+    }
+  /** A lazy server with no process. `stopping`: its last child is still ending, and a wake waits for that. */
+  | { readonly status: 'asleep'; readonly tools: readonly DownstreamTool[]; readonly stopping?: Promise<void> }
   | { readonly status: 'failed'; readonly reason: string; readonly sealed: string }
 
 /** `tools`: the list after the last change of the server. */
@@ -348,7 +362,8 @@ const transportOf = (
   auth: Auth | undefined,
   stderr: (chunk: Buffer) => void,
   share: ShareOptions | undefined,
-): { transport: Transport; lastError: () => string } => {
+  lazy: boolean,
+): { transport: Transport; lastError: () => string; child?: ChildTransport } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   // With sharing on, a shared or per-folder server has one child in the broker and never a child of this process.
   const class_ = share === undefined ? undefined : classify(key, server, share.bridges)
@@ -368,20 +383,31 @@ const transportOf = (
       lastError: () => tail.replace(/\s+/g, ' ').trim().slice(-300),
     }
   }
-  const transport = new StdioClientTransport({
-    command: server.command,
-    args: [...server.args],
-    env: childEnv(server),
-    ...(server.cwd !== undefined && { cwd: server.cwd }),
-    stderr: 'pipe',
-  })
+  // A lazy child has the transport that stops its whole tree and counts its open requests.
+  const child = lazy
+    ? new ChildTransport({
+        command: server.command,
+        args: server.args,
+        env: childEnv(server),
+        ...(server.cwd !== undefined && { cwd: server.cwd }),
+      })
+    : undefined
+  const transport =
+    child ??
+    new StdioClientTransport({
+      command: server.command,
+      args: [...server.args],
+      env: childEnv(server),
+      ...(server.cwd !== undefined && { cwd: server.cwd }),
+      stderr: 'pipe',
+    })
   let tail = ''
   transport.stderr?.on('data', (chunk: Buffer) => {
     stderr(chunk)
     tail = (tail + chunk.toString('utf8')).slice(-2000)
   })
   const lastError = () => tail.replace(/\s+/g, ' ').trim().slice(-300)
-  return { transport, lastError }
+  return { transport, lastError, ...(child !== undefined && { child }) }
 }
 
 /**
@@ -437,6 +463,25 @@ export type ConnectOptions = {
   readonly unshown?: string
   /** Sharing is on (issue #63): a shared or per-folder stdio server links to the broker. Absent: every child is this process's. */
   readonly share?: ShareOptions
+  /** Lazy start is on (decision 028, `TOOLSCRIPT_LAZY` not 0). Absent: every child starts at the session start, as before. */
+  readonly lazy?: LazyOptions
+}
+
+/** The tool lists of lazy servers on disk. The host reads and writes the file; a test gives a fake. */
+export type ToolsStore = {
+  /** The key of a launch in the cache: a hash, so no argument, env value or path is on disk. */
+  readonly key: (server: StdioServer) => string
+  /** The cache as it is on disk. Never rejects: a file that cannot be read gives an empty cache. */
+  readonly load: () => Promise<ToolsCache>
+  /** Merges one entry into the file. Never rejects. */
+  readonly save: (id: string, tools: readonly DownstreamTool[]) => Promise<void>
+}
+
+export type LazyOptions = {
+  readonly bridges: Bridges
+  /** The idle time in ms: a server with no open request for this long stops. */
+  readonly idleMs: number
+  readonly cache: ToolsStore
 }
 
 /** What a link needs to use the broker. `brokerFile` is undefined for a run from source: each shared link then fails. */
@@ -462,6 +507,7 @@ export const connectAll = (
     childStderr = chunk => void process.stderr.write(chunk),
     unshown = UNSHOWN,
     share,
+    lazy,
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -472,11 +518,25 @@ export const connectAll = (
   // The time of the last list of each server for a name that its list lacked.
   const missed = new Map<ServerKey, number>()
 
-  const connect = async (key: ServerKey, server: ServerConfig): Promise<void> => {
+  // The cache on disk, read once at the start, and the lists that this process remembered since.
+  const lazyServer = (key: ServerKey, server: ServerEntry): server is StdioServer =>
+    lazy !== undefined && isLazy(key, server, lazy.bridges, true)
+  // The file is read only when a lazy server exists.
+  const cache = [...servers].some(([key, server]) => server.kind !== 'invalid' && lazyServer(key, server))
+    ? lazy!.cache.load().then(loaded => new Map(loaded))
+    : undefined
+  // The keys whose current attempt is a wake: a caller waits up to CONNECT_TIMEOUT_MS for it.
+  const waking = new Set<ServerKey>()
+  // The children of lazy servers: a shutdown hurries their stop.
+  const children = new Set<ChildTransport>()
+
+  const connect = async (key: ServerKey, server: ServerConfig, woke = false): Promise<void> => {
+    const began = performance.now()
     const client = new Client({ name: 'toolscript-mcp', version })
     opened.add(client)
     let secrets = (): readonly string[] => []
     const hide: Hide = text => redact(text, server, secrets())
+    const lazily = lazy !== undefined && lazyServer(key, server)
     // `hidden`: the start of the reason without the error text of the server or its child, when it holds such text.
     const fail = (reason: string, hidden?: string) => {
       const safe = hide(reason)
@@ -487,6 +547,14 @@ export const connectAll = (
     const lost = (reason: string, hidden?: string): boolean => {
       const link = links.get(key)
       if (closing || link?.status !== 'connected' || link.client !== client) return false
+      // A lazy server that is lost is asleep again with its last live list: a search does not start it, and the next
+      // call wakes it (the cap of attempts applies). A server that fails to wake stays failed, with its reason.
+      if (lazily) {
+        const stopping = client.close().catch(() => {})
+        links.set(key, { status: 'asleep', tools: link.lists.tools(), stopping })
+        log(`${key}: lost: ${hide(reason)}. It is asleep and starts on the next call that names it`)
+        return true
+      }
       fail(reason, hidden)
       return true
     }
@@ -502,10 +570,24 @@ export const connectAll = (
       // rejects each open request with "Connection closed".
       setImmediate(() => void client.close().catch(() => {}))
     }
-    const list = () =>
-      listAll(client, () =>
+    const cacheId = lazily ? lazy.cache.key(server) : undefined
+    // Each list that differs from the cached one goes to the cache. The cache is for display only.
+    const remember = async (tools: readonly DownstreamTool[]): Promise<void> => {
+      const known = await cache
+      if (known === undefined || cacheId === undefined) return
+      const old = known.get(cacheId)
+      if (old !== undefined && sameTools(old.tools, tools)) return
+      const kept = cachedTools(tools)
+      known.set(cacheId, { at: Date.now(), tools: kept })
+      await lazy!.cache.save(cacheId, kept)
+    }
+    const list = async () => {
+      const tools = await listAll(client, () =>
         log(`${key}: the tool list has more than ${MAX_PAGES} pages, so toolscript-mcp uses the first ${MAX_PAGES}`),
       )
+      remember(tools).catch(() => {})
+      return tools
+    }
     // A server whose tools change, also in their marks, says so: list again, so the checks of a call see the new list.
     // A change before the lists start, in the connect or in its list, lists once more after it.
     let lists: Lists | undefined
@@ -533,8 +615,13 @@ export const connectAll = (
       if (problem !== undefined) throw new OwnError(problem)
       // close() closes only the clients that it sees: a shutdown during the check must not start a process after it.
       if (closing) throw new OwnError('toolscript-mcp is shutting down')
-      const made = transportOf(key, server, sessionEnded, auth, childStderr, share)
+      const made = transportOf(key, server, sessionEnded, auth, childStderr, share, lazily)
       lastError = made.lastError
+      if (made.child !== undefined) {
+        children.add(made.child)
+        // A shutdown that began before this child started hurries it at once.
+        if (closing) made.child.hurry()
+      }
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const first = await list()
       // The old list can lack a new mark, so lists that stop fail the link, and the next use connects and lists anew.
@@ -545,9 +632,30 @@ export const connectAll = (
         listFloorMs,
       )
       if (early) lists.changed()
-      links.set(key, { status: 'connected', client, hide, lists })
-      log(`${key}: connected, ${first.length} tools`)
+      // The idle clock of a lazy server runs while it is connected with no open request, and each message sets it back.
+      let last = performance.now()
+      let idle: NodeJS.Timeout | undefined
+      const check = () => {
+        const link = links.get(key)
+        if (closing || link?.status !== 'connected' || link.client !== client) return
+        const wait = made.child!.open > 0 ? lazy!.idleMs : last + lazy!.idleMs - performance.now()
+        if (wait > 0) return void (idle = setTimeout(check, wait).unref())
+        // The client closes first, and the link is asleep in the same tick: no late event of this client changes it.
+        const stopping = client.close().catch(() => {})
+        links.set(key, { status: 'asleep', tools: lists!.tools(), stopping })
+        log(`${key}: stopped after ${Math.round(lazy!.idleMs / 1000)} s idle`)
+      }
+      const touch = () => void (last = performance.now())
+      if (lazily && made.child !== undefined) {
+        made.child.onactivity = touch
+        idle = setTimeout(check, lazy!.idleMs).unref()
+      }
+      links.set(key, { status: 'connected', client, hide, lists, ...(lazily && { touch }) })
+      if (woke) log(`${key}: started on first use, ${Math.round(performance.now() - began)} ms, ${first.length} tools`)
+      else log(`${key}: connected, ${first.length} tools`)
       client.onclose = () => {
+        clearTimeout(idle)
+        if (made.child !== undefined) children.delete(made.child)
         opened.delete(client)
         const stderr = lastError()
         if (stderr === '') lost('the connection closed')
@@ -576,11 +684,26 @@ export const connectAll = (
     return times.length < MAX_ATTEMPTS ? 0 : times[0]! + ATTEMPT_WINDOW_MS - now()
   }
 
-  const attempt = (key: ServerKey, server: ServerConfig): Promise<void> => {
+  /** `after`: the end of the child that this server had, which a wake waits for before it starts a new one. */
+  const attempt = (key: ServerKey, server: ServerConfig, after?: Promise<void>): Promise<void> => {
     attempts.set(key, [...recent(key), now()])
-    const done = connect(key, server)
+    const woke = after !== undefined
+    if (woke) waking.add(key)
+    const done = (async () => {
+      await after
+      await connect(key, server, woke)
+    })().finally(() => waking.delete(key))
     links.set(key, { status: 'connecting', done })
     return done
+  }
+
+  /** Starts the child of a sleeping lazy server, when the cap allows an attempt, and returns the attempt. */
+  const wake = (key: ServerKey): Promise<void> | undefined => {
+    const server = servers.get(key)
+    const link = links.get(key)
+    if (closing || server === undefined || server.kind === 'invalid' || link?.status !== 'asleep' || capWait(key) > 0)
+      return undefined
+    return attempt(key, server, link.stopping ?? Promise.resolve())
   }
 
   /** Starts an attempt when `key` failed and the cap allows one, and returns it. */
@@ -607,16 +730,26 @@ export const connectAll = (
         if (links.get(key) === link) return
         continue
       }
-      const wait = attempted ? undefined : link?.status === 'connecting' ? link.done : reconnect(key)
+      const wait = attempted
+        ? undefined
+        : link?.status === 'connecting'
+          ? link.done
+          : link?.status === 'asleep'
+            ? wake(key)
+            : reconnect(key)
       if (wait === undefined) return
       attempted = true
       await within(wait, end)
     }
   }
 
+  /** A wake waits for the start of a child: up to CONNECT_TIMEOUT_MS, not RETRY_WAIT_MS. */
+  const longWait = (key: ServerKey): boolean => links.get(key)?.status === 'asleep' || waking.has(key)
+
   const stateOf = (key: ServerKey, link: Link): ServerState => {
     if (link.status === 'connecting') return { key, status: 'connecting' }
     if (link.status === 'connected') return { key, status: 'connected', tools: link.lists.tools() }
+    if (link.status === 'asleep') return { key, status: 'asleep', tools: link.tools }
     const wait = closing ? 0 : capWait(key)
     const note = wait > 0 ? `. toolscript-mcp tries again on next use after ${Math.ceil(wait / 1000)} s` : ''
     // Read at each look: a server can return its first untrusted wrapper after its link failed.
@@ -634,8 +767,19 @@ export const connectAll = (
   const first = new Map<ServerKey, Promise<void>>()
   const starts = [...servers].map(async ([key, server]) => {
     if (server.kind !== 'invalid') {
-      const done = attempt(key, server)
+      // A lazy server with a cached list starts asleep, with no process. With none, it connects, writes the cache, and
+      // sleeps after the idle time.
+      const done =
+        cache !== undefined && lazyServer(key, server)
+          ? cache.then(known => {
+              const hit = known.get(lazy!.cache.key(server))
+              if (closing) return
+              if (hit === undefined) return attempt(key, server)
+              links.set(key, { status: 'asleep', tools: hit.tools })
+            })
+          : attempt(key, server)
       first.set(key, done)
+      if (!links.has(key)) links.set(key, { status: 'connecting', done })
       return done
     }
     const reason = invalidReason(server.errors)
@@ -654,17 +798,25 @@ export const connectAll = (
     },
     states: () => [...links].map(([key, link]) => stateOf(key, link)),
     retry: async (keys, signal) => {
-      const end = deadline(signal)
-      const waits =
-        keys === undefined
-          ? [...servers.keys()].flatMap(key => reconnect(key) ?? [])
-          : keys.map(key => settle(key, end))
-      await within(Promise.all(waits), end)
+      // A search (no keys) starts no lazy server: one that failed to wake shows its reason, and a call wakes it.
+      if (keys === undefined) {
+        const waits = [...servers].flatMap(([key, server]) =>
+          server.kind !== 'invalid' && lazyServer(key, server) ? [] : (reconnect(key) ?? []),
+        )
+        return within(Promise.all(waits), deadline(signal))
+      }
+      // Each key has its own deadline: a wake waits longer than a reconnect, and must not give the others its time.
+      await Promise.all(
+        keys.map(key => {
+          const end = deadline(signal, longWait(key) ? CONNECT_TIMEOUT_MS : RETRY_WAIT_MS)
+          return within(settle(key, end), end)
+        }),
+      )
     },
     client: async (key, signal) => {
       if (closing) return { ok: false, reason: 'toolscript-mcp is shutting down' }
       if (!links.has(key)) return { ok: false, reason: `no MCP server "${key}" is connected` }
-      const end = deadline(signal)
+      const end = deadline(signal, longWait(key) ? CONNECT_TIMEOUT_MS : RETRY_WAIT_MS)
       await settle(key, end)
       const link = links.get(key)!
       if (link.status !== 'connected') return { ok: false, reason: notConnected(stateOf(key, link))! }
@@ -673,6 +825,7 @@ export const connectAll = (
           ok: false,
           reason: `the MCP server "${key}" changed its tools, and its new tool list did not come in time. Run the program again`,
         }
+      link.touch?.()
       return { ok: true, client: link.client, hide: link.hide, tools: link.lists.tools() }
     },
     relist: async (key, signal) => {
@@ -683,6 +836,10 @@ export const connectAll = (
     },
     untrusted,
     distrust: key => void distrusted.add(key),
-    close: () => (closing ??= Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})),
+    close: () =>
+      (closing ??= (() => {
+        for (const child of children) child.hurry()
+        return Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})
+      })()),
   }
 }

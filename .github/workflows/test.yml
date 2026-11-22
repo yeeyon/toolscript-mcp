@@ -35,6 +35,7 @@ jobs:
       - run: node tests/server.e2e.mjs
       - run: node tests/memory.e2e.mjs
       - run: node tests/share.e2e.mjs
+      - run: node tests/lazy.e2e.mjs
       - run: node --experimental-strip-types tests/broker.integration.ts
       - run: node scripts/pack-check.mjs
 

@@ -23,9 +23,14 @@ export type ServerState =
   | { readonly key: ServerKey; readonly status: 'connecting' }
   | { readonly key: ServerKey; readonly status: 'connected'; readonly tools: readonly DownstreamTool[] }
   | { readonly key: ServerKey; readonly status: 'failed'; readonly reason: string }
+  /**
+   * A lazy server with no process (issue #63, slice 5): it starts on a nested call. `tools` is the cached list of its
+   * last connect. It is for display only: no policy check, approval or argument check reads it, and `catalogOf` skips it.
+   */
+  | { readonly key: ServerKey; readonly status: 'asleep'; readonly tools: readonly DownstreamTool[] }
 
-/** A server that connected or failed. */
-export type SettledState = Exclude<ServerState, { readonly status: 'connecting' }>
+/** A server that connected or failed: the states of a host with no lazy server, as `toolscript-mcp tools` and `doctor` read. */
+export type SettledState = Exclude<ServerState, { readonly status: 'connecting' | 'asleep' }>
 
 export type CatalogEntry = ToolEntry & {
   readonly server: ServerKey
@@ -74,6 +79,13 @@ export const catalogOf = (states: readonly ServerState[]): CatalogEntry[] =>
           }))
       : [],
   )
+
+/**
+ * The states as `search_tools` shows them: a server that is asleep shows its cached tools as a connected one does. Only
+ * the display reads this. Every check reads the live list of a connected server.
+ */
+export const shownStates = (states: readonly ServerState[]): ServerState[] =>
+  states.map(s => (s.status === 'asleep' ? { key: s.key, status: 'connected', tools: s.tools } : s))
 
 /** The tools whose server requires a person's approval on every call. */
 export const interactiveTools = (states: readonly ServerState[]): Set<string> =>
@@ -131,7 +143,13 @@ export const toolLineText = ({ name, hint, action, person }: ToolLine): string =
 export const notConnected = (s: ServerState): string | undefined =>
   s.status === 'connected'
     ? undefined
-    : `the MCP server "${s.key}" is not connected: ${s.status === 'failed' ? s.reason : 'it is still connecting'}`
+    : `the MCP server "${s.key}" is not connected: ${
+        s.status === 'failed'
+          ? s.reason
+          : s.status === 'asleep'
+            ? 'it is asleep and did not start. After 3 starts in 60 s a wait applies, and then it starts on the next call that names it'
+            : 'it is still connecting'
+      }`
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 

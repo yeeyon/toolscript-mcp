@@ -26,7 +26,10 @@ after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
 // No free-RAM floor: a small runner (macOS counts only free pages) must not stop round 1 at 0 sessions.
 const FAST = ['--min-free-mb', '0']
 const SMOKE = [...FAST, '--counts', '1,2', '--idle', '1', '--after-run', '1', '--closed', '3']
-const KEYS = ['bench1', 'bench2', 'bench3', 'bench4']
+// The fixture has a fake Claude Code bridge and, with bench4 ("share": false, "lazy": true), 2 lazy servers: they have
+// no child until a program calls them.
+const LAZY_KEYS = ['bench4', 'claude-code']
+const KEYS = ['bench1', 'bench2', 'bench3', 'bench4', 'claude-code']
 
 test('an unknown flag exits 2 before any spawn', () => {
   const r = spawnSync(process.execPath, [BENCH, '--nope'], { encoding: 'utf8', env, windowsHide: true })
@@ -70,7 +73,8 @@ test('the smoke run: N hosts, N copies of each server, timings, no leftovers, no
         const tops = procs.filter(
           p => p.role === `server ${key}` && !procs.some(q => q.pid === p.ppid && q.role === p.role),
         )
-        assert.equal(tops.length, n, `${phase}: copies of ${key}`)
+        const asleep = phase === 'idle' && LAZY_KEYS.includes(key)
+        assert.equal(tops.length, asleep ? 0 : n, `${phase}: copies of ${key}`)
       }
       const pb = procs.map(p => p.pb)
       const ws = procs.map(p => p.ws)
@@ -154,7 +158,9 @@ test('sharing on, 6 sessions in 2 folders at --counts 1,2: one broker, the copie
       assert.equal(copies(procs, 'bench1'), 1, 'share true: one copy')
       assert.equal(copies(procs, 'bench2'), 1, 'cwd: one copy')
       assert.equal(copies(procs, 'bench3'), Math.min(n, 2), 'no key: one copy for each folder')
-      assert.equal(copies(procs, 'bench4'), n, 'share false: one copy for each session')
+      const lazy = phase === 'idle' ? 0 : n
+      assert.equal(copies(procs, 'bench4'), lazy, 'share false and lazy: one copy for each session that called it')
+      assert.equal(copies(procs, 'claude-code'), lazy, 'a bridge: one copy for each session that called it')
       // The servers of the broker belong to no session.
       assert.ok(procs.filter(p => p.role === 'server bench1').every(p => p.session === null))
     }
@@ -162,6 +168,62 @@ test('sharing on, 6 sessions in 2 folders at --counts 1,2: one broker, the copie
     for (const s of round.sessions) assert.deepEqual(s.connected, KEYS)
   }
   assert.ok(!r.stdout.includes(MARKER) && !r.stderr.includes(MARKER), 'the marker is in no output')
+})
+
+test('lazy start: the lazy servers have no copy at idle, a copy for each session after a run, none after the idle time, and a run still works', () => {
+  const json = path.join(dir, 'lazy.json')
+  const lazy = { ...env, TOOLSCRIPT_LAZY_IDLE_MS: '12000' }
+  const r = spawnSync(
+    process.execPath,
+    [BENCH, ...FAST, '--counts', '1,3', '--idle', '1', '--after-run', '0', '--closed', '3', '--json', json],
+    { encoding: 'utf8', env: lazy, windowsHide: true, timeout: 240_000 },
+  )
+  assert.equal(r.status, 0, r.stderr)
+  const data = JSON.parse(fs.readFileSync(json, 'utf8'))
+  assert.equal(data.meta.afterIdleSeconds, 17, 'the idle time in seconds plus 5')
+  for (const round of data.rounds) {
+    const n = round.count
+    const at = phase => round.samples[phase].procs
+    for (const key of LAZY_KEYS) {
+      assert.equal(copies(at('idle'), key), 0, `idle: no copy of ${key}`)
+      assert.equal(copies(at('after-run'), key), n, `after-run: a copy of ${key} for each session`)
+      assert.equal(copies(at('after-idle'), key), 0, `after-idle: no copy of ${key}`)
+    }
+    for (const key of ['bench1', 'bench2', 'bench3']) assert.equal(copies(at('after-idle'), key), n, key)
+    for (const s of round.sessions) {
+      assert.equal(s.afterIdleOk, true, 'a run_code after the idle phase works')
+      assert.deepEqual(s.connected, KEYS)
+      // One wake of each lazy server for the run, and one for the run after the idle time.
+      assert.deepEqual(
+        s.wakes.map(w => w.key).sort(),
+        [...LAZY_KEYS, ...LAZY_KEYS].sort(),
+        'two wakes of each lazy server',
+      )
+    }
+    assert.deepEqual(round.leftovers, [])
+  }
+  assert.ok(r.stdout.includes('### Wake time (ms)'))
+  assert.ok(r.stdout.includes('| 3 | claude-code | 6 |'))
+  assert.ok(!r.stdout.includes(MARKER) && !r.stderr.includes(MARKER), 'the marker is in no output')
+})
+
+test('TOOLSCRIPT_LAZY=0: every server has a copy at idle, after the run and after the idle time', () => {
+  const json = path.join(dir, 'eager.json')
+  const eager = { ...env, TOOLSCRIPT_LAZY: '0', TOOLSCRIPT_LAZY_IDLE_MS: '2000' }
+  const r = spawnSync(
+    process.execPath,
+    [BENCH, ...FAST, '--counts', '3', '--idle', '1', '--after-run', '0', '--closed', '3', '--json', json],
+    { encoding: 'utf8', env: eager, windowsHide: true, timeout: 240_000 },
+  )
+  assert.equal(r.status, 0, r.stderr)
+  const [round] = JSON.parse(fs.readFileSync(json, 'utf8')).rounds
+  for (const phase of ['idle', 'after-run', 'after-idle'])
+    for (const key of KEYS) assert.equal(copies(round.samples[phase].procs, key), 3, `${phase}: ${key}`)
+  for (const s of round.sessions) {
+    assert.equal(s.afterIdleOk, true)
+    assert.deepEqual(s.wakes, [], 'no lazy start')
+  }
+  assert.deepEqual(round.leftovers, [])
 })
 
 test('--folders and --call give bad values a message, and --call is for real mode only', () => {
@@ -238,8 +300,22 @@ test('a hard kill of the bench leaves no host and no fake server, and the next s
   const seen = await waitFor(child, /idle: 60 s/, 120_000)
   const pids = [...seen.matchAll(/host pid (\d+)/g)].map(m => Number(m[1]))
   assert.equal(pids.length, 2)
-  const tree = treeOf(await readTable(), pids)
-  assert.ok(tree.size >= 8, 'the hosts, their servers and the broker run')
+  const table = await readTable()
+  const tree = treeOf(table, pids)
+  // At idle with sharing on, the hosts have no stdio child: bench4 and the fake bridge are lazy and asleep, and the
+  // broker holds bench1, bench2 and bench3. So the run is the 2 hosts, the broker and its 3 servers.
+  const running = table.filter(p => tree.has(idOf(p))).map(p => p.cmd.replaceAll('\\', '/'))
+  assert.ok(tree.size >= 6, 'the hosts, the broker and its servers run')
+  assert.ok(
+    running.some(c => c.includes('dist/host/broker.js')),
+    'the broker runs',
+  )
+  for (const key of ['bench1', 'bench2', 'bench3']) {
+    assert.ok(
+      running.some(c => new RegExp(String.raw`fake-server\.mjs"? ${key}\b`).test(c)),
+      `${key} runs`,
+    )
+  }
   child.kill('SIGKILL')
   await new Promise(resolve => child.on('exit', resolve))
   await new Promise(resolve => setTimeout(resolve, 10_000 + IDLE_MS * 2))

@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { searchResult, shownShapes, type ServerState } from '../core/catalog.ts'
+import { searchResult, shownShapes, shownStates, type ServerState } from '../core/catalog.ts'
 import { policyOf, type Config } from '../core/config.ts'
 import { appPath } from '../core/paths.ts'
 import {
@@ -53,7 +53,8 @@ const HANDLERS: Record<ServedName, Handler> = {
     const limit = Math.min(100, Math.max(1, asked || SEARCH_LIMIT))
     await downstream.settled
     await downstream.retry()
-    const states = downstream.states()
+    // A server that is asleep shows its cached tools. Only this display reads them.
+    const states = shownStates(downstream.states())
     return text(searchResult(states, query, limit, await shapes(states), canAsk()))
   },
   run_code: async (args, { run, extra }) => run(parseInput('run_code', args).code, extra),

@@ -796,6 +796,7 @@ hold text with instructions. Return an image only from a source that you trust.
 - `"log": false` turns off the run log. See [Run log](#run-log).
 - `"share": true` or `false` at the top level, and `TOOLSCRIPT_SHARE=1` or `0`, set the share switch. The variable wins. The default is off.
 - `"share": true`, `false` or `"folder"` on a stdio server sets its class. See [Shared servers](#shared-servers).
+- `"lazy": true` or `false` on a stdio server, and `TOOLSCRIPT_LAZY=0`, set when it starts. See [Lazy start](#lazy-start).
 
 Only `policy` reloads at each run. After changes to server entries or sandbox options, restart toolscript-mcp.
 OAuth login needs no restart.
@@ -859,6 +860,16 @@ A broker holds at most 256 links and 32 copies. A session has one link for each 
 Sharing does not keep apart the state inside one copy of a server, or its stderr. Set `"share": false` on a server that keeps state. [SECURITY.md](SECURITY.md) says what the broker protects and what it does not.
 
 A run from source has no broker, so each shared server fails with that reason. Run the built package to share servers. A server that ignores the end of its input can stay after a broker crash. It can also stay after a session crash.
+
+### Lazy start
+
+The `claude mcp serve` bridge costs about 315 MB of private memory in each session. toolscript-mcp starts it on the first call that a program makes to it, and stops it after 10 minutes with no call. A session that never calls it holds no bridge process.
+
+- `search_tools` never starts it, also after a crash or a failed start: only a call that names it does. It lists the tools from the last list that the bridge gave, which toolscript-mcp keeps in `~/.toolscript-mcp/learned/tools.json`. The first session after an install starts it one time at the session start, to get that list. A change to the command, arguments, `env` or `cwd` of its entry does the same. A different `PATH` in the shell does not.
+- The first call after a start or a stop waits for the start, which takes the time of the start of `claude`. Policy, approval and the argument checks use the live list of the started server, never the kept list.
+- A stop ends the state of the bridge: the files that it read, and the shells that it started in the background. Use `"lazy": false` on its entry, or `TOOLSCRIPT_LAZY=0`, to start it with the session as before.
+- Any other stdio server is lazy only with `"lazy": true`. Do not set it on a server that keeps state between calls, such as a browser or a shell. With sharing on, a server in a broker has no `"lazy"` key.
+- `toolscript-mcp doctor` shows each lazy server in the `lazy` line.
 
 ### OAuth login
 
@@ -947,6 +958,7 @@ The files under `~/.toolscript-mcp` include:
 - `oauth/`: the tokens of `login`.
 - `files/<session>/`: the files of `saveFile`.
 - `learned/shapes.json`: the learned shapes.
+- `learned/tools.json`: the last tool list of each lazy server, as a hash of its launch and its tools.
 
 - The file holds tool names and field names, never a value.
 - A shape comes only from a result that worked in a run that read no untrusted content.
@@ -973,7 +985,7 @@ Five folders under `~/.toolscript-mcp/` hold files that steer the model, or hold
 
 - `hints/`: the hint files.
 - `functions/`: the saved functions.
-- `learned/`: the learned result shapes.
+- `learned/`: the learned result shapes and the tool lists of lazy servers.
 - `oauth/`: the OAuth tokens.
 - `broker/`: the key of the [shared-server broker](#shared-servers), its log and its socket.
 

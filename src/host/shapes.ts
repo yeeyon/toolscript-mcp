@@ -34,7 +34,7 @@ const TRIES = 4
 const RETRY_MS = 25
 
 // Windows answers EPERM or EBUSY to an open or a rename of a file that another process has open: try again a few times.
-const retried = async <T>(op: () => Promise<T>): Promise<T> => {
+export const retried = async <T>(op: () => Promise<T>): Promise<T> => {
   for (let tries = 1; ; tries++) {
     try {
       return await op()
@@ -64,7 +64,7 @@ export const within = async <T>(promise: Promise<T>, ms: number, fallback: T): P
  * The text of the file, undefined when it is absent. Only a regular file is opened: a FIFO or a device at the
  * path would block `open` for ever. A file over MAX_SHAPES_BYTES is not read past that.
  */
-const readText = async (file: string): Promise<string | undefined> => {
+export const readText = async (file: string, max = MAX_SHAPES_BYTES): Promise<string | undefined> => {
   const found = await fs.promises.lstat(file).catch(err => {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw err
@@ -78,7 +78,7 @@ const readText = async (file: string): Promise<string | undefined> => {
   if (handle === undefined) return undefined
   try {
     const { size } = await handle.stat()
-    const buffer = Buffer.allocUnsafe(Math.min(size, MAX_SHAPES_BYTES) + 1)
+    const buffer = Buffer.allocUnsafe(Math.min(size, max) + 1)
     let length = 0
     while (length < buffer.length) {
       const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length)
@@ -128,7 +128,7 @@ export const removeOrphans = async (home: string): Promise<void> => {
   const folder = shapesFolder(home)
   const names = await fs.promises.readdir(folder).catch(() => [])
   for (const name of names) {
-    if (!/^shapes\.json\..+\.tmp$/.test(name)) continue
+    if (!/^(shapes|tools)\.json\..+\.tmp$/.test(name)) continue
     const file = `${folder}/${name}`
     const info = await fs.promises.lstat(file).catch(() => undefined)
     if (info?.isFile() === true && Date.now() - info.mtimeMs > ORPHAN_AGE_MS)
