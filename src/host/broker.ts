@@ -14,6 +14,7 @@ import {
   brokerSide,
   CHILD_INIT_MS,
   entryText,
+  LINE_MAX,
   lineSplitter,
   parseEntry,
   parseFrame,
@@ -47,9 +48,17 @@ export type Broker = {
 
 const LOG_MAX = 1 << 20
 const ENTRY_BYTES = 1 << 20
+/** What a host may send while its attach waits for the child. */
+const QUEUE_MAX = 4 * LINE_MAX
+/** The first 8 hex digits of a child key, which is all that the log shows. */
+const tag = (id: string): string => id.slice(0, 8)
 const PROBE = 'probe'
-/** An initialize that the broker sends itself, so each attach waits for a child that answers it. */
-const PROBE_VERSION = '2025-06-18'
+/**
+ * An initialize that the broker sends itself, so each attach waits for a child that answers it. It is the latest version
+ * of the SDK that the hosts use, so a shared server negotiates what a direct one does. This bundle holds no SDK:
+ * tests/broker.test.ts compares the two.
+ */
+export const PROBE_VERSION = '2025-11-25'
 
 /** The lines of broker.log: lifecycle only, never an argument, a variable, a path or a key. It never throws. */
 const makeLog = (file: string): ((line: string) => void) => {
@@ -72,7 +81,8 @@ const makeLog = (file: string): ((line: string) => void) => {
   }
 }
 
-type Conn = { readonly send: (msg: unknown) => void; readonly close: () => void }
+/** `close` ends the link, with the reason in a last frame when there is one. */
+type Conn = { readonly send: (msg: unknown) => void; readonly close: (reason?: string) => void }
 
 type Child = {
   readonly id: string
@@ -87,10 +97,15 @@ type Child = {
   stopping: Promise<void> | undefined
 }
 
-/** Ends the tree of a child that still lives: `taskkill /T /F` on Windows, the process group elsewhere. */
+/**
+ * Ends the tree of a child: `taskkill /T /F` on Windows, the process group elsewhere. Windows needs a live top process.
+ * Elsewhere the group is also ended after the top process exited, so a wrapper that leaves on EOF takes no grandchild
+ * that ignores EOF with it. Call it at the exit, when the group id cannot have been reused.
+ */
 const endTree = (proc: ChildProcess): void => {
-  if (proc.pid === undefined || proc.exitCode !== null || proc.signalCode !== null) return
+  if (proc.pid === undefined) return
   if (process.platform === 'win32') {
+    if (proc.exitCode !== null || proc.signalCode !== null) return
     nodeSpawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on(
       'error',
       () => {},
@@ -143,7 +158,7 @@ export const startBroker = async ({
 
   const stopChild = (child: Child): Promise<void> => {
     if (child.stopping !== undefined) return child.stopping
-    log(`child ${child.id} stop`)
+    log(`child ${tag(child.id)} stop`)
     children.delete(child.id)
     clearTimeout(child.idle)
     child.stopping = new Promise<void>(resolve => {
@@ -193,27 +208,38 @@ export const startBroker = async ({
       stopping: undefined,
     }
     children.set(id, child)
-    log(`child ${id} start`)
+    log(`child ${tag(id)} start`)
     proc.stdin?.on('error', () => {})
     proc.stderr?.on('data', () => {})
     proc.stdout?.setEncoding('utf8')
     proc.stdout?.on(
       'data',
-      lineSplitter(line => {
-        const msg = parseFrame(line)
-        if (msg !== undefined) apply(child, router.fromChild(msg))
-      }),
+      lineSplitter(
+        line => {
+          const msg = parseFrame(line)
+          if (msg !== undefined) apply(child, router.fromChild(msg))
+        },
+        () => LINE_MAX,
+        // A line over the cap that the SDK reader would refuse: the child is dead, and its links get the reason.
+        () => {
+          endTree(proc)
+          gone('the server wrote a line longer than 10 MB', 'line over the cap')
+        },
+      ),
     )
     const gone = (why: string, code: unknown): void => {
       if (child.dead) return
       child.dead = true
       clearTimeout(timer)
       if (children.get(id) === child) children.delete(id)
-      log(`child ${id} exit ${String(code)}`)
-      settle(`${why}. Run the command of the server by hand in a terminal to see why`)
+      log(`child ${tag(id)} exit ${String(code)}`)
+      const reason = `${why}. Run the command of the server by hand in a terminal to see why`
+      settle(reason)
       apply(child, router.died())
-      for (const conn of child.conns.values()) conn.close()
+      for (const conn of child.conns.values()) conn.close(reason)
       child.conns.clear()
+      // A wrapper that left on EOF must not leave a grandchild that ignores it.
+      endTree(proc)
       checkEmpty()
     }
     proc.on('error', err => gone('the server process could not start', (err as NodeJS.ErrnoException).code))
@@ -225,7 +251,10 @@ export const startBroker = async ({
     child.conns.set(PROBE, {
       close: () => {},
       send: msg => {
-        const failed = typeof msg === 'object' && msg !== null && 'error' in msg
+        // Only the answer to the initialize counts: a notification that comes first must not clear the guard.
+        if (typeof msg !== 'object' || msg === null || (msg as { id?: unknown }).id !== 0) return
+        if (!('result' in msg) && !('error' in msg)) return
+        const failed = 'error' in msg
         child.conns.delete(PROBE)
         clearTimeout(timer)
         if (failed) {
@@ -267,15 +296,17 @@ export const startBroker = async ({
     const side = brokerSide(wire)
     const queue: string[] = []
     let stage: 'proof' | 'entry' | 'attaching' | 'linked' = 'proof'
-    let bytes = 0
+    let queued = 0
     const leave = () => {
       if (!proven) pending--
       proven = true
     }
     const timer = setTimeout(() => socket.destroy(), PROOF_MS)
-    const close = (): void => void socket.end()
+    const close = (reason?: string): void =>
+      void (reason === undefined ? socket.end() : socket.end(refusedFrame(reason)))
     const attach = async (entry: Entry): Promise<void> => {
-      const id = crypto.createHash('sha256').update(entryText(entry)).digest('hex').slice(0, 8)
+      // The full hash keys the child. The log shows only its first 8 digits.
+      const id = crypto.createHash('sha256').update(entryText(entry)).digest('hex')
       child = children.get(id) ?? startChild(entry, id)
       const mine = child
       clearTimeout(mine.idle)
@@ -289,7 +320,7 @@ export const startBroker = async ({
       link = name
       mine.conns.set(name, { send: msg => write(socket, msg), close })
       mine.router.attach(name)
-      log(`attach ${id} links=${mine.conns.size}`)
+      log(`attach ${tag(id)} links=${mine.conns.size}`)
       socket.write(attachedFrame)
       stage = 'linked'
       for (const line of queue.splice(0)) fromHost(mine, name, line)
@@ -298,30 +329,33 @@ export const startBroker = async ({
       const msg = parseFrame(line)
       if (msg !== undefined) apply(target, target.router.fromLink(name, msg))
     }
-    const lines = lineSplitter(line => {
-      if (stage === 'proof') {
-        const step = side.step(line)
-        if (step.fail !== undefined) return void socket.destroy()
-        if (step.send !== undefined) socket.write(step.send)
-        if (step.done) {
-          leave()
-          stage = 'entry'
-        }
-      } else if (stage === 'entry') {
-        const entry = parseEntry(parseFrame(line))
-        clearTimeout(timer)
-        if (typeof entry === 'string') return void socket.end(refusedFrame(entry))
-        stage = 'attaching'
-        void attach(entry)
-      } else if (stage === 'attaching') queue.push(line)
-      else if (child !== undefined && link !== undefined) fromHost(child, link, line)
-    })
-    socket.on('data', (chunk: string) => {
-      bytes += chunk.length
-      if (stage === 'proof' && bytes > PROOF_BYTES) return void socket.destroy()
-      if (stage === 'entry' && bytes > ENTRY_BYTES) return void socket.destroy()
-      lines(chunk)
-    })
+    // The longest line depends on the stage: 4 KB before the proof, 1 MB for the entry, then the cap of the SDK reader.
+    const lines = lineSplitter(
+      line => {
+        if (stage === 'proof') {
+          const step = side.step(line)
+          if (step.fail !== undefined) return void socket.destroy()
+          if (step.send !== undefined) socket.write(step.send)
+          if (step.done) {
+            leave()
+            stage = 'entry'
+          }
+        } else if (stage === 'entry') {
+          const entry = parseEntry(parseFrame(line))
+          clearTimeout(timer)
+          if (typeof entry === 'string') return void socket.end(refusedFrame(entry))
+          stage = 'attaching'
+          void attach(entry)
+        } else if (stage === 'attaching') {
+          queued += line.length
+          if (queued > QUEUE_MAX) return void socket.destroy()
+          queue.push(line)
+        } else if (child !== undefined && link !== undefined) fromHost(child, link, line)
+      },
+      () => (stage === 'proof' ? PROOF_BYTES : stage === 'entry' ? ENTRY_BYTES : LINE_MAX),
+      () => socket.destroy(),
+    )
+    socket.on('data', lines)
     socket.on('error', () => socket.destroy())
     socket.on('close', () => {
       clearTimeout(timer)
@@ -330,7 +364,7 @@ export const startBroker = async ({
       if (child !== undefined && link !== undefined) {
         apply(child, child.router.detach(link))
         child.conns.delete(link)
-        log(`detach ${child.id} links=${child.conns.size}`)
+        log(`detach ${tag(child.id)} links=${child.conns.size}`)
         if (child.conns.size === 0) idleStart(child)
       }
       checkEmpty()

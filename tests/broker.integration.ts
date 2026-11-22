@@ -117,6 +117,42 @@ describe('a real broker', () => {
     assert.equal(new Set(brokerPids(home)).size, 2)
   })
 
+  test('a child that floods stdout with no newline dies with a reason, and another link keeps working', async () => {
+    const home = newHome()
+    const other = await connect(home)
+    const flooder = await connect(home, serverEntry(root, {}, ['--flooder']))
+    const errors: string[] = []
+    flooder.onerror = e => errors.push(e.message)
+    const flooderPid = Number(await text(flooder, 'pid'))
+    const [broker] = brokerPids(home)
+    let worst = 0
+    let running = true
+    const pinger = (async () => {
+      while (running) {
+        const at = performance.now()
+        await text(other, 'pid')
+        worst = Math.max(worst, performance.now() - at)
+        await new Promise(r => setTimeout(r, 50))
+      }
+    })()
+    const result = await flooder.callTool({ name: 'flood', arguments: {} }, undefined, { timeout: 20_000 }).then(
+      () => 'answered',
+      (e: Error) => e.message,
+    )
+    running = false
+    await pinger
+    assert.match(result, /ended|closed/i)
+    assert.ok(worst < 5000, `the other link waited ${Math.round(worst)} ms`)
+    assert.equal((await text(other, 'pid')).length > 0, true)
+    assert.match(logOf(home), /child [0-9a-f]{8} exit line over the cap/)
+    await until('the flooder is gone', () => !alive(flooderPid), 8000)
+    assert.ok(alive(broker!), 'the broker lives')
+    assert.ok(
+      errors.some(m => /longer than 10 MB/.test(m)),
+      `the link got the reason: ${errors.join(' | ')}`,
+    )
+  })
+
   test('a squatter on the endpoint fails the link, and no child starts in its place', async () => {
     const home = newHome()
     const id = crypto.createHash('sha256').update(fs.readFileSync(BROKER)).digest('hex')

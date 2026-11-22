@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -17,8 +18,10 @@ import {
   CHILD_INIT_MS,
   entryFrame,
   hostSide,
+  LINE_MAX,
   lineSplitter,
   parseAnswer,
+  PROOF_BYTES,
   PROOF_MS,
   resolveEnvPath,
   SOCKET_MAX_BYTES,
@@ -86,13 +89,19 @@ const dialOnce = (endpoint: string): Promise<net.Socket> =>
 
 /** Nothing starts at login: the broker starts on demand, detached and windowless, and outlives this process. */
 const startDetached = (file: string): void => {
-  const broker = spawn(process.execPath, [file], { detached: true, stdio: 'ignore', windowsHide: true })
+  // Not the folder of this session: on Windows a process holds its folder, and a broker outlives the session.
+  const broker = spawn(process.execPath, [file], {
+    cwd: os.homedir(),
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
   broker.on('error', () => {})
   broker.unref()
 }
 
 /** Connects to the broker, starts it when none listens, and polls up to BROKER_START_MS. */
-const dial = async (endpoint: string, file: string): Promise<net.Socket> => {
+const dial = async (endpoint: string, file: string, id: string): Promise<net.Socket> => {
   const end = performance.now() + BROKER_START_MS
   let started = false
   for (;;) {
@@ -102,7 +111,13 @@ const dial = async (endpoint: string, file: string): Promise<net.Socket> => {
       const code = (err as NodeJS.ErrnoException).code ?? 'unknown'
       if (!['ENOENT', 'ECONNREFUSED', 'EBUSY', 'EAGAIN'].includes(code))
         throw new BrokerError(unusable(`could not connect to it (${code})`))
-      if (!started) startDetached(file)
+      if (!started) {
+        // The broker that would start is the file as it is now, and the endpoint is the file as this process read it.
+        // After a rebuild in place they differ and no link could ever meet: say so.
+        if (buildId(file) !== id)
+          throw new BrokerError(unusable('toolscript-mcp was rebuilt after this session started. Restart the session'))
+        startDetached(file)
+      }
       started = true
       if (performance.now() >= end) throw new BrokerError(unusable(`none listened within ${BROKER_START_MS / 1000} s`))
       await pause(50)
@@ -117,15 +132,25 @@ const reader = (socket: net.Socket) => {
   let waiter: ((line: string | undefined) => void) | undefined
   let follower: ((line: string) => void) | undefined
   let closed = false
+  // A peer that is not yet proven may send 4 KB in a line, and no more: a squatter must not make this process hold more.
+  let limit = PROOF_BYTES
+  let tooLong = false
   socket.on(
     'data',
-    lineSplitter(line => {
-      if (follower !== undefined) return follower(line)
-      const wake = waiter
-      waiter = undefined
-      if (wake !== undefined) wake(line)
-      else queue.push(line)
-    }),
+    lineSplitter(
+      line => {
+        if (follower !== undefined) return follower(line)
+        const wake = waiter
+        waiter = undefined
+        if (wake !== undefined) wake(line)
+        else queue.push(line)
+      },
+      () => limit,
+      () => {
+        tooLong = true
+        socket.destroy()
+      },
+    ),
   )
   socket.on('close', () => {
     closed = true
@@ -135,6 +160,12 @@ const reader = (socket: net.Socket) => {
   })
   socket.on('error', () => {})
   return {
+    /** True when the peer sent a line over the limit, and the socket was ended for it. */
+    tooLong: (): boolean => tooLong,
+    /** After the proof the cap is the one of the SDK reader. */
+    proven: (): void => {
+      limit = LINE_MAX
+    },
     /** The next line, or undefined when the socket closed or `ms` passed. */
     next: (ms: number): Promise<string | undefined> =>
       new Promise(resolve => {
@@ -173,11 +204,13 @@ export const openLink = async ({
   if (brokerFile === undefined)
     throw new BrokerError(unusable('this run has no broker.js beside it (a run from source)'))
   let endpoint: string
+  let id: string
   let wire: ReturnType<typeof makeCrypto>
   try {
     const key = loadKey(home)
     wire = makeCrypto(key)
-    endpoint = endpointFor(home, key, idOf(brokerFile))
+    id = idOf(brokerFile)
+    endpoint = endpointFor(home, key, id)
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code ?? 'error'
     throw new BrokerError(
@@ -190,20 +223,28 @@ export const openLink = async ({
   }
   if (process.platform !== 'win32' && Buffer.byteLength(endpoint) > SOCKET_MAX_BYTES)
     throw new BrokerError(unusable('its socket path is too long'))
-  const socket = await dial(endpoint, brokerFile)
+  const socket = await dial(endpoint, brokerFile, id)
   const lines = reader(socket)
   try {
     const side = hostSide(wire)
     socket.write(side.start())
+    const until = performance.now() + PROOF_MS
     for (let done = false; !done; ) {
-      const line = await lines.next(PROOF_MS)
+      const line = await lines.next(Math.max(0, until - performance.now()))
       if (line === undefined)
-        throw new BrokerError(unusable(`the peer did not answer the handshake in ${PROOF_MS / 1000} s`))
+        throw new BrokerError(
+          unusable(
+            lines.tooLong()
+              ? 'the peer sent more than 4 KB in a line before it proved the key'
+              : `the peer did not answer the handshake in ${PROOF_MS / 1000} s`,
+          ),
+        )
       const step = side.step(line)
       if (step.fail !== undefined) throw new BrokerError(unusable(step.fail))
       if (step.send !== undefined) socket.write(step.send)
       done = step.done === true
     }
+    lines.proven()
     if (entry !== undefined) {
       socket.write(entryFrame(entry))
       const line = await lines.next(CHILD_INIT_MS + 5_000)
@@ -237,6 +278,11 @@ export class BrokerTransport implements Transport {
     if (this.#closed) return void socket.destroy()
     socket.on('close', () => this.#end())
     lines.follow(line => {
+      // The broker's own last frame before it ends the link: why the shared server is gone.
+      if (line.startsWith('{"t":"refused"')) {
+        const answer = parseAnswer(line)
+        if (!answer.ok) return void this.onerror?.(new BrokerError(`the shared server ended: ${answer.reason}`))
+      }
       try {
         this.onmessage?.(deserializeMessage(line))
       } catch (err) {

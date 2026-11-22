@@ -159,7 +159,8 @@ export const hostSide = (c: Crypto): Side => {
     step: line => {
       const msg = parseFrame(line)
       if (state === 'hello') {
-        if (!isObj(msg) || !isNonce(msg.n) || !isProof(msg.p)) return { fail: 'the peer did not answer as a broker' }
+        if (!isObj(msg) || msg.t !== 'hello' || !isNonce(msg.n) || !isProof(msg.p))
+          return { fail: 'the peer did not answer as a broker' }
         if (!c.same(msg.p, c.mac(proofText('broker', host, msg.n)))) return { fail: 'the peer did not prove the key' }
         state = 'ok'
         return { send: frame({ t: 'proof', p: c.mac(proofText('host', host, msg.n)) }) }
@@ -192,15 +193,45 @@ export const unusable = (why: string): string =>
   `the shared-server broker is not usable: ${why}. Run "toolscript-mcp doctor". To start this server for each ` +
   'session instead, set "share": false on the server or at the top level of the config, or set TOOLSCRIPT_SHARE=0'
 
-/** Splits a stream of text chunks into lines. A line is complete at its `\n`. */
-export const lineSplitter = (onLine: (line: string) => void): ((chunk: string) => void) => {
-  let rest = ''
+/** The longest line of a child or a host after the proof, as the SDK's own reader allows (10 MB). */
+export const LINE_MAX = 10 * 1024 * 1024
+
+/**
+ * Splits a stream of text chunks into lines. A line is complete at its `\n`. The work is linear: each chunk is searched
+ * once, and the parts of a line that is not yet complete are joined once, when it ends. A line longer than `max()`
+ * (read at each chunk, so the limit can change) calls `onOverflow` once and ends the splitter: it drops all that follows.
+ */
+export const lineSplitter = (
+  onLine: (line: string) => void,
+  max: () => number = () => LINE_MAX,
+  onOverflow: () => void = () => {},
+): ((chunk: string) => void) => {
+  let parts: string[] = []
+  let size = 0
+  let over = false
+  const overflow = (): void => {
+    over = true
+    parts = []
+    size = 0
+    onOverflow()
+  }
   return chunk => {
-    rest += chunk
-    for (let at = rest.indexOf('\n'); at >= 0; at = rest.indexOf('\n')) {
-      const line = rest.slice(0, at)
-      rest = rest.slice(at + 1)
+    if (over) return
+    let from = 0
+    for (let at = chunk.indexOf('\n', from); at >= 0; at = chunk.indexOf('\n', from)) {
+      if (size + (at - from) > max()) return overflow()
+      parts.push(chunk.slice(from, at))
+      const line = parts.length === 1 ? parts[0]! : parts.join('')
+      parts = []
+      size = 0
+      from = at + 1
       if (line.trim() !== '') onLine(line)
+    }
+    if (from < chunk.length) {
+      const tail = from === 0 ? chunk : chunk.slice(from)
+      size += tail.length
+      if (size > max()) return overflow()
+      parts.push(tail)
     }
   }
 }

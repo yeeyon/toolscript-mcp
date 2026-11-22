@@ -26,8 +26,10 @@ import {
   type Crypto,
   type Entry,
 } from '../src/core/broker.ts'
-import { startBroker, type Broker } from '../src/host/broker.ts'
-import { BrokerError, BrokerTransport, openLink } from '../src/host/brokerlink.ts'
+import { brokerFolder } from '../src/core/paths.ts'
+import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js'
+import { PROBE_VERSION, startBroker, type Broker } from '../src/host/broker.ts'
+import { BrokerError, BrokerTransport, idOf, openLink } from '../src/host/brokerlink.ts'
 import { alive, serverEntry, text, until } from './broker-rig.ts'
 import { endpointFor, loadKey, makeCrypto } from '../src/host/brokerwire.ts'
 
@@ -160,6 +162,44 @@ describe('the pure wire', () => {
     assert.deepEqual(got, ['ab', 'c'])
   })
 
+  test('the line splitter does linear work on a long line and stops at the cap', () => {
+    const got: string[] = []
+    const feed = lineSplitter(
+      l => got.push(l),
+      () => Infinity,
+    )
+    const chunk = 'x'.repeat(16 * 1024)
+    const start = performance.now()
+    for (let i = 0; i < 1280; i++) feed(chunk) // 20 MB with no newline
+    feed('\n')
+    assert.ok(performance.now() - start < 1000, 'a quadratic splitter takes more than a second here')
+    assert.equal(got.length, 1)
+    assert.equal(got[0]!.length, 1280 * chunk.length)
+
+    let over = 0
+    const capped = lineSplitter(
+      l => got.push(l),
+      () => 10,
+      () => over++,
+    )
+    capped('12345\n')
+    capped('abcde')
+    capped('fghij')
+    assert.equal(over, 0, 'a line of 10 is allowed')
+    capped('k')
+    capped('\nlater\n')
+    assert.equal(over, 1)
+    assert.equal(got.at(-1), '12345')
+    assert.ok(!got.includes('later'), 'nothing is read after the overflow')
+    const whole = lineSplitter(
+      l => got.push(l),
+      () => 3,
+      () => over++,
+    )
+    whole('abcdefg\n')
+    assert.equal(over, 2, 'a complete line over the cap also overflows')
+  })
+
   test('PATH: each entry is resolved, repeats go, and one folder through two links is one entry', () => {
     const real = (e: string) => (e.startsWith('/shell-') ? '/real/node' : undefined)
     assert.equal(resolvePath('/shell-1:/usr/bin:/shell-2:/usr/bin', ':', real, false), '/real/node:/usr/bin')
@@ -221,7 +261,7 @@ describe('attach and routing', () => {
     const { tools } = await client.listTools()
     assert.deepEqual(
       tools.map(t => t.name),
-      ['pid', 'env', 'cwd', 'sleep', 'exit', 'grow'],
+      ['pid', 'env', 'cwd', 'sleep', 'exit', 'grow', 'flood'],
     )
     assert.match(await text(client, 'pid'), /^\d+$/)
     assert.equal(await text(client, 'cwd'), root)
@@ -444,6 +484,61 @@ describe('the handshake limits and a peer that is not the broker', () => {
     const start = Date.now()
     await assert.rejects(openLink({ home, brokerFile: file, entry: entryOf() }), /did not answer the handshake/)
     assert.ok(Date.now() - start < 4000)
+  })
+
+  test('a squatter that streams a line with no newline fails the link at once, and the host reads little of it', async () => {
+    const home = fs.mkdtempSync(path.join(root, 'sq-'))
+    const file = path.join(home, 'broker.js')
+    fs.writeFileSync(file, 'build one')
+    const endpoint = endpointFor(home, loadKey(home), crypto.createHash('sha256').update('build one').digest('hex'))
+    fs.mkdirSync(path.dirname(endpoint), { recursive: true })
+    const piece = 'a'.repeat(1 << 20)
+    let sent = 0
+    const squatter = net.createServer(socket => {
+      socket.on('error', () => {})
+      const pump = () => {
+        while (!socket.destroyed && socket.write(piece)) sent += piece.length
+        if (!socket.destroyed) socket.once('drain', pump)
+      }
+      pump()
+    })
+    await new Promise<void>(r => squatter.listen(endpoint, r))
+    closers.push(() => void squatter.close())
+    const start = Date.now()
+    await assert.rejects(
+      openLink({ home, brokerFile: file, entry: entryOf() }),
+      (err: Error) => err instanceof BrokerError && /more than 4 KB/.test(err.message),
+    )
+    assert.ok(Date.now() - start < 1500, 'it does not wait for the handshake timer')
+    assert.ok(sent < 64 << 20, `the squatter could write ${sent >> 20} MB`)
+  })
+
+  test('a broker rebuilt in place after this process read its build id fails the link with "restart"', async () => {
+    const home = fs.mkdtempSync(path.join(root, 'sq-'))
+    const file = path.join(home, 'broker.js')
+    fs.writeFileSync(file, 'build one')
+    idOf(file) // this process has read the id of the file, as a running host has
+    fs.writeFileSync(file, '// rebuilt')
+    const start = Date.now()
+    await assert.rejects(
+      openLink({ home, brokerFile: file, entry: entryOf() }),
+      (err: Error) => err instanceof BrokerError && /rebuilt .*Restart the session/.test(err.message),
+    )
+    assert.ok(Date.now() - start < 3000, 'no wait for a broker that cannot meet this host')
+    assert.equal(fs.existsSync(`${brokerFolder(home)}/broker.log`), false, 'no broker started')
+  })
+
+  test('the probe of the broker asks for the latest protocol version of the SDK', () => {
+    assert.equal(PROBE_VERSION, LATEST_PROTOCOL_VERSION)
+  })
+
+  test('a host does not take a frame without t "hello" as the broker first frame', () => {
+    const c = makeCrypto(Buffer.alloc(32, 7))
+    const side = hostSide(c)
+    side.start()
+    const nonce = 'e'.repeat(32)
+    const frame = JSON.stringify({ n: nonce, p: c.mac(`toolscript-mcp 1 broker ${'0'.repeat(32)} ${nonce}`) })
+    assert.ok(side.step(frame).fail !== undefined)
   })
 
   test('a run with no broker.js fails the link with the reason and starts nothing', async () => {
