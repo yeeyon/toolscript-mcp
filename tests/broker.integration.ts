@@ -1,0 +1,159 @@
+// The real broker, spawned from dist/host/broker.js by the host code, on a temp HOME with a short idle time. Run
+// `npm run build` first, then:
+//
+//   node --experimental-strip-types tests/broker.integration.ts
+
+import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
+import { after, describe, test } from 'node:test'
+import { fileURLToPath } from 'node:url'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { brokerFolder } from '../src/core/paths.ts'
+import { BrokerError, BrokerTransport, openLink } from '../src/host/brokerlink.ts'
+import { endpointFor, loadKey } from '../src/host/brokerwire.ts'
+import { alive, SERVER, serverEntry, text, until } from './broker-rig.ts'
+
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+const BROKER = path.join(ROOT, 'dist', 'host', 'broker.js')
+assert.ok(fs.existsSync(BROKER), 'run `npm run build` first')
+
+const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-broker-int-')))
+// The spawned broker finds its folder through os.homedir(), so it reads the environment of this process.
+const saved = {
+  HOME: process.env.HOME,
+  USERPROFILE: process.env.USERPROFILE,
+  IDLE: process.env.TOOLSCRIPT_BROKER_IDLE_MS,
+}
+const IDLE_MS = 1500
+process.env.TOOLSCRIPT_BROKER_IDLE_MS = String(IDLE_MS)
+
+const clients: Client[] = []
+const homes: string[] = []
+/** A new HOME for one test: every test gets its own key, so its own broker. */
+const newHome = (): string => {
+  const home = fs.mkdtempSync(path.join(root, 'h-'))
+  process.env.HOME = home
+  process.env.USERPROFILE = home
+  homes.push(home)
+  return home
+}
+after(async () => {
+  for (const c of clients) await c.close().catch(() => {})
+  for (const home of homes) for (const pid of brokerPids(home)) if (alive(pid)) process.kill(pid)
+  await new Promise(r => setTimeout(r, 300))
+  Object.assign(process.env, { HOME: saved.HOME, USERPROFILE: saved.USERPROFILE })
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 })
+})
+
+const logOf = (home: string): string => {
+  try {
+    return fs.readFileSync(`${brokerFolder(home)}/broker.log`, 'utf8')
+  } catch {
+    return ''
+  }
+}
+const brokerPids = (home: string): number[] => [...logOf(home).matchAll(/start pid (\d+)/g)].map(m => Number(m[1]))
+const listens = (home: string): number => (logOf(home).match(/ listen$/gm) ?? []).length
+
+const connect = async (home: string, entry = serverEntry(root), file = BROKER): Promise<Client> => {
+  const client = new Client({ name: 'test', version: '0' })
+  clients.push(client)
+  await client.connect(new BrokerTransport({ home, brokerFile: file, entry }))
+  return client
+}
+
+describe('a real broker', () => {
+  test('six starts at once give one broker and one child, and all six links work', async () => {
+    const home = newHome()
+    const six = await Promise.all([0, 1, 2, 3, 4, 5].map(() => connect(home)))
+    const pids = await Promise.all(six.map(c => text(c, 'pid')))
+    assert.equal(new Set(pids).size, 1, 'one child')
+    assert.equal(listens(home), 1, 'one broker')
+    assert.equal(brokerPids(home).length, 1)
+    assert.ok(alive(Number(pids[0])))
+  })
+
+  test('idle: the child, then the broker, are gone, with no socket file left', async () => {
+    const home = newHome()
+    const client = await connect(home)
+    const child = Number(await text(client, 'pid'))
+    const [broker] = brokerPids(home)
+    await client.close()
+    await until('the child stops', () => !alive(child), 8000)
+    await until('the broker leaves', () => !alive(broker!), 8000)
+    if (process.platform !== 'win32')
+      assert.deepEqual(
+        fs.readdirSync(brokerFolder(home)).filter(f => f.endsWith('.sock')),
+        [],
+      )
+    assert.match(logOf(home), / exit$/m)
+  })
+
+  test('a killed broker: the links close, the next use starts a new broker, and the old child ends', async () => {
+    const home = newHome()
+    const client = await connect(home)
+    const child = Number(await text(client, 'pid'))
+    const closed = new Promise<void>(r => (client.onclose = r))
+    process.kill(brokerPids(home)[0]!, 'SIGKILL')
+    await closed
+    const again = await connect(home)
+    assert.notEqual(Number(await text(again, 'pid')), child)
+    assert.equal(listens(home), 2)
+    await until('the old child ends', () => !alive(child), 8000)
+  })
+
+  test('two build ids give two brokers', async () => {
+    const home = newHome()
+    const other = path.join(root, `broker-${path.basename(home)}.js`)
+    fs.writeFileSync(other, `${fs.readFileSync(BROKER, 'utf8')}\n// another build\n`)
+    const [a, b] = [await connect(home), await connect(home, serverEntry(root), other)]
+    assert.notEqual(await text(a, 'pid'), await text(b, 'pid'))
+    assert.equal(listens(home), 2)
+    assert.equal(new Set(brokerPids(home)).size, 2)
+  })
+
+  test('a squatter on the endpoint fails the link, and no child starts in its place', async () => {
+    const home = newHome()
+    const id = crypto.createHash('sha256').update(fs.readFileSync(BROKER)).digest('hex')
+    const endpoint = endpointFor(home, loadKey(home), id)
+    const squatter = net.createServer(() => {})
+    await new Promise<void>(r => squatter.listen(endpoint, r))
+    const marker = path.join(home, 'child-started')
+    const entry = serverEntry(root, {}, [], process.execPath)
+    const marked = { ...entry, args: ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`] }
+    await assert.rejects(openLink({ home, brokerFile: BROKER, entry: marked }), BrokerError)
+    await new Promise(r => setTimeout(r, 500))
+    squatter.close()
+    assert.ok(!fs.existsSync(marker), 'no direct child')
+  })
+
+  test('a wrapper server and a server that ignores stdin EOF leave no process after the idle stop', async () => {
+    const home = newHome()
+    const wrapped =
+      process.platform === 'win32'
+        ? serverEntry(root, {}, ['--ignore-eof'], 'cmd')
+        : serverEntry(root, {}, ['--ignore-eof'], 'sh')
+    const entry =
+      process.platform === 'win32'
+        ? { ...wrapped, args: ['/c', 'node', SERVER, '--ignore-eof'] }
+        : { ...wrapped, args: ['-c', `"${process.execPath}" "${SERVER}" --ignore-eof; true`] }
+    const client = await connect(home, entry)
+    const server = Number(await text(client, 'pid'))
+    assert.ok(alive(server))
+    await client.close()
+    await until('the whole tree ends', () => !alive(server), 10_000)
+  })
+
+  test('a host that is gone leaves the call of the other host alone and the child up', async () => {
+    const home = newHome()
+    const [a, b] = [await connect(home), await connect(home)]
+    const child = await text(a, 'pid')
+    void text(a, 'sleep', { ms: 4000 }).catch(() => {})
+    await a.close()
+    assert.equal(await text(b, 'pid'), child)
+  })
+})

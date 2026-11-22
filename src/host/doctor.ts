@@ -30,6 +30,8 @@ import { appPath, oauthFolder, runLogFile } from '../core/paths.ts'
 import { shownName } from '../core/policy.ts'
 import { errorText, takeMessages, type RunnerDone, type RunnerError } from '../core/protocol.ts'
 import { futureLine, isFuture } from '../core/runlog.ts'
+import { classify } from '../core/share.ts'
+import { brokerFileBeside, idOf, openLink } from './brokerlink.ts'
 import { connectStates, readRunLog, type CheckIo } from './diagnose.ts'
 import { LAYERS, RUNNER, launch, makeExchangeDir, removeExchangeDir } from './launch.ts'
 import { storeFile } from './oauth.ts'
@@ -223,6 +225,25 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
   },
 
   share: async ({ loaded }) => (loaded.ok ? shareFindings(loaded.config) : []),
+
+  broker: async ({ io, loaded }) => {
+    if (!loaded.ok || !loaded.config.share.on) return []
+    const { servers, bridges } = loaded.config
+    const linked = [...servers].some(([key, server]) => {
+      const c = classify(key, server, bridges)
+      return c !== undefined && c.class !== 'session'
+    })
+    if (!linked) return []
+    const file = brokerFileBeside(import.meta.url)
+    try {
+      // The handshake only: no entry goes over, so no downstream server starts. It may start the broker.
+      const { socket } = await openLink({ home: io.home, brokerFile: file })
+      socket.destroy()
+      return [ok(`build ${idOf(file!).slice(0, 8)}: the broker answered and proved the key`)]
+    } catch (err) {
+      return [fail(errorText(err))]
+    }
+  },
 
   policy: async ({ loaded, states }) => {
     if (!loaded.ok || states === undefined) return [info('skipped, because the config did not load')]

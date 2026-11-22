@@ -9,9 +9,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import {
   brokerSide,
   entryText,
@@ -27,9 +25,9 @@ import {
 } from '../src/core/broker.ts'
 import { startBroker, type Broker } from '../src/host/broker.ts'
 import { BrokerError, BrokerTransport, openLink } from '../src/host/brokerlink.ts'
+import { alive, serverEntry, text, until } from './broker-rig.ts'
 import { endpointFor, loadKey, makeCrypto } from '../src/host/brokerwire.ts'
 
-const SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'pid-server.mjs')
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-broker-test-')))
 const closers: (() => Promise<void> | void)[] = []
 after(async () => {
@@ -172,12 +170,8 @@ const startRig = async (idle = 600_000, build = 'build one'): Promise<Rig> => {
   return { home, file, broker, stop }
 }
 
-const entryOf = (env: Record<string, string> = {}, args: string[] = [], command = process.execPath): Entry => ({
-  command,
-  args: [SERVER, ...args],
-  env: { ...getDefaultEnvironment(), ...env },
-  folder: root,
-})
+const entryOf = (env: Record<string, string> = {}, args: string[] = [], command = process.execPath): Entry =>
+  serverEntry(root, env, args, command)
 
 const clients: Client[] = []
 const connect = async (rig: Rig, entry: Entry = entryOf()): Promise<Client> => {
@@ -190,25 +184,6 @@ after(async () => {
   for (const c of clients) await c.close().catch(() => {})
 })
 
-const text = async (client: Client, name: string, args: Record<string, unknown> = {}): Promise<string> => {
-  const result = (await client.callTool({ name, arguments: args })) as { content: { text: string }[] }
-  return result.content[0]!.text
-}
-const alive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-const until = async (what: string, check: () => boolean, ms = 8000): Promise<void> => {
-  const end = Date.now() + ms
-  while (!check()) {
-    assert.ok(Date.now() < end, `timed out: ${what}`)
-    await new Promise(r => setTimeout(r, 25))
-  }
-}
 const closed = (socket: net.Socket): Promise<number> =>
   new Promise(resolve => {
     const start = Date.now()

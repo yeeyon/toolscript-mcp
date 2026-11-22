@@ -417,13 +417,14 @@ checks come in this order:
 2. `config`: the config exists and has no errors. If it does not exist, doctor prints the `init` command.
 3. `servers`: doctor connects to each server in parallel. Each line shows the tool count, the login command or the
    reason of the failure. It marks each server with `"untrusted": true`.
-4. `share`: the share switch, and the class of each stdio server and the rule that decided. All lines are `info`. This version still starts each server one time per session.
-5. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
+4. `share`: the share switch, and the class of each stdio server and the rule that decided. All lines are `info`.
+5. `broker`: only when sharing is on and a server is `shared` or `folder`. Doctor finds the build of the broker, connects to it (it starts the broker when none runs) and checks the proof of the key in both directions. One line: `ok`, or `fail` with the reason and the ways out. It starts no server.
+6. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
    [Claude Code bridge](#claude-code-as-a-downstream-server), and the tools that require a person.
-6. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
-7. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run. As in `runs`, it
+7. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
+8. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run. As in `runs`, it
    skips a run with a time more than 5 minutes after now, and counts these runs.
-8. `files`: doctor can write to `~/.toolscript-mcp`. If that path or a folder above it is a file, the check fails. An
+9. `files`: doctor can write to `~/.toolscript-mcp`. If that path or a folder above it is a file, the check fails. An
    `info` line names the OAuth tokens that no server of the config uses. They can belong to another config.
 
 doctor skips the check for allow rules that match no tool when a server does not connect. The output never shows

@@ -63,7 +63,8 @@ export const brokerFileBeside = (moduleUrl: string): string | undefined => {
 }
 
 const builds = new Map<string, string>()
-const idOf = (file: string): string => {
+/** The build id of a `broker.js`, read one time per process. */
+export const idOf = (file: string): string => {
   const known = builds.get(file)
   if (known !== undefined) return known
   const id = buildId(file)

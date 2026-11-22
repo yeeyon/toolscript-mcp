@@ -481,7 +481,7 @@ describe('shareFindings', () => {
     assert.deepEqual(
       found.map(f => f.detail),
       [
-        'sharing is off (the default). This version starts each server one time per session in any case',
+        'sharing is off (the default)',
         'grafana: shared by all sessions: "share": true, so it starts in the home folder',
         'azure: one copy per folder: no cwd and no "share" key. Set "share": true when it reads no file of its folder',
         'github: shared by all sessions: it has a cwd',
@@ -496,7 +496,7 @@ describe('shareFindings', () => {
   test('names the switch and its source', () => {
     const first = (json: object, env?: Record<string, string>) =>
       findings({ mcpServers: entries, ...json }, env)[0]!.detail
-    const tail = '. This version starts each server one time per session in any case'
+    const tail = ''
     assert.equal(first({ share: true }), 'sharing is on ("share": true)' + tail)
     assert.equal(first({ share: false }), 'sharing is off ("share": false)' + tail)
     assert.equal(first({}, { TOOLSCRIPT_SHARE: '1' }), 'sharing is on (TOOLSCRIPT_SHARE=1)' + tail)
@@ -518,12 +518,39 @@ describe('shareFindings', () => {
     const s = setup({ mcpServers: { demo: { ...demoEntry, share: true, env: { TOKEN: SECRET } } } })
     assert.equal(await s.doctor(), 0)
     assert.deepEqual(s.of('share'), [
-      'info  share    sharing is off (the default). This version starts each server one time per session in any case',
+      'info  share    sharing is off (the default)',
       'info  share    demo: shared by all sessions: "share": true, so it starts in the home folder',
     ])
     assert.ok(
       s.printed.findIndex(l => l.startsWith('info  share')) > s.printed.findIndex(l => l.slice(6, 13) === 'servers'),
     )
     assert.ok(!s.printed.join('\n').includes(SECRET))
+  })
+})
+
+describe('the broker check', () => {
+  test('is silent with sharing off, and with no shared or per-folder server', async () => {
+    const off = setup({ mcpServers: { demo: { ...demoEntry, share: true } } })
+    await off.doctor()
+    assert.deepEqual(off.of('broker'), [])
+    const none = setup({ share: true, mcpServers: { demo: { ...demoEntry, share: false } } })
+    await none.doctor()
+    assert.deepEqual(none.of('broker'), [])
+  })
+
+  test('with sharing on and a shared server, a run from source fails with the reason and the ways out', async () => {
+    const s = setup({ share: true, mcpServers: { demo: { ...demoEntry, share: true, env: { TOKEN: SECRET } } } })
+    assert.equal(await s.doctor(), 1)
+    const [line, ...more] = s.of('broker')
+    assert.equal(more.length, 0)
+    assert.match(
+      line!,
+      /^fail {2}broker {3}the shared-server broker is not usable: this run has no broker\.js beside it/,
+    )
+    assert.match(line!, /toolscript-mcp doctor/)
+    assert.match(line!, /"share": false/)
+    assert.match(line!, /TOOLSCRIPT_SHARE=0/)
+    assert.ok(!s.printed.join('\n').includes(SECRET))
+    assert.ok(!fs.existsSync(path.join(s.home, '.toolscript-mcp', 'broker')), 'no broker folder made')
   })
 })
