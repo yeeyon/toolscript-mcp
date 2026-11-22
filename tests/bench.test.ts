@@ -10,7 +10,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TOOL } from '../src/core/tools.ts'
 import { searchResult } from '../src/core/catalog.ts'
-import { newTracker, parseNotConnected, update } from '../bench/memory.mjs'
+import { formatOutcome } from '../src/core/protocol.ts'
+import { NO_MATCH, newTracker, parseNotConnected, parseToolCounts, runValue, update } from '../bench/memory.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const ROOT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-bench-test-')))
@@ -237,6 +238,36 @@ test('memory.mjs reads the Not connected lines that search_tools prints', () => 
   )
   assert.match(text, /^- slow: still connecting\. Search again in a moment\.$/m)
   assert.deepEqual(parseNotConnected(text, ['slow', 'dead', 'fine']), { connecting: ['slow'], failed: ['dead'] })
+})
+
+test('memory.mjs counts the tools of each key past the cap of 100 that a list of all tools has', () => {
+  const tools = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ name: `tool_${i}`, description: 'Reads one item of the project.' }))
+  const states = [
+    { key: 'big', status: 'connected', tools: tools(130) },
+    { key: 'grafana', status: 'connected', tools: tools(40) },
+    { key: 'grafana2', status: 'connected', tools: tools(3) },
+    { key: 'empty', status: 'connected', tools: [] },
+  ] as const
+  const keys = ['big', 'grafana', 'grafana2', 'empty']
+  assert.deepEqual(parseToolCounts(searchResult(states, NO_MATCH, 10), keys), {
+    big: 130,
+    grafana: 40,
+    grafana2: 3,
+    empty: 0,
+  })
+  assert.equal(parseToolCounts(searchResult(states, '', 100), keys), undefined, 'a list of matches is not the form')
+})
+
+test('memory.mjs reads the value of a run_code result, also inside the wrapper of untrusted content', () => {
+  const value = { mcp__a__list: 'ok', mcp__b__get: 'failed' }
+  const done = { t: 'done' as const, value: JSON.stringify(value), logs: [] }
+  const plain = formatOutcome(done, 2, '', 20_000)
+  const wrapped = formatOutcome(done, 2, '', 20_000, undefined, 'a1b2c3d4e5f60718293a4b5c6d7e8f90')
+  assert.match(wrapped, /^<<a1b2c3d4e5f60718293a4b5c6d7e8f90>> \[UNTRUSTED TOOL CONTENT/)
+  assert.deepEqual(runValue(plain), value)
+  assert.deepEqual(runValue(wrapped), value)
+  assert.equal(runValue('Error: the sandbox exited without a result.\n\n--- 0 MCP calls ---'), undefined)
 })
 
 test('memory.mjs counts no older process whose dead parent left its pid to a host', () => {

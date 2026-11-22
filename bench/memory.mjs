@@ -480,6 +480,29 @@ export const parseNotConnected = (text, keys) => {
   }
 }
 
+/** A query that no tool holds: search_tools then lists the tool names of each server instead of matches. */
+export const NO_MATCH = 'zqxbenchnomatchqzx'
+
+/**
+ * The tool count of each key from the search_tools result of NO_MATCH: the line `mcp__<key>__: a, b (+N more)` of each
+ * server (namesByServer in src/core/catalog.ts, which tests/bench.test.ts runs against this) holds the names that it
+ * shows and the count of the rest. A key with no line has no tool. Undefined when the text is not that form.
+ */
+export const parseToolCounts = (text, keys) => {
+  if (!/^No MCP tool matches /.test(text)) return undefined
+  const lines = text.split('\n')
+  return Object.fromEntries(
+    keys.map(k => {
+      const head = `mcp__${k}__: `
+      const line = lines.find(l => l.startsWith(head))
+      if (line === undefined) return [k, 0]
+      const more = / \(\+(\d+) more\)$/.exec(line)
+      const names = line.slice(head.length, more?.index).split(', ')
+      return [k, names.length + Number(more?.[1] ?? 0)]
+    }),
+  )
+}
+
 // Calls search_tools until no server is connecting. Records keys only: a failure reason can hold a URL.
 const connect = async (ctx, s, rec) => {
   const keys = new Set(ctx.keys)
@@ -503,18 +526,26 @@ const connect = async (ctx, s, rec) => {
   if (connecting.length > 0) rec.connectTimeout = true
   rec.failed = [...new Set([...failed, ...connecting])].filter(k => keys.has(k)).sort()
   rec.connected = ctx.keys.filter(k => !rec.failed.includes(k))
-  // The tool count of each connected key: the summaries of every tool, counted by the key in their id.
+  // The tool count of each connected key. A list of all tools stops at 100, so the count comes from the names by server.
   try {
-    const reply = await s.request(
-      'tools/call',
-      { name: 'search_tools', arguments: { query: '', limit: 100_000 } },
-      LIMIT,
-    )
-    const text = reply.result?.content?.[0]?.text ?? ''
-    rec.tools = Object.fromEntries(
-      rec.connected.map(k => [k, text.split('\n').filter(l => l.startsWith(`### mcp__${k}__`)).length]),
-    )
+    const reply = await s.request('tools/call', { name: 'search_tools', arguments: { query: NO_MATCH } }, LIMIT)
+    const counts = parseToolCounts(reply.result?.content?.[0]?.text ?? '', rec.connected)
+    if (counts !== undefined) rec.tools = counts
   } catch {}
+}
+
+/**
+ * The value that a run_code result shows: the text before the footer, also when the run read untrusted content and the
+ * host put the text in the wrapper of formatOutcome (src/core/protocol.ts, which tests/bench.test.ts runs against this).
+ * Undefined when that text is not JSON.
+ */
+export const runValue = text => {
+  const wrapped = /^<<([0-9a-f]+)>> \[UNTRUSTED TOOL CONTENT[^\n]*\n([\s\S]*?)\n<<\/\1>>/.exec(text)
+  try {
+    return JSON.parse((wrapped?.[2] ?? text).split('\n\n---')[0])
+  } catch {
+    return undefined
+  }
 }
 
 /** The program of --call: a status for each tool and nothing else, so that no result reaches the output. */
@@ -537,11 +568,7 @@ const callTools = async (ctx, s, rec) => {
       { name: 'run_code', arguments: { code: callProgram(ctx.calls) } },
       ctx.runLimit,
     )
-    const text = reply.result?.content?.[0]?.text ?? ''
-    let out = {}
-    try {
-      out = JSON.parse(text.split('\n\n---')[0])
-    } catch {}
+    const out = runValue(reply.result?.content?.[0]?.text ?? '') ?? {}
     for (const tool of ctx.calls) {
       const key = keyOfTool(ctx, tool)
       status[key] = status[key] === 'failed' || out[tool] !== 'ok' ? 'failed' : 'ok'
