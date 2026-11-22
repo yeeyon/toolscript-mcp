@@ -15,17 +15,16 @@ import {
 import { errorText } from '../core/protocol.ts'
 import { childEnv, type StdioServer } from '../core/config.ts'
 import type { DownstreamTool } from '../core/catalog.ts'
-import { childEnvironment } from './childtransport.ts'
 import { writeConfig } from './configfile.ts'
 import type { ToolsStore } from './downstream.ts'
 import { readText, retried, SHAPES_WAIT_MS, within } from './shapes.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
-/** The key of a launch: SHA-256 of its command, arguments, child environment and folder. */
+/** The key of a launch: SHA-256 of its command, arguments, the env of its config and folder (not the inherited env: its PATH differs by shell). */
 export const toolsKey = (server: StdioServer): string =>
   createHash('sha256')
-    .update(toolsKeyText(server, childEnvironment(childEnv(server))))
+    .update(toolsKeyText(server, childEnv(server)))
     .digest('hex')
 
 /**
@@ -79,7 +78,8 @@ const write = async (
   log: (line: string) => void,
 ): Promise<void> => {
   try {
-    const current = await read(home, log)
+    // Silent about a bad file: the load at the start logged it once.
+    const current = await read(home, () => {})
     if (!current.readable) return
     const next = new Map(current.cache).set(id, { at: Date.now(), tools })
     const file = toolsFile(home)

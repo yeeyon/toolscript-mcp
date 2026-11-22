@@ -85,16 +85,22 @@ export const parseToolsCache = (text: string): { cache: ToolsCache; problem?: st
   if (!isObject(json) || json.version !== VERSION || !isObject(json.entries))
     return none('the file is not a tools cache')
   const cache = new Map<string, CachedList>()
-  for (const [id, raw] of Object.entries(json.entries)) {
-    if (cache.size >= MAX_CACHE_ENTRIES) break
-    if (!/^[0-9a-f]{64}$/.test(id) || !isObject(raw) || !Number.isFinite(raw.at) || !Array.isArray(raw.tools)) continue
-    if (raw.tools.length > MAX_CACHE_TOOLS) continue
-    const tools: DownstreamTool[] = []
-    for (const t of raw.tools) {
-      const tool = toolOf(t)
-      if (tool !== undefined) tools.push(tool)
+  try {
+    for (const [id, raw] of Object.entries(json.entries)) {
+      if (cache.size >= MAX_CACHE_ENTRIES) break
+      if (!/^[0-9a-f]{64}$/.test(id) || !isObject(raw) || !Number.isFinite(raw.at) || !Array.isArray(raw.tools))
+        continue
+      if (raw.tools.length > MAX_CACHE_TOOLS) continue
+      const tools: DownstreamTool[] = []
+      for (const t of raw.tools) {
+        const tool = toolOf(t)
+        if (tool !== undefined) tools.push(tool)
+      }
+      cache.set(id, { at: raw.at as number, tools })
     }
-    cache.set(id, { at: raw.at as number, tools })
+  } catch {
+    // A value nested so deep that JSON.stringify throws on it: no cache, and the next write replaces the file.
+    return none('the file could not be read')
   }
   return { cache }
 }
@@ -126,8 +132,8 @@ export const toolsCacheText = (cache: ToolsCache): string => {
 }
 
 /**
- * The text that names a launch in the cache: the command, the arguments in order, the whole child environment and the
- * folder. Not the server key or the folder of the session, so the cache is the same over folders. Never print it: it
+ * The text that names a launch in the cache: the command, the arguments in order, the env of the config (after ${VAR}
+ * expansion, not the env that the host inherits: its PATH differs by shell) and the folder. Not the server key or the folder of the session, so the cache is the same over folders. Never print it: it
  * holds env values. The host hashes it, so only the hash goes to disk.
  */
 export const toolsKeyText = (server: StdioServer, env: Readonly<Record<string, string>>): string => {
