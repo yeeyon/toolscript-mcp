@@ -116,19 +116,41 @@ export const cachedTools = (tools: readonly DownstreamTool[]): DownstreamTool[] 
     ...(_meta !== undefined && { _meta }),
   }))
 
+/** The UTF-8 length of a text that JSON.stringify wrote, which holds no lone surrogate. */
+const utf8Length = (text: string): number => {
+  let bytes = 0
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code < 0xdc00) {
+      bytes += 4
+      i++
+    } else bytes += 3
+  }
+  return bytes
+}
+
 /**
- * The file text of the cache. The newest MAX_CACHE_ENTRIES entries stay, and a list over MAX_CACHE_TOOLS tools is not
- * cached (the entry is dropped), so the file always parses back.
+ * The file text of the cache, so that it always parses back: newest first, at most MAX_CACHE_ENTRIES entries and
+ * MAX_CACHE_BYTES in all. A list over MAX_CACHE_TOOLS tools, or one that does not fit in the bytes left, is not cached.
  */
 export const toolsCacheText = (cache: ToolsCache): string => {
+  const head = `{"version":${VERSION},"entries":{`
+  const parts: string[] = []
+  let bytes = utf8Length(head) + 2
   const entries = [...cache]
     .filter(([, list]) => list.tools.length <= MAX_CACHE_TOOLS)
     .sort((a, b) => b[1].at - a[1].at)
-    .slice(0, MAX_CACHE_ENTRIES)
-  return JSON.stringify({
-    version: VERSION,
-    entries: Object.fromEntries(entries.map(([id, list]) => [id, { at: list.at, tools: cachedTools(list.tools) }])),
-  })
+  for (const [id, list] of entries) {
+    if (parts.length >= MAX_CACHE_ENTRIES) break
+    const part = `${JSON.stringify(id)}:${JSON.stringify({ at: list.at, tools: cachedTools(list.tools) })}`
+    const size = utf8Length(part) + (parts.length > 0 ? 1 : 0)
+    if (bytes + size > MAX_CACHE_BYTES) continue
+    parts.push(part)
+    bytes += size
+  }
+  return `${head}${parts.join(',')}}}`
 }
 
 /**

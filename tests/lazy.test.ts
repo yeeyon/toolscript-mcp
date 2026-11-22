@@ -13,6 +13,7 @@ import { lazyFindings } from '../src/core/doctor.ts'
 import { parseConfig, serverKey, type ServerConfig, type ServerKey, type StdioServer } from '../src/core/config.ts'
 import {
   LAZY_IDLE_MS,
+  MAX_CACHE_BYTES,
   MAX_CACHE_TOOLS,
   isLazy,
   lazyIdleMs,
@@ -248,6 +249,27 @@ describe('the tool cache file', () => {
       at: 7,
       tools: [{ ...list.tools[0]!, extra: undefined }].map(t => JSON.parse(JSON.stringify(t))),
     })
+  })
+
+  test('the file stays within the bytes that the read takes: newest first, and a list that does not fit is left out', () => {
+    const list = (at: number, count: number): CachedList => ({
+      at,
+      tools: Array.from({ length: count }, (_, i) => ({ name: `t${i}`, description: 'é'.repeat(10_000) })),
+    })
+    const big = 'b'.repeat(64)
+    const old = 'c'.repeat(64)
+    const oldest = 'd'.repeat(64)
+    const cache = new Map([
+      [id, list(4, 75)],
+      [big, list(3, 250)],
+      [old, list(2, 75)],
+      [oldest, list(1, 75)],
+    ])
+    const text = toolsCacheText(cache)
+    assert.ok(Buffer.byteLength(text) <= MAX_CACHE_BYTES)
+    const { cache: back, problem } = parseToolsCache(text)
+    assert.equal(problem, undefined)
+    assert.deepEqual([...back.keys()], [id, old])
   })
 
   test('a hostile or half written file gives no cache, with a fixed problem text and no content', () => {
