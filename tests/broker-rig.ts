@@ -1,7 +1,7 @@
 // Helpers for the broker tests: the entry of tests/pid-server.mjs, a tool call as text, and waits on a process.
 
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,6 +31,23 @@ export const alive = (pid: number): boolean => {
   } catch {
     return false
   }
+}
+
+/**
+ * The private bytes of a process, in bytes: the commit charge on Windows, the resident set elsewhere (the nearest figure
+ * that `ps` gives). Undefined when the process cannot be read.
+ */
+export const privateBytes = (pid: number): number | undefined => {
+  const win = process.platform === 'win32'
+  const r = win
+    ? spawnSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).PrivateMemorySize64`],
+        { encoding: 'utf8', windowsHide: true, timeout: 20_000 },
+      )
+    : spawnSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
+  const n = Number(r.stdout?.trim())
+  return r.status === 0 && Number.isFinite(n) && n > 0 ? (win ? n : n * 1024) : undefined
 }
 
 export const until = async (what: string, check: () => boolean, ms = 8000): Promise<void> => {

@@ -16,7 +16,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { brokerFolder } from '../src/core/paths.ts'
 import { BrokerError, BrokerTransport, openLink } from '../src/host/brokerlink.ts'
 import { endpointFor, loadKey } from '../src/host/brokerwire.ts'
-import { alive, SERVER, serverEntry, staleSocket, text, until } from './broker-rig.ts'
+import { alive, privateBytes, SERVER, serverEntry, staleSocket, text, until } from './broker-rig.ts'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const BROKER = path.join(ROOT, 'dist', 'host', 'broker.js')
@@ -167,6 +167,33 @@ describe('a real broker', () => {
       errors.some(m => /longer than 10 MB/.test(m)),
       `the link got the reason: ${errors.join(' | ')}`,
     )
+  })
+
+  test('a stderr flood of 1 MB a second for 5 s: another server answers under 1 s, and the broker stays small', async () => {
+    const home = newHome()
+    const other = await connect(home, serverEntry(root, { ZONE: 'other' }))
+    const noisy = await connect(home)
+    const [broker] = brokerPids(home)
+    let worst = 0
+    let running = true
+    const pinger = (async () => {
+      while (running) {
+        const at = performance.now()
+        await text(other, 'pid')
+        worst = Math.max(worst, performance.now() - at)
+        await new Promise(r => setTimeout(r, 100))
+      }
+    })()
+    await noisy.callTool({ name: 'noise', arguments: { ms: 5000, mb: 1 } }, undefined, { timeout: 30_000 })
+    running = false
+    await pinger
+    assert.ok(worst < 1000, `the other server waited ${Math.round(worst)} ms`)
+    const size = privateBytes(broker!)
+    assert.ok(
+      size === undefined || size < 100 * 1024 * 1024,
+      `the broker holds ${Math.round((size ?? 0) / 1048576)} MB`,
+    )
+    assert.ok(!logOf(home).includes('zzzz'), 'no stderr text in the log')
   })
 
   test('a squatter on the endpoint fails the link, and no child starts in its place', async () => {
