@@ -20,7 +20,9 @@ import {
   hostSide,
   LINE_MAX,
   lineSplitter,
+  MARK,
   parseAnswer,
+  parseBrokerFrame,
   PROOF_BYTES,
   PROOF_MS,
   resolveEnvPath,
@@ -31,7 +33,7 @@ import {
 import { childEnv, type StdioServer } from '../core/config.ts'
 import type { Keyed, Place } from '../core/share.ts'
 import { brokerFolder } from '../core/paths.ts'
-import { BAD_KEY, buildId, endpointFor, folderProblem, loadKey, makeCrypto } from './brokerwire.ts'
+import { BAD_KEY, buildId, endpointFor, folderProblem, loadKey, makeCrypto, parseStderr } from './brokerwire.ts'
 
 /** An error whose text toolscript-mcp wrote: it holds no text of a server and no value of the config. */
 export class BrokerError extends Error {}
@@ -201,6 +203,18 @@ export type LinkOptions = {
   readonly brokerFile: string | undefined
   /** Sent after the proof. Without it the link ends after the proof: `doctor` only checks the handshake. */
   readonly entry?: Entry
+  /** Gets the stderr text of the shared child, as a direct child's stderr would be got (see `childStderr`). */
+  readonly onStderr?: (chunk: Buffer) => void
+}
+
+/** The stderr text of a broker frame, for the host's own stderr: the data, or a line that counts what was dropped. */
+const stderrChunk = (line: string): Buffer | undefined => {
+  const got = parseStderr(line)
+  if (got === undefined) return undefined
+  return 'data' in got
+    ? got.data
+    : Buffer.from(`[toolscript-mcp: ${got.dropped} bytes of the server's stderr were dropped]
+`)
 }
 
 /** A connection that proved the key both ways and, with an entry, was attached to a child. */
@@ -208,6 +222,7 @@ export const openLink = async ({
   home,
   brokerFile,
   entry,
+  onStderr,
 }: LinkOptions): Promise<{ readonly socket: net.Socket; readonly lines: ReturnType<typeof reader> }> => {
   if (brokerFile === undefined)
     throw new BrokerError(unusable('this run has no broker.js beside it (a run from source)'))
@@ -264,7 +279,14 @@ export const openLink = async ({
     lines.proven()
     if (entry !== undefined) {
       socket.write(entryFrame(entry))
-      const line = await lines.next(CHILD_INIT_MS + 5_000)
+      // The stderr text of a child that is starting comes before the answer.
+      const answerBy = performance.now() + CHILD_INIT_MS + 5_000
+      let line = await lines.next(CHILD_INIT_MS + 5_000)
+      for (let chunk = line === undefined ? undefined : stderrChunk(line); chunk !== undefined; ) {
+        onStderr?.(chunk)
+        line = await lines.next(Math.max(0, answerBy - performance.now()))
+        chunk = line === undefined ? undefined : stderrChunk(line)
+      }
       const answer = line === undefined ? undefined : parseAnswer(line)
       if (answer === undefined) throw new BrokerError(unusable('it did not answer the entry'))
       if (!answer.ok) throw new BrokerError(`the shared server could not start: ${answer.reason}`)
@@ -295,10 +317,15 @@ export class BrokerTransport implements Transport {
     if (this.#closed) return void socket.destroy()
     socket.on('close', () => this.#end())
     lines.follow(line => {
-      // The broker's own last frame before it ends the link: why the shared server is gone.
-      if (line.startsWith('{"t":"refused"')) {
+      // A marked line is the broker's. No line that a server writes carries the mark (see MARK).
+      if (line.startsWith(MARK)) {
+        const chunk = stderrChunk(line)
+        if (chunk !== undefined) return void this.#options.onStderr?.(chunk)
+        // The broker's own last frame before it ends the link: why the shared server is gone.
         const answer = parseAnswer(line)
-        if (!answer.ok) return void this.onerror?.(new BrokerError(`the shared server ended: ${answer.reason}`))
+        if (!answer.ok && parseBrokerFrame(line)?.t === 'refused')
+          return void this.onerror?.(new BrokerError(`the shared server ended: ${answer.reason}`))
+        return
       }
       try {
         this.onmessage?.(deserializeMessage(line))
@@ -312,9 +339,13 @@ export class BrokerTransport implements Transport {
   send(message: JSONRPCMessage): Promise<void> {
     const socket = this.#socket
     if (socket === undefined || socket.destroyed) return Promise.reject(new Error('the connection closed'))
-    return new Promise((resolve, reject) =>
-      socket.write(`${JSON.stringify(message)}\n`, err => (err ? reject(err) : resolve())),
-    )
+    const line = JSON.stringify(message)
+    // The broker ends a link that sends a longer line. Only this call fails, and the link goes on.
+    if (line.length > LINE_MAX)
+      return Promise.reject(
+        new BrokerError(`this request is longer than the 10 MB that a message to a shared server may hold`),
+      )
+    return new Promise((resolve, reject) => socket.write(`${line}\n`, err => (err ? reject(err) : resolve())))
   }
 
   close(): Promise<void> {

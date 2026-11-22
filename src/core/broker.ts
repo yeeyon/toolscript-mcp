@@ -6,7 +6,7 @@ import { brokerFolder } from './paths.ts'
 import { shareText } from './share.ts'
 
 /** Changes with the wire. It is read by both sides, and the build id covers the code of the broker as well. */
-export const WIRE = 1
+export const WIRE = 2
 
 /** What the broker reads and waits for before the proof (a squatter or a stray client costs it no more than this). */
 export const PROOF_BYTES = 4096
@@ -176,14 +176,61 @@ export const hostSide = (c: Crypto): Side => {
 }
 
 export const entryFrame = (entry: Entry): string => frame({ t: 'entry', ...entry })
-export const attachedFrame = frame({ t: 'attached' })
-export const refusedFrame = (reason: string): string => frame({ t: 'refused', reason })
+
+/**
+ * A frame that the broker writes to a host after the proof starts with this byte, which no JSON text can start with. The
+ * broker writes each line of a child again with `JSON.stringify`, so no line that a child writes can carry it: a host
+ * reads a marked line as the broker's and any other as the server's.
+ */
+export const MARK = '\u0001'
+const marked = (value: unknown): string => `${MARK}${JSON.stringify(value)}\n`
+export const attachedFrame = marked({ t: 'attached' })
+export const refusedFrame = (reason: string): string => marked({ t: 'refused', reason })
+
+/** The most bytes of child stderr in one frame (8 KB once encoded). */
+export const STDERR_CHUNK = 6144
+/** What a child may write to stderr and the broker still passes on: this many bytes in each window, then it drops. */
+export const STDERR_RATE = 256 * 1024
+export const STDERR_WINDOW_MS = 10_000
+/** A host whose socket holds more than this unsent gets no stderr text, only a count of what it missed. */
+export const STDERR_BACKLOG = 256 * 1024
+/** The tail of a child that failed to start, kept for the host whose attach is refused. */
+export const STDERR_TAIL = 8 * 1024
+/** A host connection with more than this unsent is closed (its link only), and so is a child stdin that holds it. */
+export const UNSENT_MAX = 64 * 1024 * 1024
+/** At most this many links and this many children in one broker. */
+export const LINKS_MAX = 64
+export const CHILDREN_MAX = 32
+
+/** A frame with stderr text of a child, which the host encoded in base64 (at most STDERR_CHUNK bytes before that). */
+export const stderrFrame = (base64: string): string => marked({ t: 'stderr', d: base64 })
+/** The frame that tells a host how many bytes of stderr it did not get. */
+export const droppedFrame = (bytes: number): string => marked({ t: 'stderr', dropped: bytes })
+
+/** A frame of the broker after the proof, or undefined for a line without the mark or with bad JSON. */
+export const parseBrokerFrame = (line: string): Record<string, unknown> | undefined => {
+  if (!line.startsWith(MARK)) return undefined
+  const msg = parseFrame(line.slice(1))
+  return isObj(msg) ? msg : undefined
+}
+
+/** The stderr part of a broker frame (the base64 text, or the count of bytes dropped), or undefined for any other. */
+export const parseStderrFrame = (
+  line: string,
+): { readonly data: string } | { readonly dropped: number } | undefined => {
+  const msg = parseBrokerFrame(line)
+  if (msg === undefined || msg.t !== 'stderr') return undefined
+  if (typeof msg.d === 'string') return { data: msg.d.slice(0, 11000) }
+  if (typeof msg.dropped === 'number' && Number.isFinite(msg.dropped) && msg.dropped >= 0)
+    return { dropped: Math.floor(msg.dropped) }
+  return undefined
+}
 
 /** The answer to an entry: attached, or the reason that the broker gives. Any other frame is no answer. */
 export const parseAnswer = (line: string): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
-  const msg = parseFrame(line)
-  if (isObj(msg) && msg.t === 'attached') return { ok: true }
-  if (isObj(msg) && msg.t === 'refused' && typeof msg.reason === 'string')
+  const msg = parseBrokerFrame(line)
+  if (msg !== undefined && msg.t === 'attached') return { ok: true }
+  if (msg !== undefined && msg.t === 'refused' && typeof msg.reason === 'string')
     return { ok: false, reason: msg.reason.slice(0, 300) }
   return { ok: false, reason: 'the broker gave no valid answer to the entry' }
 }
