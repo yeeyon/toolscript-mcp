@@ -509,6 +509,16 @@ describe('the gaps of issue 107', () => {
     }
   })
 
+  test('a doubled separator, a /./ and a backslash do not hide a marker', () => {
+    for (const text of [
+      'x/.toolscript-mcp//hints',
+      'x/.toolscript-mcp/./hints',
+      'x/.toolscript-mcp/.//./oauth',
+      'x\\.toolscript-mcp\\\\learned',
+    ])
+      assert.notEqual(markerIn(text), undefined, text)
+  })
+
   test('(e) a run of dots after a marker is part of its name, and a trailing dot or space on the state folder hides nothing', () => {
     for (const text of [
       '.toolscript-mcp/hints.',
