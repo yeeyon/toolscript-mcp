@@ -62,7 +62,15 @@ export const saveToolsEntry = (
   id: string,
   tools: readonly DownstreamTool[],
   log: (line: string) => void,
-): Promise<void> => within(write(home, id, tools, log), SHAPES_WAIT_MS, undefined).then(() => undefined)
+): Promise<void> => {
+  // One write at a time in this process: two lazy servers that list together would else read the same file, and the
+  // second rename would drop the entry of the first.
+  const next = writes.then(() => within(write(home, id, tools, log), SHAPES_WAIT_MS, undefined)).then(() => undefined)
+  writes = next
+  return next
+}
+
+let writes: Promise<void> = Promise.resolve()
 
 const write = async (
   home: string,
