@@ -146,36 +146,51 @@ Per role at 6 sessions, idle, private bytes each as a median:
 Totals include each process's `conhost.exe` (about 1.2 MB). The 4 stdio servers cost about 286 MB a session. Those are
 what sharing can save. The bridge and the host stay per session.
 
-### Owner's config, DATE PENDING, sharing off against on
+### Owner's config, 2026-11-22, sharing off against on
 
-PLACEHOLDER: the main session fills this section with numbers that it measured on the owner's machine (section 7 of the
-slice 4 bar). No number is written here until then. No pid, argument, env name, URL, path or organisation name goes in,
-and never the JSON. Server keys become kinds.
+Windows 11, Node 22.23.3, commit bece1d6 (slice 3), 60 s idle, 32 GB RAM, 2 folders. 8 servers: 4 stdio entries with
+`"share": true` (one `node` server and 3 entries of one native binary with another environment each), 3 over HTTP,
+and the `claude mcp serve` bridge, which stays per session. `TOOLSCRIPT_SHARE=0` against `TOOLSCRIPT_SHARE=1`, the
+same config, both runs within one hour, nothing else running.
 
-OS, Node, commit, idle time, RAM, the servers as kinds: PENDING.
+Table 1, idle phase, at 1, 3 and 6 sessions, off and on:
 
-Table 1, at 1, 3 and 6 sessions, off and on:
-
-| sessions | switch | private bytes with the bridge (MB) | without the bridge, `T` (MB) | saved (MB) | private working set (MB) | processes | copies of each shared kind |
+| sessions | switch | private bytes with the bridge (MB) | without the bridge, `T` (MB) | saved, `T` off minus on (MB) | private working set (MB) | processes | copies of each shared kind |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 1 | off | PENDING | PENDING | | PENDING | PENDING | PENDING |
-| 1 | on | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| 3 | off | PENDING | PENDING | | PENDING | PENDING | PENDING |
-| 3 | on | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| 6 | off | PENDING | PENDING | | PENDING | PENDING | PENDING |
-| 6 | on | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| 1 | off | 694.0 | 354.9 | | 227.6 | 12 | node 1, native 3 |
+| 1 | on | 715.0 | 366.0 | -11.1 | 245.9 | 13 | node 1, native 3 |
+| 3 | off | 2,083.9 | 1,066.6 | | 718.6 | 36 | node 3, native 9 |
+| 3 | on | 1,586.8 | 512.4 | 554.2 | 530.8 | 21 | node 1, native 3 |
+| 6 | off | 4,113.2 | 2,143.7 | | 1,394.9 | 72 | node 6, native 18 |
+| 6 | on | 2,776.5 | 709.2 | 1,434.5 | 925.1 | 33 | node 1, native 3 |
 
-Table 2, per role at 6 sessions, off against on:
+Table 2, per role at 6 sessions, idle, off against on (each is the median; totals include each process's
+`conhost.exe`):
 
 | role | copies off | each off (MB) | total off (MB) | copies on | each on (MB) | total on (MB) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| PENDING | | | | | | |
-| broker | 0 | | | 1 | PENDING | PENDING |
+| `claude mcp serve` bridge | 6 | 324.8 | 1,969.5 | 6 | 349.8 | 2,067.3 |
+| native binary, 3 entries | 18 | 68.2 | 1,244.9 | 3 | 65.7 | 203.9 |
+| `node` server | 6 | 81.0 | 488.7 | 1 | 79.7 | 80.9 |
+| toolscript-mcp host | 6 | 67.5 | 402.7 | 6 | 66.2 | 397.1 |
+| broker | 0 | | | 1 | 20.1 | 20.1 |
 
-`S`, the cost of an added session, off and on: PENDING. G1 to G10, each as pass or miss with its number: PENDING.
-Leftovers, and containers if any (never added to private bytes): PENDING.
+`S`, the private bytes of the 4 shared entries in one session with the switch off, is 283.3 MB. An added session costs
+357.8 MB of `T` off and 68.6 MB on. G1 pass (1 copy of each shared entry and 1 broker at 3 and 6 sessions), G2 pass
+(554 MB saved at 3, at least 422 needed; 1,435 at 6, at least 1,144 needed), G3 pass (289 MB lower, at least 227
+needed), G4 pass (+11 MB, at most 60), G5 pass (the same servers connect and the same tool count per key off and on),
+G6: each call of the `node` server and of one native entry ok in every session off and on; the 2 other native entries
+fail off and on alike, because their endpoints were down. G7 pass (0 leftovers in both runs). G8 does not apply (no
+container). G9: windows were not read in this run (the reviews found every broker process windowless in the fixture), and the
+report holds no argument, env, URL or path. Leftovers: none.
 
-Sentence: "sharing saves X MB of Y MB at 6 sessions (Z %); without the bridge, X of W": PENDING.
+Sharing saves 1,337 MB of 4,113 MB at 6 sessions (32 %); without the bridge, 1,435 of 2,144 (67 %).
 
-G10 (2 or more real Claude Code sessions from separate terminals, one process-table read, one read call per shared
-server, M1 in the same sitting): PENDING.
+The bridge is half of what stays: slice 5 starts it on first use, which saved another 2,056 MB at 6 idle sessions on
+the same config.
+
+G10: the owner's installed build has no broker yet, so 2 real sessions from separate terminals wait for the next beta.
+The broker's life was measured instead with headless Claude Code (2.1.330) sessions against a temp home: the broker
+lived when the session that started it exited (4 runs) and when its `claude` process was ended (1 run), and the next
+session reused the same broker each time. A broker ended alone left no process behind, the same as a host with the
+switch off.

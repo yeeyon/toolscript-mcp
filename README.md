@@ -842,7 +842,7 @@ A broker holds the shared copies. It is one process for each user and each build
 
 A session proves a secret key to the broker before it sends anything, and the broker proves the key back. The key is in `~/.toolscript-mcp/broker`, which only your user can read. Each session has its own connection, so a result reaches only the session that asked. The endpoint is a named pipe on Windows and a socket file elsewhere. There is no TCP port.
 
-A copy with no session stops after 10 minutes. A broker with no session and no copy ends soon after. A new build of toolscript-mcp starts its own broker, and the old one ends when its last session ends.
+The broker does not end with the session that started it. On Windows it stayed when that Claude Code session exited and when its `claude` process was ended, and the next session used the same broker. A copy with no session stops after 10 minutes. A broker with no session and no copy ends soon after. A new build of toolscript-mcp starts its own broker, and the old one ends when its last session ends.
 
 If a session cannot start or reach the broker, the server of that session fails with a reason. toolscript-mcp never starts a direct copy in its place. The other servers and the session keep working. Run `toolscript-mcp doctor` and read the `broker` line. To get a copy for each session again, use one of these:
 
