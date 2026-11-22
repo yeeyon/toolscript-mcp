@@ -172,7 +172,7 @@ test('sharing on, 6 sessions in 2 folders at --counts 1,2: one broker, the copie
 
 test('lazy start: the lazy servers have no copy at idle, a copy for each session after a run, none after the idle time, and a run still works', () => {
   const json = path.join(dir, 'lazy.json')
-  const lazy = { ...env, TOOLSCRIPT_LAZY_IDLE_MS: '2000' }
+  const lazy = { ...env, TOOLSCRIPT_LAZY_IDLE_MS: '12000' }
   const r = spawnSync(
     process.execPath,
     [BENCH, ...FAST, '--counts', '1,3', '--idle', '1', '--after-run', '0', '--closed', '3', '--json', json],
@@ -180,7 +180,7 @@ test('lazy start: the lazy servers have no copy at idle, a copy for each session
   )
   assert.equal(r.status, 0, r.stderr)
   const data = JSON.parse(fs.readFileSync(json, 'utf8'))
-  assert.equal(data.meta.afterIdleSeconds, 7, 'the idle time in seconds plus 5')
+  assert.equal(data.meta.afterIdleSeconds, 17, 'the idle time in seconds plus 5')
   for (const round of data.rounds) {
     const n = round.count
     const at = phase => round.samples[phase].procs
@@ -202,8 +202,8 @@ test('lazy start: the lazy servers have no copy at idle, a copy for each session
     }
     assert.deepEqual(round.leftovers, [])
   }
-  assert.match(r.stdout, /### Wake time (ms)/)
-  assert.match(r.stdout, /| 3 | claude-code | 6 |/)
+  assert.ok(r.stdout.includes('### Wake time (ms)'))
+  assert.ok(r.stdout.includes('| 3 | claude-code | 6 |'))
   assert.ok(!r.stdout.includes(MARKER) && !r.stderr.includes(MARKER), 'the marker is in no output')
 })
 
