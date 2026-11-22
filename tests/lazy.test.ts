@@ -22,7 +22,7 @@ import {
   type CachedList,
 } from '../src/core/lazy.ts'
 import { connectAll, type Downstream, type ToolsStore } from '../src/host/downstream.ts'
-import { toolsKey } from '../src/host/toolscache.ts'
+import { loadToolsCache, saveToolsEntry, toolsKey } from '../src/host/toolscache.ts'
 
 const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
 const PID_SERVER = path.join(import.meta.dirname, 'pid-server.mjs')
@@ -537,5 +537,32 @@ describe('the doctor line', () => {
       lazyFindings(config({ TOOLSCRIPT_LAZY: '0' }), () => 3).map(f => f.detail),
       ['lazy start is off (TOOLSCRIPT_LAZY=0): every server starts with the session'],
     )
+  })
+})
+
+describe('the cache file on disk', () => {
+  test('two saves at once keep both entries, and the file is 0600-written under the learned folder', async () => {
+    const home = fs.mkdtempSync(path.join(DIR, 'home-'))
+    const a = 'a'.repeat(64)
+    const b = 'b'.repeat(64)
+    await Promise.all([
+      saveToolsEntry(home, a, [{ name: 'one' }], () => {}),
+      saveToolsEntry(home, b, [{ name: 'two' }], () => {}),
+    ])
+    const cache = await loadToolsCache(home, () => {})
+    assert.deepEqual([...cache.keys()].sort(), [a, b])
+    assert.deepEqual(cache.get(b)!.tools, [{ name: 'two' }])
+    assert.ok(fs.existsSync(path.join(home, '.toolscript-mcp', 'learned', 'tools.json')))
+  })
+
+  test('a hostile file on disk loads as no cache with one log line that holds no content', async () => {
+    const home = fs.mkdtempSync(path.join(DIR, 'home-'))
+    const folder = path.join(home, '.toolscript-mcp', 'learned')
+    fs.mkdirSync(folder, { recursive: true })
+    fs.writeFileSync(path.join(folder, 'tools.json'), '{"version":1,"entries":{"x":SECRET-TOKEN')
+    const lines: string[] = []
+    const cache = await loadToolsCache(home, line => lines.push(line))
+    assert.equal(cache.size, 0)
+    assert.deepEqual(lines, ['the tool cache was not loaded: the file is not JSON'])
   })
 })
