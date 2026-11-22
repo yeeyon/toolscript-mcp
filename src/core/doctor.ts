@@ -200,3 +200,53 @@ export const shareFindings = (config: Config): Finding[] => {
   })
   return lines.length === 0 ? [] : [info(shareSwitch(config.share)), ...lines]
 }
+
+/** What a person does when something else holds the name of the broker. It names no path but the broker folder. */
+export const takenNameWayOut = (platform: string): string =>
+  platform === 'win32'
+    ? 'Something that is not the broker may hold its pipe name. Close the sessions of toolscript-mcp, then delete the ' +
+      'file "key" in the folder "broker" of the folder ".toolscript-mcp" in your home folder: a new key gives a new pipe name'
+    : 'Something that is not the broker may hold its socket. Close the sessions of toolscript-mcp, then delete the ' +
+      'file "key" in the folder "broker" of the folder ".toolscript-mcp" in your home folder (a new key gives a new socket name). When ' +
+      'the socket is in /tmp/tsm- and your user id, remove that folder, or use a shorter home path'
+
+/** The failures of the handshake that a squatter on the name causes: the peer is no broker, or it did not answer. */
+const SQUATTER =
+  /did not answer as a broker|did not prove the key|did not answer the handshake|more than 4 KB|refused the proof/
+
+/** The `fail` line of the broker check: the reason, and for a peer that is not a broker, the way out. */
+export const brokerFail = (reason: string, platform: string): Finding =>
+  fail(SQUATTER.test(reason) ? `${reason}. ${takenNameWayOut(platform)}` : reason)
+
+/** The principals that may hold the broker folder on Windows: SYSTEM and Administrators, and the user. */
+const ALLOWED_SIDS = new Set(['S-1-5-18', 'S-1-5-32-544'])
+
+/**
+ * The finding of the access rules of the broker folder on Windows. `text` holds the SID of the user on the first line and
+ * then one `SID|Allow or Deny|rights` line for each rule. A principal other than the user, SYSTEM and Administrators with
+ * an Allow rule gives `warn`; a text that is not that gives `info`.
+ */
+export const aclFinding = (text: string): Finding => {
+  const lines = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line !== '')
+  const user = lines[0]
+  const rules = lines.slice(1).map(line => line.split('|'))
+  if (
+    user === undefined ||
+    !/^S-1-/.test(user) ||
+    rules.length === 0 ||
+    rules.some(r => r.length < 3 || !/^S-1-/.test(r[0]!))
+  )
+    return info('the access rules of the broker folder could not be read')
+  const extra = new Set(
+    rules.filter(([sid, type]) => type === 'Allow' && sid !== user && !ALLOWED_SIDS.has(sid!)).map(([sid]) => sid!),
+  )
+  if (extra.size === 0) return ok('the broker folder is open to you, SYSTEM and Administrators only')
+  return warn(
+    `${extra.size} other principal(s) can enter the broker folder, so they can read its key. Look at the rules with ` +
+      '`icacls` on the folder "broker" of the folder ".toolscript-mcp" in your home folder. Your profile folder normally allows only you, ' +
+      'SYSTEM and Administrators: remove the extra rule, or move your home folder to one that does',
+  )
+}

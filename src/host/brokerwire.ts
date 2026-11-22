@@ -3,7 +3,7 @@
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
-import { endpointOf, type Crypto } from '../core/broker.ts'
+import { endpointOf, parseStderrFrame, STDERR_CHUNK, stderrFrame, type Crypto } from '../core/broker.ts'
 import { brokerFolder } from '../core/paths.ts'
 
 const KEY_BYTES = 32
@@ -20,6 +20,20 @@ export const makeCrypto = (key: Buffer): Crypto => ({
     return x.length === y.length && crypto.timingSafeEqual(x, y)
   },
 })
+
+/** Stderr text of a child as frames of at most STDERR_CHUNK bytes. */
+export const stderrFrames = (data: Buffer): string[] => {
+  const out: string[] = []
+  for (let at = 0; at < data.length; at += STDERR_CHUNK)
+    out.push(stderrFrame(data.subarray(at, at + STDERR_CHUNK).toString('base64')))
+  return out
+}
+
+/** The stderr text of a broker frame (a Buffer, or the count of bytes dropped), or undefined for any other line. */
+export const parseStderr = (line: string): { readonly data: Buffer } | { readonly dropped: number } | undefined => {
+  const got = parseStderrFrame(line)
+  return got === undefined ? undefined : 'data' in got ? { data: Buffer.from(got.data, 'base64') } : got
+}
 
 /** The SHA-256 of a file: the build id of a `broker.js`. Two builds whose code differs never share an endpoint. */
 export const buildId = (file: string): string => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')

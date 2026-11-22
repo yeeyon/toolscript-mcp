@@ -60,3 +60,36 @@ Include:
   URL- or form-encoded, and as the Basic header value of the client ID and secret. Only the authorization URL that
   login prints for the browser holds the state. A leak of one of them is in scope.
 - The running server only reads the store and saves refreshed tokens. It never opens a browser or registers a client.
+- Sharing (`"share"`, `TOOLSCRIPT_SHARE`, README "Shared servers") is opt-in. With it on, one broker process of your
+  user holds one copy of each shared server for all sessions. A session sends the entry of a server, with its `env`
+  values, over the endpoint. The values stay in the memory of the broker. Nothing with a value goes to disk, and
+  `broker.log` holds lifecycle lines only.
+- The control is the key, not the endpoint. Both sides prove 32 random bytes with HMAC-SHA-256 before any other byte,
+  bound to both nonces and to the role. The key is never sent, and a session sends its entry only after the proof of
+  the broker.
+- A process of the same user that can read the key can call a shared server through the broker, with no policy of any
+  session. That process can also read the config and start the server itself, so this adds no right.
+- The endpoint on Windows is a named pipe with the default access rule, which allows Read for Everyone and anonymous
+  users. Node cannot narrow it, and the pipe does not refuse remote clients. Elsewhere it is a socket in the `broker`
+  folder, mode 0700, or in `/tmp/tsm-<uid>` when the home path is too long. The broker uses a folder only when it is a
+  real folder that this user owns.
+- Another account on the machine can hold the 16 connections that wait for a proof, take the pipe name while no broker
+  runs, or make `/tmp/tsm-<uid>` first. Each ends in shared links that fail with a reason. That account cannot read the
+  key or a frame, call a tool, get an entry from a session, or make toolscript-mcp start a direct copy in its place.
+- The ways out are the three off switches: `"share": false` on a server, `"share": false` at the top level, and
+  `TOOLSCRIPT_SHARE=0`. For a taken pipe name, close the sessions and delete the file `key` in `.toolscript-mcp/broker`:
+  a new key gives a new name. For `/tmp/tsm-<uid>`, remove that folder, or use a shorter home path.
+- The key file is mode 0600 in a folder of mode 0700 on Linux and macOS. On Windows it gets the access rules of your
+  profile folder, as the OAuth store does. `toolscript-mcp doctor` warns when the rules of the broker folder name a
+  principal other than you, SYSTEM and Administrators.
+- Sharing does not keep apart the state inside one server copy: set `"share": false` on a server that keeps state. It
+  does not keep apart its stderr either. The stderr text of a shared copy goes to the client log of each session
+  attached to it, as with a direct copy. It never goes to a model, a reason, `search_tools` or `broker.log`.
+- The broker drops stderr text above 256 KB in 10 s, and a frame holds at most 8 KB. It holds at most 256 links (one for
+  each shared server of each session) and 32 copies, closes a link that has more than 64 MB unsent, and fails one
+  request of more than 10 MB without ending the link.
+- No line that a server writes can pass as a frame of the broker: each frame of the broker starts with a byte that no
+  JSON text starts with.
+- In scope: a result, progress line, elicitation or stderr text that reaches the model of another session, a link
+  without the proof, an entry sent to an unproven peer, a key or `env` value on disk or in a log, and a second account
+  that reads a frame or calls a tool. Out of scope: the denial of service above, and a process of the same user.

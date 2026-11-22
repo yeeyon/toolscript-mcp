@@ -352,15 +352,22 @@ const transportOf = (
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   // With sharing on, a shared or per-folder server has one child in the broker and never a child of this process.
   const class_ = share === undefined ? undefined : classify(key, server, share.bridges)
-  if (share !== undefined && class_ !== undefined && class_.class !== 'session')
+  if (share !== undefined && class_ !== undefined && class_.class !== 'session') {
+    // The stderr text of the shared child reaches the same `stderr` as that of a direct child, and nothing else.
+    let tail = ''
     return {
       transport: new BrokerTransport({
         home: share.home,
         brokerFile: share.brokerFile,
         entry: entryOf(server, class_, { home: share.home, folder: share.folder }),
+        onStderr: chunk => {
+          stderr(chunk)
+          tail = (tail + chunk.toString('utf8')).slice(-2000)
+        },
       }),
-      lastError: () => '',
+      lastError: () => tail.replace(/\s+/g, ' ').trim().slice(-300),
     }
+  }
   const transport = new StdioClientTransport({
     command: server.command,
     args: [...server.args],
@@ -554,7 +561,8 @@ export const connectAll = (
       await client.close().catch(() => {})
       opened.delete(client)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
-      if (isOAuthStop(err) || err instanceof OwnError || err instanceof BrokerError) fail(errorText(err))
+      if (isOAuthStop(err) || err instanceof OwnError || err instanceof BrokerError)
+        fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`)
       else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
     }
   }

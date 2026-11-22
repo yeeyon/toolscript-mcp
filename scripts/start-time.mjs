@@ -19,6 +19,7 @@ import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { isBroker, lastLiveStart, processInfo } from './broker-proc.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const WIN = process.platform === 'win32'
@@ -141,15 +142,16 @@ try {
   if (tarball) console.log(`install: ${summary(all.map(t => t.install))}`)
 } finally {
   // A broker that the starts left in the temp home: end it, so it does not hold the folder for its idle time. Only the
-  // last broker of the log can live, and only when no exit line follows its start line.
+  // last broker of the log can live, and only when no exit line follows its start line. The pid may be another process
+  // by now, so it is ended only when its command line names the broker file and it began when the log says.
   let log = ''
   try {
     log = fs.readFileSync(path.join(home, '.toolscript-mcp', 'broker', 'broker.log'), 'utf8')
   } catch {}
-  const live = /start pid (\d+)\n(?:(?!.* exit\n).*\n)*$/.exec(log)
-  if (live) {
+  const live = lastLiveStart(log)
+  if (live && isBroker(processInfo(live.pid), live.at, 'broker.js')) {
     try {
-      process.kill(Number(live[1]))
+      process.kill(live.pid)
     } catch {}
   }
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 })

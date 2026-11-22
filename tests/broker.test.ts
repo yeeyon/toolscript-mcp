@@ -28,10 +28,18 @@ import {
 } from '../src/core/broker.ts'
 import { brokerFolder } from '../src/core/paths.ts'
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js'
-import { PROBE_VERSION, startBroker, type Broker } from '../src/host/broker.ts'
+import { PROBE_VERSION, startBroker, takeLock, type Broker, type BrokerOptions } from '../src/host/broker.ts'
 import { BrokerError, BrokerTransport, idOf, openLink } from '../src/host/brokerlink.ts'
 import { alive, serverEntry, staleSocket, text, until } from './broker-rig.ts'
-import { buildId, endpointFor, folderProblem, loadKey, makeCrypto } from '../src/host/brokerwire.ts'
+import {
+  buildId,
+  endpointFor,
+  folderProblem,
+  loadKey,
+  makeCrypto,
+  parseStderr,
+  stderrFrames,
+} from '../src/host/brokerwire.ts'
 
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-broker-test-')))
 const closers: (() => Promise<void> | void)[] = []
@@ -110,7 +118,7 @@ describe('the pure wire', () => {
 
   test('a broker proof cannot stand in for the host proof (reflection)', () => {
     const broker = brokerSide(fake('k'))
-    const hello = broker.step(`{"t":"hello","v":1,"n":"${'a'.repeat(32)}"}`)
+    const hello = broker.step(`{"t":"hello","v":2,"n":"${'a'.repeat(32)}"}`)
     const frame = JSON.parse(hello.send!) as { n: string; p: string }
     // The attacker sends the broker's own proof back as the host proof.
     assert.equal(broker.step(JSON.stringify({ t: 'proof', p: frame.p })).fail, 'wrong proof')
@@ -118,18 +126,18 @@ describe('the pure wire', () => {
 
   test('a recorded proof does not pass with fresh nonces (replay)', () => {
     const first = brokerSide(fake('k'))
-    first.step(`{"t":"hello","v":1,"n":"${'a'.repeat(32)}"}`)
-    const hostProof = fake('k').mac(`toolscript-mcp 1 host ${'a'.repeat(32)} ${'00000000000000000000000000000001'}`)
+    first.step(`{"t":"hello","v":2,"n":"${'a'.repeat(32)}"}`)
+    const hostProof = fake('k').mac(`toolscript-mcp 2 host ${'a'.repeat(32)} ${'00000000000000000000000000000001'}`)
     assert.equal(first.step(JSON.stringify({ t: 'proof', p: hostProof })).done, true, 'the true proof passes once')
     const crypto2 = fake('k')
     crypto2.nonce()
     const second = brokerSide(crypto2)
-    second.step(`{"t":"hello","v":1,"n":"${'a'.repeat(32)}"}`)
+    second.step(`{"t":"hello","v":2,"n":"${'a'.repeat(32)}"}`)
     assert.equal(second.step(JSON.stringify({ t: 'proof', p: hostProof })).fail, 'wrong proof')
   })
 
   test('a bad hello, a bad version and a proof with no hello fail', () => {
-    for (const line of ['x', '{}', '{"t":"hello","v":2,"n":"' + 'a'.repeat(32) + '"}', '{"t":"proof","p":"x"}'])
+    for (const line of ['x', '{}', '{"t":"hello","v":1,"n":"' + 'a'.repeat(32) + '"}', '{"t":"proof","p":"x"}'])
       assert.ok(brokerSide(fake('k')).step(line).fail, line)
   })
 
@@ -234,11 +242,16 @@ describe('the pure wire', () => {
 type Rig = { home: string; file: string; broker: Broker; stop: () => Promise<void> }
 
 /** A broker in this process, on a temp HOME, whose build is the content of a temp file. */
-const startRig = async (idle = 600_000, build = 'build one', initMs?: number): Promise<Rig> => {
+const startRig = async (
+  idle = 600_000,
+  build = 'build one',
+  initMs?: number,
+  extra: Partial<BrokerOptions> = {},
+): Promise<Rig> => {
   const home = fs.mkdtempSync(path.join(root, 'h-'))
   const file = path.join(home, 'broker.js')
   fs.writeFileSync(file, build)
-  const broker = await startBroker({ home, idleMs: idle, file, ...(initMs !== undefined && { initMs }) })
+  const broker = await startBroker({ home, idleMs: idle, file, ...(initMs !== undefined && { initMs }), ...extra })
   assert.ok(broker, 'the broker listens')
   const stop = () => broker.stop()
   closers.push(stop)
@@ -249,10 +262,12 @@ const entryOf = (env: Record<string, string> = {}, args: string[] = [], command 
   serverEntry(root, env, args, command)
 
 const clients: Client[] = []
-const connect = async (rig: Rig, entry: Entry = entryOf()): Promise<Client> => {
+const connect = async (rig: Rig, entry: Entry = entryOf(), onStderr?: (chunk: Buffer) => void): Promise<Client> => {
   const client = new Client({ name: 'test', version: '0' })
   clients.push(client)
-  await client.connect(new BrokerTransport({ home: rig.home, brokerFile: rig.file, entry }))
+  await client.connect(
+    new BrokerTransport({ home: rig.home, brokerFile: rig.file, entry, ...(onStderr && { onStderr }) }),
+  )
   return client
 }
 after(async () => {
@@ -273,7 +288,7 @@ describe('attach and routing', () => {
     const { tools } = await client.listTools()
     assert.deepEqual(
       tools.map(t => t.name),
-      ['pid', 'env', 'cwd', 'sleep', 'exit', 'grow', 'flood', 'swell'],
+      ['pid', 'env', 'cwd', 'sleep', 'exit', 'grow', 'flood', 'swell', 'forge', 'big', 'noise'],
     )
     assert.match(await text(client, 'pid'), /^\d+$/)
     assert.equal(await text(client, 'cwd'), root)
@@ -431,6 +446,83 @@ describe('attach and routing', () => {
       assert.equal((fs.readFileSync(`${brokerFolder(home)}/broker.log`, 'utf8').match(/ listen$/gm) ?? []).length, 1)
     })
 
+    test('six brokers against a stale socket and a stale lock (dead pid) give one that listens', async () => {
+      const home = fs.mkdtempSync(path.join(root, 'h-'))
+      const file = path.join(home, 'broker.js')
+      fs.writeFileSync(file, 'build stale lock')
+      const endpoint = endpointFor(home, loadKey(home), buildId(file))
+      await staleSocket(endpoint)
+      fs.writeFileSync(`${endpoint}.lock`, JSON.stringify({ pid: 2 ** 22 + 12345, id: 'dead', at: Date.now() }))
+      const six = await Promise.all([0, 1, 2, 3, 4, 5].map(() => startBroker({ home, idleMs: 600_000, file })))
+      const winners = six.filter((b): b is Broker => b !== undefined)
+      closers.push(...winners.map(b => () => b.stop()))
+      assert.equal(winners.length, 1, 'one broker listens')
+      assert.ok(await dials(endpoint))
+      assert.deepEqual(
+        fs.readdirSync(path.dirname(endpoint)).filter(n => n.includes('.break.') || n.endsWith('.lock')),
+        [],
+        'no lock or aside file is left',
+      )
+    })
+
+    describe('the recovery lock', () => {
+      const lockFile = (): string => path.join(fs.mkdtempSync(path.join(root, 'lk-')), 'x.sock.lock')
+      const write = (file: string, held: object): void => fs.writeFileSync(file, JSON.stringify(held))
+      const holder = (file: string): { id?: string } => JSON.parse(fs.readFileSync(file, 'utf8')) as { id?: string }
+
+      test('a lock whose time is in the future is broken although its pid lives', () => {
+        const file = lockFile()
+        write(file, { pid: process.pid, id: 'future', at: Date.now() + 3_600_000 })
+        assert.equal(takeLock(file), undefined, 'the breaker does not hold it yet')
+        assert.ok(takeLock(file), 'the next try does')
+      })
+
+      test('a fresh lock of a live pid is left alone', () => {
+        const file = lockFile()
+        write(file, { pid: process.pid, id: 'fresh', at: Date.now() })
+        assert.equal(takeLock(file), undefined)
+        assert.equal(holder(file).id, 'fresh')
+      })
+
+      test('a lock that another holder replaced after the breaker read it stays, and a third contender is refused', () => {
+        const file = lockFile()
+        write(file, { pid: 2 ** 22 + 12345, id: 'stale', at: Date.now() })
+        const breaker = takeLock(file, () => {
+          // The holder C removes the stale lock and takes a fresh one, between the read of B and its rename.
+          fs.rmSync(file)
+          write(file, { pid: process.pid, id: 'fresh-c', at: Date.now() })
+        })
+        assert.equal(breaker, undefined)
+        assert.equal(holder(file).id, 'fresh-c', 'the lock of C is back')
+        assert.equal(takeLock(file), undefined, 'a third contender does not enter beside C')
+        assert.equal(takeLock(file), undefined)
+        assert.deepEqual(fs.readdirSync(path.dirname(file)), ['x.sock.lock'], 'no aside file is left')
+      })
+
+      test('a half written lock is broken by its mtime and not before', () => {
+        const file = lockFile()
+        fs.writeFileSync(file, '{"pid":')
+        assert.equal(takeLock(file), undefined)
+        assert.ok(fs.existsSync(file), 'a new file is a writer at work')
+        const old = new Date(Date.now() - 60_000)
+        fs.utimesSync(file, old, old)
+        assert.equal(takeLock(file), undefined)
+        assert.ok(takeLock(file))
+      })
+    })
+
+    test('a broker killed inside the link-aside leaves a .keep socket that the next start links back', async () => {
+      const first = await startRig()
+      const endpoint = first.broker.endpoint
+      const keep = `${endpoint}.keep.${2 ** 22 + 12345}`
+      fs.linkSync(endpoint, keep)
+      fs.rmSync(endpoint)
+      assert.equal(await startBroker({ home: first.home, idleMs: 600_000, file: first.file }), undefined)
+      assert.ok(fs.existsSync(endpoint), 'the socket is back at the endpoint')
+      assert.ok(!fs.existsSync(keep))
+      assert.ok(await dials(endpoint), 'and its broker answers')
+    })
+
     test('the shutdown of a broker leaves a socket that another broker bound at its path', async () => {
       const first = await startRig()
       const endpoint = first.broker.endpoint
@@ -461,6 +553,168 @@ describe('attach and routing', () => {
     ])
       assert.ok(!log.includes(secret), `no ${secret}`)
   })
+})
+
+describe('child stderr, forged frames and the caps', () => {
+  const sink = () => {
+    const got: Buffer[] = []
+    return { on: (chunk: Buffer) => void got.push(chunk), text: () => Buffer.concat(got).toString('utf8') }
+  }
+  const logOf = (rig: Rig): string =>
+    fs.readFileSync(path.join(rig.home, '.toolscript-mcp', 'broker', 'broker.log'), 'utf8')
+
+  test('a marker on stderr reaches both hosts, and no result, reason or log line holds it', async () => {
+    const rig = await startRig()
+    const entry = entryOf({}, ['--marker=MARK-XYZ'])
+    const [first, second] = [sink(), sink()]
+    const a = await connect(rig, entry, first.on)
+    const b = await connect(rig, entry, second.on)
+    const results = [await text(a, 'pid'), await text(b, 'pid'), JSON.stringify(await a.listTools())]
+    await until('both hosts see both calls', () =>
+      [first, second].every(s => (s.text().match(/MARK-XYZ call pid/g) ?? []).length === 2),
+    )
+    assert.match(first.text(), /MARK-XYZ start/, 'the host that waited for the start has it')
+    assert.doesNotMatch(second.text(), /MARK-XYZ start/, 'a link that attaches to a running child gets no earlier text')
+    for (const seen of [...results, logOf(rig)]) assert.ok(!seen.includes('MARK-XYZ'), 'no marker in results or log')
+  })
+
+  test('a child that writes to stderr and exits before the initialize: the host gets the text, the reason does not', async () => {
+    const rig = await startRig()
+    const bad = { ...entryOf(), args: ['-e', 'console.error("SECRET-TEXT"); process.exit(2)'] }
+    const seen = sink()
+    const err = await connect(rig, bad, seen.on).catch((e: Error) => e)
+    assert.ok(err instanceof BrokerError)
+    assert.match(err.message, /exit code 2/)
+    assert.doesNotMatch(err.message, /SECRET-TEXT/)
+    assert.match(seen.text(), /SECRET-TEXT/)
+    assert.ok(!logOf(rig).includes('SECRET-TEXT'))
+  })
+
+  test('a child line that looks like a refused frame gives its result and no BrokerError text', async () => {
+    const rig = await startRig()
+    const client = await connect(rig)
+    const errors: string[] = []
+    client.onerror = e => errors.push(e.message)
+    // The SDK may refuse a line with extra keys, as it does from a direct child: that call then ends at its own timeout.
+    const answer = await client
+      .callTool({ name: 'forge', arguments: {} }, undefined, { timeout: 1000 })
+      .catch((e: Error) => e)
+    assert.ok(!JSON.stringify(answer instanceof Error ? answer.message : answer).includes('FORGED-REASON'))
+    assert.ok(!errors.join('|').includes('FORGED-REASON'), errors.join('|'))
+    assert.match(await text(client, 'pid'), /^\d+$/, 'the link goes on')
+  })
+
+  test('a request over 10 MB fails that one call with the cap, and the link takes the next call', async () => {
+    const rig = await startRig()
+    const client = await connect(rig)
+    await assert.rejects(client.callTool({ name: 'pid', arguments: { pad: 'x'.repeat(11 * 1024 * 1024) } }), /10 MB/)
+    assert.match(await text(client, 'pid'), /^\d+$/)
+  })
+
+  test('the link over the cap and the child over the cap are refused with the reason, and the earlier ones work', async () => {
+    const rig = await startRig(600_000, 'build caps', undefined, { maxLinks: 3, maxChildren: 2 })
+    const links = [await connect(rig), await connect(rig), await connect(rig)]
+    await assert.rejects(
+      connect(rig),
+      (err: Error) => err instanceof BrokerError && /3 shared links.*"share": false/.test(err.message),
+    )
+    for (const c of links) assert.match(await text(c, 'pid'), /^\d+$/)
+    await links[1]!.close()
+    await links[2]!.close()
+    await until('two places are free', () => (logOf(rig).match(/detach/g) ?? []).length >= 2)
+    const other = await connect(rig, entryOf({ ZONE: 'one' }))
+    await assert.rejects(
+      connect(rig, entryOf({ ZONE: 'two' })),
+      (err: Error) => err instanceof BrokerError && /2 shared servers.*"share": false/.test(err.message),
+    )
+    assert.match(await text(other, 'pid'), /^\d+$/)
+  })
+
+  test('a host that stops reading is closed at the cap and the other session goes on', async () => {
+    const rig = await startRig(600_000, 'build slow host', undefined, { maxUnsent: 1 << 20 })
+    const other = await connect(rig)
+    const stalled = await openLink({ home: rig.home, brokerFile: rig.file, entry: entryOf() })
+    stalled.socket.pause()
+    const frame = (msg: object): string => `${JSON.stringify(msg)}\n`
+    stalled.socket.write(
+      frame({
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'initialize',
+        params: { protocolVersion: PROBE_VERSION, capabilities: {}, clientInfo: { name: 'stalled', version: '1' } },
+      }),
+    )
+    stalled.socket.write(frame({ jsonrpc: '2.0', method: 'notifications/initialized' }))
+    for (let i = 1; i <= 80; i++)
+      stalled.socket.write(
+        `${JSON.stringify({ jsonrpc: '2.0', id: i, method: 'tools/call', params: { name: 'big', arguments: { kb: 1024 } } })}\n`,
+      )
+    // The stalled socket does not read, so it sees no close: the broker's log shows that it ended the link.
+    await until('the broker ends the stalled link', () => /detach/.test(logOf(rig)), 20000)
+    assert.match(await text(other, 'pid'), /^\d+$/, 'the other session still calls')
+  })
+
+  test('a child that stops reading its input is treated as dead once the hosts hold the cap for it', async () => {
+    const rig = await startRig(600_000, 'build stalled child', undefined, { maxUnsent: 1 << 20 })
+    const client = await connect(rig, entryOf({}, ['--stall-after-init']))
+    const gone = new Promise<void>(r => (client.onclose = r))
+    for (let i = 0; i < 40; i++)
+      void client
+        .callTool({ name: 'pid', arguments: { pad: 'x'.repeat(512 * 1024) } }, undefined, { timeout: 3000 })
+        .catch(() => {})
+    let shut = false
+    void gone.then(() => (shut = true))
+    await until('the link ends', () => shut, 20000)
+    assert.match(logOf(rig), /exit input over the cap/)
+  })
+
+  test('stderr over the rate is dropped and counted in one frame, and stays out of the log', async () => {
+    const rig = await startRig()
+    const seen = sink()
+    const client = await connect(rig, entryOf(), seen.on)
+    await client.callTool({ name: 'noise', arguments: { ms: 1500, mb: 2 } }, undefined, { timeout: 30000 })
+    await until('the count arrives', () => /bytes of the server's stderr were dropped/.test(seen.text()), 15000)
+    assert.ok(Buffer.byteLength(seen.text()) < 400 * 1024, 'about the rate and not the whole flood')
+    assert.ok(!logOf(rig).includes('zzzz'))
+  })
+
+  test('frames of stderr hold at most 8 KB each, whole or in parts', () => {
+    const frames = stderrFrames(Buffer.alloc(20_000, 'a'))
+    assert.equal(frames.length, 4)
+    for (const f of frames) assert.ok(f.length <= 8 * 1024 + 64)
+    const back = Buffer.concat(
+      frames.map(f =>
+        'data' in parseStderr(f.trim())! ? (parseStderr(f.trim()) as { data: Buffer }).data : Buffer.alloc(0),
+      ),
+    )
+    assert.equal(back.length, 20_000)
+    assert.equal(parseStderr('{"t":"stderr","d":"YQ=="}'), undefined, 'an unmarked line is not a frame')
+  })
+
+  test(
+    'a dead socket file of another build is removed by the next broker, and a live or a young one is not',
+    {
+      skip: process.platform === 'win32',
+    },
+    async () => {
+      const live = await startRig(600_000, 'build live')
+      const dir = path.dirname(live.broker.endpoint)
+      const old = path.join(dir, 'tsm-aaaaaaaaaaaa.sock')
+      const young = path.join(dir, 'tsm-bbbbbbbbbbbb.sock')
+      await staleSocket(old)
+      await staleSocket(young)
+      const aged = new Date(Date.now() - 60_000)
+      fs.utimesSync(old, aged, aged)
+      const next = path.join(live.home, 'broker-next.js')
+      fs.writeFileSync(next, 'build next')
+      const second = await startBroker({ home: live.home, idleMs: 600_000, file: next })
+      assert.ok(second)
+      closers.push(() => second.stop())
+      await until('the dead file is gone', () => !fs.existsSync(old))
+      assert.ok(fs.existsSync(young), 'a young file may be a broker between bind and listen')
+      assert.ok(fs.existsSync(live.broker.endpoint), 'a live broker keeps its socket')
+    },
+  )
 })
 
 describe('the handshake limits and a peer that is not the broker', () => {
@@ -510,7 +764,7 @@ describe('the handshake limits and a peer that is not the broker', () => {
     )
     const end = closed(socket)
     await new Promise(r => socket.once('connect', r))
-    socket.write(`{"t":"hello","v":1,"n":"${'b'.repeat(32)}"}\n`)
+    socket.write(`{"t":"hello","v":2,"n":"${'b'.repeat(32)}"}\n`)
     await until('the broker proof', () => lines.length === 1)
     socket.write(`{"t":"proof","p":"${'0'.repeat(64)}"}\n`)
     await end
@@ -608,7 +862,7 @@ describe('the handshake limits and a peer that is not the broker', () => {
     const side = hostSide(c)
     side.start()
     const nonce = 'e'.repeat(32)
-    const frame = JSON.stringify({ n: nonce, p: c.mac(`toolscript-mcp 1 broker ${'0'.repeat(32)} ${nonce}`) })
+    const frame = JSON.stringify({ n: nonce, p: c.mac(`toolscript-mcp 2 broker ${'0'.repeat(32)} ${nonce}`) })
     assert.ok(side.step(frame).fail !== undefined)
   })
 

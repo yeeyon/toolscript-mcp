@@ -11,6 +11,8 @@ import { parseArgs, promisify } from 'node:util'
 import type { SettledState } from '../core/catalog.ts'
 import { configPath, launchText, pathWord } from '../core/config.ts'
 import {
+  aclFinding,
+  brokerFail,
   CHECK_NAMES,
   checkLine,
   doctorExit,
@@ -26,7 +28,7 @@ import {
   type CheckName,
   type Finding,
 } from '../core/doctor.ts'
-import { appPath, oauthFolder, runLogFile } from '../core/paths.ts'
+import { appPath, brokerFolder, oauthFolder, runLogFile } from '../core/paths.ts'
 import { shownName } from '../core/policy.ts'
 import { errorText, takeMessages, type RunnerDone, type RunnerError } from '../core/protocol.ts'
 import { futureLine, isFuture } from '../core/runlog.ts'
@@ -69,6 +71,28 @@ const nodeVersion = async (node: string): Promise<Finding> => {
     return nodeFinding(`sandbox.node ${node}:`, stdout)
   } catch (err) {
     return fail(`cannot run sandbox.node ${node}: ${errorText(err)}`)
+  }
+}
+
+/**
+ * The user's SID, then `SID|Allow or Deny|rights` for each access rule of the folder, by SID and not by a name that the
+ * system language changes. It is empty when the read fails. The path goes in as an argument, not in the script.
+ */
+const readAcl = async (folder: string): Promise<string> => {
+  const script =
+    '$u = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $u; ' +
+    '(New-Object System.IO.DirectoryInfo $args[0]).GetAccessControl().GetAccessRules($true, $true, ' +
+    '[System.Security.Principal.SecurityIdentifier]) | ForEach-Object { ' +
+    '$_.IdentityReference.Value + "|" + $_.AccessControlType + "|" + $_.FileSystemRights }'
+  try {
+    const { stdout } = await promisify(execFile)(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', `& { ${script} } '${folder.replaceAll("'", "''")}'`],
+      { timeout: VERSION_TIMEOUT_MS, windowsHide: true },
+    )
+    return stdout
+  } catch {
+    return ''
   }
 }
 
@@ -235,14 +259,19 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
     })
     if (!linked) return []
     const file = brokerFileBeside(import.meta.url)
-    try {
-      // The handshake only: no entry goes over, so no downstream server starts. It may start the broker.
-      const { socket } = await openLink({ home: io.home, brokerFile: file })
-      socket.destroy()
-      return [ok(`build ${idOf(file!).slice(0, 8)}: the broker answered and proved the key`)]
-    } catch (err) {
-      return [fail(errorText(err))]
-    }
+    const answered = await (async (): Promise<Finding> => {
+      try {
+        // The handshake only: no entry goes over, so no downstream server starts. It may start the broker.
+        const { socket } = await openLink({ home: io.home, brokerFile: file })
+        socket.destroy()
+        return ok(`build ${idOf(file!).slice(0, 8)}: the broker answered and proved the key`)
+      } catch (err) {
+        return brokerFail(errorText(err), io.platform)
+      }
+    })()
+    // Only here, never in the server: one hidden read of the access rules of the broker folder.
+    const folder = brokerFolder(io.home)
+    return io.platform === 'win32' && fs.existsSync(folder) ? [answered, aclFinding(await readAcl(folder))] : [answered]
   },
 
   policy: async ({ loaded, states }) => {

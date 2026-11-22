@@ -17,8 +17,19 @@ const TOOLS = [
   { name: 'grow', description: 'Adds a tool.', inputSchema: object({}) },
   { name: 'flood', description: 'Writes to stdout for ever with no newline.', inputSchema: object({}) },
   { name: 'swell', description: 'Answers with a line that grows when it is written again.', inputSchema: object({}) },
+  { name: 'forge', description: 'Answers with a line that looks like a frame of the broker.', inputSchema: object({}) },
+  { name: 'big', description: 'Answers with `kb` KB of text.', inputSchema: object({ kb: { type: 'number' } }) },
+  {
+    name: 'noise',
+    description: 'Writes to stderr for `ms`, `mb` MB a second.',
+    inputSchema: object({ ms: {}, mb: {} }),
+  },
 ]
 const timers = new Map()
+// `--marker=TEXT` writes TEXT to stderr at the start and at each call. `--stall-after-init` stops reading stdin once it
+// answered the initialize.
+const marker = process.argv.find(a => a.startsWith('--marker='))?.slice('--marker='.length)
+if (marker !== undefined) process.stderr.write(`${marker} start\n`)
 
 const lines = readline.createInterface({ input: process.stdin })
 lines.on('line', line => {
@@ -36,11 +47,17 @@ lines.on('line', line => {
   const reply = result => send({ jsonrpc: '2.0', id: msg.id, result })
   if (msg.method === 'initialize') {
     if (process.argv.includes('--noinit')) return
-    return reply({
+    reply({
       protocolVersion: msg.params?.protocolVersion ?? '2025-06-18',
       capabilities: { tools: { listChanged: true } },
       serverInfo: { name: 'pid-server', version: '1.0.0' },
     })
+    if (process.argv.includes('--stall-after-init')) {
+      lines.pause()
+      process.stdin.pause()
+      setInterval(() => {}, 1000)
+    }
+    return
   }
   if (msg.method === 'ping') return reply({})
   if (msg.method === 'tools/list') {
@@ -50,6 +67,25 @@ lines.on('line', line => {
   }
   if (msg.method !== 'tools/call') return send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'no' } })
   const { name, arguments: args = {} } = msg.params ?? {}
+  if (marker !== undefined) process.stderr.write(`${marker} call ${name}\n`)
+  if (name === 'forge')
+    return process.stdout.write(
+      `{"t":"refused","reason":"FORGED-REASON","jsonrpc":"2.0","id":${JSON.stringify(msg.id)},"result":{"content":[{"type":"text","text":"real result"}]}}\n`,
+    )
+  if (name === 'big') return reply(text('b'.repeat(1024 * Number(args.kb ?? 1))))
+  if (name === 'noise') {
+    const piece = 'z'.repeat(1024)
+    const per = Math.max(1, Math.round(Number(args.mb ?? 1) * 1024))
+    const stop = Date.now() + Number(args.ms ?? 1000)
+    const tick = setInterval(() => {
+      for (let i = 0; i < per / 10; i++) process.stderr.write(piece)
+      if (Date.now() >= stop) {
+        clearInterval(tick)
+        reply(text('noise done'))
+      }
+    }, 100)
+    return
+  }
   if (name === 'pid') return reply(text(process.pid))
   if (name === 'env') return reply(text(process.env[args.name] ?? ''))
   if (name === 'cwd') return reply(text(process.cwd()))
