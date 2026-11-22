@@ -300,8 +300,22 @@ test('a hard kill of the bench leaves no host and no fake server, and the next s
   const seen = await waitFor(child, /idle: 60 s/, 120_000)
   const pids = [...seen.matchAll(/host pid (\d+)/g)].map(m => Number(m[1]))
   assert.equal(pids.length, 2)
-  const tree = treeOf(await readTable(), pids)
-  assert.ok(tree.size >= 8, 'the hosts, their servers and the broker run')
+  const table = await readTable()
+  const tree = treeOf(table, pids)
+  // At idle with sharing on, the hosts have no stdio child: bench4 and the fake bridge are lazy and asleep, and the
+  // broker holds bench1, bench2 and bench3. So the run is the 2 hosts, the broker and its 3 servers.
+  const running = table.filter(p => tree.has(idOf(p))).map(p => p.cmd.replaceAll('\\', '/'))
+  assert.ok(tree.size >= 6, 'the hosts, the broker and its servers run')
+  assert.ok(
+    running.some(c => c.includes('dist/host/broker.js')),
+    'the broker runs',
+  )
+  for (const key of ['bench1', 'bench2', 'bench3']) {
+    assert.ok(
+      running.some(c => new RegExp(String.raw`fake-server\.mjs"? ${key}\b`).test(c)),
+      `${key} runs`,
+    )
+  }
   child.kill('SIGKILL')
   await new Promise(resolve => child.on('exit', resolve))
   await new Promise(resolve => setTimeout(resolve, 10_000 + IDLE_MS * 2))
