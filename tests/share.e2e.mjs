@@ -352,4 +352,41 @@ describe('the stderr of a shared server', () => {
     await until('the marker', () => host.log().includes(`${MARKER} call pid`))
     await host.client.close()
   })
+
+  test('a shared server that writes to stderr and exits at the start: the log has the text, the reason does not', async () => {
+    const SECRET_TEXT = 'E2E-DEAD-AT-START'
+    const deadConfig = path.join(dir, 'dead.json')
+    fs.writeFileSync(
+      deadConfig,
+      JSON.stringify({
+        mcpServers: {
+          dead: {
+            command: process.execPath,
+            args: ['-e', `console.error(${JSON.stringify(SECRET_TEXT)}); process.exit(2)`],
+            share: true,
+          },
+        },
+      }),
+    )
+    const log = []
+    const client = new Client({ name: 'dead', version: '0' })
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [MAIN, '--config', deadConfig],
+      env: envOf(true),
+      stderr: 'pipe',
+    })
+    transport.stderr.on('data', d => log.push(String(d)))
+    await client.connect(transport)
+    let reason = ''
+    await until('the failed reason', async () => {
+      reason = (await client.callTool({ name: 'search_tools', arguments: { query: '' } })).content[0].text
+      return /exit code 2/.test(reason)
+    })
+    await until('the text in the log', () => log.join('').includes(SECRET_TEXT))
+    assert.match(reason, /Its stderr is not shown here/)
+    assert.ok(!reason.includes(SECRET_TEXT), 'the model reads no stderr text')
+    assert.ok(!brokerLog().includes(SECRET_TEXT))
+    await client.close()
+  })
 })
