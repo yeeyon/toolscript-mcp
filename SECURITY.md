@@ -35,7 +35,7 @@ Include:
   toolscript-mcp. A declined policy is not asked again until the config file changes. A changed policy that lets a
   tool run with less approval and applies without the person's approval is in scope.
 - The server refuses a nested call when a string in its arguments names a guarded folder: `~/.toolscript-mcp/hints`,
-  `functions`, `learned` and `oauth`, and the `hints` folder of the project. It checks paths and the text of the
+  `functions`, `learned`, `oauth` and `broker`, and the `hints` folder of the project. It checks paths and the text of the
   call, also through `..`, letter case, symlinks, junctions and 8.3 names. No allow rule or approval lifts it. This is
   a net for a confused model and the simple injected program. It is not containment. A shell command that no name
   matches, the native tools of the client, another process, a tool that writes from an id or a URL, a hard link, a

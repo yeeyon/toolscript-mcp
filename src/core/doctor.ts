@@ -11,7 +11,17 @@ import { decide, matches, printable, ruleText, shownName, type Bridges, type Pol
 export type Status = 'ok' | 'info' | 'warn' | 'fail'
 
 /** The checks in the order that doctor prints them. */
-export const CHECK_NAMES = ['node', 'config', 'servers', 'share', 'policy', 'sandbox', 'run-log', 'files'] as const
+export const CHECK_NAMES = [
+  'node',
+  'config',
+  'servers',
+  'share',
+  'broker',
+  'policy',
+  'sandbox',
+  'run-log',
+  'files',
+] as const
 export type CheckName = (typeof CHECK_NAMES)[number]
 
 /** What one check found. A check gives one finding or more. */
@@ -158,10 +168,10 @@ export const staleStoreKeys = (files: readonly string[], used: ReadonlySet<strin
   ...new Set(files.flatMap(f => (used.has(f) ? [] : (STORE_FILE.exec(f)?.slice(1, 2) ?? [])))),
 ]
 
-/** The first line of the share check: the switch, its source, and that this version starts no shared server. */
+/** The first line of the share check: the switch and its source. */
 const shareSwitch = ({ on, source }: Config['share']): string => {
   const how = { default: ' (the default)', config: ' ("share": ' + on + ')', env: ` (TOOLSCRIPT_SHARE=${on ? 1 : 0})` }
-  return `sharing is ${on ? 'on' : 'off'}${how[source]}. This version starts each server one time per session in any case`
+  return `sharing is ${on ? 'on' : 'off'}${how[source]}`
 }
 
 /** The line of one server: the class that it gets when sharing is on, the rule that decided and the way out. */

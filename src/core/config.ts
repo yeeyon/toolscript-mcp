@@ -155,7 +155,8 @@ export type Config = {
   readonly log: boolean
   /**
    * The share switch: `TOOLSCRIPT_SHARE`, else the top-level `"share"`, else off (decision 026). When it is off, every
-   * server starts one time per session, also one with `"share": true`.
+   * server starts one time per session, also one with `"share": true`. With it on, a shared or per-folder stdio
+   * server has one child in the broker (`src/host/broker.ts`).
    */
   readonly share: { readonly on: boolean; readonly source: 'default' | 'config' | 'env' }
 }

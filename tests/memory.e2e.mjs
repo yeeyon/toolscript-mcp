@@ -1,5 +1,5 @@
-// Test of bench/memory.mjs in fixture mode, on Linux, macOS and Windows: the smoke run (2 rounds, 3 stdio servers
-// each), the secrets rule, the bad --json path and the hard kill of the bench. It asserts no memory threshold. Run
+// Test of bench/memory.mjs in fixture mode, on Linux, macOS and Windows: the smoke run (2 rounds, 4 stdio servers
+// each), the same with sharing on, the secrets rule, the bad --json path and the hard kill of the bench. It asserts no memory threshold. Run
 // `npm run build` first.
 //
 //   node tests/memory.e2e.mjs
@@ -17,13 +17,16 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const BENCH = path.join(ROOT, 'bench', 'memory.mjs')
 const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-memory-test-')))
 // The bench makes its temp dirs here, so a test can see what it left.
-const env = { ...process.env, TMPDIR: dir, TEMP: dir, TMP: dir }
+const env = { ...process.env, TMPDIR: dir, TEMP: dir, TMP: dir, TOOLSCRIPT_SHARE: '0' }
+// Sharing on, with a short idle time, so a round can wait for the end of its broker.
+const IDLE_MS = 1500
+const shared = { ...env, TOOLSCRIPT_SHARE: '1', TOOLSCRIPT_BROKER_IDLE_MS: String(IDLE_MS) }
 after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
 
 // No free-RAM floor: a small runner (macOS counts only free pages) must not stop round 1 at 0 sessions.
 const FAST = ['--min-free-mb', '0']
 const SMOKE = [...FAST, '--counts', '1,2', '--idle', '1', '--after-run', '1', '--closed', '3']
-const KEYS = ['bench1', 'bench2', 'bench3']
+const KEYS = ['bench1', 'bench2', 'bench3', 'bench4']
 
 test('an unknown flag exits 2 before any spawn', () => {
   const r = spawnSync(process.execPath, [BENCH, '--nope'], { encoding: 'utf8', env, windowsHide: true })
@@ -105,6 +108,69 @@ test('the smoke run: N hosts, N copies of each server, timings, no leftovers, no
   )
 })
 
+/** The server rows of one sample that are the top of a copy: their parent is not a row of the same server. */
+const copies = (procs, key) =>
+  procs.filter(p => p.role === `server ${key}` && !procs.some(q => q.pid === p.ppid && q.role === p.role)).length
+
+test('sharing on, 6 sessions in 2 folders at --counts 1,2: one broker, the copies of each class, no leftover', () => {
+  const json = path.join(dir, 'shared.json')
+  const r = spawnSync(
+    process.execPath,
+    [
+      BENCH,
+      ...FAST,
+      '--counts',
+      '1,2',
+      '--folders',
+      'a,b',
+      '--idle',
+      '1',
+      '--after-run',
+      '1',
+      '--closed',
+      '8',
+      '--json',
+      json,
+    ],
+    { encoding: 'utf8', env: shared, windowsHide: true, timeout: 240_000 },
+  )
+  assert.equal(r.status, 0, r.stderr)
+  const data = JSON.parse(fs.readFileSync(json, 'utf8'))
+  assert.equal(data.meta.folders, 2)
+  for (const round of data.rounds) {
+    const n = round.count
+    assert.equal(round.sessions.filter(s => s.ok && s.runOk).length, n)
+    assert.deepEqual(
+      round.sessions.map(s => s.folder),
+      n === 1 ? [0] : [0, 1],
+    )
+    for (const phase of ['idle', 'after-run']) {
+      const procs = round.samples[phase].procs
+      const brokers = procs.filter(
+        p => p.role === 'broker' && !procs.some(q => q.pid === p.ppid && q.role === 'broker'),
+      )
+      assert.equal(brokers.length, 1, `${phase}: one broker tree`)
+      assert.equal(new Set(procs.map(p => p.pid)).size, procs.length, 'each process once')
+      assert.equal(copies(procs, 'bench1'), 1, 'share true: one copy')
+      assert.equal(copies(procs, 'bench2'), 1, 'cwd: one copy')
+      assert.equal(copies(procs, 'bench3'), Math.min(n, 2), 'no key: one copy for each folder')
+      assert.equal(copies(procs, 'bench4'), n, 'share false: one copy for each session')
+      // The servers of the broker belong to no session.
+      assert.ok(procs.filter(p => p.role === 'server bench1').every(p => p.session === null))
+    }
+    assert.deepEqual(round.leftovers, [], 'the broker ended at its idle time')
+    for (const s of round.sessions) assert.deepEqual(s.connected, KEYS)
+  }
+  assert.ok(!r.stdout.includes(MARKER) && !r.stderr.includes(MARKER), 'the marker is in no output')
+})
+
+test('--folders and --call give bad values a message, and --call is for real mode only', () => {
+  const run = args => spawnSync(process.execPath, [BENCH, ...args], { encoding: 'utf8', env, windowsHide: true })
+  assert.match(run(['--folders', 'a,,b']).stderr, /--folders: names or paths/)
+  assert.match(run(['--call', 'mcp__bench1__list_issues']).stderr, /--call: real mode only/)
+  assert.equal(run(['--folders', '']).status, 2)
+})
+
 test('--min-free-mb names megabytes when its value is bad', () => {
   const r = spawnSync(process.execPath, [BENCH, '--min-free-mb', 'lots'], { encoding: 'utf8', env, windowsHide: true })
   assert.equal(r.status, 2)
@@ -137,35 +203,58 @@ const waitFor = (child, pattern, ms) =>
   })
 
 const idOf = p => `${p.pid}:${p.t}`
-/** Rows of the given hosts (pid and creation time) and of every process whose command line holds the marker. */
-const alive = async hostIds => {
-  const table = await readTable()
-  return table.filter(p => hostIds.has(idOf(p)) || p.cmd.includes(MARKER))
+/**
+ * The ids (pid and creation time) of the hosts and of every process below them: their servers, the broker (detached,
+ * its ppid still names the host that started it), its servers and their wrappers. A child is never older than its
+ * parent. A process of another run, such as a broker of this build in another home, is in no such tree.
+ */
+const treeOf = (table, hostPids) => {
+  const tree = new Map(table.filter(p => hostPids.includes(p.pid)).map(p => [p.pid, p.t]))
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const p of table) {
+      if (tree.has(p.pid) || !tree.has(p.ppid) || tree.get(p.ppid) > p.t) continue
+      tree.set(p.pid, p.t)
+      grew = true
+    }
+  }
+  return new Set([...tree].map(([pid, t]) => `${pid}:${t}`))
 }
 const benchDirs = () => fs.readdirSync(dir).filter(f => f.startsWith('toolscript-memory-'))
 
 test('a hard kill of the bench leaves no host and no fake server, and the next start removes its temp dir', async () => {
+  // A process of another run whose command line names the broker of this build: the test must neither count nor end it.
+  const named = path.join(ROOT, 'dist', 'host', 'broker.js')
+  const other = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', named], {
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  after(() => other.kill())
   const child = spawn(process.execPath, [BENCH, ...FAST, '--counts', '2', '--idle', '60'], {
-    env,
+    env: shared,
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   })
   const seen = await waitFor(child, /idle: 60 s/, 120_000)
   const pids = [...seen.matchAll(/host pid (\d+)/g)].map(m => Number(m[1]))
   assert.equal(pids.length, 2)
-  const hostIds = new Set((await readTable()).filter(p => pids.includes(p.pid)).map(idOf))
-  assert.equal(hostIds.size, 2)
-  assert.ok((await alive(hostIds)).length >= 8, 'the hosts and their servers run')
+  const tree = treeOf(await readTable(), pids)
+  assert.ok(tree.size >= 8, 'the hosts, their servers and the broker run')
   child.kill('SIGKILL')
   await new Promise(resolve => child.on('exit', resolve))
-  await new Promise(resolve => setTimeout(resolve, 10_000))
-  const left = await alive(hostIds)
+  await new Promise(resolve => setTimeout(resolve, 10_000 + IDLE_MS * 2))
+  const left = (await readTable()).filter(p => tree.has(idOf(p)))
   // Do not leave them running if the assertion fails: only rows that matched by pid and creation time.
   for (const p of left) {
     try {
       process.kill(p.pid, 'SIGKILL')
     } catch {}
   }
+  const ended = await Promise.race([
+    new Promise(resolve => other.once('exit', () => resolve(true))),
+    new Promise(resolve => setTimeout(() => resolve(false), 1000)),
+  ])
+  assert.equal(ended, false, 'the process of another run still lives')
   assert.deepEqual(
     left.map(p => `${p.name} ${p.pid}`),
     [],

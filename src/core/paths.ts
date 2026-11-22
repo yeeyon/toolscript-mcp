@@ -8,6 +8,7 @@ const HINTS = 'hints'
 const FUNCTIONS = 'functions'
 const LEARNED = 'learned'
 const OAUTH = 'oauth'
+const BROKER = 'broker'
 
 /**
  * An absolute path with empty, `.` and `..` parts resolved. A Windows path
@@ -62,11 +63,17 @@ export const shapesFolder = (home: string): string => appPath(home, LEARNED)
 export const shapesFile = (home: string): string => `${shapesFolder(home)}/shapes.json`
 
 /**
- * The text that names a guarded folder in any root: `.toolscript-mcp/hints` and the three others, never the bare
+ * The folder of the shared-server broker under HOME (issue #63): its key file, its log and, outside Windows, its
+ * socket. The key file is alone in it with them, so a guard on the folder covers nothing else.
+ */
+export const brokerFolder = (home: string): string => appPath(home, BROKER)
+
+/**
+ * The text that names a guarded folder in any root: `.toolscript-mcp/hints` and the four others, never the bare
  * `.toolscript-mcp`, which also holds `files/`, the run log and the config. `src/core/guard.ts` looks for them in
  * the text of a call, where `~`, `$HOME` or a relative path hides the root.
  */
-export const GUARD_MARKERS: readonly string[] = [HINTS, FUNCTIONS, LEARNED, OAUTH].map(name => `${APP}/${name}`)
+export const GUARD_MARKERS: readonly string[] = [HINTS, FUNCTIONS, LEARNED, OAUTH, BROKER].map(name => `${APP}/${name}`)
 
 /**
  * The folders whose files steer the model, or hold its secrets, as written: the person's and the
@@ -82,7 +89,9 @@ export const guardedDirs = (home: string, project: string, pluginRoot = ''): str
   const plugin = normalizePath(pluginRoot)
   const plugins = normalizePath(`${home}/.claude/plugins`)
   return [
-    ...(home ? [hintsFolder(home), functionsFolder(home), shapesFolder(home), oauthFolder(home)] : []),
+    ...(home
+      ? [hintsFolder(home), functionsFolder(home), shapesFolder(home), oauthFolder(home), brokerFolder(home)]
+      : []),
     ...(project ? [hintsFolder(project)] : []),
     ...(home && plugin.startsWith(`${plugins}/`) ? [plugin] : []),
   ]

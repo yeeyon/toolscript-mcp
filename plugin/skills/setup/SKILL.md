@@ -279,6 +279,14 @@ node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" untrusted <name>
 
 Then tell the person to start a new Claude Code session. `untrusted <name> false` removes the key.
 
+To make every session use one copy of a stdio server (the share switch must be on), run this command with approval:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" share <name>
+```
+
+It sets `"share": true` on the server. `share <name> false` removes the key. It prints no secret.
+
 ## 10. Log in to an OAuth server
 
 init lists the HTTP servers without headers, and `config.mjs` marks them `oauth`. For each one, give the person

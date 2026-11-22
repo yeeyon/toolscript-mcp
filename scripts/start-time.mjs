@@ -35,6 +35,11 @@ const runs = Number(values.runs)
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-start-'))
 const config = path.join(dir, 'config.json')
+// A temp home (os.homedir() reads USERPROFILE on Windows and HOME elsewhere): with TOOLSCRIPT_SHARE=1 the broker, its
+// key and its log go there, not into the home of the person who runs this.
+const home = path.join(dir, 'home')
+fs.mkdirSync(home)
+const env = { ...process.env, HOME: home, USERPROFILE: home }
 const fake = { command: process.execPath, args: [path.join(ROOT, 'bench', 'fake-server.mjs')] }
 const servers = Array.from({ length: Number(values.servers) }, (_, i) => [`bench${i + 1}`, fake])
 fs.writeFileSync(config, JSON.stringify({ mcpServers: Object.fromEntries(servers) }))
@@ -46,14 +51,11 @@ const npm = (args, cwd) => {
   assert.equal(r.status, 0, `npm ${args.join(' ')} failed:\n${r.stderr}`)
   return r.stdout
 }
+const main = path.resolve(values.main ?? path.join(ROOT, 'dist', 'host', 'main.js'))
 const start = bin =>
   bin === undefined
-    ? spawn(process.execPath, [
-        path.resolve(values.main ?? path.join(ROOT, 'dist', 'host', 'main.js')),
-        '--config',
-        config,
-      ])
-    : spawn(quote(bin), ['--config', quote(config)], { shell: WIN })
+    ? spawn(process.execPath, [main, '--config', config], { env, windowsHide: true })
+    : spawn(quote(bin), ['--config', quote(config)], { shell: WIN, env, windowsHide: true })
 
 const send = (child, msg) => child.stdin.write(`${JSON.stringify(msg)}\n`)
 
@@ -138,5 +140,17 @@ try {
   console.log(`tools/list: ${summary(all.map(t => t.list))}`)
   if (tarball) console.log(`install: ${summary(all.map(t => t.install))}`)
 } finally {
-  fs.rmSync(dir, { recursive: true, force: true })
+  // A broker that the starts left in the temp home: end it, so it does not hold the folder for its idle time. Only the
+  // last broker of the log can live, and only when no exit line follows its start line.
+  let log = ''
+  try {
+    log = fs.readFileSync(path.join(home, '.toolscript-mcp', 'broker', 'broker.log'), 'utf8')
+  } catch {}
+  const live = /start pid (\d+)\n(?:(?!.* exit\n).*\n)*$/.exec(log)
+  if (live) {
+    try {
+      process.kill(Number(live[1]))
+    } catch {}
+  }
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 })
 }

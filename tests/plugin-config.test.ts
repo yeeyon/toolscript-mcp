@@ -253,6 +253,30 @@ describe('plugin config helper', () => {
     }
   })
 
+  it('sets "share": true on a server, removes the key with false, and prints no secret', () => {
+    const file = makeConfig()
+    for (const [args, value] of [
+      [['local'], true],
+      [['local', 'false'], undefined],
+      [['remote', 'true'], true],
+    ] as const) {
+      const { code, out } = run(file, 'share', ...args)
+      assert.equal(code, 0)
+      for (const secret of SECRETS) assert.ok(!out.includes(secret), secret)
+      const saved = JSON.parse(read(file))
+      assert.equal(saved.mcpServers[args[0]].share, value)
+      const { share: _, ...rest } = saved.mcpServers[args[0]]
+      assert.deepEqual(rest, FIXTURE.mcpServers[args[0]])
+      assert.deepEqual(saved.policy, FIXTURE.policy)
+    }
+    const before = read(file)
+    assert.equal(run(file, 'share', 'missing').code, 1)
+    assert.equal(run(file, 'share', 'local', 'yes').code, 2)
+    assert.equal(run(file, 'share').code, 2)
+    assert.equal(run(file, 'share', 'local', 'true', 'more').code, 2)
+    assert.equal(read(file), before)
+  })
+
   it('keeps the share keys, at the top level and on a server', () => {
     const shared = {
       ...FIXTURE,

@@ -25,7 +25,10 @@ import {
   type ServerEntry,
   type ServerKey,
 } from '../core/config.ts'
+import type { Bridges } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
+import { classify } from '../core/share.ts'
+import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 
 /** The time that one server gets for its connect, and for its whole tool list. */
@@ -339,12 +342,25 @@ export const serverFetch = (server: HttpServer): FetchLike => {
  * stderr, as one line. The child's stderr also goes to `stderr`.
  */
 const transportOf = (
+  key: ServerKey,
   server: ServerConfig,
   onSessionEnd: (err: Error) => void,
   auth: Auth | undefined,
   stderr: (chunk: Buffer) => void,
+  share: ShareOptions | undefined,
 ): { transport: Transport; lastError: () => string } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
+  // With sharing on, a shared or per-folder server has one child in the broker and never a child of this process.
+  const class_ = share === undefined ? undefined : classify(key, server, share.bridges)
+  if (share !== undefined && class_ !== undefined && class_.class !== 'session')
+    return {
+      transport: new BrokerTransport({
+        home: share.home,
+        brokerFile: share.brokerFile,
+        entry: entryOf(server, class_, { home: share.home, folder: share.folder }),
+      }),
+      lastError: () => '',
+    }
   const transport = new StdioClientTransport({
     command: server.command,
     args: [...server.args],
@@ -412,6 +428,17 @@ export type ConnectOptions = {
   readonly childStderr?: (chunk: Buffer) => void
   /** The sentence that ends the reason of an untrusted server in place of its error text. */
   readonly unshown?: string
+  /** Sharing is on (issue #63): a shared or per-folder stdio server links to the broker. Absent: every child is this process's. */
+  readonly share?: ShareOptions
+}
+
+/** What a link needs to use the broker. `brokerFile` is undefined for a run from source: each shared link then fails. */
+export type ShareOptions = {
+  readonly bridges: Bridges
+  readonly home: string
+  /** The folder of this session: where a per-folder server runs. */
+  readonly folder: string
+  readonly brokerFile: string | undefined
 }
 
 export const connectAll = (
@@ -427,6 +454,7 @@ export const connectAll = (
     firstWaitMs = FIRST_WAIT_MS,
     childStderr = chunk => void process.stderr.write(chunk),
     unshown = UNSHOWN,
+    share,
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -498,7 +526,7 @@ export const connectAll = (
       if (problem !== undefined) throw new OwnError(problem)
       // close() closes only the clients that it sees: a shutdown during the check must not start a process after it.
       if (closing) throw new OwnError('toolscript-mcp is shutting down')
-      const made = transportOf(server, sessionEnded, auth, childStderr)
+      const made = transportOf(key, server, sessionEnded, auth, childStderr, share)
       lastError = made.lastError
       await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
       const first = await list()
@@ -526,7 +554,7 @@ export const connectAll = (
       await client.close().catch(() => {})
       opened.delete(client)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
-      if (isOAuthStop(err) || err instanceof OwnError) fail(errorText(err))
+      if (isOAuthStop(err) || err instanceof OwnError || err instanceof BrokerError) fail(errorText(err))
       else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
     }
   }

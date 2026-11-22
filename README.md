@@ -417,13 +417,14 @@ checks come in this order:
 2. `config`: the config exists and has no errors. If it does not exist, doctor prints the `init` command.
 3. `servers`: doctor connects to each server in parallel. Each line shows the tool count, the login command or the
    reason of the failure. It marks each server with `"untrusted": true`.
-4. `share`: the share switch, and the class of each stdio server and the rule that decided. All lines are `info`. This version still starts each server one time per session.
-5. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
+4. `share`: the share switch, and the class of each stdio server and the rule that decided. All lines are `info`.
+5. `broker`: only when sharing is on and a server is `shared` or `folder`. Doctor finds the build of the broker and connects to it. It starts the broker when none runs. It checks the proof of the key in both directions. One line: `ok`, or `fail` with the reason and the ways out. It starts no server.
+6. `policy`: hidden rules, allow rules that match no tool, allow rules that skip a
    [Claude Code bridge](#claude-code-as-a-downstream-server), and the tools that require a person.
-6. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
-7. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run. As in `runs`, it
+7. `sandbox`: the layers of this system, and a run of `return 1` in the real sandbox.
+8. `run-log`: on or off, the path of the [run log](#run-log), and the ending of the newest run. As in `runs`, it
    skips a run with a time more than 5 minutes after now, and counts these runs.
-8. `files`: doctor can write to `~/.toolscript-mcp`. If that path or a folder above it is a file, the check fails. An
+9. `files`: doctor can write to `~/.toolscript-mcp`. If that path or a folder above it is a file, the check fails. An
    `info` line names the OAuth tokens that no server of the config uses. They can belong to another config.
 
 doctor skips the check for allow rules that match no tool when a server does not connect. The output never shows
@@ -817,7 +818,7 @@ servers, the check returned 86 to 820 characters. An empty query with the defaul
 
 ### Shared servers
 
-Sharing is not active in this version. A later version can start one copy of a stdio server for several sessions. It is opt-in and off by default. Today each server still starts one time per session, and `doctor` shows the class that each server gets.
+With sharing on, several sessions use one copy of a stdio server. It is opt-in and off by default. With it off, each session starts its own copy of each server, and nothing else changes.
 
 The switch is `TOOLSCRIPT_SHARE`, else the top-level `"share"`, else off. A stdio server gets one of 3 classes when sharing is on:
 
@@ -836,6 +837,22 @@ The first rule that matches decides:
 The state words are playwright, puppeteer, chrome-devtools, browsermcp, browser, selenium, desktop-commander, shell and terminal. A word counts only between characters that are not letters, with an `s` allowed at its end. The list is not complete. A server that it misses is `folder`. If a server matches a word but keeps no state, or reads no file of its folder, set `"share": true` to share it. A `shared` server without `cwd` starts in your home folder.
 
 Policy, approval and the guard still run in each session for every call, for every class.
+
+A broker holds the shared copies. It is one process for each user and each build of toolscript-mcp. The first session that needs it starts it, hidden and detached, and nothing starts at login. It holds one copy of each server for all sessions, and it decides no policy and keeps no tool result.
+
+A session proves a secret key to the broker before it sends anything, and the broker proves the key back. The key is in `~/.toolscript-mcp/broker`, which only your user can read. Each session has its own connection, so a result reaches only the session that asked. The endpoint is a named pipe on Windows and a socket file elsewhere. There is no TCP port.
+
+A copy with no session stops after 10 minutes. A broker with no session and no copy ends soon after. A new build of toolscript-mcp starts its own broker, and the old one ends when its last session ends.
+
+If a session cannot start or reach the broker, the server of that session fails with a reason. toolscript-mcp never starts a direct copy in its place. The other servers and the session keep working. Run `toolscript-mcp doctor` and read the `broker` line. To get a copy for each session again, use one of these:
+
+- `"share": false` on the server.
+- `"share": false` at the top level of the config.
+- `TOOLSCRIPT_SHARE=0` in the environment.
+
+Two sessions share a copy only when the command, the arguments, the whole environment and the folder are the same. A session that has another value of an `env` variable gets its own copy. Before toolscript-mcp compares `PATH`, it replaces each entry by its real path and drops repeats. Two shells whose `PATH` differs only in a per-shell link to one folder share a copy. Two Node versions do not.
+
+A run from source has no broker, so each shared server fails with that reason. Run the built package to share servers. A server that ignores the end of its input can stay after a broker crash. It can also stay after a session crash.
 
 ### OAuth login
 
@@ -946,12 +963,13 @@ read as words, as the field names of a result do in a session.
 
 ### Guarded folders
 
-Four folders under `~/.toolscript-mcp/` hold files that steer the model, or hold its secrets:
+Five folders under `~/.toolscript-mcp/` hold files that steer the model, or hold its secrets:
 
 - `hints/`: the hint files.
 - `functions/`: the saved functions.
 - `learned/`: the learned result shapes.
 - `oauth/`: the OAuth tokens.
+- `broker/`: the key of the [shared-server broker](#shared-servers), its log and its socket.
 
 The `hints/` folder in the project folder is guarded too. The project folder is the folder where toolscript-mcp
 started. The plugin folder is not guarded yet.

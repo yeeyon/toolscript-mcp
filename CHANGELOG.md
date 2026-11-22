@@ -188,6 +188,9 @@ Shared servers (issue #63, preparation):
 - Added the `share` keys: `"share": true` or `false` at the top level, `true`, `false` or `"folder"` on a stdio server, and `TOOLSCRIPT_SHARE=0` or `1`. Sharing is off by default and not active yet: each server still starts one time per session.
 - Added `src/core/mux.ts`, the pure router of a child process that several sessions share, with a seeded property test, and `src/core/share.ts`, the class and the share key of a stdio server.
 - Added the `doctor` check `share`: the switch, and the class of each stdio server with the rule that decided.
+- Sharing works (slice 3 of #63). With `"share": true` or `TOOLSCRIPT_SHARE=1`, a shared or per-folder stdio server has one child in a broker, `dist/host/broker.js`, for all sessions of a user and build. The broker starts on first use, detached and hidden, and ends when no session and no child is left. A child with no session stops after 10 minutes. A session and the broker prove a key to each other before any other byte, and a failure fails the link with a reason that names `doctor` and the ways out: there is no direct fallback. With sharing off nothing changes.
+- Added the `doctor` check `broker`, the `broker` folder (the key, the log, the socket) to the guarded folders, and the second bundle `dist/host/broker.js`. `PATH` is resolved to real paths before it enters the share key.
+- `bench/memory.mjs` gained the broker row, `--folders` and `--call`, and its fixture one server of each share class.
 
 Runner fixes (inherited from claude-code-mode at eea4077):
 
