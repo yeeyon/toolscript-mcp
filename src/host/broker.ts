@@ -330,7 +330,16 @@ export const startBroker = async ({
       }
       const name = `l${++seq}`
       link = name
-      mine.conns.set(name, { send: msg => write(socket, msg), close })
+      mine.conns.set(name, {
+        // The host reads at most LINE_MAX in a line. A child line under that cap can come out longer once written again
+        // (1e9 becomes 1000000000), and then the link ends with the reason instead of a line the host cuts off.
+        send: msg => {
+          const line = JSON.stringify(msg)
+          if (line.length > LINE_MAX) close('the server sent a message longer than 10 MB')
+          else if (!socket.destroyed) socket.write(`${line}\n`)
+        },
+        close,
+      })
       mine.router.attach(name)
       log(`attach ${tag(id)} links=${mine.conns.size}`)
       socket.write(attachedFrame)
