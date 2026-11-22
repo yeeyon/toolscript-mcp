@@ -30,22 +30,27 @@ const FAKE_SERVER = path.join(REPO, 'bench', 'fake-server.mjs')
 const MB = 1048576
 /** In the arg, an env value, a header and the URL of the fixture: no output may hold it. tests/memory.e2e.mjs checks that. */
 export const MARKER = 'bench-marker-7c1e9a52'
-const FIXTURE_KEYS = ['bench1', 'bench2', 'bench3']
+// One server of each class of the share rules (src/core/share.ts): "share": true, a cwd, no key, "share": false.
+const FIXTURE_KEYS = ['bench1', 'bench2', 'bench3', 'bench4']
 /** The longest wait for a start, a connect and a table read, in ms. */
 const LIMIT = 120_000
 const EXIT_WAIT = 15_000
 const STDIN_WAIT = 5_000
 
 const USAGE = `usage: node bench/memory.mjs [--counts 1,3,6] [--idle SECONDS] [--after-run SECONDS] [--closed SECONDS]
-       [--min-free-mb MB] [--json FILE] [--config FILE]
+       [--min-free-mb MB] [--folders A,B,...] [--call TOOL]... [--json FILE] [--config FILE]
        node bench/memory.mjs --report FILE
-Fixture mode (default) starts hosts with 3 fake stdio servers and a temp home. --config FILE is real mode: the owner's
+Fixture mode (default) starts hosts with 4 fake stdio servers, one of each share class, and a temp home. --config FILE is real mode: the owner's
 config and home, a run_code that only returns 1, and no tool call. Run \`npm run build\` first.
 --counts       sessions per round, one fresh round each (default 1,3,6)
 --idle         seconds without traffic before the first sample (default 60)
 --after-run    seconds from the last run_code result to the second sample (default 5)
 --closed       seconds from the end of every host to the list of leftovers (default 10)
 --min-free-mb  a session does not start when free RAM is below this (default 2048)
+--folders      session k starts in folder k modulo the count. Real mode: the folders must exist. Fixture mode makes
+               one temp folder for each name in the list and never uses the names as paths
+--call TOOL    real mode only, repeatable: each session calls the tool once with {} through run_code (a full id,
+               mcp__<key>__<tool>), and the report says ok or failed for each server key. A result is never printed
 --json FILE    write every process, timing and leftover as JSON
 --report FILE  print the tables of a saved JSON and run nothing`
 
@@ -239,8 +244,9 @@ export const update = (tracker, table) => {
         const session = tracker.hosts.get(e.pid)
         if (session !== undefined && e.ppid === process.pid) {
           info = { session, role: 'host', key: null }
-        } else if (parent === undefined && norm(e.cmd).includes(norm(BROKER)) && e.t >= tracker.since) {
-          // A broker is its own tree: it is not in the host that started it, and it counts once in the union.
+        } else if (norm(e.cmd).includes(norm(BROKER)) && e.t >= tracker.since) {
+          // A broker is its own tree, also while the host that started it lives and is its parent: it belongs to no
+          // session, and it counts once in the union.
           info = { session: null, role: 'broker', key: null }
         } else if (parent !== undefined && parent.t <= e.t) {
           // A child is never older than its parent. An older row only holds a stale ppid that a new process reused.
@@ -309,14 +315,14 @@ const endAlive = async tracker => {
 // One session: a host over stdio and the MCP client of this script.
 
 class Session {
-  constructor(n, command, args, env) {
+  constructor(n, command, args, env, cwd) {
     this.n = n
     this.exit = undefined
     this.pending = new Map()
     this.nextId = 1
     this.buffer = ''
     this.exited = new Promise(resolve => {
-      this.child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
+      this.child = spawn(command, args, { env, cwd, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
       this.pid = this.child.pid
       this.child.on('error', err => {
         this.exit ??= { code: null, error: err.code ?? 'spawn' }
@@ -393,7 +399,9 @@ const RUN_REAL = 'return 1'
 const startSession = async (ctx, n) => {
   const rec = { n, ok: false }
   const t0 = performance.now()
-  const s = new Session(n, process.execPath, [MAIN, '--config', ctx.configFile], ctx.env)
+  const folder = ctx.folders.length === 0 ? undefined : ctx.folders[(n - 1) % ctx.folders.length]
+  if (folder !== undefined) rec.folder = (n - 1) % ctx.folders.length
+  const s = new Session(n, process.execPath, [MAIN, '--config', ctx.configFile], ctx.env, folder)
   ctx.live.add(s)
   rec.pid = s.pid
   try {
@@ -464,6 +472,53 @@ const connect = async (ctx, s, rec) => {
   if (connecting.length > 0) rec.connectTimeout = true
   rec.failed = [...new Set([...failed, ...connecting])].filter(k => keys.has(k)).sort()
   rec.connected = ctx.keys.filter(k => !rec.failed.includes(k))
+  // The tool count of each connected key: the summaries of every tool, counted by the key in their id.
+  try {
+    const reply = await s.request(
+      'tools/call',
+      { name: 'search_tools', arguments: { query: '', limit: 100_000 } },
+      LIMIT,
+    )
+    const text = reply.result?.content?.[0]?.text ?? ''
+    rec.tools = Object.fromEntries(
+      rec.connected.map(k => [k, text.split('\n').filter(l => l.startsWith(`### mcp__${k}__`)).length]),
+    )
+  } catch {}
+}
+
+/** The program of --call: a status for each tool and nothing else, so that no result reaches the output. */
+const callProgram = tools =>
+  [
+    `const tools = ${JSON.stringify(tools)}`,
+    'const out = {}',
+    "for (const t of tools) { try { await call(t, {}); out[t] = 'ok' } catch { out[t] = 'failed' } }",
+    'return out',
+  ].join('\n')
+
+const keyOfTool = (ctx, tool) => ctx.keys.find(k => tool.startsWith(`mcp__${k}__`))
+
+/** Runs the --call tools in one session and records ok or failed for each server key. */
+const callTools = async (ctx, s, rec) => {
+  const status = {}
+  try {
+    const reply = await s.request(
+      'tools/call',
+      { name: 'run_code', arguments: { code: callProgram(ctx.calls) } },
+      ctx.runLimit,
+    )
+    const text = reply.result?.content?.[0]?.text ?? ''
+    let out = {}
+    try {
+      out = JSON.parse(text.split('\n\n---')[0])
+    } catch {}
+    for (const tool of ctx.calls) {
+      const key = keyOfTool(ctx, tool)
+      status[key] = status[key] === 'failed' || out[tool] !== 'ok' ? 'failed' : 'ok'
+    }
+  } catch {
+    for (const tool of ctx.calls) status[keyOfTool(ctx, tool)] = 'failed'
+  }
+  rec.calls = status
 }
 
 const sample = async (ctx, round, phase) => {
@@ -539,6 +594,10 @@ const runRound = async (ctx, data, count) => {
           rec.runOk = false
         }
       }
+    }
+    if (ctx.calls.length > 0) {
+      log('  run: each --call tool once per session')
+      for (const s of sessions) await callTools(ctx, s, round.sessions[s.n - 1])
     }
     log(`  after-run: ${ctx.afterRun} s`)
     await sleep(ctx.afterRun * 1000)
@@ -646,7 +705,33 @@ export const render = data => {
   const unmeasured = data.rounds.reduce((n, r) => n + sum(Object.values(r.samples).map(s => s.unmeasured)), 0)
   if (unmeasured > 0) notes.push(`${unmeasured} process rows had no memory figure and count as 0`)
   if (data.rounds.some(r => r.leftoversEnded)) notes.push('the bench ended each leftover by tree after it listed them')
+  if (data.meta.folders > 0) notes.push(`session k started in folder k modulo ${data.meta.folders}`)
   if (notes.length > 0) lines.push('', ...notes.map(n => `- ${n}`))
+
+  const served = data.rounds.filter(r => r.sessions.some(s => s.connected !== undefined))
+  if (served.length > 0) {
+    lines.push(
+      '',
+      '### Servers',
+      '',
+      '| sessions | key | connected | failed | tools | calls |',
+      '| ---: | --- | ---: | ---: | --- | --- |',
+    )
+    for (const r of served) {
+      const ok = r.sessions.filter(x => x.ok)
+      for (const key of data.meta.keys) {
+        const connected = ok.filter(x => x.connected?.includes(key))
+        const failed = ok.filter(x => x.failed?.includes(key))
+        const counts = connected.map(x => x.tools?.[key]).filter(n => n !== undefined)
+        const called = ok.filter(x => x.calls?.[key] !== undefined)
+        const calls =
+          called.length === 0
+            ? '-'
+            : `${called.filter(x => x.calls[key] === 'ok').length} ok, ${called.filter(x => x.calls[key] === 'failed').length} failed`
+        lines.push(`| ${ok.length} | ${key} | ${connected.length} | ${failed.length} | ${spread(counts)} | ${calls} |`)
+      }
+    }
+  }
 
   const last = [...data.rounds].reverse().find(r => r.samples.idle)
   if (last) {
@@ -706,11 +791,17 @@ export const render = data => {
 
 // Setup
 
-const fixtureConfig = () => {
+const fixtureConfig = cwd => {
+  const extra = { bench1: { share: true }, bench2: { cwd }, bench3: {}, bench4: { share: false } }
   const servers = Object.fromEntries(
     FIXTURE_KEYS.map(k => [
       k,
-      { command: process.execPath, args: [FAKE_SERVER, k, `--note=${MARKER}`], env: { BENCH_NOTE: MARKER } },
+      {
+        command: process.execPath,
+        args: [FAKE_SERVER, k, `--note=${MARKER}`],
+        env: { BENCH_NOTE: MARKER },
+        ...extra[k],
+      },
     ]),
   )
   // An HTTP entry that nothing answers: it costs no process, and holds a header and a URL for the secrets test.
@@ -757,6 +848,8 @@ const parseOptions = () => {
         json: { type: 'string' },
         report: { type: 'string' },
         config: { type: 'string' },
+        folders: { type: 'string' },
+        call: { type: 'string', multiple: true },
       },
     }).values
   } catch (err) {
@@ -796,6 +889,11 @@ const main = async () => {
   const minFree = Number(opts['min-free-mb'] ?? 2048)
   if (!Number.isFinite(minFree) || minFree < 0) bad('--min-free-mb: a number of megabytes, 0 or more')
   const real = opts.config !== undefined
+  const calls = opts.call ?? []
+  if (calls.length > 0 && !real) bad('--call: real mode only (with --config)')
+  const folderNames = opts.folders === undefined ? [] : opts.folders.split(',')
+  if (opts.folders !== undefined && (folderNames.some(n => n === '') || folderNames.length > 64))
+    bad('--folders: names or paths separated by commas, at most 64')
   if (!fs.existsSync(MAIN)) {
     console.error('dist/host/main.js is missing: run npm run build first')
     process.exit(1)
@@ -805,6 +903,7 @@ const main = async () => {
   let configFile
   let env = process.env
   let servers
+  let folders = []
   if (real) {
     configFile = path.resolve(opts.config)
     try {
@@ -812,6 +911,12 @@ const main = async () => {
     } catch {
       return bad('--config: the file is missing or is not JSON')
     }
+    folders = folderNames.map(n => path.resolve(n))
+    for (const folder of folders)
+      if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return bad('--folders: a folder does not exist')
+    for (const tool of calls)
+      if (!Object.keys(servers).some(k => tool.startsWith(`mcp__${k}__`)))
+        return bad('--call: a tool id must start with mcp__<key>__ of a server of the config')
   } else {
     // A temp home and temp dir, as in tests/server.e2e.mjs: the real run log, shapes file and OAuth store stay out of it.
     // The dir name holds this script's pid and creation time. A hard kill leaves the dir, so each start removes the
@@ -824,7 +929,13 @@ const main = async () => {
     const tmp = path.join(root, 'tmp')
     fs.mkdirSync(home)
     fs.mkdirSync(tmp)
-    const config = fixtureConfig()
+    fs.mkdirSync(path.join(root, 'cwd'))
+    folders = folderNames.map((_, i) => {
+      const folder = path.join(root, 'folders', `f${i}`)
+      fs.mkdirSync(folder, { recursive: true })
+      return folder
+    })
+    const config = fixtureConfig(path.join(root, 'cwd'))
     servers = config.mcpServers
     configFile = path.join(root, 'config.json')
     fs.writeFileSync(configFile, JSON.stringify(config))
@@ -840,6 +951,8 @@ const main = async () => {
     afterRun,
     closed,
     minFree,
+    folders,
+    calls,
     live: new Set(),
     tracker: undefined,
     program: real ? RUN_REAL : RUN_FIXTURE,
@@ -857,10 +970,13 @@ const main = async () => {
       ramTotalMb: Math.round(os.totalmem() / MB),
       ramFreeMb: Math.round(freeMb()),
       keys: ctx.keys,
+      folders: folders.length,
       memory: MEMORY_NOTE,
       program: real
-        ? 'real: `return 1`, no tool call'
-        : 'fixture: one list_issues call on each of the 3 servers, checked',
+        ? calls.length === 0
+          ? 'real: `return 1`, no tool call'
+          : `real: \`return 1\`, then ${calls.length} tool call${calls.length === 1 ? '' : 's'} (--call) in each session`
+        : 'fixture: one list_issues call on each of the 4 servers, checked',
     },
     rounds: [],
   }

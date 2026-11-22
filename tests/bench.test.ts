@@ -267,3 +267,22 @@ test('memory.mjs counts as a broker only the broker.js of this build', () => {
     ['8000 broker'],
   )
 })
+
+test('memory.mjs counts a broker that a live host started as its own tree, with its servers by key', () => {
+  const groups = [{ keys: ['grafana'], needle: 'node', args: ['fake-server.mjs', 'grafana'] }]
+  const tracker = newTracker(groups, 0)
+  tracker.hosts.set(5000, 1)
+  const ours = path.join(REPO, 'dist', 'host', 'broker.js')
+  const row = { name: 'node.exe', pb: 1, ws: 1 }
+  const table = [
+    { ...row, pid: 5000, ppid: process.pid, t: 100, cmd: 'node main.js' },
+    // The broker is detached, but its ppid still names the host that started it.
+    { ...row, pid: 5100, ppid: 5000, t: 200, cmd: `node "${ours}"` },
+    { ...row, pid: 5101, ppid: 5100, t: 300, cmd: 'node fake-server.mjs grafana' },
+    { ...row, pid: 5102, ppid: 5101, t: 310, name: 'conhost.exe', cmd: 'conhost.exe' },
+  ]
+  assert.deepEqual(
+    update(tracker, table).map(i => `${i.pid} ${i.role} ${i.session}`),
+    ['5000 host 1', '5100 broker null', '5101 server grafana null', '5102 server grafana null'],
+  )
+})
