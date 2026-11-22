@@ -14,6 +14,12 @@ import crossSpawn from 'cross-spawn'
 /** The time that a child gets to leave after its stdin ends, before its tree is ended. */
 export const STOP_WAIT_MS = 2000
 
+/**
+ * The same time at the shutdown of the host: the client of the host waits about 2 s before it kills the host, so the
+ * host must have ended the tree of each child by then.
+ */
+export const HURRY_WAIT_MS = 300
+
 export type ChildParams = {
   readonly command: string
   readonly args: readonly string[]
@@ -60,6 +66,9 @@ export class ChildTransport implements Transport {
   readonly #open = new Set<string | number>()
   #proc: ChildProcess | undefined
   #stopping: Promise<void> | undefined
+  #grace = STOP_WAIT_MS
+  #timer: NodeJS.Timeout | undefined
+  #kill: (() => void) | undefined
 
   constructor(params: ChildParams) {
     this.#params = params
@@ -144,6 +153,14 @@ export class ChildTransport implements Transport {
     })
   }
 
+  /** The host shuts down: a child that has not left HURRY_WAIT_MS after its stdin ended loses its tree now. */
+  hurry(): void {
+    this.#grace = HURRY_WAIT_MS
+    if (this.#timer === undefined || this.#kill === undefined) return
+    clearTimeout(this.#timer)
+    this.#timer = setTimeout(this.#kill, HURRY_WAIT_MS)
+  }
+
   /** Stops the child and its tree, and settles when it is gone. A second call returns the first. */
   close(): Promise<void> {
     if (this.#stopping !== undefined) return this.#stopping
@@ -154,13 +171,14 @@ export class ChildTransport implements Transport {
         endTree(proc)
         return resolve()
       }
-      const timer = setTimeout(() => {
+      this.#kill = () => {
         endTree(proc)
         // The close event follows the kill. Do not wait for it longer than a second.
         setTimeout(resolve, 1000).unref()
-      }, STOP_WAIT_MS)
+      }
+      this.#timer = setTimeout(this.#kill, this.#grace)
       proc.once('close', () => {
-        clearTimeout(timer)
+        clearTimeout(this.#timer)
         resolve()
       })
       try {
