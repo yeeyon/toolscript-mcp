@@ -404,6 +404,7 @@ describe('the handshake limits and a peer that is not the broker', () => {
       assert.match(err.message, /TOOLSCRIPT_SHARE=0/)
       return true
     })
+    await until('the hello arrives', () => received.length >= 1)
     assert.equal(received.length, 1, 'only the hello')
     assert.ok(!received.join('').includes('hunter2-value') && !received.join('').includes('"entry"'))
   })
