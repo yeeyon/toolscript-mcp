@@ -2453,6 +2453,103 @@ describe('a run waits only for the servers that it names', () => {
   })
 })
 
+describe('a lazy server in a run', () => {
+  const KEY_C = 'claude-code' as ServerKey
+  /** A bridge `claude-code` that is a probe server in `mode`, asleep on a cache that holds `cached`. */
+  const lazyRig = (mode: string, cached: readonly { name: string; _meta?: unknown }[] = [{ name: 'probe' }]) => {
+    const file = path.join(ROOT, `lazy-${randomBytes(4).toString('hex')}.json`)
+    const server: ServerConfig = { kind: 'stdio', command: process.execPath, args: [PROBE, file, mode], env: {} }
+    const id = JSON.stringify([server.command, server.args])
+    const saved = new Map<string, { at: number; tools: readonly { name: string; _meta?: unknown }[] }>([
+      [id, { at: 1, tools: cached }],
+    ])
+    const downstream = connectAll(new Map([[KEY_C, server]]), '0', () => {}, {
+      lazy: {
+        bridges: new Set([KEY_C]),
+        idleMs: 60_000,
+        cache: {
+          key: s => JSON.stringify([s.command, s.args]),
+          load: async () => new Map(saved),
+          save: async (key, tools) => void saved.set(key, { at: 2, tools }),
+        },
+      },
+    })
+    const starts = () =>
+      fs.existsSync(`${file}.log`)
+        ? fs
+            .readFileSync(`${file}.log`, 'utf8')
+            .split('\n')
+            .filter(l => l.includes('"event":"start"')).length
+        : 0
+    return { downstream, starts }
+  }
+  const allow = rules(['mcp__claude-code__*', 'allow'])
+
+  test('a literal call that needs approval wakes the server, and the prompt comes from the live list, not the cache', async () => {
+    // The cache holds no mark. The live list marks `probe`, so a person is still asked.
+    const { downstream, starts } = lazyRig('--requires-person')
+    try {
+      await downstream.settled
+      assert.equal(starts(), 0)
+      const { run, asked } = setup({ downstream, policy: allow, bridges: [KEY_C] })
+      const r = await run('return await call("mcp__claude-code__probe", {})')
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(asked, [['mcp__claude-code__probe']])
+      assert.equal(starts(), 1)
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a name built at run time wakes the server too', async () => {
+    const { downstream, starts } = lazyRig('--exit-after-call')
+    try {
+      await downstream.settled
+      const { run } = setup({ downstream, policy: allow, bridges: [KEY_C] })
+      const r = await run('const n = ["mcp", "claude-code", "probe"].join("__")\nreturn typeof (await call(n, {}))')
+      assert.equal(r.isError, false, r.text)
+      assert.equal(starts(), 1)
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('3 runs at once that name the sleeping server start 1 child', async () => {
+    const { downstream, starts } = lazyRig('')
+    try {
+      await downstream.settled
+      const { run } = setup({ downstream, policy: allow, bridges: [KEY_C] })
+      const results = await Promise.all([1, 2, 3].map(() => run('return await call("mcp__claude-code__probe", {})')))
+      assert.deepEqual(
+        results.map(r => r.isError),
+        [false, false, false],
+      )
+      assert.equal(starts(), 1)
+    } finally {
+      await downstream.close()
+    }
+  })
+
+  test('a program that the policy denies, and a program that names other servers, start no child', async () => {
+    const { downstream, starts } = lazyRig('')
+    try {
+      await downstream.settled
+      const { run } = setup({ downstream, policy: rules(['mcp__claude-code__*', 'deny'], ['mcp__other__*', 'allow']) })
+      const denied = await run('return await call("mcp__claude-code__probe", {})')
+      assert.equal(denied.isError, true)
+      const other = await run('return await call("mcp__other__echo", {})')
+      assert.equal(other.isError, true)
+      assert.ok(other.text.includes('"other"'), other.text)
+      const nothing = await run('return 1')
+      assert.equal(nothing.isError, false, nothing.text)
+      assert.equal(starts(), 0)
+      assert.equal(downstream.states()[0]?.status, 'asleep')
+    } finally {
+      await downstream.close()
+    }
+  })
+})
+
 describe('the guarded folders', () => {
   const OWN = '~/.toolscript-mcp/'
   // The refusal of any guarded folder: the home ones have `~/`, a link into the project hints does not.
