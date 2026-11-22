@@ -30,8 +30,8 @@ import { brokerFolder } from '../src/core/paths.ts'
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js'
 import { PROBE_VERSION, startBroker, type Broker } from '../src/host/broker.ts'
 import { BrokerError, BrokerTransport, idOf, openLink } from '../src/host/brokerlink.ts'
-import { alive, serverEntry, text, until } from './broker-rig.ts'
-import { endpointFor, folderProblem, loadKey, makeCrypto } from '../src/host/brokerwire.ts'
+import { alive, serverEntry, staleSocket, text, until } from './broker-rig.ts'
+import { buildId, endpointFor, folderProblem, loadKey, makeCrypto } from '../src/host/brokerwire.ts'
 
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-broker-test-')))
 const closers: (() => Promise<void> | void)[] = []
@@ -407,6 +407,41 @@ describe('attach and routing', () => {
   test('a broker that finds its endpoint taken does not start', async () => {
     const rig = await startRig()
     assert.equal(await startBroker({ home: rig.home, idleMs: 600_000, file: rig.file }), undefined)
+  })
+
+  describe('a stale socket file', { skip: process.platform === 'win32' }, () => {
+    const dials = (endpoint: string): Promise<boolean> =>
+      new Promise(resolve => {
+        const probe = net.connect(endpoint)
+        probe.once('connect', () => (probe.destroy(), resolve(true)))
+        probe.once('error', () => resolve(false))
+      })
+
+    test('six brokers started at once against it give exactly one that listens, and it answers', async () => {
+      const home = fs.mkdtempSync(path.join(root, 'h-'))
+      const file = path.join(home, 'broker.js')
+      fs.writeFileSync(file, 'build stale')
+      const endpoint = endpointFor(home, loadKey(home), buildId(file))
+      await staleSocket(endpoint)
+      const six = await Promise.all([0, 1, 2, 3, 4, 5].map(() => startBroker({ home, idleMs: 600_000, file })))
+      const winners = six.filter((b): b is Broker => b !== undefined)
+      closers.push(...winners.map(b => () => b.stop()))
+      assert.equal(winners.length, 1, 'one broker listens')
+      assert.ok(await dials(endpoint), 'the socket answers')
+      assert.equal((fs.readFileSync(`${brokerFolder(home)}/broker.log`, 'utf8').match(/ listen$/gm) ?? []).length, 1)
+    })
+
+    test('the shutdown of a broker leaves a socket that another broker bound at its path', async () => {
+      const first = await startRig()
+      const endpoint = first.broker.endpoint
+      fs.rmSync(endpoint)
+      const second = await startBroker({ home: first.home, idleMs: 600_000, file: first.file })
+      assert.ok(second, 'a second broker binds the freed path')
+      closers.push(() => second.stop())
+      await first.stop()
+      assert.ok(fs.existsSync(endpoint), 'the socket file of the second broker stays')
+      assert.ok(await dials(endpoint), 'and it answers')
+    })
   })
 
   test('the log holds lifecycle lines and no argument, variable or path', async () => {

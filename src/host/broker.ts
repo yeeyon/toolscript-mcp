@@ -121,6 +121,106 @@ const endTree = (proc: ChildProcess): void => {
   }
 }
 
+/** How long a contender waits for the recovery of a stale socket before it gives up. The host polls for 10 s. */
+const RECOVER_MS = 8000
+/** A lock file older than this is stale whatever its pid says. Recovery takes milliseconds. */
+const LOCK_STALE_MS = 5000
+
+/** dev and inode of a file as one text, or undefined when there is none. */
+const fileId = (file: string): string | undefined => {
+  try {
+    const info = fs.statSync(file, { bigint: true })
+    return `${info.dev}:${info.ino}`
+  } catch {
+    return undefined
+  }
+}
+
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * Takes the recovery lock beside the socket: a file made with `wx` that holds a pid, a random id and the time (no
+ * secret). Returns its id, or undefined when another contender holds it. A lock whose pid is dead or that is older than
+ * the bound is removed first, and the next try is the caller's.
+ */
+const takeLock = (file: string): string | undefined => {
+  const id = crypto.randomBytes(8).toString('hex')
+  try {
+    fs.writeFileSync(file, JSON.stringify({ pid: process.pid, id, at: Date.now() }), { flag: 'wx', mode: 0o600 })
+    return id
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+  }
+  try {
+    const held = JSON.parse(fs.readFileSync(file, 'utf8')) as { pid?: unknown; at?: unknown }
+    const dead = typeof held.pid !== 'number' || !pidAlive(held.pid)
+    const old = typeof held.at !== 'number' || Date.now() - held.at > LOCK_STALE_MS
+    if (dead || old) fs.rmSync(file, { force: true })
+  } catch {
+    // Unreadable or half written: a holder may be writing it right now. A file that stays so is old by its mtime.
+    try {
+      if (Date.now() - fs.statSync(file).mtimeMs > LOCK_STALE_MS) fs.rmSync(file, { force: true })
+    } catch {}
+  }
+  return undefined
+}
+
+const dropLock = (file: string, id: string): void => {
+  try {
+    if ((JSON.parse(fs.readFileSync(file, 'utf8')) as { id?: unknown }).id === id) fs.rmSync(file, { force: true })
+  } catch {}
+}
+
+/** One dial of the endpoint: a broker answers, nobody does behind a stale file, or the file is gone. */
+const dial = (endpoint: string): Promise<'alive' | 'stale' | 'gone'> =>
+  new Promise(resolve => {
+    const probe = net.connect(endpoint)
+    probe.once('connect', () => (probe.destroy(), resolve('alive')))
+    probe.once('error', e => {
+      const code = (e as NodeJS.ErrnoException).code
+      resolve(code === 'ECONNREFUSED' ? 'stale' : code === 'ENOENT' ? 'gone' : 'alive')
+    })
+  })
+
+/**
+ * The listen found a socket file at the path. One contender at a time probes it, removes it if nobody answers and
+ * listens, under a lock file. The others wait and dial again, so a socket that the first one bound is never removed.
+ * Returns true when this broker now listens.
+ */
+const recoverSocket = async (endpoint: string, listen: () => Promise<void>): Promise<boolean> => {
+  const lockFile = `${endpoint}.lock`
+  const end = Date.now() + RECOVER_MS
+  while (Date.now() < end) {
+    const lock = takeLock(lockFile)
+    if (lock === undefined) {
+      await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 30))
+      if ((await dial(endpoint)) === 'alive') return false
+      continue
+    }
+    try {
+      const state = await dial(endpoint)
+      if (state === 'alive') return false
+      if (state === 'stale') fs.rmSync(endpoint, { force: true })
+      try {
+        await listen()
+        return true
+      } catch {
+        return false
+      }
+    } finally {
+      dropLock(lockFile, lock)
+    }
+  }
+  return false
+}
+
 /** Starts a broker, or returns undefined when another broker of this build already listens. */
 export const startBroker = async ({
   home,
@@ -410,19 +510,28 @@ export const startBroker = async ({
     await listen()
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err
-    // A socket file that nobody answers is stale: remove it and listen again. Anything else means a broker is there.
-    const alive = await new Promise<boolean>(resolve => {
-      const probe = net.connect(endpoint)
-      probe.once('connect', () => (probe.destroy(), resolve(true)))
-      probe.once('error', e => resolve((e as NodeJS.ErrnoException).code !== 'ECONNREFUSED'))
-    })
-    if (alive || process.platform === 'win32') return undefined
-    fs.rmSync(endpoint, { force: true })
+    // Windows pipes vanish with their process, so a taken name means a broker is there.
+    if (process.platform === 'win32' || !(await recoverSocket(endpoint, listen))) return undefined
+  }
+  // The inode of the socket file this broker bound: at the close, a file at the path that is not this one is another
+  // broker's, and stays.
+  const mine = process.platform === 'win32' ? undefined : fileId(endpoint)
+  const closeServer = (): void => {
+    const now = mine === undefined ? undefined : fileId(endpoint)
+    if (now === undefined || now === mine) return void server.close()
+    // The close of a pipe server unlinks the path whoever bound it, so the other broker's file is linked aside and back.
+    const aside = `${endpoint}.keep.${process.pid}`
+    let kept = false
     try {
-      await listen()
-    } catch {
-      return undefined
-    }
+      fs.linkSync(endpoint, aside)
+      kept = true
+    } catch {}
+    server.close()
+    if (!kept) return
+    try {
+      fs.linkSync(aside, endpoint)
+    } catch {}
+    fs.rmSync(aside, { force: true })
   }
   log(`start pid ${process.pid}`)
   log('listen')
@@ -433,7 +542,7 @@ export const startBroker = async ({
   const stop = (): Promise<void> =>
     (exiting ??= (async () => {
       clearTimeout(emptyTimer)
-      server.close()
+      closeServer()
       await Promise.all([...children.values()].map(stopChild))
       for (const socket of sockets) socket.destroy()
       log('exit')

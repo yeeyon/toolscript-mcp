@@ -16,7 +16,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { brokerFolder } from '../src/core/paths.ts'
 import { BrokerError, BrokerTransport, openLink } from '../src/host/brokerlink.ts'
 import { endpointFor, loadKey } from '../src/host/brokerwire.ts'
-import { alive, SERVER, serverEntry, text, until } from './broker-rig.ts'
+import { alive, SERVER, serverEntry, staleSocket, text, until } from './broker-rig.ts'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const BROKER = path.join(ROOT, 'dist', 'host', 'broker.js')
@@ -77,6 +77,21 @@ describe('a real broker', () => {
     assert.equal(brokerPids(home).length, 1)
     assert.ok(alive(Number(pids[0])))
   })
+
+  test(
+    'six starts at once against a stale socket file give one broker and one child',
+    { skip: process.platform === 'win32' },
+    async () => {
+      const home = newHome()
+      const id = crypto.createHash('sha256').update(fs.readFileSync(BROKER)).digest('hex')
+      const endpoint = endpointFor(home, loadKey(home), id)
+      await staleSocket(endpoint)
+      const six = await Promise.all([0, 1, 2, 3, 4, 5].map(() => connect(home)))
+      const pids = await Promise.all(six.map(c => text(c, 'pid')))
+      assert.equal(new Set(pids).size, 1, 'one child')
+      assert.equal(listens(home), 1, 'one broker')
+    },
+  )
 
   test('idle: the child, then the broker, are gone, with no socket file left', async () => {
     const home = newHome()
