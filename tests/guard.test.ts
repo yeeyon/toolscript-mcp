@@ -44,12 +44,13 @@ const hit = (args: unknown, f = fake(), cwd = PROJECT) =>
   })
 
 describe('the markers', () => {
-  test('are the four folders, never the bare state folder', () => {
+  test('are the five folders, never the bare state folder', () => {
     assert.deepEqual(GUARD_MARKERS, [
       '.toolscript-mcp/hints',
       '.toolscript-mcp/functions',
       '.toolscript-mcp/learned',
       '.toolscript-mcp/oauth',
+      '.toolscript-mcp/broker',
     ])
   })
 
