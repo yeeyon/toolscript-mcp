@@ -151,9 +151,9 @@ describe('one refresh in one process', () => {
           signal?.addEventListener('abort', () => (clearInterval(alive), reject(new Error('aborted'))))
         }),
       undefined,
-      300,
+      2000,
     )
-    assert.match(((await h.refresh()) as Error).message, /did not answer in 0\.3 s/)
+    assert.match(((await h.refresh()) as Error).message, /did not answer in 2 s/)
     assert.equal(fs.existsSync(h.lock), false)
   })
 
