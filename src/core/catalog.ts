@@ -313,7 +313,15 @@ const notConnectedText = (states: readonly ServerState[]): string => {
   return lines.length === 0 ? '' : `\n\n## Not connected\n${lines.join('\n')}`
 }
 
-/** Most hits that search_tools shows in full. More hits show one line each, so a broad search stays short. */
+/** Two tools of different servers with the same short name, description, schemas and mark. Compares the source fields. */
+const isTwin = (a: CatalogEntry, b: CatalogEntry): boolean =>
+  a.tool === b.tool &&
+  a.description === b.description &&
+  a.requiresUserInteraction === b.requiresUserInteraction &&
+  JSON.stringify(a.inputSchema) === JSON.stringify(b.inputSchema) &&
+  JSON.stringify(a.outputSchema) === JSON.stringify(b.outputSchema)
+
+/** Most full blocks that search_tools shows. More hits show one line each, so a broad search stays short. */
 const DETAIL_HITS = 3
 /**
  * Most characters of all full blocks, hit 1 included, when more than DETAIL_HITS tools match. Hit 1 shows in full
@@ -681,7 +689,10 @@ export const namesByServer = (all: readonly CatalogEntry[], cap = NAMES_CAP): st
  * tool name). With more matches than that, hit 1 shows in full always, and
  * hits 2 and 3 only while all full blocks, hit 1 included, total DETAIL_BUDGET
  * characters or less. The first hit that does not fit and all later ones show as
- * summaries, so the full hits are a prefix of the rank order. A list of all
+ * summaries, so the full hits are a prefix of the rank order. A twin of a full
+ * hit above (same short name, description, schemas and mark) is a heading and a
+ * line that names that hit, anywhere in the result. It takes no place of
+ * DETAIL_HITS and no budget, so those count full blocks. A list of all
  * tools shows summaries only, so the check of the servers with limit 1 stays
  * short. With no match, the result lists the tool names by server. `canAsk`:
  * the client can show an approval prompt.
@@ -708,19 +719,27 @@ export const searchResult = (
   if (listsAll(query)) blocks.push(...found.map(t => summaryBlock(t, canAsk)))
   else {
     // Hit 1 shows in full always. The next hits show in full while they fit, and the first one that does not ends it.
+    // A twin of a full hit above is a heading and one line, and takes no full place and no budget.
     const few = found.length <= DETAIL_HITS
+    const fulls: CatalogEntry[] = []
     let used = 0
     let full = true
-    found.forEach((t, i) => {
-      const detail = full && i < DETAIL_HITS ? detailBlock(t, shapes, canAsk) : undefined
-      if (detail !== undefined && (i === 0 || few || used + detail.length <= DETAIL_BUDGET)) {
+    for (const t of found) {
+      const twin = fulls.find(f => isTwin(f, t))
+      if (twin !== undefined) {
+        blocks.push(`### ${t.name}\nthe same description and arguments as ${twin.name}`)
+        continue
+      }
+      const detail = full && fulls.length < DETAIL_HITS ? detailBlock(t, shapes, canAsk) : undefined
+      if (detail !== undefined && (fulls.length === 0 || few || used + detail.length <= DETAIL_BUDGET)) {
         used += detail.length
+        fulls.push(t)
         blocks.push(detail)
       } else {
         full = false
         blocks.push(summaryBlock(t, canAsk))
       }
-    })
+    }
   }
   return `${found.length} of ${all.length} MCP tools.\n\n${blocks.join('\n\n')}${tail}`
 }
