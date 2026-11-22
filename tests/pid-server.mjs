@@ -1,5 +1,5 @@
 // A small MCP server over stdio for the broker tests. Tools: `pid` (the process id), `env` (one variable), `cwd`,
-// `sleep` (replies after `ms`, or never when its request is cancelled), `exit` (ends the process), `grow` (adds a tool `extra` and sends tools/list_changed), `flood` (writes with no newline for ever). With `--ignore-eof`
+// `sleep` (replies after `ms`, or never when its request is cancelled), `exit` (ends the process), `grow` (adds a tool `extra` and sends tools/list_changed), `flood` (writes with no newline for ever), `swell` (answers with a line under 10 MB that is longer when written again). With `--ignore-eof`
 // it keeps running when stdin ends, as a server that ignores EOF does. With `--noinit` it never answers `initialize`.
 // `--list-changed` sends tools/list_changed after each `tools/list`.
 
@@ -16,6 +16,7 @@ const TOOLS = [
   { name: 'exit', description: 'Ends the process.', inputSchema: object({}) },
   { name: 'grow', description: 'Adds a tool.', inputSchema: object({}) },
   { name: 'flood', description: 'Writes to stdout for ever with no newline.', inputSchema: object({}) },
+  { name: 'swell', description: 'Answers with a line that grows when it is written again.', inputSchema: object({}) },
 ]
 const timers = new Map()
 
@@ -60,6 +61,15 @@ lines.on('line', line => {
       process.stdout.once('drain', pump)
     }
     return pump()
+  }
+  if (name === 'swell') {
+    // A line under 10 MB whose numbers JSON.stringify writes out longer (1e9 is 1000000000): 26 MB after a parse.
+    const many = Array(Math.floor(9.5 * 2 ** 18))
+      .fill('1e9')
+      .join(',')
+    return process.stdout.write(
+      `{"jsonrpc":"2.0","id":${JSON.stringify(msg.id)},"result":{"content":[],"n":[${many}]}}\n`,
+    )
   }
   if (name === 'grow') {
     TOOLS.push({ name: 'extra', description: 'Added by grow.', inputSchema: object({}) })

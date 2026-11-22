@@ -261,7 +261,7 @@ describe('attach and routing', () => {
     const { tools } = await client.listTools()
     assert.deepEqual(
       tools.map(t => t.name),
-      ['pid', 'env', 'cwd', 'sleep', 'exit', 'grow', 'flood'],
+      ['pid', 'env', 'cwd', 'sleep', 'exit', 'grow', 'flood', 'swell'],
     )
     assert.match(await text(client, 'pid'), /^\d+$/)
     assert.equal(await text(client, 'cwd'), root)
@@ -353,6 +353,19 @@ describe('attach and routing', () => {
       return true
     })
     assert.match(await text(await connect(rig), 'pid'), /^\d+$/)
+  })
+
+  test('a child line that grows over 10 MB when written again ends only that link, with the reason', async () => {
+    const rig = await startRig()
+    const [a, b] = [await connect(rig), await connect(rig)]
+    const errors: string[] = []
+    a.onerror = e => errors.push(e.message)
+    await assert.rejects(a.callTool({ name: 'swell', arguments: {} }))
+    assert.ok(
+      errors.some(m => /longer than 10 MB/.test(m)),
+      `the link got the reason: ${errors.join(' | ')}`,
+    )
+    assert.match(await text(b, 'pid'), /^\d+$/)
   })
 
   test('a child with no link stops at the idle time, then the broker leaves', async () => {
