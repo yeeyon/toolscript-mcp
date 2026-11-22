@@ -17,6 +17,7 @@ import { errorText } from '../core/protocol.ts'
 import { ALLOW_USAGE, runAllow } from './allow.ts'
 import { RUNS_USAGE, runRuns, runTools, TOOLS_USAGE } from './diagnose.ts'
 import { DOCTOR_USAGE, runDoctor } from './doctor.ts'
+import { brokerFileBeside } from './brokerlink.ts'
 import { connectAll } from './downstream.ts'
 import { INIT_USAGE, runInit } from './init.ts'
 import { LOGIN_USAGE, runLogin } from './login.ts'
@@ -83,6 +84,14 @@ log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 
 const downstream = connectAll(config.servers, version, log, {
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
+  ...(config.share.on && {
+    share: {
+      bridges: config.bridges,
+      home: os.homedir(),
+      folder: process.cwd(),
+      brokerFile: brokerFileBeside(import.meta.url),
+    },
+  }),
 })
 const { server, stopRuns } = createServer(downstream, config, file, version, log)
 
