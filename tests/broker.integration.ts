@@ -4,13 +4,14 @@
 //   node --experimental-strip-types tests/broker.integration.ts
 
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { after, describe, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { brokerFolder } from '../src/core/paths.ts'
 import { BrokerError, BrokerTransport, openLink } from '../src/host/brokerlink.ts'
@@ -194,6 +195,33 @@ describe('a real broker', () => {
     process.kill(broker!, 'SIGTERM')
     await until('the child ends', () => !alive(child), 8000)
     await until('the broker ends', () => !alive(broker!), 8000)
+  })
+
+  test('a crash writes a line with the class and code of the error, never its message, and the broker exits 1', async () => {
+    const home = newHome()
+    // Loaded before broker.js: throws once the broker listens, with a path in the message.
+    const preload = path.join(home, 'crash.mjs')
+    fs.writeFileSync(
+      preload,
+      [
+        "import fs from 'node:fs'",
+        "import os from 'node:os'",
+        'const file = `${os.homedir()}/.toolscript-mcp/broker/broker.log`',
+        'const read = () => { try { return fs.readFileSync(file, "utf8") } catch { return "" } }',
+        'const timer = setInterval(() => {',
+        '  if (!/ listen$/m.test(read())) return',
+        '  clearInterval(timer)',
+        '  throw Object.assign(new Error(`message with ${file}`), { code: "EFAKE" })',
+        '}, 20)',
+      ].join('\n'),
+    )
+    const broker = spawn(process.execPath, ['--import', pathToFileURL(preload).href, BROKER], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    assert.equal(await new Promise(r => broker.on('exit', r)), 1)
+    assert.match(logOf(home), / crash Error EFAKE$/m)
+    assert.ok(!logOf(home).includes('message with'))
   })
 
   test('a host that is gone leaves the call of the other host alone and the child up', async () => {

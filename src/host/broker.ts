@@ -44,6 +44,8 @@ export type Broker = {
   /** Settles when the broker has stopped its children and closed its endpoint. */
   readonly done: Promise<void>
   readonly stop: () => Promise<void>
+  /** Writes a lifecycle line to broker.log. */
+  readonly log: (line: string) => void
 }
 
 const LOG_MAX = 1 << 20
@@ -416,5 +418,5 @@ export const startBroker = async ({
       finish()
     })())
   checkEmpty()
-  return { endpoint, done, stop }
+  return { endpoint, done, stop, log }
 }

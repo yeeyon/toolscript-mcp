@@ -19,5 +19,15 @@ if (broker === undefined) process.exit(0)
 const leave = () => void broker.stop()
 process.on('SIGTERM', leave)
 process.on('SIGINT', leave)
+// A crash would end the broker with no line: its stderr goes nowhere. The line holds the class and code of the error,
+// never its message, which can hold a path or a value. The children see the end of their stdin.
+const crash = (err: unknown): never => {
+  const { name, code } = (typeof err === 'object' && err !== null ? err : {}) as { name?: unknown; code?: unknown }
+  const word = (v: unknown, fallback: string) => (typeof v === 'string' && /^\w{1,40}$/.test(v) ? v : fallback)
+  broker.log(`crash ${word(name, 'Error')} ${word(code, '-')}`)
+  process.exit(1)
+}
+process.on('uncaughtException', crash)
+process.on('unhandledRejection', crash)
 await broker.done
 process.exit(0)
