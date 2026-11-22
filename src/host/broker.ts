@@ -211,7 +211,8 @@ export const startBroker = async ({
     }
     children.set(id, child)
     log(`child ${tag(id)} start`)
-    proc.stdin?.on('error', () => {})
+    // A pipe error with no listener would end the broker. The exit of the child follows and does the cleanup.
+    for (const stream of [proc.stdin, proc.stdout, proc.stderr]) stream?.on('error', () => {})
     proc.stderr?.on('data', () => {})
     proc.stdout?.setEncoding('utf8')
     proc.stdout?.on(
@@ -309,7 +310,16 @@ export const startBroker = async ({
     const attach = async (entry: Entry): Promise<void> => {
       // The full hash keys the child. The log shows only its first 8 digits.
       const id = crypto.createHash('sha256').update(entryText(entry)).digest('hex')
-      child = children.get(id) ?? startChild(entry, id)
+      try {
+        child = children.get(id) ?? startChild(entry, id)
+      } catch (err) {
+        // spawn throws at once for a bad entry (a NUL byte, EINVAL, E2BIG, ENAMETOOLONG, EPERM): only this link fails.
+        const code = (err as NodeJS.ErrnoException).code
+        const shown = typeof code === 'string' && /^\w{1,40}$/.test(code) ? code : 'error'
+        log(`child ${tag(id)} exit ${shown}`)
+        socket.end(refusedFrame(`the server process could not start (${shown}). Run its command by hand in a terminal`))
+        return
+      }
       const mine = child
       clearTimeout(mine.idle)
       const reason = await mine.ready
@@ -347,7 +357,7 @@ export const startBroker = async ({
           clearTimeout(timer)
           if (typeof entry === 'string') return void socket.end(refusedFrame(entry))
           stage = 'attaching'
-          void attach(entry)
+          attach(entry).catch(() => socket.destroy())
         } else if (stage === 'attaching') {
           queued += line.length
           if (queued > QUEUE_MAX) return void socket.destroy()
@@ -407,6 +417,9 @@ export const startBroker = async ({
   }
   log(`start pid ${process.pid}`)
   log('listen')
+  // An error of the server after the listen (an accept that failed) would end the broker with no listener. It keeps
+  // listening, so the line is all.
+  server.on('error', err => log(`listen error ${(err as NodeJS.ErrnoException).code ?? 'error'}`))
 
   const stop = (): Promise<void> =>
     (exiting ??= (async () => {
