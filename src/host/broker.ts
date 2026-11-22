@@ -147,10 +147,13 @@ const pidAlive = (pid: number): boolean => {
 
 /**
  * Takes the recovery lock beside the socket: a file made with `wx` that holds a pid, a random id and the time (no
- * secret). Returns its id, or undefined when another contender holds it. A lock whose pid is dead or that is older than
- * the bound is removed first, and the next try is the caller's.
+ * secret). Returns its id, or undefined when another contender holds it. A stale lock is broken first, and the next try
+ * is the caller's. Stale: its pid is dead, or its time is more than the bound from now in either direction (a future
+ * time never ages otherwise), or it is unreadable and its mtime is. A lock is never removed on the strength of an
+ * earlier read: the breaker renames it to a name of its own, reads what it moved, and puts it back when that is not
+ * what it judged (the holder made a fresh lock after the read). `afterRead` is a hook for the test of that gap.
  */
-const takeLock = (file: string): string | undefined => {
+export const takeLock = (file: string, afterRead: () => void = () => {}): string | undefined => {
   const id = crypto.randomBytes(8).toString('hex')
   try {
     fs.writeFileSync(file, JSON.stringify({ pid: process.pid, id, at: Date.now() }), { flag: 'wx', mode: 0o600 })
@@ -158,17 +161,34 @@ const takeLock = (file: string): string | undefined => {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
   }
+  let seen: string
+  let stale: boolean
   try {
-    const held = JSON.parse(fs.readFileSync(file, 'utf8')) as { pid?: unknown; at?: unknown }
-    const dead = typeof held.pid !== 'number' || !pidAlive(held.pid)
-    const old = typeof held.at !== 'number' || Date.now() - held.at > LOCK_STALE_MS
-    if (dead || old) fs.rmSync(file, { force: true })
-  } catch {
-    // Unreadable or half written: a holder may be writing it right now. A file that stays so is old by its mtime.
+    seen = fs.readFileSync(file, 'utf8')
     try {
-      if (Date.now() - fs.statSync(file).mtimeMs > LOCK_STALE_MS) fs.rmSync(file, { force: true })
-    } catch {}
+      const held = JSON.parse(seen) as { pid?: unknown; at?: unknown }
+      const dead = typeof held.pid !== 'number' || !pidAlive(held.pid)
+      const old = typeof held.at !== 'number' || Math.abs(Date.now() - held.at) > LOCK_STALE_MS
+      stale = dead || old
+    } catch {
+      // Unreadable or half written: a holder may be writing it right now. A file that stays so is old by its mtime.
+      stale = Math.abs(Date.now() - fs.statSync(file).mtimeMs) > LOCK_STALE_MS
+    }
+  } catch {
+    return undefined
   }
+  if (!stale) return undefined
+  afterRead()
+  const aside = `${file}.break.${process.pid}.${id}`
+  try {
+    fs.renameSync(file, aside)
+  } catch {
+    return undefined
+  }
+  try {
+    if (fs.readFileSync(aside, 'utf8') !== seen) fs.linkSync(aside, file)
+  } catch {}
+  fs.rmSync(aside, { force: true })
   return undefined
 }
 
@@ -219,6 +239,36 @@ const recoverSocket = async (endpoint: string, listen: () => Promise<void>): Pro
     }
   }
   return false
+}
+
+/**
+ * A broker that was killed inside the link-aside of its close (see `closeServer`) leaves another broker's socket under
+ * the name `<endpoint>.keep.<pid>` and nothing at the endpoint. The next start links that socket back when it answers,
+ * and removes any other leftover of a dead pid. Returns true when it put a live broker back: that one serves.
+ */
+const adoptKept = async (endpoint: string): Promise<boolean> => {
+  const dir = path.dirname(endpoint)
+  const prefix = `${path.basename(endpoint)}.keep.`
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir).filter(name => name.startsWith(prefix))
+  } catch {
+    return false
+  }
+  let adopted = false
+  for (const name of names) {
+    const pid = Number(name.slice(prefix.length))
+    if (Number.isInteger(pid) && pidAlive(pid)) continue
+    const keep = `${dir}/${name}`
+    if (!adopted && !fs.existsSync(endpoint) && (await dial(keep)) === 'alive') {
+      try {
+        fs.linkSync(keep, endpoint)
+        adopted = true
+      } catch {}
+    }
+    fs.rmSync(keep, { force: true })
+  }
+  return adopted
 }
 
 /** Starts a broker, or returns undefined when another broker of this build already listens. */
@@ -507,6 +557,7 @@ export const startBroker = async ({
       })
     })
   try {
+    if (process.platform !== 'win32' && (await adoptKept(endpoint))) return undefined
     await listen()
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err
@@ -520,6 +571,9 @@ export const startBroker = async ({
     const now = mine === undefined ? undefined : fileId(endpoint)
     if (now === undefined || now === mine) return void server.close()
     // The close of a pipe server unlinks the path whoever bound it, so the other broker's file is linked aside and back.
+    // What remains: for the two calls between the unlink and the relink (microseconds) the path does not exist, and a
+    // host that dials then gets ENOENT (it dials once more before it starts a broker). A kill inside it leaves the
+    // `.keep` file, which the next start links back (`adoptKept`).
     const aside = `${endpoint}.keep.${process.pid}`
     let kept = false
     try {

@@ -105,6 +105,7 @@ const startDetached = (file: string): void => {
 const dial = async (endpoint: string, file: string, id: string): Promise<net.Socket> => {
   const end = performance.now() + BROKER_START_MS
   let started = false
+  let redialed = false
   for (;;) {
     try {
       return await dialOnce(endpoint)
@@ -112,6 +113,12 @@ const dial = async (endpoint: string, file: string, id: string): Promise<net.Soc
       const code = (err as NodeJS.ErrnoException).code ?? 'unknown'
       if (!['ENOENT', 'ECONNREFUSED', 'EBUSY', 'EAGAIN'].includes(code))
         throw new BrokerError(unusable(`could not connect to it (${code})`))
+      // A broker that closes while another one's socket sits at the path unlinks it for a moment: dial once more.
+      if (!started && code === 'ENOENT' && !redialed) {
+        redialed = true
+        await pause(30)
+        continue
+      }
       if (!started) {
         // The broker that would start is the file as it is now, and the endpoint is the file as this process read it.
         // After a rebuild in place they differ and no link could ever meet: say so.

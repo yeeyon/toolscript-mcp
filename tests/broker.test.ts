@@ -28,7 +28,7 @@ import {
 } from '../src/core/broker.ts'
 import { brokerFolder } from '../src/core/paths.ts'
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js'
-import { PROBE_VERSION, startBroker, type Broker } from '../src/host/broker.ts'
+import { PROBE_VERSION, startBroker, takeLock, type Broker } from '../src/host/broker.ts'
 import { BrokerError, BrokerTransport, idOf, openLink } from '../src/host/brokerlink.ts'
 import { alive, serverEntry, staleSocket, text, until } from './broker-rig.ts'
 import { buildId, endpointFor, folderProblem, loadKey, makeCrypto } from '../src/host/brokerwire.ts'
@@ -429,6 +429,83 @@ describe('attach and routing', () => {
       assert.equal(winners.length, 1, 'one broker listens')
       assert.ok(await dials(endpoint), 'the socket answers')
       assert.equal((fs.readFileSync(`${brokerFolder(home)}/broker.log`, 'utf8').match(/ listen$/gm) ?? []).length, 1)
+    })
+
+    test('six brokers against a stale socket and a stale lock (dead pid) give one that listens', async () => {
+      const home = fs.mkdtempSync(path.join(root, 'h-'))
+      const file = path.join(home, 'broker.js')
+      fs.writeFileSync(file, 'build stale lock')
+      const endpoint = endpointFor(home, loadKey(home), buildId(file))
+      await staleSocket(endpoint)
+      fs.writeFileSync(`${endpoint}.lock`, JSON.stringify({ pid: 2 ** 22 + 12345, id: 'dead', at: Date.now() }))
+      const six = await Promise.all([0, 1, 2, 3, 4, 5].map(() => startBroker({ home, idleMs: 600_000, file })))
+      const winners = six.filter((b): b is Broker => b !== undefined)
+      closers.push(...winners.map(b => () => b.stop()))
+      assert.equal(winners.length, 1, 'one broker listens')
+      assert.ok(await dials(endpoint))
+      assert.deepEqual(
+        fs.readdirSync(path.dirname(endpoint)).filter(n => n.includes('.break.') || n.endsWith('.lock')),
+        [],
+        'no lock or aside file is left',
+      )
+    })
+
+    describe('the recovery lock', () => {
+      const lockFile = (): string => path.join(fs.mkdtempSync(path.join(root, 'lk-')), 'x.sock.lock')
+      const write = (file: string, held: object): void => fs.writeFileSync(file, JSON.stringify(held))
+      const holder = (file: string): { id?: string } => JSON.parse(fs.readFileSync(file, 'utf8')) as { id?: string }
+
+      test('a lock whose time is in the future is broken although its pid lives', () => {
+        const file = lockFile()
+        write(file, { pid: process.pid, id: 'future', at: Date.now() + 3_600_000 })
+        assert.equal(takeLock(file), undefined, 'the breaker does not hold it yet')
+        assert.ok(takeLock(file), 'the next try does')
+      })
+
+      test('a fresh lock of a live pid is left alone', () => {
+        const file = lockFile()
+        write(file, { pid: process.pid, id: 'fresh', at: Date.now() })
+        assert.equal(takeLock(file), undefined)
+        assert.equal(holder(file).id, 'fresh')
+      })
+
+      test('a lock that another holder replaced after the breaker read it stays, and a third contender is refused', () => {
+        const file = lockFile()
+        write(file, { pid: 2 ** 22 + 12345, id: 'stale', at: Date.now() })
+        const breaker = takeLock(file, () => {
+          // The holder C removes the stale lock and takes a fresh one, between the read of B and its rename.
+          fs.rmSync(file)
+          write(file, { pid: process.pid, id: 'fresh-c', at: Date.now() })
+        })
+        assert.equal(breaker, undefined)
+        assert.equal(holder(file).id, 'fresh-c', 'the lock of C is back')
+        assert.equal(takeLock(file), undefined, 'a third contender does not enter beside C')
+        assert.equal(takeLock(file), undefined)
+        assert.deepEqual(fs.readdirSync(path.dirname(file)), ['x.sock.lock'], 'no aside file is left')
+      })
+
+      test('a half written lock is broken by its mtime and not before', () => {
+        const file = lockFile()
+        fs.writeFileSync(file, '{"pid":')
+        assert.equal(takeLock(file), undefined)
+        assert.ok(fs.existsSync(file), 'a new file is a writer at work')
+        const old = new Date(Date.now() - 60_000)
+        fs.utimesSync(file, old, old)
+        assert.equal(takeLock(file), undefined)
+        assert.ok(takeLock(file))
+      })
+    })
+
+    test('a broker killed inside the link-aside leaves a .keep socket that the next start links back', async () => {
+      const first = await startRig()
+      const endpoint = first.broker.endpoint
+      const keep = `${endpoint}.keep.${2 ** 22 + 12345}`
+      fs.linkSync(endpoint, keep)
+      fs.rmSync(endpoint)
+      assert.equal(await startBroker({ home: first.home, idleMs: 600_000, file: first.file }), undefined)
+      assert.ok(fs.existsSync(endpoint), 'the socket is back at the endpoint')
+      assert.ok(!fs.existsSync(keep))
+      assert.ok(await dials(endpoint), 'and its broker answers')
     })
 
     test('the shutdown of a broker leaves a socket that another broker bound at its path', async () => {
