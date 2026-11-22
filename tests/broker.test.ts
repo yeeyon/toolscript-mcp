@@ -595,7 +595,10 @@ describe('child stderr, forged frames and the caps', () => {
     const client = await connect(rig)
     const errors: string[] = []
     client.onerror = e => errors.push(e.message)
-    const answer = await client.callTool({ name: 'forge', arguments: {} }).catch((e: Error) => e)
+    // The SDK may refuse a line with extra keys, as it does from a direct child: that call then ends at its own timeout.
+    const answer = await client
+      .callTool({ name: 'forge', arguments: {} }, undefined, { timeout: 1000 })
+      .catch((e: Error) => e)
     assert.ok(!JSON.stringify(answer instanceof Error ? answer.message : answer).includes('FORGED-REASON'))
     assert.ok(!errors.join('|').includes('FORGED-REASON'), errors.join('|'))
     assert.match(await text(client, 'pid'), /^\d+$/, 'the link goes on')
@@ -656,8 +659,12 @@ describe('child stderr, forged frames and the caps', () => {
     const client = await connect(rig, entryOf({}, ['--stall-after-init']))
     const gone = new Promise<void>(r => (client.onclose = r))
     for (let i = 0; i < 40; i++)
-      void client.callTool({ name: 'pid', arguments: { pad: 'x'.repeat(512 * 1024) } }).catch(() => {})
-    await Promise.race([gone, new Promise((_, no) => setTimeout(() => no(new Error('the link stayed open')), 20000))])
+      void client
+        .callTool({ name: 'pid', arguments: { pad: 'x'.repeat(512 * 1024) } }, undefined, { timeout: 3000 })
+        .catch(() => {})
+    let shut = false
+    void gone.then(() => (shut = true))
+    await until('the link ends', () => shut, 20000)
     assert.match(logOf(rig), /exit input over the cap/)
   })
 
