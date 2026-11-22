@@ -203,18 +203,26 @@ const waitFor = (child, pattern, ms) =>
   })
 
 const idOf = p => `${p.pid}:${p.t}`
-/** Rows of the given hosts (pid and creation time) and of every process whose command line holds the marker. */
-const alive = async hostIds => {
-  const table = await readTable()
-  return table.filter(p => hostIds.has(idOf(p)) || p.cmd.includes(MARKER))
+/**
+ * The ids (pid and creation time) of the hosts and of every process below them: their servers, the broker (detached,
+ * its ppid still names the host that started it), its servers and their wrappers. A child is never older than its
+ * parent. A process of another run, such as a broker of this build in another home, is in no such tree.
+ */
+const treeOf = (table, hostPids) => {
+  const tree = new Map(table.filter(p => hostPids.includes(p.pid)).map(p => [p.pid, p.t]))
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const p of table) {
+      if (tree.has(p.pid) || !tree.has(p.ppid) || tree.get(p.ppid) > p.t) continue
+      tree.set(p.pid, p.t)
+      grew = true
+    }
+  }
+  return new Set([...tree].map(([pid, t]) => `${pid}:${t}`))
 }
-/** A broker of this build that started after `since`. */
-const brokersSince = async since =>
-  (await readTable()).filter(p => p.cmd.replaceAll('\\', '/').includes('dist/host/broker.js') && p.t >= since)
 const benchDirs = () => fs.readdirSync(dir).filter(f => f.startsWith('toolscript-memory-'))
 
 test('a hard kill of the bench leaves no host and no fake server, and the next start removes its temp dir', async () => {
-  const since = Date.now() - 2000
   // A process of another run whose command line names the broker of this build: the test must neither count nor end it.
   const named = path.join(ROOT, 'dist', 'host', 'broker.js')
   const other = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', named], {
@@ -230,13 +238,12 @@ test('a hard kill of the bench leaves no host and no fake server, and the next s
   const seen = await waitFor(child, /idle: 60 s/, 120_000)
   const pids = [...seen.matchAll(/host pid (\d+)/g)].map(m => Number(m[1]))
   assert.equal(pids.length, 2)
-  const hostIds = new Set((await readTable()).filter(p => pids.includes(p.pid)).map(idOf))
-  assert.equal(hostIds.size, 2)
-  assert.ok((await alive(hostIds)).length >= 7, 'the hosts and their servers run')
+  const tree = treeOf(await readTable(), pids)
+  assert.ok(tree.size >= 8, 'the hosts, their servers and the broker run')
   child.kill('SIGKILL')
   await new Promise(resolve => child.on('exit', resolve))
   await new Promise(resolve => setTimeout(resolve, 10_000 + IDLE_MS * 2))
-  const left = [...(await alive(hostIds)), ...(await brokersSince(since))]
+  const left = (await readTable()).filter(p => tree.has(idOf(p)))
   // Do not leave them running if the assertion fails: only rows that matched by pid and creation time.
   for (const p of left) {
     try {
