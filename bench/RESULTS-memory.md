@@ -179,15 +179,15 @@ Table 2, per role at 6 sessions, idle, off against on (each is the median; total
 357.8 MB of `T` off and 68.6 MB on. G1 pass (1 copy of each shared entry and 1 broker at 3 and 6 sessions), G2 pass
 (554 MB saved at 3, at least 422 needed; 1,435 at 6, at least 1,144 needed), G3 pass (289 MB lower, at least 227
 needed), G4 pass (+11 MB, at most 60), G5 pass (the same servers connect and the same tool count per key off and on),
-G6: each call of the `node` server and of one native entry ok in every session off and on; the 2 other native entries
-fail off and on alike, because their endpoints were down. G7 pass (0 leftovers in both runs). G8 does not apply (no
+G6 pass for the servers whose endpoints were up: each call of the `node` server and of one native entry ok in every
+session off and on; the 2 other native entries fail off and on alike, because their endpoints were down. G7 pass (0 leftovers in both runs). G8 does not apply (no
 container). G9: windows were not read in this run (the reviews found every broker process windowless in the fixture), and the
 report holds no argument, env, URL or path. Leftovers: none.
 
 Sharing saves 1,337 MB of 4,113 MB at 6 sessions (32 %); without the bridge, 1,435 of 2,144 (67 %).
 
-The bridge is half of what stays: slice 5 starts it on first use, which saved another 2,056 MB at 6 idle sessions on
-the same config.
+The bridge is half of what stays. Slice 5 starts it on first use: measured on its branch on the same config, that saved
+another 2,056 MB at 6 idle sessions.
 
 G10: the owner's installed build has no broker yet, so 2 real sessions from separate terminals wait for the next beta.
 The broker's life was measured instead with headless Claude Code (2.1.330) sessions against a temp home: the broker
