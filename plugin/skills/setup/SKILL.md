@@ -1,14 +1,13 @@
 ---
 name: setup
-description: Install, update or uninstall toolscript-mcp from its GitHub beta branch and connect it to Claude Code. Use when the person asks to set up, install, update or remove toolscript-mcp. For a guided first run or a check of the last run, use the start skill (/toolscript:start). For a check of the whole setup, use the doctor skill (/toolscript:doctor). Also use this skill to add an MCP server to toolscript-mcp, let programs use the tools of Claude Code, log in to an OAuth server through it, or change its policy.
+description: Install, update or remove toolscript-mcp from npm and connect it to Claude Code. Use also to switch from a GitHub clone, add a downstream server, set the policy, enable the Claude Code bridge, or log in with OAuth. Use /toolscript:start for a first run and /toolscript:doctor for a setup check.
 argument-hint: "[install|update|add|login|policy|native|uninstall]"
 ---
 
 # toolscript-mcp setup
 
 toolscript-mcp is an MCP server for code mode. The model writes one JavaScript program that calls the tools of other
-MCP servers in a sandbox. This skill installs it from the `beta` branch of
-[github.com/yeeyon/toolscript-mcp](https://github.com/yeeyon/toolscript-mcp) and connects it to Claude Code.
+MCP servers in a sandbox. This skill sets it up from npm and connects it to Claude Code.
 
 ## Rules
 
@@ -24,56 +23,37 @@ MCP servers in a sandbox. This skill installs it from the `beta` branch of
 
 The names in the commands:
 
-- `<folder>` is the clone of toolscript-mcp.
-- `<main>` is `<folder>/dist/host/main.js`.
 - `<config>` is the toolscript-mcp config file.
+- `<scope>` is `user` for a new entry, or `user` or `local` from the existing entry.
 
 ## 1. Find the state
 
 Run `claude mcp get toolscript`. In each path of its arguments, write each `\` as `/`.
 
-- If the value after `Scope:` does not start with `User config` or `Local config`, someone else can choose its paths.
-  Tell the person, do not use them, and go on as if it showed no server.
-- If an argument holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, show it and stop. A shell can
-  change such a path. The person moves the clone or the config to another path.
-- If its arguments hold `/dist/host/main.js`, that path is `<main>`. `<folder>` is the part of `<main>` before
-  `/dist/host/main.js`.
-- If its arguments hold `--config`, the next argument is `<config>`. Else, run
-  `node "${CLAUDE_SKILL_DIR}/config.mjs" path`, and use the path that it prints.
-- If it shows `npx` and no `<main>`, toolscript-mcp runs from npm. To move to a clone, do step 3, then step 5.
-- If it shows no server, toolscript-mcp is not in Claude Code.
+- If the entry is in the project scope, ask the person to change it in an editor and stop. The project can share this file.
+- The standard npm command is `npx -y toolscript-mcp`, or `cmd /c npx -y toolscript-mcp` on Windows.
+- If the package has a numeric version pin, keep that version in the npm commands below except in step 3.
+- If it uses a clone, keep its config path and scope. Use step 5 to switch the launch command.
+- If its arguments hold `--config`, the next argument is `<config>`. Otherwise, use the entry's `TOOLSCRIPT_CONFIG` if it sets one.
+- If no config path is set, run `node "${CLAUDE_SKILL_DIR}/config.mjs" path`, and use the path it prints.
+- If the config path holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, stop. Ask the person to register the path in an editor.
+- Do not repeat environment values from the existing entry.
 
 Go to the step for the request of the person. For a first run or a check of the last run, do step 6. For `native`, do
 step 8. With no request, do steps 2 to 6, then offer step 8.
 
-## 2. Check Node and git
+## 2. Check Node and npm
 
-Run `node --version` and `git --version`.
+Run `node --version` and `npm --version`.
 
 - If Node is older than 22.13 or missing, stop. Tell the person to install Node 22.13 or later.
-- If git is missing, stop. Tell the person to install git.
+- If npm is missing, stop. Tell the person to install npm.
 
 ## 3. Install or update
 
-If step 1 found no `<folder>`, run `node -p "require('os').homedir()"`. Propose `<home>/toolscript-mcp` as
-`<folder>`. The person can choose a different folder.
-
-Run `git -C "<folder>" remote get-url origin`.
-
-- If the URL ends in `/toolscript-mcp` or `/toolscript-mcp.git`, update the clone.
-- If git cannot change to the folder, the folder does not exist. Install toolscript-mcp.
-- In other cases, the folder holds something else. Stop, and ask for a different folder.
-
-To update:
-
-1. Run `git -C "<folder>" pull --ff-only`.
-2. Run `npm ci --prefix "<folder>"`. It also builds `dist/`.
-3. Tell the person to start a new Claude Code session. The running session keeps the old server.
-
-To install:
-
-1. Run `git clone --branch beta https://github.com/yeeyon/toolscript-mcp.git "<folder>"`.
-2. Run `npm ci --prefix "<folder>"`. It also builds `dist/`.
+With approval, run `npx -y toolscript-mcp@latest --help`. npm fetches the published package if it needs a copy.
+If the entry pins a version, ask the person to update that pin in their entry. Start a new Claude Code session after
+an update. The running session keeps the old server.
 
 ## 4. Write the config
 
@@ -81,14 +61,14 @@ If step 1 found no `<config>`, run `node "${CLAUDE_SKILL_DIR}/config.mjs" path`.
 
 Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>"`.
 
-- If it lists servers, the config exists. Keep it, and go to step 5.
+- If it reads the config, keep it and go to step 5.
 - If it cannot read the file, there is no config yet. Continue with this step.
 
 Tell the person that init reads the user-scope MCP servers of Claude Code, Claude Desktop and Cursor. It writes
 `<config>` and does not change the files of the clients. With approval, run:
 
 ```sh
-node "<main>" init --config "<config>"
+npx -y toolscript-mcp init --config "<config>"
 ```
 
 init prints the servers that it imported and the servers that it left out, with no secret values. Show this list to
@@ -112,7 +92,7 @@ edits the file that init names.
 
 Recommend one path to each server. If a client also lists a server directly, the model calls the direct tools, and
 each full result goes into the context. MCP gives a server no list of the servers of its client. So toolscript-mcp does
-not check for a duplicate while it runs. To find the other copies, run `node "<main>" init --list --config "<config>"`.
+not check for a duplicate while it runs. To find the other copies, run `npx -y toolscript-mcp init --list --config "<config>"`.
 It shows the servers of every Claude Code scope, and the steps that remove a direct copy.
 
 If the person wants a new import over a config that exists, run init with `--force` after approval. init keeps the old
@@ -120,27 +100,39 @@ file as `<config>.bak`, and it lists the servers that the new config leaves out.
 
 ## 5. Add toolscript-mcp to Claude Code
 
-If step 1 showed a server with the same `<main>` and `<config>`, skip this step. On Windows, a path with `/` and the
-same path with `\` are the same path. If it showed a different
-command, ask to run `claude mcp remove toolscript --scope user` first.
+If the entry uses the standard npm command and the same config, go to the connection check. Keep any version pin.
+On Windows, a path with `/` and the same path with `\` are the same path.
 
-With approval, run:
+To switch from a clone, keep the existing config and scope. If the entry sets environment variables, ask the person
+to change the command and arguments in an editor so those values stay. If the config uses files inside the clone,
+keep those files or update their paths first. For an entry with no environment variables, ask to run
+`claude mcp remove toolscript --scope <scope>` before you add the new entry.
+
+For a different existing launch command, ask the person to update it in an editor and confirm the config path.
+
+For a new entry or after removal, run this command with approval:
 
 ```sh
-claude mcp add --scope user toolscript '--' node "<main>" --config "<config>"
+claude mcp add --scope <scope> toolscript '--' npx -y toolscript-mcp --config "<config>"
 ```
 
-Keep the quotes around `--`. PowerShell drops a bare `--` before it starts `claude`. `node` is an executable on
-each system, so Windows needs no `cmd /c` here.
+On Windows, run this in PowerShell:
 
-Run `claude mcp get toolscript`. It must show `Connected`.
+```powershell
+claude mcp add --scope <scope> toolscript '--' cmd /c npx -y toolscript-mcp --config "<config>"
+```
+
+Keep the quotes around `--`. PowerShell drops a bare `--` before it starts `claude`.
+
+Check the connection with `claude mcp get toolscript`. It must show `Connected`.
 
 For Claude Desktop and Cursor, show the entry for `mcpServers`. The person adds it:
 
 ```json
-"toolscript": { "command": "node", "args": ["<main>", "--config", "<config>"] }
+"toolscript": { "command": "npx", "args": ["-y", "toolscript-mcp", "--config", "<config>"] }
 ```
 
+On Windows, use `"command": "cmd"` and put `"/c", "npx"` at the start of the arguments.
 Tell the person to start a new Claude Code session, so the session gets `search_tools` and `run_code`.
 
 ## 6. First run
@@ -164,7 +156,7 @@ Explain these choices, and ask the person to choose one:
    rules and hooks of Claude Code do not apply to the nested calls. The policy matches tool names only, not arguments.
 3. Allow specific tools. Allow the tools that programs use often, such as read tools. Other tools stay `ask`. Do not
    guess a name prefix such as `get_*`: a read tool can have another name, such as `issue_read` or
-   `alerting_rules_read`, and then it still asks. Run `node "<main>" tools --config "<config>" -- <server>` for each
+   `alerting_rules_read`, and then it still asks. Run `npx -y toolscript-mcp tools --config "<config>" -- <server>` for each
    server. If it says that the server needs an OAuth login, do step 10 first. It shows each tool with its hint and the
    action of the policy, and it ends with `Commands that allow tools:`. Show the person the tools that ask, and let
    them choose. For each chosen tool, run the ready command under its label. It writes nothing: it shows the new
@@ -219,7 +211,7 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
      runs.
    - Bash, PowerShell, Edit and Write run as the person. They reach files outside `<project>`, also `<config>`.
    - If a hook or a permission rule guards a tool, use the native tool of Claude Code for that work.
-   - The section "Claude Code as a downstream server" of `<folder>/README.md` gives the full risks.
+   - See [Claude Code as a downstream server](https://github.com/yeeyon/toolscript-mcp#claude-code-as-a-downstream-server).
 4. With approval, put these rules first in the policy. They allow Read, Grep and Glob, ask for the tools that change
    something, and deny the other tools of Claude Code:
 
@@ -257,7 +249,7 @@ With this step, programs call the Read, Grep, Glob, Edit and Bash or PowerShell 
      `"untrusted": true`. Then each of its results reaches the model as untrusted text.
 5. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>" add <name> "<tmp>/toolscript-entry.json"`. It makes `<config>` if it does not exist.
    Then delete the entry file.
-   Then run `node "<main>" init --list --config "<config>"`. If a client still has the same server, it is under
+   Then run `npx -y toolscript-mcp init --list --config "<config>"`. If a client still has the same server, it is under
    `Steps that remove a direct copy`. Step 4 tells why it matters.
    - For the user or local scope, offer the ready commands under its label, as step 4 runs them. Never type the
      name into a command yourself.
@@ -293,7 +285,7 @@ init lists the HTTP servers without headers, and `config.mjs` marks them `oauth`
 this command:
 
 ```sh
-node "<main>" login --config "<config>" -- <server>
+npx -y toolscript-mcp login --config "<config>" -- <server>
 ```
 
 The `--` keeps a server name that starts with `-` a name.
@@ -301,9 +293,7 @@ The `--` keeps a server name that starts with `-` a name.
 The person runs it. Do not run it yourself. A browser opens, and login waits 5 minutes for the approval. In Claude
 Code, the person can type the command after the `!` prefix.
 
-If `search_tools` later says that a server needs a login, it names the command to run. An older clone names
-`npx -y toolscript-mcp` there. If the command starts with `npx -y toolscript-mcp`, replace that part with
-`node "<main>"`. Give the person the command.
+If `search_tools` later says that a server needs a login, give the person the command that it prints.
 
 ## 11. Uninstall
 
@@ -311,10 +301,9 @@ Ask before each step:
 
 1. Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>"`. It shows the server names. The full entries stay in `<config>`. Tell the person to
    copy the entries that they want back to their clients from `<config>` in an editor.
-2. Run `claude mcp remove toolscript --scope user`.
-3. Delete `<folder>`, then `<config>` and `<config>.bak`. Delete each path with
-   `node -e "require('fs').rmSync(process.argv[1], { recursive: true, force: true })" "<path>"`.
-4. `<home>/.toolscript-mcp` holds the OAuth tokens, the run log and the files of programs. Delete it only on request.
+2. Run `claude mcp remove toolscript --scope <scope>`.
+3. If the person also asks to remove saved settings, delete `<config>` and `<config>.bak`.
+4. `<home>/.toolscript-mcp` holds OAuth tokens, logs, program files and the optional demo package. Delete it only on request.
 5. To remove this plugin, the person runs `/plugin uninstall toolscript@toolscript-mcp`, then
    `/plugin marketplace remove toolscript-mcp`.
 
@@ -327,4 +316,4 @@ Tell the person these facts at the end of an install:
   no arguments and no results.
 - toolscript-mcp sends tool calls only to the servers in the config. The model gets the search results and the return
   value of each program.
-- `<folder>/SECURITY.md` describes the sandbox and its limits. On Windows, the sandbox has no network block.
+- [SECURITY.md](https://github.com/yeeyon/toolscript-mcp/blob/main/SECURITY.md) describes the sandbox and its limits.

@@ -1,17 +1,17 @@
 ---
 name: doctor
-description: Check a whole toolscript-mcp setup in Claude Code and name the fix for each problem. Runs toolscript-mcp doctor (Node, config, servers, policy, sandbox, run log, files), then checks the Claude Code registration, the servers that a client still calls directly, and the clone against the beta branch. Changes no setting. Use when the person asks to check, diagnose or troubleshoot toolscript-mcp, or asks why it does not work.
+description: Check toolscript-mcp in Claude Code and name the fix for each problem. Run npm diagnostics, check the Claude Code registration and find direct copies of downstream servers. Use when the person asks to check, diagnose or troubleshoot toolscript-mcp.
 argument-hint: "[<config>]"
 ---
 
 # toolscript-mcp doctor
 
-This skill checks a setup and explains each problem. It changes no setting, no config and no clone. Each fix is a step
+This skill checks a setup and explains each problem. It changes no setting or config. Each fix is a step
 of `/toolscript:setup` or `/toolscript:start`, and the person decides when to do it. Each command here prints no secret
 value.
 
-doctor writes one temp file to check a folder, then removes it. If doctor refreshes the OAuth tokens of a server, the
-token store gets the new tokens, as with the running server.
+The npm commands can fill the npm cache. doctor writes one temp file to check a folder, then removes it.
+If doctor refreshes a server's OAuth tokens, it saves the new tokens in the same place as the running server.
 
 ## Rules
 
@@ -25,7 +25,6 @@ token store gets the new tokens, as with the running server.
 
 The names in the commands:
 
-- `<folder>` is the clone of toolscript-mcp. `<main>` is `<folder>/dist/host/main.js`.
 - `<config>` is the toolscript-mcp config file.
 - `<helper>` is `${CLAUDE_SKILL_DIR}/../setup/config.mjs`, the config helper of the setup skill.
 
@@ -33,21 +32,19 @@ The names in the commands:
 
 Run `claude mcp get toolscript`. Keep its output for step 3. In each path of its arguments, write each `\` as `/`.
 
-- If it shows no server, or no `/dist/host/main.js` in its arguments, toolscript-mcp is not set up from a clone. Tell
-  the person to run `/toolscript:setup`, and stop.
-- If the value after `Scope:` does not start with `User config` or `Local config`, stop. Tell the person that the
-  entry is not in their own user or local scope, so someone else can choose its paths. Do not use them.
-- `<main>` is the argument that ends in `/dist/host/main.js`. `<folder>` is the part before `/dist/host/main.js`.
-- If its arguments hold `--config`, the next argument is the registered config. Else, run `node "<helper>" path`. The
-  path that it prints is the registered config.
-- If the person gave a config path as the argument, that path is `<config>`. Else, the registered config is `<config>`.
-- If `<main>` or `<config>` holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, show the path and
-  stop. A shell can change such a path. The person moves the clone or the config to another path.
+- If there is no server or the entry uses a clone, tell the person to run `/toolscript:setup`, and stop.
+- Check for `npx -y toolscript-mcp` or its Windows form `cmd /c npx -y toolscript-mcp`.
+- If the scope is neither user nor local, stop. The project can share this entry.
+- If its arguments hold `--config`, the next argument is the registered config.
+- Otherwise, use the entry's `TOOLSCRIPT_CONFIG` if set, or the path that `node "<helper>" path` prints.
+- If the person gave a config path, use it as `<config>`. Otherwise, use the registered config.
+- If `<config>` holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, stop. A shell can change such a path.
+- If the package has a numeric version pin, keep that version in the npm commands below.
+- If the entry uses a different launch command, give the steps for that command and stop.
 
 ## 2. Run doctor
 
-Run `node "<main>" doctor --config "<config>"`. If `<main>` does not exist, skip this step, and report the problem of
-step 3.
+Run `npx -y toolscript-mcp doctor --config "<config>"`.
 
 doctor prints one line for each finding: the status, the check and the detail. The status is one of these:
 
@@ -63,15 +60,14 @@ Show the lines. Then explain each `warn` and `fail` line with the table in step 
 Use the output of step 1.
 
 - It must show `Connected`. If not, the person starts a new Claude Code session. If it still fails, do `/toolscript:setup` step 5.
-- `<main>` must exist. Run `node -e "process.exit(require('fs').existsSync(process.argv[1]) ? 0 : 1)" "<main>"`.
-  Exit 1 means that `dist/` is not built. Do `/toolscript:setup` step 3, which runs `npm ci`.
+- If npm cannot start the package, use `/toolscript:setup` steps 2 and 3.
 - The registered config must be `<config>`. On Windows, a path with `/` and the same path with `\` are the same path,
   and the case of the letters does not matter. If they differ, tell the person that the running server reads the
   registered config, not the config that doctor checked.
 
-## 4. Check the clients and the clone
+## 4. Check the clients
 
-Run `node "<main>" init --list --config "<config>"`. It shows one line for each server of Claude Code, Claude Desktop
+Run `npx -y toolscript-mcp init --list --config "<config>"`. It shows one line for each server of Claude Code, Claude Desktop
 and Cursor.
 
 - A server with the status `in config` is in `<config>` and still in that client. The model can call it directly, and
@@ -79,22 +75,6 @@ and Cursor.
   removes the direct copy.
 - A server with the status `name taken by a different entry` has the same name as a different server in `<config>`.
   Tell the person.
-
-Then check the clone. Run these commands:
-
-```sh
-git -C "<folder>" status -sb
-git -C "<folder>" rev-parse HEAD
-git -C "<folder>" ls-remote origin refs/heads/beta
-```
-
-`ls-remote` reads the newest commit of `beta` from GitHub, and it changes nothing in the clone.
-
-- The first line of `status -sb` names the branch. If it is not `beta`, tell the person. `/toolscript:setup` updates
-  only the `beta` branch.
-- More lines after the first line are local changes. Tell the person. An update with `pull --ff-only` can fail on them.
-- If the hash of `ls-remote` is not the hash of `rev-parse`, the clone is not at the newest `beta`. Do
-  `/toolscript:setup` step 3 to update it.
 
 ## 5. Explain each problem
 
@@ -111,7 +91,7 @@ For each `warn` and `fail`, give the cause and the step that fixes it:
 | `policy` | never decides a tool | An earlier rule matches each tool of this rule. `/toolscript:setup` step 7 writes the rules again in a new order. Put a hidden deny rule above the earlier rule, and do not remove it. A hidden allow or ask rule can move up, or the person can remove it. |
 | `policy` | matches no tool | A wrong name, or a tool that the server removed. `/toolscript:setup` step 7. |
 | `policy` | does not allow the tools of the Claude Code bridge | Only a rule that starts with `mcp__<bridge>__` allows them. `/toolscript:setup` step 8. |
-| `sandbox` | no network block, no CPU limit | Windows has neither layer. `<folder>/SECURITY.md` describes the sandbox. No fix. |
+| `sandbox` | no network block, no CPU limit | Windows has neither layer. [SECURITY.md](https://github.com/yeeyon/toolscript-mcp/blob/main/SECURITY.md) describes the sandbox. |
 | `sandbox` | any `fail` line | The sandbox did not run `return 1`. Check the `node` lines first. Then `/toolscript:setup` step 3. |
 | `run-log` | off | The config sets `"log": false`. `/toolscript:start verify` needs the run log. The person removes the key in an editor. |
 | `run-log` | newest run | `/toolscript:start verify` shows the calls of the run and the next step. |

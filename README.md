@@ -5,7 +5,7 @@ servers in a sandbox. The program filters and joins the data there. Only the res
 
 The goal is a server that works with any MCP client, for example Claude Code, Claude Desktop, Cursor and Codex.
 
-> **Status: 1.0.0 is on npm.** Set it up [from npm](#from-npm) with `npx -y toolscript-mcp init`. Read
+> **Install from npm.** Set it up [from npm](#from-npm) with `npx -y toolscript-mcp init`. Read
 > [Limits](#limits) before you use it.
 
 - [Features](#features)
@@ -66,7 +66,7 @@ It uses Sonnet 5.5 on Windows 11, with 6 tasks and 3 runs per task and arm. All 
 | Mean seconds per task | 12.7 | 9.9 | 10.6 |
 
 The table excludes two cold runs. One slow server start remains in the toolscript-mcp mean.
-These results use commit `49d871f`, fixed fake data and one model. They do not measure the current beta or Codex.
+These results use commit `49d871f`, fixed fake data and one model. They cover that commit in Claude Code.
 Read [bench/RESULTS-codemode.md](bench/RESULTS-codemode.md) for the method, cold runs and limits.
 
 ## How it works
@@ -100,60 +100,34 @@ The model sees a short list of keys and titles, not every full issue.
 
 ## Install
 
-You need Node 22.13 or later and npm. The GitHub clone also needs git.
+You need Node 22.13 or later and npm.
 
 ### From npm
-
-This works once 1.0.0 is published. Until then, use the GitHub clone or the Claude Code plugin below.
 
 ```sh
 npx -y toolscript-mcp init
 ```
 
-`init` prints the entry of each client it finds, with `npx -y toolscript-mcp` as the command. For Codex, which init
-does not read, use the Codex entry in [Client setup](#client-setup) with `command = "npx"` and
-`args = ["-y", "toolscript-mcp", "--config", "/absolute/path/to/config.json"]`. Then follow
+init imports user-scope servers from Claude Code, Claude Desktop and Cursor. It writes a toolscript-mcp config
+and prints the client changes. Use [Client setup](#client-setup) for Codex or a manual setup. Then follow
 [Configure downstream servers](#configure-downstream-servers).
 
-### From GitHub (beta)
+To update, run `npx -y toolscript-mcp@latest --help` and restart your client. If your client entry pins a version,
+change the version in that entry before you restart.
 
-The `beta` branch points at a commit of `main` that passed every test. Clone it once, and `npm ci` builds `dist/`:
+#### Move an existing clone setup to npm
 
-```sh
-git clone --branch beta https://github.com/yeeyon/toolscript-mcp.git ~/toolscript-mcp
-cd ~/toolscript-mcp
-npm ci
-node dist/host/main.js init
-```
+1. Find the config path in the existing client entry. If it uses the default path, keep that default.
+2. Replace the client entry's command and arguments. Keep the same config path and any environment variables. Use
+   [Client setup](#client-setup).
+3. Restart the client and run a task through toolscript-mcp. Check it with [runs](#check-a-server-and-a-run).
 
-init imports the user-scope servers of Claude Code, Claude Desktop and Cursor. It writes a toolscript-mcp config
-and prints the client changes. It does not edit your client files. It does not import Codex configs.
-See [init](#init) for the options.
-
-Next, follow [Client setup](#client-setup) and [Configure downstream servers](#configure-downstream-servers).
-Use an absolute path to `dist/host/main.js` in your client.
-
-To update the clone:
-
-```sh
-cd ~/toolscript-mcp
-git pull --ff-only
-npm ci
-```
-
-Then start a new session of your client. Do not start the server with `npx github:…` in a client.
-In a measured start, the GitHub check of npx added about 12 seconds.
-
-The commands that toolscript-mcp prints, such as the login command and the steps of `init`, use the start of the
-running process. From a clone, they start with `node /absolute/path/to/toolscript-mcp/dist/host/main.js`. From npm,
-they start with `npx -y toolscript-mcp`. On Windows, each path in them has forward slashes. So the login command
-works in cmd.exe, PowerShell and Git Bash. Run the Claude Code step of an npm install in PowerShell or cmd.exe. Run
-`node dist/host/main.js --help` to see the usage.
+The config keeps your servers and policy. The same user account also keeps its saved OAuth tokens.
+If an entry uses a file inside the clone, keep that file or update its path first.
 
 #### With the Claude Code plugin
 
-This repo is also a Claude Code plugin marketplace. Its plugin `toolscript` installs the beta with you. In
-Claude Code, run:
+This repo is also a Claude Code plugin marketplace. Its plugin `toolscript` guides the npm setup. In Claude Code, run:
 
 ```text
 /plugin marketplace add yeeyon/toolscript-mcp
@@ -163,7 +137,7 @@ Claude Code, run:
 Then run `/toolscript:setup`, or ask Claude to set up toolscript-mcp. The skill asks you before each step that changes
 something:
 
-1. It checks Node and git, then clones the `beta` branch, or updates a clone that exists.
+1. It checks Node and npm, then checks that the published package starts.
 2. It runs `init` when you agree, and shows the servers that init imported.
 3. It adds toolscript-mcp to Claude Code with `claude mcp add`.
 4. It sends you to `/toolscript:start` for the first run. See the list below.
@@ -181,25 +155,25 @@ something:
 6. After a run works, the skill offers to remove the direct copy of the server from Claude Code. It shows the scope of the copy first.
 
 `/toolscript:doctor` checks the whole setup and changes no setting. It runs [doctor](#doctor), then checks the Claude
-Code registration, the direct copies of your servers and the clone. For each problem, it names the step that fixes it.
+Code registration and the direct copies of your servers. For each problem, it names the step that fixes it.
 
 The skills do not edit the config files of your clients. They show the lines to change. To update or uninstall
 toolscript-mcp, ask Claude again.
 
 ### Client setup
 
-Replace each path below with the absolute path of your clone or config. Use the server name `toolscript`.
+Replace the example config path with your absolute config path. Use the server name `toolscript`.
 
 Claude Code on Linux and macOS:
 
 ```sh
-claude mcp add --scope user toolscript '--' node "/absolute/path/to/toolscript-mcp/dist/host/main.js" --config "/absolute/path/to/config.json"
+claude mcp add --scope user toolscript '--' npx -y toolscript-mcp --config "/absolute/path/to/config.json"
 ```
 
 Claude Code on Windows, in PowerShell:
 
 ```powershell
-claude mcp add --scope user toolscript '--' node "C:/tools/toolscript-mcp/dist/host/main.js" --config "C:/tools/toolscript-config.json"
+claude mcp add --scope user toolscript '--' cmd /c npx -y toolscript-mcp --config "C:/tools/toolscript-config.json"
 ```
 
 Keep the quotes around `'--'`. The PowerShell `claude.ps1` shim drops a bare `--`, so it can misread `--config`.
@@ -210,8 +184,8 @@ Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
 {
   "mcpServers": {
     "toolscript": {
-      "command": "node",
-      "args": ["/absolute/path/to/toolscript-mcp/dist/host/main.js", "--config", "/absolute/path/to/config.json"]
+      "command": "npx",
+      "args": ["-y", "toolscript-mcp", "--config", "/absolute/path/to/config.json"]
     }
   }
 }
@@ -221,8 +195,8 @@ Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.toolscript]
-command = "node"
-args = ["/absolute/path/to/toolscript-mcp/dist/host/main.js", "--config", "/absolute/path/to/config.json"]
+command = "npx"
+args = ["-y", "toolscript-mcp", "--config", "/absolute/path/to/config.json"]
 default_tools_approval_mode = "approve"
 ```
 
@@ -231,7 +205,8 @@ toolscript-mcp still checks its own policy on each call of a program.
 In a test on Windows, Codex started toolscript-mcp in the folder where `codex exec` ran. A downstream server with
 no `cwd` in its entry starts in that folder too.
 
-On Windows, use paths such as `C:/tools/toolscript-mcp/dist/host/main.js` in JSON and TOML.
+On Windows, set the command to `cmd` and put `"/c", "npx"` at the start of the arguments in JSON and TOML.
+Use a config path such as `C:/tools/toolscript-config.json`.
 If you put the config file in the default place, you can omit `--config` and its path.
 See [The config file](#the-config-file).
 
@@ -284,12 +259,13 @@ npm ci
 npm run build
 ```
 
-Then use [Client setup](#client-setup) with the path of this clone.
+For a development session, use `node` as the client command. Replace the npm arguments with
+`["/absolute/path/to/toolscript-mcp/dist/host/main.js", "--config", "/absolute/path/to/config.json"]`.
 
 ### init
 
-- `node /absolute/path/to/toolscript-mcp/dist/host/main.js init` imports the user-scope servers of Claude Code. It does not import the servers of a
-  project. To add them, use `--list` and `--add` below.
+- `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code, Claude Desktop and Cursor.
+  To add servers from a project, use `--list` and `--add` below.
 - If two clients have a server with the same name, init keeps the first one. The order is Claude Code, Claude
   Desktop, Cursor.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
@@ -515,13 +491,19 @@ worked. Without `--server`, the run must call a tool of any server. These cases 
 
 #### Demo server
 
-`demo/server.mjs` is a read-only MCP server with 40 sample pull requests of a made-up repository. It needs no account
-and no network. The npm package and a clone both hold it. Add it to the config with the absolute path of the file:
+`demo/server.mjs` is a read-only MCP server with 40 sample pull requests. It needs no account.
+Install the npm package in a folder of your choice to give the demo file a stable path.
+
+```sh
+npm install --prefix "/absolute/path/to/demo-package" toolscript-mcp@latest
+```
+
+Add the demo file to your config. Replace the example path with your path.
 
 ```json
 {
   "mcpServers": {
-    "demo": { "command": "node", "args": ["/absolute/path/to/toolscript-mcp/demo/server.mjs"] }
+    "demo": { "command": "node", "args": ["/absolute/path/to/demo-package/node_modules/toolscript-mcp/demo/server.mjs"] }
   },
   "policy": [{ "match": "mcp__demo__list_pull_requests", "action": "allow" }]
 }
@@ -876,7 +858,7 @@ The `claude mcp serve` bridge costs about 315 MB of private memory in each sessi
 toolscript-mcp logs in to a remote HTTP server with OAuth. You do not need a proxy such as `mcp-remote`.
 
 1. Add the server to the config with `"type": "http"` and `url`, without `headers`.
-2. Run `node /absolute/path/to/toolscript-mcp/dist/host/main.js login <server>`. If your config uses another path, add `--config <path>`.
+2. Run `npx -y toolscript-mcp login <server>`. If your config uses another path, add `--config <path>`.
 3. Log in and approve the access in the browser. If the browser does not open, open the URL that login prints.
 
 login waits 5 minutes for the browser and 30 s for the token exchange. Then it connects to the server and prints the
@@ -1255,11 +1237,11 @@ Code 2.1.325.
 - [x] Write the docs and add the release workflow.
 - [x] Compare toolscript-mcp with Claude Code Code Mode in the bench.
 - [x] Log in to remote servers with OAuth.
-- [x] Offer guided beta setup through the Claude Code plugin.
+- [x] Offer guided setup through the Claude Code plugin.
 - [x] Run Claude Code tools through the optional stdio bridge, with a project `cwd`.
 - [x] Require per-run approval for tools marked for user interaction.
 - [x] Keep images and other non-text results as files, and show the images that a program returns.
-- [ ] Publish 1.0.0 to npm.
+- [x] Publish 1.0.0 to npm.
 - [ ] Run the Codex comparison and publish its results.
 - [ ] Keep state between `run_code` calls, as an option.
 - [ ] Serve hint files and saved functions as tools.

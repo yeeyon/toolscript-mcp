@@ -24,7 +24,6 @@ With the argument `verify`, do step 6 only.
 
 The names in the commands:
 
-- `<folder>` is the clone of toolscript-mcp. `<main>` is `<folder>/dist/host/main.js`.
 - `<config>` is the toolscript-mcp config file.
 - `<helper>` is `${CLAUDE_SKILL_DIR}/../setup/config.mjs`, the config helper of the setup skill.
 - `<server>` is a server key: the value in the `key` column of `init --list`, or `demo`. A key has only letters,
@@ -32,26 +31,27 @@ The names in the commands:
 
 ## 1. Find the state
 
+Do not repeat environment values from the Claude Code entry.
+
 Run `claude mcp get toolscript`. In each path of its arguments, write each `\` as `/`.
 
-- If it shows no server, or no `/dist/host/main.js` in its arguments, toolscript-mcp is not set up from a clone. Tell
-  the person to run `/toolscript:setup` first, and stop.
-- If the value after `Scope:` does not start with `User config` or `Local config`, stop. Tell the person that the
-  entry is not in their own user or local scope, so someone else can choose its paths. Do not use them.
-- `<main>` is the argument that ends in `/dist/host/main.js`. `<folder>` is the part before `/dist/host/main.js`.
-- If its arguments hold `--config`, the next argument is `<config>`. Else, run `node "<helper>" path`, and use the
-  path that it prints.
-- If `<main>` or `<config>` holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, show the path and
-  stop. A shell can change such a path. The person moves the clone or the config to another path.
+- If there is no server or the entry uses a clone, tell the person to run `/toolscript:setup`, and stop.
+- Check for `npx -y toolscript-mcp` or its Windows form `cmd /c npx -y toolscript-mcp`.
+- If the scope is neither user nor local, stop. The project can share this entry.
+- If its arguments hold `--config`, the next argument is `<config>`.
+- Otherwise, use the entry's `TOOLSCRIPT_CONFIG` if set, or the path that `node "<helper>" path` prints. Use that path as `<config>`.
+- If `<config>` holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, stop. A shell can change such a path.
+- If the package has a numeric version pin, keep that version in the npm commands below.
+- If the entry uses a different launch command, give the steps for that command and stop.
 
 ## 2. Pick a server
 
-Run `node "<main>" init --list --config "<config>"`. It shows one line for each server of Claude Code, Claude Desktop
+Run `npx -y toolscript-mcp init --list --config "<config>"`. It shows one line for each server of Claude Code, Claude Desktop
 and Cursor: the name, client, scope, kind, status, key and folder. Show the list to the person, and ask which server to
 use first. `<server>` is the value in the `key` column of its line: the key that the server has or gets in `<config>`.
 A line with `-` as its key cannot go into `<config>`.
 
-If init says `Unknown option '--list'`, the clone is older than this skill. Tell the person to run
+If init says `Unknown option '--list'`, the package is older than this skill. Tell the person to run
 `/toolscript:setup update`, and stop.
 
 - A server with the status `in config` is ready.
@@ -67,15 +67,24 @@ If init says `Unknown option '--list'`, the clone is older than this skill. Tell
   is the command file name or the URL origin. A name can copy the name of a server that the person trusts, so the name
   alone proves nothing. Run the command only after the person agrees.
 - Do not run the steps under `Steps that remove a direct copy` now. Step 7 does.
-- If no server fits, or the person wants a test first, offer the demo server. It needs no account, and its tools only
-  read fixed sample data. Run `node -p "require('os').tmpdir()"`. With approval, write
-  `{ "command": "node", "args": ["<folder>/demo/server.mjs"] }` to `<tmp>/toolscript-entry.json`. Then run
-  `node "<helper>" "<config>" add demo "<tmp>/toolscript-entry.json"`, and delete the entry file. `<server>` is
-  `demo`.
+- If no server fits, or the person wants a test first, offer the read-only demo. It needs no account.
+  If `node "<helper>" "<config>"` lists the demo, use it and go to step 3.
+  1. Run `node -p "require('os').homedir()"` and `node -p "require('os').tmpdir()"`. Use their output as `<home>` and `<tmp>`.
+  2. With approval, run `npm install --prefix "<home>/.toolscript-mcp/demo-package" toolscript-mcp@latest`.
+  3. With approval, write the entry below to `<tmp>/toolscript-entry.json` with the absolute path.
+  4. Run `node "<helper>" "<config>" add demo "<tmp>/toolscript-entry.json"` with approval.
+  5. Delete the entry file with approval. The server key is `demo`.
+
+  ```json
+  {
+    "command": "node",
+    "args": ["<home>/.toolscript-mcp/demo-package/node_modules/toolscript-mcp/demo/server.mjs"]
+  }
+  ```
 
 ## 3. See the tools
 
-Run `node "<main>" tools --config "<config>" -- <server>`. The `--` keeps a key that starts with `-` a key. It connects
+Run `npx -y toolscript-mcp tools --config "<config>" -- <server>`. The `--` keeps a key that starts with `-` a key. It connects
 to the server and shows each tool with its hint (`read-only`, `destructive` or `-`) and the action of the policy.
 `a person each run` means that the tool asks for each program, also under an allow rule. Keep the output for step 5:
 it ends with `Commands that allow tools:`.
@@ -83,7 +92,7 @@ it ends with `Commands that allow tools:`.
 - If it says that the server needs an OAuth login, give the person the login command that it prints. The person runs
   it. Then run `tools` again.
 - If it cannot connect, show the reason and stop.
-- If a tool shows `ask` and the output has no `Commands that allow tools:`, the clone is older than this skill. Tell
+- If a tool shows `ask` and the output has no `Commands that allow tools:`, the package is older than this skill. Tell
   the person to run `/toolscript:setup update`, and stop.
 
 ## 4. Pick a first task
@@ -122,7 +131,7 @@ that session, the person gives the task and names toolscript, then runs `/toolsc
 For `verify`, do step 1. Then run:
 
 ```sh
-node "<main>" runs --server=<server> --since 2h --config "<config>"
+npx -y toolscript-mcp runs --server=<server> --since 2h --config "<config>"
 ```
 
 If this session does not know `<server>`, leave out `--server=<server>`. `runs` then checks the newest run with a call
@@ -147,7 +156,7 @@ the task earlier, ask when, and use a longer time, such as `1d`.
 Do this only after step 6 shows exit 0. If a client still has a copy of the server, the model can still call it
 directly, and each full result goes into the context.
 
-Run `node "<main>" init --list --config "<config>"`. Under `Steps that remove a direct copy`, find the label of the
+Run `npx -y toolscript-mcp init --list --config "<config>"`. Under `Steps that remove a direct copy`, find the label of the
 server. For Claude Code, the lines under it are ready commands. For the `local` and `project` scopes, a `pushd` command
 comes first: `claude mcp remove` finds such a server only from its folder. Show the lines to the person. After the
 person agrees, run the `pushd` line alone first. If it prints an error, show it and stop: the remove line is then in
