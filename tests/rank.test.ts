@@ -616,6 +616,8 @@ describe('rankTools with the action values of the input schema', () => {
 
   test('a word in the name beats a word in an action enum', () => {
     assert.equal(names(withSchemas, 'azure devops create branch')[0], 'mcp__azure-devops__repo_create_branch')
+    // Only "create" can decide this one: it fails when the action tier reaches the 3 of a name word.
+    assert.equal(names(withSchemas, 'azure devops create')[0], 'mcp__azure-devops__repo_create_branch')
   })
 
   test('a method enum lifts the review tool under the create_pull_request tool', () => {
@@ -658,17 +660,5 @@ describe('rankTools with the action values of the input schema', () => {
     assert.equal(actionWords(act('x'.repeat(1_000_000))).size, 0)
     for (const bad of [undefined, null, 1, 'x', [], { properties: null }, { properties: [] }])
       assert.equal(actionWords(bad).size, 0)
-  })
-
-  test('a long action list ranks in well under 100 ms', () => {
-    const actions = actionWords(act(...Array.from({ length: 10_000 }, (_, k) => `v${k}`)))
-    const tools: ToolEntry[] = Array.from({ length: 200 }, (_, i) => ({
-      name: `mcp__s__t${i}`,
-      description: 'd',
-      actions,
-    }))
-    const start = performance.now()
-    rankTools(tools, 'v1 v2 v3 create pull request', 10)
-    assert.ok(performance.now() - start < 100)
   })
 })

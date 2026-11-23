@@ -1606,8 +1606,8 @@ const wholeWordRe = (word: string): RegExp => new RegExp(`(?<![a-z0-9])${word}s?
  * "wit_work_items"), else 2 as a word of the server key, else 1.5 (less 0.01 for each word of the name, at most 20)
  * when the word is not in `FILLER` and is a word of the tool's `actions`, so "create pull request" finds a
  * `*_pull_request_write` tool that has the action `create` and no verb in its description, and the shorter name goes
- * first, else 1 in the description, else 0.5 when the stem of a plural
- * word (`stem`) is in the short name, joined from its words or in the description. A stem hit scores less than the
+ * first, else 1 in the description, else 0.5 when the stem of a plural word (`stem`) is in the short name, joined
+ * from its words or in the description. A stem hit scores less than the
  * full word, so for "builds" a tool whose description holds "builds" ranks above one whose description holds "build".
  * A word of `ABBREVIATIONS` or its plural ("prs") scores 6 as a name word as written ("mr_discussions"): a tool that
  * spells the abbreviation is the one meant, and it must stay above the dozens of `*_merge_request*` tools. It scores

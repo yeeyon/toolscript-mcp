@@ -1155,7 +1155,8 @@ describe('search_tools with action enums', () => {
   }))
 
   test('the enum words change no text when the order stays the same', () => {
-    const query = 'pull requests'
+    // "create" is an action of both tools, so the new tier fires for both and the order stays the same.
+    const query = 'create pull requests'
     const order = (tools: DownstreamTool[]) =>
       [...searchResult(server(tools), query, 15).matchAll(/^### (\S+)/gm)].map(m => m[1])
     assert.deepEqual(order(withEnum), order(plain))
