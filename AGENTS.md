@@ -1,6 +1,6 @@
 # toolscript-mcp
 
-A standalone MCP server, version 1.0.1: the model writes one JavaScript program that calls the tools of other MCP
+A standalone MCP server, version 1.1.0: the model writes one JavaScript program that calls the tools of other MCP
 servers in a sandbox, and only the return value goes back into the context. It is derived from the MIT project
 claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 
@@ -50,6 +50,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     next use, at most 3 times in 60 s.
   - `oauth.ts`: the token store under `~/.toolscript-mcp/oauth/` and the SDK OAuth provider over it, in login mode
     or in the mode of the running server, which never starts a login.
+  - `sigv4.ts`: the AWS SigV4 signing of an HTTP entry with `"sigv4"` (issue #135), with `node:crypto`. The credentials
+    come from `aws configure export-credentials --profile <name>` and stay in memory until 5 minutes before they expire.
   - `oauthlock.ts`: the lock file of one OAuth refresh (`<store>.lock`), taken in `renew` of `oauth.ts`: the create
     with `wx`, the wait, the takeover of a stale lock through a claim file, and the removal.
   - `login.ts`: `toolscript-mcp login <server>`: the callback listener, the browser and the token exchange.

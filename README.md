@@ -916,6 +916,39 @@ shows the cause. The next search or call tries the refresh again.
 Sessions that share one token store refresh one at a time, so a server that revokes a reused refresh token keeps your login.
 A `.lock` file can show beside the store for a moment. If a session waits up to 20 s for another session, `search_tools` shows the cause. The next call tries again.
 
+### AWS SigV4
+
+toolscript-mcp signs the requests to an AWS HTTP server, such as the AWS MCP Server, with AWS SigV4. It uses the
+credentials of a profile of the AWS CLI. You do not need a proxy such as `mcp-proxy-for-aws`, and you do not need a
+login.
+
+```json
+{
+  "mcpServers": {
+    "aws-sit": {
+      "type": "http",
+      "url": "https://aws-mcp.us-east-1.api.aws/mcp",
+      "sigv4": { "profile": "my-sit-profile" }
+    }
+  }
+}
+```
+
+1. Install the AWS CLI version 2 and put `aws` on your `PATH`.
+2. For an SSO profile, run `aws sso login --profile <profile>`.
+3. Add one entry for each profile. Each entry uses one account.
+
+- toolscript-mcp gets the credentials with `aws configure export-credentials --profile <profile>`. It keeps them in
+  memory and gets new ones 5 minutes before they expire.
+- When the credentials cannot be read, the call fails with the cause and the `aws sso login` command. After you log in
+  again, the next call works, with no restart.
+- The region and the service come from the host of `url`, such as `us-east-1` and `aws-mcp`. For another host, set
+  `"region"` and `"service"` in `sigv4`.
+- An entry with `sigv4` does not log in with OAuth. An entry with `sigv4` and `oauth`, or with an `Authorization`
+  header, is an error.
+- toolscript-mcp signs only the requests to the origin of `url`. It never writes the credentials or the signature to a
+  log.
+
 ### Run log
 
 toolscript-mcp writes one line to `~/.toolscript-mcp/runs.jsonl` for each `run_code` call.

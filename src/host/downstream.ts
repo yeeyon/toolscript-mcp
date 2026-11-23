@@ -35,6 +35,7 @@ import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
 import { ChildTransport } from './childtransport.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
+import { sigv4Fetch } from './sigv4.ts'
 
 /** The time that one server gets for its connect, and for its whole tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
@@ -315,7 +316,11 @@ class HttpTransport extends StreamableHTTPClientTransport {
 
   constructor(server: HttpServer, onSessionEnd: (err: Error) => void, auth: Auth | undefined) {
     super(new URL(server.url), {
-      fetch: auth ? auth.provider.fetch(serverFetch(server)) : serverFetch(server),
+      fetch: auth
+        ? auth.provider.fetch(serverFetch(server))
+        : server.sigv4
+          ? sigv4Fetch({ url: server.url, sigv4: server.sigv4 }, serverFetch(server))
+          : serverFetch(server),
       ...(auth && { authProvider: auth.provider }),
     })
     this.#onSessionEnd = onSessionEnd
