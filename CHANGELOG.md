@@ -2,6 +2,7 @@
 
 ## 1.0.1
 
+- The README and Claude Code plugin use npm for setup. Existing users can keep their config when they switch from a GitHub clone. The beta promotion workflow is retired.
 - `search_tools` now ranks a tool by the verbs in its `action`, `method` or `operation` argument. Before, a query such as "create pull request" ranked the read tools above a write tool that lists `create` only in that argument.
 
 ## 1.0.0
