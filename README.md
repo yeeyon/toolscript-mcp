@@ -925,10 +925,10 @@ login.
 ```json
 {
   "mcpServers": {
-    "aws-sit": {
+    "aws": {
       "type": "http",
       "url": "https://aws-mcp.us-east-1.api.aws/mcp",
-      "sigv4": { "profile": "my-sit-profile" }
+      "sigv4": { "profile": "dev" }
     }
   }
 }

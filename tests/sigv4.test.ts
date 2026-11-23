@@ -147,10 +147,10 @@ const entryOf = (entry: unknown) => {
 }
 
 test('a sigv4 entry takes the region and service from the AWS host, and takes no OAuth login', () => {
-  const server = entryOf({ type: 'http', url: 'https://aws-mcp.us-east-1.api.aws/mcp', sigv4: { profile: 'cx-sit' } })
+  const server = entryOf({ type: 'http', url: 'https://aws-mcp.us-east-1.api.aws/mcp', sigv4: { profile: 'dev' } })
   assert.equal(server?.kind, 'http')
   assert.ok(server?.kind === 'http')
-  assert.deepEqual(server.sigv4, { profile: 'cx-sit', region: 'us-east-1', service: 'aws-mcp' })
+  assert.deepEqual(server.sigv4, { profile: 'dev', region: 'us-east-1', service: 'aws-mcp' })
   assert.equal(server.oauth, undefined)
 })
 
@@ -184,7 +184,7 @@ test('sigv4Fetch signs only the server origin, keeps credentials until near expi
   let loads = 0
   let fail = false
   const load = async (profile: string): Promise<AwsCredentials> => {
-    assert.equal(profile, 'cx-sit')
+    assert.equal(profile, 'dev')
     loads++
     if (fail) throw new Error('expired')
     return { ...EXAMPLE, sessionToken: `T${loads}`, expiresAt: now + 60 * 60_000 }
@@ -197,7 +197,7 @@ test('sigv4Fetch signs only the server origin, keeps credentials until near expi
   const signed = sigv4Fetch(
     {
       url: 'https://aws-mcp.us-east-1.api.aws/mcp',
-      sigv4: { profile: 'cx-sit', region: 'us-east-1', service: 'aws-mcp' },
+      sigv4: { profile: 'dev', region: 'us-east-1', service: 'aws-mcp' },
     },
     base,
     load,
