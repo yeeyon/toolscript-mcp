@@ -57,7 +57,12 @@ const parseRunnerMessage = (text: string): RunnerMessage | undefined => {
 
 export type Reply = { ok: true; value: unknown } | { ok: false; error: string }
 
-export type ToolEntry = { name: string; description: string }
+export type ToolEntry = {
+  name: string
+  description: string
+  /** The words of the values of its `action`, `method` or `operation` argument (`actionWords`). Only `rankTools` reads it. */
+  actions?: ReadonlySet<string>
+}
 
 /** Splits buffered stdout into whole protocol lines; other lines are ignored. */
 export const takeMessages = (buffer: string): { messages: RunnerMessage[]; rest: string } => {
@@ -1598,7 +1603,10 @@ const wholeWordRe = (word: string): RegExp => new RegExp(`(?<![a-z0-9])${word}s?
  * A short name counts only when it is the whole query or holds `_`, `-` or `.`: a plain word such as "search" in a
  * longer query must not lift the tool named `search`. Each query word then scores 3 in the short name, else 2.5 when
  * a word of 4 or more characters is written together from consecutive words of the name (`joinedIn`: "workitem" in
- * "wit_work_items"), else 2 as a word of the server key, else 1 in the description, else 0.5 when the stem of a plural
+ * "wit_work_items"), else 2 as a word of the server key, else 1.5 (less 0.01 for each word of the name, at most 20)
+ * when the word is not in `FILLER` and is a word of the tool's `actions`, so "create pull request" finds a
+ * `*_pull_request_write` tool that has the action `create` and no verb in its description, and the shorter name goes
+ * first, else 1 in the description, else 0.5 when the stem of a plural
  * word (`stem`) is in the short name, joined from its words or in the description. A stem hit scores less than the
  * full word, so for "builds" a tool whose description holds "builds" ranks above one whose description holds "build".
  * A word of `ABBREVIATIONS` or its plural ("prs") scores 6 as a name word as written ("mr_discussions"): a tool that
@@ -1667,6 +1675,7 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
       } else if (short.includes(word)) hit = 3
       else if (word.length >= 4 && joinedIn(segs, word)) hit = 2.5
       else if (ofServer.has(word)) hit = 2
+      else if (tool.actions?.has(word) && !FILLER.has(word)) hit = 1.5 - 0.01 * Math.min(segs.length, 20)
       else if (description.includes(word)) hit = 1
       else if (stem !== word && (short.includes(stem) || description.includes(stem))) hit = 0.5
       else if (stem !== word && stem.length >= 4 && joinedIn(segs, stem)) hit = 0.5

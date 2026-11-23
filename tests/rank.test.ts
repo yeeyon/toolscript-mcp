@@ -2,6 +2,7 @@ import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { actionWords } from '../src/core/catalog.ts'
 import { listsAll, rankTools, type ToolEntry } from '../src/core/protocol.ts'
 
 type Servers = Record<string, [string, string][]>
@@ -564,5 +565,110 @@ describe('rankTools with each server of the tuning set twice', () => {
     const top1 = ranks.filter(r => r === 1).length
     const mrr = ranks.reduce((sum, r) => sum + 1 / r, 0) / ranks.length
     assert.ok(top1 >= 67 && mrr >= 0.88, `top-1 ${top1} of ${ranks.length}, MRR ${mrr.toFixed(3)}, floors 67 and 0.88`)
+  })
+})
+
+// The action enum of a tool (#125): `repo_pull_request_write` holds its verbs in `action` and none in its description.
+describe('rankTools with the action values of the input schema', () => {
+  const act = (...values: unknown[]) => ({ properties: { action: { enum: values } } })
+  const azure = (tool: string, description: string, schema: unknown) => ({
+    name: `mcp__azure-devops__${tool}`,
+    description,
+    schema,
+  })
+  const defs = [
+    azure('repo_pull_request', 'Read operations for pull requests.', act('get', 'list', 'list_by_commits')),
+    azure('repo_pull_request_org', 'List pull requests of the organization.', undefined),
+    azure('repo_pull_request_thread', 'Read the threads of a pull request.', act('list', 'get')),
+    azure('repo_pull_request_thread_write', 'Write operations for threads of pull requests.', act('create', 'reply')),
+    azure(
+      'repo_pull_request_write',
+      'Write operations for pull requests. Use the action parameter to specify the operation.',
+      act('create', 'update', 'update_reviewers', 'vote'),
+    ),
+    azure('repo_create_branch', 'Make a branch from a commit.', undefined),
+  ]
+  const withSchemas: ToolEntry[] = defs.map(d => ({
+    name: d.name,
+    description: d.description,
+    actions: actionWords(d.schema),
+  }))
+  const without: ToolEntry[] = defs.map(d => ({ name: d.name, description: d.description }))
+  const names = (tools: ToolEntry[], query: string, limit = 10) => rankTools(tools, query, limit).map(t => t.name)
+  const W = 'mcp__azure-devops__repo_pull_request_write'
+
+  test('a verb of the action enum ranks the tool first', () => {
+    assert.equal(names(withSchemas, 'azure devops create pull request', 2)[0], W)
+    assert.equal(names(withSchemas, 'azure devops create pr')[0], W)
+    assert.equal(names(withSchemas, 'update reviewers pull request')[0], W)
+  })
+
+  test('the shorter name goes first when two write tools hold the verb', () => {
+    const found = names(withSchemas, 'create pull request')
+    assert.ok(found.indexOf(W) < found.indexOf('mcp__azure-devops__repo_pull_request_thread_write'))
+  })
+
+  test('a filler verb gains nothing from the enum', () => {
+    for (const query of ['azure devops get pull request', 'azure devops list pull requests'])
+      assert.deepEqual(names(withSchemas, query), names(without, query))
+    assert.equal(names(withSchemas, 'azure devops get pull request')[0], 'mcp__azure-devops__repo_pull_request')
+  })
+
+  test('a word in the name beats a word in an action enum', () => {
+    assert.equal(names(withSchemas, 'azure devops create branch')[0], 'mcp__azure-devops__repo_create_branch')
+  })
+
+  test('a method enum lifts the review tool under the create_pull_request tool', () => {
+    const tools = catalogH.map(t =>
+      t.name.endsWith('__pull_request_review_write')
+        ? { ...t, actions: actionWords({ properties: { method: { enum: ['create', 'submit_pending'] } } }) }
+        : t,
+    )
+    assert.ok(tools.some(t => t.actions !== undefined))
+    assert.ok(rankTools(tools, 'create github pull request', 1)[0]?.name.endsWith('__create_pull_request'))
+  })
+
+  test('only the own top-level action, method and operation enums count', () => {
+    assert.deepEqual(
+      [...actionWords(act('Create Draft', 'update_reviewers'))],
+      ['create', 'draft', 'update', 'reviewers'],
+    )
+    const both = actionWords({ properties: { operation: { enum: ['merge'] }, method: { enum: ['x'] } } })
+    assert.deepEqual([...both].sort(), ['merge', 'x'])
+    assert.equal(actionWords({ properties: { mode: { enum: ['create'] } } }).size, 0)
+    assert.equal(actionWords({ properties: { action: { $ref: '#/$defs/a' } } }).size, 0)
+    assert.equal(actionWords({ properties: { action: { const: 'create' } } }).size, 0)
+    assert.equal(actionWords({ properties: { action: { anyOf: [{ enum: ['create'] }] } } }).size, 0)
+    assert.equal(actionWords({ properties: { nested: { properties: { action: { enum: ['create'] } } } } }).size, 0)
+    assert.equal(actionWords(Object.create({ properties: { action: { enum: ['create'] } } })).size, 0)
+    assert.equal(actionWords({ properties: Object.create({ action: { enum: ['create'] } }) }).size, 0)
+  })
+
+  test('a hostile schema gives a bounded set and never throws', () => {
+    const many = Array.from({ length: 10_000 }, (_, i) => `verb${i}`)
+    assert.equal(actionWords(act(...many)).size, 25)
+    assert.equal(actionWords(act('a b c d e f g h '.repeat(100))).size, 0)
+    assert.equal(actionWords(act(...Array.from({ length: 25 }, (_, i) => `a${i}_b${i}_c${i}`))).size, 50)
+    assert.equal(actionWords(act(1, null, {}, ['x'])).size, 0)
+    assert.equal(actionWords({ properties: { action: { enum: { 0: 'create' } } } }).size, 0)
+    assert.equal(
+      actionWords(JSON.parse('{"properties":{"__proto__":{"enum":["x"]},"action":{"enum":["go"]}}}')).size,
+      1,
+    )
+    assert.equal(actionWords(act('x'.repeat(1_000_000))).size, 0)
+    for (const bad of [undefined, null, 1, 'x', [], { properties: null }, { properties: [] }])
+      assert.equal(actionWords(bad).size, 0)
+  })
+
+  test('a long action list ranks in well under 100 ms', () => {
+    const actions = actionWords(act(...Array.from({ length: 10_000 }, (_, k) => `v${k}`)))
+    const tools: ToolEntry[] = Array.from({ length: 200 }, (_, i) => ({
+      name: `mcp__s__t${i}`,
+      description: 'd',
+      actions,
+    }))
+    const start = performance.now()
+    rankTools(tools, 'v1 v2 v3 create pull request', 10)
+    assert.ok(performance.now() - start < 100)
   })
 })
