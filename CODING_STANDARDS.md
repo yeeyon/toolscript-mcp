@@ -41,7 +41,8 @@ enforces; the others rely on discipline.
   processes, a refresh holds `<store>.lock` (`src/host/oauthlock.ts`, made with `wx`, in the `oauth` folder, never a
   secret in it). It reads the store again after it takes the lock, and returns the tokens of the winner when the store
   holds a refresh token other than the one it holds, or an access token that no server refused in this process. The
-  lock wait and the request share `refreshTimeoutMs`. A lock is stale when its pid is dead, or when it is older than
+  lock wait and the request share `refreshTimeoutMs`. A waiter that gets the lock with less than half of that time
+  left, and no new tokens in the store, sends no request. A lock is stale when its pid is dead, or when it is older than
   the refresh time plus the rename wait plus a margin. Only the waiter that makes the claim file of a stale lock removes
   it. `login` takes no lock. A lock that cannot be made (a full disk) lets the refresh run without it. Both are an `OAuthError`, so the SDK passes them on and starts no login.
   A refresh saves its tokens only when the store still holds the refresh token that it held when the refresh started: a login in

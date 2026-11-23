@@ -259,8 +259,10 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       // The process that held the lock before this one saved the tokens that this refresh needs.
       const now = await current()
       if (newer(now, sent)) return now
+      // A holder that kept the lock for half of the time and saved nothing met a slow or silent endpoint. Each process
+      // counts its time from its own start, so waiters that each sent with the rest would fail one after another.
       const left = deadline - Date.now()
-      if (left <= 0) throw busy()
+      if (left < timeoutMs / 2) throw busy()
       return await exchange(send, sent, now, left, timeoutMs)
     } finally {
       if (typeof lock === 'object') await dropLock(lock, lockFs)

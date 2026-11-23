@@ -46,8 +46,9 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
   test('a live pid that is not a holder: young, the refresh fails at its time with no request. Old, it is taken over', async () => {
     const s = await setup()
     const [fake] = s.fakes as [Fake]
-    putLock(s, lockText(process.pid), 0)
     const children = await group(s, 6, 1000)
+    // After the start of the processes: on a slow machine it takes longer than the age of a lock (12 s here).
+    putLock(s, lockText(process.pid), 0)
     const young = await round(s, children)
     assert.equal(young.lines.length, 6)
     for (const l of young.lines)
@@ -73,8 +74,8 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
     test(`${name}: waits for the age, and then 6 waiters take it over with one request`, async () => {
       const s = await setup()
       const [fake] = s.fakes as [Fake]
-      putLock(s, text, 0)
       const children = await group(s, 6, 1000)
+      putLock(s, text, 0)
       const young = await round(s, children)
       for (const l of young.lines) assert.match(l.text, /another toolscript-mcp process is refreshing/, l.text)
       assert.equal(requests(fake), 0)
