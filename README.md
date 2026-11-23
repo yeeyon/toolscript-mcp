@@ -5,8 +5,8 @@ servers in a sandbox. The program filters and joins the data there. Only the res
 
 The goal is a server that works with any MCP client, for example Claude Code, Claude Desktop, Cursor and Codex.
 
-> **Status: 1.0.0 is the first npm release.** Until it is published, use the [beta clone](#from-github-beta) or the
-> [Claude Code plugin](#with-the-claude-code-plugin). Read [Limits](#limits) before you use it.
+> **Status: 1.0.0 is on npm.** Set it up [from npm](#from-npm) with `npx -y toolscript-mcp init`. Read
+> [Limits](#limits) before you use it.
 
 - [Features](#features)
 - [Measured](#measured)

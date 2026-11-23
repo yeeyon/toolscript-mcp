@@ -8,8 +8,8 @@
 # uploads that exact tarball. A rerun skips the steps that are done already,
 # and fails when npm holds a different tarball for the version.
 #
-# npm auth: the NPM_TOKEN secret, or npm trusted publishing (OIDC) for this
-# file once it is set up on npmjs.com. npm tries OIDC first.
+# npm auth: npm trusted publishing (OIDC) only, with no token. The trusted
+# publisher on npmjs.com names this file and allows npm publish.
 name: release
 
 on:
@@ -88,7 +88,6 @@ jobs:
       - run: npm install -g npm@11.21.2
       - name: Publish to npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           # The ./ makes npm read a file path. npm 11 reads release/<name>.tgz as the GitHub repo <owner>/<repo>.
