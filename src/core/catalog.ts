@@ -700,6 +700,34 @@ export const namesByServer = (all: readonly CatalogEntry[], cap = NAMES_CAP): st
     })
 }
 
+const ACTION_PROPERTIES = ['action', 'method', 'operation']
+const MAX_ACTION_VALUE = 40
+const MAX_ACTION_WORDS = 50
+
+/**
+ * The words of the string values of the `enum` of the top-level argument `action`, `method` or `operation`, for the
+ * rank only: a tool such as `repo_pull_request_write` names its verbs in that enum and nowhere else. It reads the first
+ * MAX_ENUM values, each of at most MAX_ACTION_VALUE characters, and keeps at most MAX_ACTION_WORDS words. Any other
+ * schema (`$ref`, `anyOf`, `const`, a nested object) gives an empty set.
+ */
+export const actionWords = (inputSchema: unknown): ReadonlySet<string> => {
+  const words = new Set<string>()
+  if (!isObject(inputSchema) || !Object.hasOwn(inputSchema, 'properties')) return words
+  const properties = inputSchema.properties
+  if (!isObject(properties)) return words
+  for (const key of ACTION_PROPERTIES) {
+    const property = Object.hasOwn(properties, key) ? properties[key] : undefined
+    if (!isObject(property) || !Array.isArray(property.enum)) continue
+    for (let i = 0; i < property.enum.length && i < MAX_ENUM; i++) {
+      const value: unknown = property.enum[i]
+      if (typeof value !== 'string' || value.length > MAX_ACTION_VALUE) continue
+      for (const word of value.toLowerCase().split(/[^a-z0-9]+/))
+        if (word !== '' && words.size < MAX_ACTION_WORDS) words.add(word)
+    }
+  }
+  return words
+}
+
 /**
  * The text of a search_tools result: the best matches, then the servers that
  * are not connected. A query with words shows its first DETAIL_HITS matches in
@@ -723,7 +751,11 @@ export const searchResult = (
   canAsk = true,
 ): string => {
   const all = catalogOf(states)
-  const found = rankTools(all, query, limit)
+  const found = rankTools(
+    all.map(t => ({ ...t, actions: actionWords(t.inputSchema) })),
+    query,
+    limit,
+  )
   const tail = notConnectedText(states)
   if (found.length === 0) {
     const shown = query.length > ECHO_MAX ? `${query.slice(0, ECHO_MAX)}... (${query.length} characters)` : query

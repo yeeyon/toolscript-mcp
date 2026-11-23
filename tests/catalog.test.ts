@@ -1135,3 +1135,40 @@ describe('search_tools with no match, the list of names', () => {
     assert.ok(text.endsWith('(+1 more)\nA narrower word, or `mcp__<key>__` in the query, finds the rest.'))
   })
 })
+
+describe('search_tools with action enums', () => {
+  const plain: DownstreamTool[] = [
+    {
+      name: 'pr_write',
+      description: 'Write operations for pull requests.',
+      inputSchema: { type: 'object', properties: { action: { type: 'string' } } },
+    },
+    {
+      name: 'pr_read',
+      description: 'Read pull requests.',
+      inputSchema: { type: 'object', properties: { action: { type: 'string' } } },
+    },
+  ]
+  const withEnum = plain.map(t => ({
+    ...t,
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['create', 'get'] } } },
+  }))
+
+  test('the enum words change no text when the order stays the same', () => {
+    // "create" is an action of both tools, so the new tier fires for both and the order stays the same.
+    const query = 'create pull requests'
+    const order = (tools: DownstreamTool[]) =>
+      [...searchResult(server(tools), query, 15).matchAll(/^### (\S+)/gm)].map(m => m[1])
+    assert.deepEqual(order(withEnum), order(plain))
+    const strip = (text: string) => text.replace(/action\?: ("create" \| "get"|string)\n/g, 'action?\n')
+    assert.equal(strip(searchResult(server(withEnum), query, 15)), strip(searchResult(server(plain), query, 15)))
+  })
+
+  test('an enum word ranks a tool whose description has no such word', () => {
+    const tools: DownstreamTool[] = [
+      { name: 'a_read', description: 'Read operations.' },
+      { name: 'b_write', description: 'Write operations.', inputSchema: withEnum[0]!.inputSchema },
+    ]
+    assert.match(searchResult(server(tools), 'create', 1), /mcp__x__b_write/)
+  })
+})
