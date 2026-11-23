@@ -319,7 +319,7 @@ class HttpTransport extends StreamableHTTPClientTransport {
       fetch: auth
         ? auth.provider.fetch(serverFetch(server))
         : server.sigv4
-          ? sigv4Fetch({ url: server.url, sigv4: server.sigv4 }, serverFetch(server))
+          ? sigv4Fetch({ url: server.url, sigv4: server.sigv4, headers: server.headers }, serverFetch(server))
           : serverFetch(server),
       ...(auth && { authProvider: auth.provider }),
     })

@@ -159,7 +159,7 @@ export const exportCredentials = (profile: string, command = 'aws'): Promise<Aws
  * new `aws sso login` works without a restart.
  */
 export const sigv4Fetch = (
-  server: { readonly url: string; readonly sigv4: SigV4 },
+  server: { readonly url: string; readonly sigv4: SigV4; readonly headers?: Readonly<Record<string, string>> },
   base: FetchLike,
   load: (profile: string) => Promise<AwsCredentials> = exportCredentials,
   clock: () => number = Date.now,
@@ -177,6 +177,8 @@ export const sigv4Fetch = (
     const target = new URL(url)
     if (target.origin !== origin) return base(url, init)
     const headers = new Headers(init?.headers)
+    // The config headers go on before the signature, so the base fetch that sets them again changes no signed value.
+    for (const [name, value] of Object.entries(server.headers ?? {})) headers.set(name, value)
     const body = init?.body
     if (body !== undefined && body !== null && typeof body !== 'string' && !(body instanceof Uint8Array))
       throw new Error('a SigV4 request body must be a string or bytes')
@@ -187,6 +189,8 @@ export const sigv4Fetch = (
       new Date(clock()),
     )
     for (const [name, value] of Object.entries(added)) headers.set(name, value)
-    return base(url, { ...init, headers })
+    // fetch would follow a redirect with the session token in x-amz-security-token, also to another origin. The 3xx
+    // goes back to the SDK as an error instead.
+    return base(url, { ...init, headers, redirect: 'manual' })
   }
 }

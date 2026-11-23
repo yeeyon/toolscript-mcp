@@ -1,7 +1,74 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { awsEndpoint, parseConfig } from '../src/core/config.ts'
+import { serverFetch } from '../src/host/downstream.ts'
 import { parseExported, signRequest, sigv4Fetch, type AwsCredentials } from '../src/host/sigv4.ts'
+
+test('a config Content-Type is the signed one, as serverFetch sends it after the signature', async () => {
+  const now = Date.UTC(2026, 10, 23, 8)
+  const server = {
+    kind: 'http' as const,
+    url: 'https://aws-mcp.us-east-1.api.aws/mcp',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    sigv4: { profile: 'p', region: 'us-east-1', service: 'aws-mcp' },
+  }
+  let sent: Headers | undefined
+  const real = globalThis.fetch
+  globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+    sent = new Headers(init?.headers)
+    return new Response('{}')
+  }) as typeof fetch
+  try {
+    const signed = sigv4Fetch(
+      server,
+      serverFetch(server),
+      async () => ({ accessKeyId: 'AKID', secretAccessKey: 'S' }),
+      () => now,
+    )
+    await signed(server.url, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } })
+  } finally {
+    globalThis.fetch = real
+  }
+  assert.equal(sent!.get('content-type'), 'application/json; charset=utf-8')
+  const again = signRequest(
+    { method: 'POST', url: server.url, headers: sent!, body: '{}' },
+    { accessKeyId: 'AKID', secretAccessKey: 'S' },
+    server.sigv4,
+    new Date(now),
+  )
+  assert.equal(sent!.get('authorization'), again.authorization, 'the sent headers match the signature')
+})
+
+test('a redirect of the signed server is not followed, so the session token reaches no other origin', async () => {
+  let reached = false
+  const other = http.createServer((_req, res) => {
+    reached = true
+    res.end('{}')
+  })
+  await new Promise<void>(r => other.listen(0, '127.0.0.1', r))
+  const otherUrl = `http://127.0.0.1:${(other.address() as AddressInfo).port}/steal`
+  const first = http.createServer((_req, res) => {
+    res.writeHead(307, { location: otherUrl })
+    res.end()
+  })
+  await new Promise<void>(r => first.listen(0, '127.0.0.1', r))
+  try {
+    const url = `http://127.0.0.1:${(first.address() as AddressInfo).port}/mcp`
+    const signed = sigv4Fetch(
+      { url, sigv4: { profile: 'p', region: 'us-east-1', service: 'aws-mcp' } },
+      (u, i) => fetch(u, i),
+      async () => ({ accessKeyId: 'AKID', secretAccessKey: 'S', sessionToken: 'SECRET' }),
+    )
+    const res = await signed(url, { method: 'POST', body: '{}' })
+    assert.equal(res.status, 307)
+    assert.equal(reached, false)
+  } finally {
+    first.close()
+    other.close()
+  }
+})
 
 // The example credentials of the AWS SigV4 test suite.
 const EXAMPLE: AwsCredentials = {
