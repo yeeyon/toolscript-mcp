@@ -11,6 +11,10 @@ Sharing (issue #63), slice 4:
 - `doctor` names the way out for a taken broker name and, on Windows, reads the access rules of the broker folder.
 - SECURITY.md gets the threat model of the broker. `scripts/start-time.mjs` checks that a pid is still the broker before it ends it.
 
+OAuth refresh lock (issue #63, slice 6):
+
+- A process that waited for the lock and gets it with less than half of the refresh time left, with no new tokens in the store, fails with the cause and sends no request. Before, against a token endpoint that never answers, each waiter sent its own request when the one before it timed out, so the requests grew with the spread of the start times.
+
 ## 1.0.0
 
 The first release on npm. Set it up with `npx -y toolscript-mcp init`. toolscript-mcp is derived from claude-code-mode by Gabriele Pavanello at commit eea4077 (MIT).

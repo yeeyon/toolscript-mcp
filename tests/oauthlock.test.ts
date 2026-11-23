@@ -221,6 +221,22 @@ describe('one refresh in one process', () => {
     )
   })
 
+  test('a holder that saves nothing: a waiter sends its own request only with half of its time left', async () => {
+    // A refresh time of 6 s: the half is 3 s, at least 1 s from each case, for a busy machine.
+    for (const [heldMs, sent] of [
+      [4000, 0],
+      [100, 1],
+    ] as const) {
+      const h = harness(ok, undefined, 6000)
+      fs.writeFileSync(h.lock, lockText({ pid: process.pid, id: ID, at: Date.now() }))
+      setTimeout(() => fs.rmSync(h.lock), heldMs)
+      const out = await h.refresh()
+      assert.equal(h.sent(), sent, `held ${heldMs} ms`)
+      if (sent === 0) assert.match((out as Error).message, /another toolscript-mcp process is refreshing.*No login/)
+      else assert.equal((out as Record<string, string>).refresh_token, NEXT.refresh_token)
+    }
+  })
+
   test('the store gets tokens from another process while this one waits: no request', async () => {
     const h = harness(ok, undefined, 3000)
     fs.writeFileSync(h.lock, lockText({ pid: process.pid, id: ID, at: Date.now() }))

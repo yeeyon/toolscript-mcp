@@ -93,13 +93,13 @@ describe('processes that share one store', { timeout: 180_000 }, () => {
   test('an endpoint that never answers fails all 6 within the refresh time, and the next use goes on', async () => {
     const s = await setup()
     const [fake] = s.fakes as [Fake]
-    const children = await group(s, 6, 1000)
+    const children = await group(s, 6, 2000)
     fake.change.stallRefreshes = true
     const failed = await round(s, children)
     assert.equal(failed.lines.length, 6)
     for (const l of failed.lines)
       assert.match(l.text, /could not refresh the OAuth token: .*No login is needed/, l.text)
-    assert.ok(failed.ms < 1000 + 2000, `${failed.ms} ms`)
+    assert.ok(failed.ms < 2000 + 2000, `${failed.ms} ms`)
     assert.ok(requests(fake) <= 2, `${requests(fake)} requests`)
     assert.deepEqual(s.leftovers(), [])
     fake.change.stallRefreshes = false
