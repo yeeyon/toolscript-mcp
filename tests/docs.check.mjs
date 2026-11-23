@@ -18,6 +18,7 @@ import { runChecks } from './check.mjs'
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const USER_DOCS = [
   'README.md',
+  'FAQ.md',
   'plugin/skills/setup/SKILL.md',
   'plugin/skills/start/SKILL.md',
   'plugin/skills/doctor/SKILL.md',
