@@ -1,6 +1,6 @@
 # toolscript-mcp
 
-A standalone MCP server, version 1.1.0: the model writes one JavaScript program that calls the tools of other MCP
+A standalone MCP server, version 1.0.2: the model writes one JavaScript program that calls the tools of other MCP
 servers in a sandbox, and only the return value goes back into the context. It is derived from the MIT project
 claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 

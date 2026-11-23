@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0
+## 1.0.2
 
 - An HTTP server entry can sign its requests with AWS SigV4: `"sigv4": { "profile": "<name>" }`. toolscript-mcp gets the credentials from the AWS CLI profile, so an `aws sso login` session works. You can use the AWS MCP Server without `mcp-proxy-for-aws` and without an OAuth login. See "AWS SigV4" in the README.
 
