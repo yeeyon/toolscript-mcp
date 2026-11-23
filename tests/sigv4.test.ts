@@ -219,4 +219,17 @@ test('sigv4Fetch signs only the server origin, keeps credentials until near expi
   fail = false
   await signed('https://aws-mcp.us-east-1.api.aws/mcp', { method: 'POST', body: '{}' })
   assert.equal(loads, 4, 'a failed read is not kept')
+  assert.deepEqual(signed.secrets(), [EXAMPLE.accessKeyId, EXAMPLE.secretAccessKey, 'T4'], 'the credentials to hide')
+})
+
+test('the canonical path encodes the path as sent once more, so a raw and an encoded colon sign differently', () => {
+  const sign = (url: string) =>
+    signRequest(
+      { method: 'GET', url, headers: new Headers(), body: '' },
+      EXAMPLE,
+      { region: 'us-east-1', service: 's' },
+      SUITE_DATE,
+    ).authorization
+  assert.notEqual(sign('https://h.us-east-1.api.aws/a/arn:x'), sign('https://h.us-east-1.api.aws/a/arn%3Ax'))
+  assert.doesNotThrow(() => sign('https://h.us-east-1.api.aws/a%zz'))
 })

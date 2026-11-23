@@ -22,12 +22,8 @@ const hmac = (key: string | Buffer, data: string): Buffer => createHmac('sha256'
 const encode = (text: string): string =>
   encodeURIComponent(text).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
 
-/** The canonical path: each segment encoded once, as a service other than S3 expects it encoded again. */
-const canonicalPath = (pathname: string): string =>
-  pathname
-    .split('/')
-    .map(s => encode(encode(decodeURIComponent(s))))
-    .join('/') || '/'
+/** The canonical path: each segment as sent, encoded once more, as AWS computes it for a service other than S3. */
+const canonicalPath = (pathname: string): string => pathname.split('/').map(encode).join('/') || '/'
 
 const canonicalQuery = (params: URLSearchParams): string =>
   [...params]
@@ -163,7 +159,7 @@ export const sigv4Fetch = (
   base: FetchLike,
   load: (profile: string) => Promise<AwsCredentials> = exportCredentials,
   clock: () => number = Date.now,
-): FetchLike => {
+): FetchLike & { readonly secrets: () => readonly string[] } => {
   const origin = new URL(server.url).origin
   let current: AwsCredentials | undefined
   let pending: Promise<AwsCredentials> | undefined
@@ -173,7 +169,7 @@ export const sigv4Fetch = (
     current = await pending
     return current
   }
-  return async (url, init) => {
+  const signed: FetchLike = async (url, init) => {
     const target = new URL(url)
     if (target.origin !== origin) return base(url, init)
     const headers = new Headers(init?.headers)
@@ -193,4 +189,10 @@ export const sigv4Fetch = (
     // goes back to the SDK as an error instead.
     return base(url, { ...init, headers, redirect: 'manual' })
   }
+  // A server can echo a header of a refused request in its error body, and that text reaches the model and the log.
+  const secrets = (): readonly string[] =>
+    current
+      ? [current.accessKeyId, current.secretAccessKey, ...(current.sessionToken ? [current.sessionToken] : [])]
+      : []
+  return Object.assign(signed, { secrets })
 }

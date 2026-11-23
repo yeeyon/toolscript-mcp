@@ -35,7 +35,7 @@ import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
 import { ChildTransport } from './childtransport.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
-import { sigv4Fetch } from './sigv4.ts'
+import { AwsCredentialsError, sigv4Fetch } from './sigv4.ts'
 
 /** The time that one server gets for its connect, and for its whole tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
@@ -313,18 +313,24 @@ type Auth = { readonly provider: Provider; readonly reason: string }
 class HttpTransport extends StreamableHTTPClientTransport {
   readonly #onSessionEnd: (err: Error) => void
   readonly #loginReason: string | undefined
+  /** The AWS credentials of a SigV4 entry, to hide from the texts that reach the model and the log. */
+  readonly secrets: () => readonly string[]
 
-  constructor(server: HttpServer, onSessionEnd: (err: Error) => void, auth: Auth | undefined) {
+  constructor(
+    server: HttpServer,
+    onSessionEnd: (err: Error) => void,
+    auth: Auth | undefined,
+    signed = server.sigv4 && !auth
+      ? sigv4Fetch({ url: server.url, sigv4: server.sigv4, headers: server.headers }, serverFetch(server))
+      : undefined,
+  ) {
     super(new URL(server.url), {
-      fetch: auth
-        ? auth.provider.fetch(serverFetch(server))
-        : server.sigv4
-          ? sigv4Fetch({ url: server.url, sigv4: server.sigv4, headers: server.headers }, serverFetch(server))
-          : serverFetch(server),
+      fetch: auth ? auth.provider.fetch(serverFetch(server)) : (signed ?? serverFetch(server)),
       ...(auth && { authProvider: auth.provider }),
     })
     this.#onSessionEnd = onSessionEnd
     this.#loginReason = auth?.reason
+    this.secrets = signed?.secrets ?? (() => [])
   }
 
   override async send(...args: Parameters<StreamableHTTPClientTransport['send']>): Promise<void> {
@@ -622,6 +628,7 @@ export const connectAll = (
       if (closing) throw new OwnError('toolscript-mcp is shutting down')
       const made = transportOf(key, server, sessionEnded, auth, childStderr, share, lazily)
       lastError = made.lastError
+      if (made.transport instanceof HttpTransport && !auth) secrets = made.transport.secrets
       if (made.child !== undefined) {
         children.add(made.child)
         // A shutdown that began before this child started hurries it at once.
@@ -674,7 +681,13 @@ export const connectAll = (
       await client.close().catch(() => {})
       opened.delete(client)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
-      if (isOAuthStop(err) || err instanceof OwnError || err instanceof BrokerError)
+      // An AwsCredentialsError holds the text of the AWS CLI, not of the server, so an untrusted entry shows it too.
+      if (
+        isOAuthStop(err) ||
+        err instanceof OwnError ||
+        err instanceof BrokerError ||
+        err instanceof AwsCredentialsError
+      )
         fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`)
       else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
     }
