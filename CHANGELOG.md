@@ -1,20 +1,5 @@
 # Changelog
 
-## Unreleased
-
-Sharing (issue #63), slice 4:
-
-- The stderr text of a shared server goes to every session attached to it, into the same log as a direct copy's, never into a reason or a result. A failed attach gets the last 8 KB of the copy that failed. The broker drops stderr above 256 KB in 10 s and counts it.
-- Broker frames to a host carry a mark byte that no JSON starts with, so a server line can no longer pass as one. The wire is version 2.
-- A request of more than 10 MB fails by itself. The broker holds at most 256 links (one for each shared server of each session) and 32 copies, and closes a link with more than 64 MB unsent or a copy that does not read its input.
-- A stale recovery lock is broken by rename, a future time in it counts as old, and a socket that a kill left is linked back or swept at the next start.
-- `doctor` names the way out for a taken broker name and, on Windows, reads the access rules of the broker folder.
-- SECURITY.md gets the threat model of the broker. `scripts/start-time.mjs` checks that a pid is still the broker before it ends it.
-
-OAuth refresh lock (issue #63, slice 6):
-
-- A process that waited for the lock and gets it with less than half of the refresh time left, with no new tokens in the store, fails with the cause and sends no request. Before, against a token endpoint that never answers, each waiter sent its own request when the one before it timed out, so the requests grew with the spread of the start times.
-
 ## 1.0.0
 
 The first release on npm. Set it up with `npx -y toolscript-mcp init`. toolscript-mcp is derived from claude-code-mode by Gabriele Pavanello at commit eea4077 (MIT).
@@ -124,6 +109,7 @@ OAuth login:
 - When Windows refuses the rename of the store because another reader or writer has the file open, the save tries again for up to 1 s. Refreshed tokens that the store never takes work until toolscript-mcp stops, or until the store gets other tokens, as from a login. stderr gets one line. Before, the refresh lost the new refresh token and asked for a login.
 - When another call or process with the same store refreshed a rotating refresh token first, the running server uses the new token from the store and needs no login. It compares the store with the refresh token of the refused request. Before, it compared with the refresh token that any call read last, so a late `invalid_grant` asked for a login. A refresh that gets no answer, a 5xx, 408 or 429 shows "could not refresh the OAuth token", its cause and "No login is needed", and the next use tries again. Any other 4xx of the token endpoint, such as a revoked token or an HTML 403, ends the link and asks for a login. Before, a 4xx without a known OAuth error code showed "could not refresh" on every use, and `invalid_token` or `invalid_request` failed each call with the raw error.
 - Processes that share one OAuth store refresh one at a time, with a `<store>.lock` file made with `O_EXCL` beside the store (#63). A server with reuse detection no longer revokes the grant when several sessions refresh at once. A lock of a dead pid, or older than the refresh time plus a margin, is taken over by one waiter. A wait of 20 s fails with the cause, and the next use tries again. `doctor` ignores the lock files.
+- A process that waited for the OAuth lock and gets it with less than half of the refresh time left, with no new tokens in the store, fails with the cause and sends no request. So against a token endpoint that never answers, the waiters do not each send a request when the one before them times out.
 - A log line, a printed line, a `search_tools` reason or an error of a nested call hides each OAuth token, code, verifier, state and client secret that toolscript-mcp sent, also URL- or form-encoded with upper- or lowercase hex digits, escaped as in a JSON string, and as a Basic header value. A token or client secret from a server is hidden as a plain word only when it has 8 characters or more, and then only in its forms of 8 characters or more, so a server cannot make a common word, or its percent-encoding, a token or secret and blank it in each reason. The login terminal hides a client secret of any length where it stands as a secret: after `client_secret=`, as a JSON `client_secret` value and in a Basic header, also form-encoded. It hides the `id:secret` pair, also URL- and form-encoded, when the id is not empty and the secret has 8 characters or more. For a client ID and secret of the config, 4 or more characters with a letter or digit are enough (#39). Before, a registered client secret under 8 characters, or a number under 12 digits, showed in the login terminal when an error echoed it.
 - The init report names the imported HTTP servers without headers, and `npx -y toolscript-mcp login <server>` for them.
 
@@ -208,6 +194,12 @@ Shared servers (issue #63, preparation):
 - Added the `doctor` check `broker`, the `broker` folder (the key, the log, the socket) to the guarded folders, and the second bundle `dist/host/broker.js`. `PATH` is resolved to real paths before it enters the share key.
 - `bench/memory.mjs` gained the broker row, `--folders` and `--call`, and its fixture one server of each share class.
 - Lazy start (slice 5 of #63, decision 028). The Claude Code bridge starts on the first call that names it and stops after 10 minutes with no open request, so a session that never calls it holds no bridge process. `"lazy": false` on its entry or `TOOLSCRIPT_LAZY=0` turns it off, and `"lazy": true` makes any other per-session stdio server lazy. The tool list of a server that is asleep comes from `~/.toolscript-mcp/learned/tools.json`, a display-only cache: no policy, approval or argument check reads it, and `search_tools` never wakes a server that is asleep, also after a crash or a failed start. A launch with no cache entry (the first session after an install, or a changed command, argument, `env` or `cwd`) starts once at the session start to fill it. A lazy child stops with its whole tree (`taskkill /T /F` on Windows, the process group elsewhere). Added the `doctor` check `lazy`, `TOOLSCRIPT_LAZY_IDLE_MS` (for tests and the bench), `tests/lazy.test.ts` and `tests/lazy.e2e.mjs`, and to `bench/memory.mjs` the phase `after-idle`.
+- The stderr text of a shared server goes to every session attached to it, into the same log as a direct copy's, never into a reason or a result. A failed attach gets the last 8 KB of the copy that failed. The broker drops stderr above 256 KB in 10 s and counts it.
+- Broker frames to a host carry a mark byte that no JSON starts with, so a server line can no longer pass as one. The wire is version 2.
+- A request of more than 10 MB fails by itself. The broker holds at most 256 links (one for each shared server of each session) and 32 copies, and closes a link with more than 64 MB unsent or a copy that does not read its input.
+- A stale recovery lock of the broker is broken by rename, a future time in it counts as old, and a socket that a kill left is linked back or swept at the next start.
+- `doctor` names the way out for a taken broker name and, on Windows, reads the access rules of the broker folder.
+- SECURITY.md gets the threat model of the broker. `scripts/start-time.mjs` checks that a pid is still the broker before it ends it.
 
 Runner fixes (inherited from claude-code-mode at eea4077):
 
