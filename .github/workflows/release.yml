@@ -91,7 +91,8 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          tarball="release/toolscript-mcp-$VERSION.tgz"
+          # The ./ makes npm read a file path. npm 11 reads release/<name>.tgz as the GitHub repo <owner>/<repo>.
+          tarball="./release/toolscript-mcp-$VERSION.tgz"
           local=$(node -e "const c=require('crypto'),f=require('fs');console.log('sha512-'+c.createHash('sha512').update(f.readFileSync(process.argv[1])).digest('base64'))" "$tarball")
           remote=$(npm view "toolscript-mcp@$VERSION" dist.integrity 2>/dev/null || true)
           if [ -z "$remote" ]; then
