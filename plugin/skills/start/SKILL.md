@@ -68,6 +68,7 @@ If init says `Unknown option '--list'`, the package is older than this skill. Te
   alone proves nothing. Run the command only after the person agrees.
 - Do not run the steps under `Steps that remove a direct copy` now. Step 7 does.
 - If no server fits, or the person wants a test first, offer the read-only demo. It needs no account.
+  If `node "<helper>" "<config>"` lists the demo, use it and go to step 3.
   1. Run `node -p "require('os').homedir()"` and `node -p "require('os').tmpdir()"`. Use their output as `<home>` and `<tmp>`.
   2. With approval, run `npm install --prefix "<home>/.toolscript-mcp/demo-package" toolscript-mcp@latest`.
   3. With approval, write the entry below to `<tmp>/toolscript-entry.json` with the absolute path.

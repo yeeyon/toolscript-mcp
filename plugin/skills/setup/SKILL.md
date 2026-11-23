@@ -100,7 +100,7 @@ file as `<config>.bak`, and it lists the servers that the new config leaves out.
 
 ## 5. Add toolscript-mcp to Claude Code
 
-If the entry uses the standard npm command and the same config, keep it. Keep an existing numeric version pin.
+If the entry uses the standard npm command and the same config, go to the connection check. Keep any version pin.
 On Windows, a path with `/` and the same path with `\` are the same path.
 
 To switch from a clone, keep the existing config and scope. If the entry sets environment variables, ask the person
@@ -110,7 +110,7 @@ keep those files or update their paths first. For an entry with no environment v
 
 For a different existing launch command, ask the person to update it in an editor and confirm the config path.
 
-With approval, run:
+For a new entry or after removal, run this command with approval:
 
 ```sh
 claude mcp add --scope <scope> toolscript '--' npx -y toolscript-mcp --config "<config>"
@@ -124,7 +124,7 @@ claude mcp add --scope <scope> toolscript '--' cmd /c npx -y toolscript-mcp --co
 
 Keep the quotes around `--`. PowerShell drops a bare `--` before it starts `claude`.
 
-Run `claude mcp get toolscript`. It must show `Connected`.
+Check the connection with `claude mcp get toolscript`. It must show `Connected`.
 
 For Claude Desktop and Cursor, show the entry for `mcpServers`. The person adds it:
 
