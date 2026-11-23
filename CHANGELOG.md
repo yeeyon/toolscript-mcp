@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- `search_tools` now ranks a tool by the verbs in its `action`, `method` or `operation` argument. Before, a query such as "create pull request" ranked the read tools above a write tool that lists `create` only in that argument.
+
 ## 1.0.0
 
 The first release on npm. Set it up with `npx -y toolscript-mcp init`. toolscript-mcp is derived from claude-code-mode by Gabriele Pavanello at commit eea4077 (MIT).
