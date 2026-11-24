@@ -99,9 +99,9 @@ export const findOnPath = (
 ): string | undefined => {
   const windows = platform === 'win32'
   const delimiter = windows ? ';' : ':'
-  const dirs = resolvePath(pathOf(source, windows).replaceAll('"', ''), delimiter, realDir, windows)
-    .split(delimiter)
-    .filter(dir => (windows ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(dir) : dir.startsWith('/')))
+  const absolute = (dir: string): boolean => (windows ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(dir) : dir.startsWith('/'))
+  const entries = pathOf(source, windows).replaceAll('"', '').split(delimiter).filter(absolute).join(delimiter)
+  const dirs = resolvePath(entries, delimiter, realDir, windows).split(delimiter).filter(absolute)
   const exts = (source.PATHEXT ?? source.Pathext ?? '.COM;.EXE;.BAT;.CMD')
     .split(';')
     .filter(e => e.startsWith('.'))

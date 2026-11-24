@@ -169,6 +169,17 @@ describe('finding a command on PATH', () => {
     )
     assert.equal(findOnPath('missing-tool', { PATH: a }, process.platform), undefined)
     assert.equal(findOnPath('tool', {}, process.platform), undefined)
+    const start = process.cwd()
+    process.chdir(dir)
+    try {
+      assert.equal(
+        findOnPath('tool', { PATH: ['a', b].join(path.delimiter) }, process.platform),
+        path.join(fs.realpathSync.native(b), name),
+        'a relative entry that exists in the start folder is dropped too',
+      )
+    } finally {
+      process.chdir(start)
+    }
   })
 
   test('outside Windows a file that is not executable is skipped, and a folder is no program', { skip: win }, t => {
