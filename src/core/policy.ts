@@ -1,7 +1,8 @@
 // The policy of the config: ordered rules over full tool names
 // (mcp__<server>__<tool>). The first rule that matches decides. A tool that no
-// rule matches needs the person's approval, as an `ask` rule does. An allow
-// rule decides a tool of a bridge only when its match names that server.
+// rule matches needs the person's approval, as an `ask` rule does, except a
+// read tool of the built-in Workspace, which runs. An allow rule decides a
+// tool of a bridge only when its match names that server.
 // parseConfig reads the rules; this file decides with them.
 
 import type { ServerKey } from './config.ts'

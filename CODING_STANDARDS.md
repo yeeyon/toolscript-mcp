@@ -8,7 +8,7 @@ enforces; the others rely on discipline.
   pinned version. Turn on the pre-commit hook one time per clone: `git config core.hooksPath .githooks`.
   `[test: code.check.mjs]`
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
-  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts` and `lock.ts`. They import no Node module and no host package, so tests call them directly.
+  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts`, `lock.ts` and `workspace.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
 - `src/host/` holds the code that runs in Node. `tsconfig.host.json` checks it with the Node types.
 - The package runs `dist/host/main.js`, and starts `dist/host/broker.js` on demand when sharing is on (issue #63).
@@ -120,6 +120,15 @@ quotes and the `^` of cmd dropped, hold the
   on its line, indented by 4 spaces, and starts with `node`, `npx`, `claude` or `pushd`. Each label line starts with
   `- `, so it never reads as a command. A skill runs only such printed lines, exactly as printed, and never types a
   name from a file or a server into a command. `[test: init.test.ts and allow.test.ts, the printed commands in each shell]`
+- The built-in Workspace (issue #144, `docs/adr/0144-workspace-provider.md`) shows no byte and no name that did not
+  come through a proven handle: an open file or folder that is shown to be inside the root, with no link on the way.
+  Open and read only through `src/host/workspace/confined.ts`. Never open a path by name after a check that came before.
+  `pathParts` checks the text of a path before any file system call, and the exclusions match the real spelling, with no
+  regard to case, after NFC. The first use tests the method of the OS, and a failed test makes Workspace unavailable with
+  a reason in our own text that holds no path. The tools read the section of the config one time, at the start. Its
+  results are untrusted (`"untrusted": true` on its entry), and its read tools run with no rule only while the section
+  is present (`Guards.workspace`). A tool is one entry of `WORKSPACE_TOOLS` and one handler in `provider.ts`.
+  `[test: workspace.test.ts, workspace-fs.test.ts (swap hook patterns for every lookup), run.test.ts describe workspace, workspace.e2e.mjs]`
 - Every run removes its exchange dir, also after a timeout, a kill or a shutdown.
   `[test: run.test.ts and server.e2e.mjs check the temp dir after the runs]`
 - Never weaken a sandbox layer, the policy check, the guard of hint and function files or the approval of proposals
