@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allowRefusal, planAllow } from '../src/core/commands.ts'
 import type { Launch, ServerKey } from '../src/core/config.ts'
-import { decide, type Action, type Policy } from '../src/core/policy.ts'
+import { NO_GUARDS, decide, type Action, type Guards, type Policy } from '../src/core/policy.ts'
 import { runAllow } from '../src/host/allow.ts'
 import { runTools, type CheckIo } from '../src/host/diagnose.ts'
 import { SHELLS } from './shells.ts'
@@ -26,7 +26,8 @@ const word = (file: string) => `"${process.platform === 'win32' ? file.replaceAl
 const rules = (...pairs: [Action, string][]): Policy =>
   pairs.map(([action, match], index) => ({ match, action, index }))
 const shape = (policy: Policy) => policy.map(({ action, match }) => [action, match])
-const NO_BRIDGE: ReadonlySet<ServerKey> = new Set()
+const NO_BRIDGE: Guards = NO_GUARDS
+const bridged = (...keys: string[]): Guards => ({ bridges: new Set(keys as ServerKey[]), workspace: false })
 
 describe('planAllow', () => {
   const plan = (policy: Policy, tools: string[], bridges = NO_BRIDGE) => planAllow(policy, bridges, tools)
@@ -85,7 +86,7 @@ describe('planAllow', () => {
   })
 
   test('refuses a tool of a bridge that a deny rule for the bridge matches', () => {
-    const bridges = new Set(['claude-code' as ServerKey])
+    const bridges = bridged('claude-code')
     const old = rules(['allow', '*'], ['deny', 'mcp__claude-code__*'])
     const { steps, policy } = plan(old, ['mcp__claude-code__Read'], bridges)
     const [step] = steps
@@ -114,7 +115,7 @@ describe('planAllow', () => {
   })
 
   test('adds a rule for a tool of a bridge, which a rule for all servers does not allow', () => {
-    const bridges = new Set(['claude-code' as ServerKey])
+    const bridges = bridged('claude-code')
     const { steps } = plan(rules(['allow', '*']), ['mcp__claude-code__Read'], bridges)
     assert.deepEqual(steps, [{ tool: 'mcp__claude-code__Read', kind: 'add' }])
   })
@@ -151,7 +152,7 @@ describe('planAllow with a deny rule behind an allow rule (issue 139)', () => {
 })
 
 describe('the hand edit of a refused tool', () => {
-  const bridges = new Set(['claude-code' as ServerKey])
+  const bridges = bridged('claude-code')
   const cases: [Policy, string][] = [
     [rules(['allow', 'mcp__fake__search'], ['deny', 'mcp__fake__*']), 'mcp__fake__fetch'],
     [rules(['ask', 'mcp__fake__hid*'], ['deny', 'mcp__fake__hidden']), 'mcp__fake__hidden'],

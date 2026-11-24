@@ -24,6 +24,7 @@ import {
   NPX_LAUNCH,
   redact,
   type HttpServer,
+  type InvalidServer,
   type ServerConfig,
   type ServerEntry,
   type ServerKey,
@@ -36,6 +37,10 @@ import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
 import { ChildTransport } from './childtransport.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 import { AwsCredentialsError, sigv4Fetch } from './sigv4.ts'
+import type { WorkspaceLink } from './workspace/bind.ts'
+
+/** A server entry that starts: any entry but an invalid one. */
+type Live = Exclude<ServerEntry, InvalidServer>
 
 /** The time that one server gets for its connect, and for its whole tool list. */
 export const CONNECT_TIMEOUT_MS = 30_000
@@ -425,7 +430,7 @@ const transportOf = (
  * Why the cwd of a stdio server cannot be its folder, or undefined when it can. Without this check, the spawn of a
  * child in a missing folder fails with "spawn <command> ENOENT", which blames the command.
  */
-const cwdProblem = async (server: ServerConfig): Promise<string | undefined> => {
+const cwdProblem = async (server: Live): Promise<string | undefined> => {
   if (server.kind !== 'stdio' || server.cwd === undefined) return undefined
   try {
     return (await fs.promises.stat(server.cwd)).isDirectory() ? undefined : `its cwd is not a folder: ${server.cwd}`
@@ -433,6 +438,15 @@ const cwdProblem = async (server: ServerConfig): Promise<string | undefined> => 
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return `its cwd folder does not exist: ${server.cwd}`
     return `cannot read its cwd folder: ${errorText(err)}`
   }
+}
+
+/** The in-memory link to the built-in Workspace, or the reason that it is not there. Each attempt makes a new link. */
+const workspaceTransport = async (
+  link: WorkspaceLink | undefined,
+): Promise<{ transport: Transport; lastError: () => string; child?: ChildTransport }> => {
+  if (link === undefined) throw new OwnError('the built-in Workspace is not available in this process')
+  if (!link.ok) throw new OwnError(link.reason)
+  return { transport: await link.serve(), lastError: () => '' }
 }
 
 /** `cut` runs when the list has more than MAX_PAGES pages. The whole list has CONNECT_TIMEOUT_MS. */
@@ -478,6 +492,8 @@ export type ConnectOptions = {
   readonly share?: ShareOptions
   /** Lazy start is on (decision 028, `TOOLSCRIPT_LAZY` not 0). Absent: every child starts at the session start, as before. */
   readonly lazy?: LazyOptions
+  /** The built-in Workspace (issue #144): the link of the entry of kind `workspace`. Absent: that entry fails to connect. */
+  readonly workspace?: WorkspaceLink
 }
 
 /** The tool lists of lazy servers on disk. The host reads and writes the file; a test gives a fake. */
@@ -522,6 +538,7 @@ export const connectAll = (
     unshown = UNSHOWN,
     share,
     lazy,
+    workspace,
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -544,12 +561,13 @@ export const connectAll = (
   // The children of lazy servers: a shutdown hurries their stop.
   const children = new Set<ChildTransport>()
 
-  const connect = async (key: ServerKey, server: ServerConfig, woke = false): Promise<void> => {
+  const connect = async (key: ServerKey, server: Live, woke = false): Promise<void> => {
     const began = performance.now()
     const client = new Client({ name: 'toolscript-mcp', version })
     opened.add(client)
     let secrets = (): readonly string[] => []
-    const hide: Hide = text => redact(text, server, secrets())
+    // The built-in Workspace holds no secret of a config, and its reasons are our own text.
+    const hide: Hide = text => (server.kind === 'workspace' ? text : redact(text, server, secrets()))
     const lazily = lazy !== undefined && lazyServer(key, server)
     // `hidden`: the start of the reason without the error text of the server or its child, when it holds such text.
     const fail = (reason: string, hidden?: string) => {
@@ -629,7 +647,10 @@ export const connectAll = (
       if (problem !== undefined) throw new OwnError(problem)
       // close() closes only the clients that it sees: a shutdown during the check must not start a process after it.
       if (closing) throw new OwnError('toolscript-mcp is shutting down')
-      const made = transportOf(key, server, sessionEnded, auth, childStderr, share, lazily)
+      const made =
+        server.kind === 'workspace'
+          ? await workspaceTransport(workspace)
+          : transportOf(key, server, sessionEnded, auth, childStderr, share, lazily)
       lastError = made.lastError
       if (made.transport instanceof HttpTransport && !auth) secrets = made.transport.secrets
       if (made.child !== undefined) {
@@ -729,7 +750,7 @@ export const connectAll = (
   }
 
   /** `after`: the end of the child that this server had, which a wake waits for before it starts a new one. */
-  const attempt = (key: ServerKey, server: ServerConfig, after?: Promise<void>): Promise<void> => {
+  const attempt = (key: ServerKey, server: Live, after?: Promise<void>): Promise<void> => {
     attempts.set(key, [...recent(key), now()])
     const woke = after !== undefined
     if (woke) waking.add(key)

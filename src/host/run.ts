@@ -27,7 +27,7 @@ import {
   planRun,
   refusedReport,
   type Asks,
-  type Bridges,
+  type Guards,
   type Policy,
 } from '../core/policy.ts'
 import {
@@ -147,6 +147,8 @@ export type RunContext = {
   readonly home: string
   /** The project root, for the project hint folder and relative paths: the cwd of the server. Tests set it. */
   readonly project?: string
+  /** The session root of the built-in Workspace: the guard reads each path of a Workspace call from it. */
+  readonly workspaceRoot?: string
   /** Tests only: lower limits of the note on calls that ran one after another, so a test stays short. */
   readonly serialLimits?: SerialLimits
 }
@@ -171,10 +173,10 @@ const refused = (text: string, known: ReadonlySet<string>, calls: readonly CallL
 })
 
 /** A call that a refused program names. It never started; `error` says why the policy or its server stops it. */
-const notMade = (policy: Policy, bridges: Bridges, states: readonly ServerState[], tool: string): CallLog => {
+const notMade = (policy: Policy, guards: Guards, states: readonly ServerState[], tool: string): CallLog => {
   const server = splitToolName(tool)?.server
   const names = server === undefined ? undefined : listedNames(states, server)
-  const checked = callDecision(policy, bridges, new Set(), tool, interactiveTools(states))
+  const checked = callDecision(policy, guards, new Set(), tool, interactiveTools(states))
   const decision = checked !== 'denied' && names !== undefined && !names.includes(tool) ? 'invalid' : checked
   return { tool, decision, ms: 0, ok: false, ...(decision === 'allow' ? {} : { error: decision }) }
 }
@@ -224,18 +226,18 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
     literal.length === callCount &&
     literal.every(c => splitToolName(c.tool) !== undefined)
   await (fast ? ctx.downstream.settledFor(serversOf(literal)) : ctx.downstream.settled)
-  const { policy, bridges } = ctx.config
+  const { policy, guards } = ctx.config
   const refuse = (text: string) => {
     const states = ctx.downstream.states()
     const known = new Set(catalogOf(states).map(t => t.name))
     return refused(
       withNote(text),
       known,
-      named.map(c => notMade(policy, bridges, states, c.tool)),
+      named.map(c => notMade(policy, guards, states, c.tool)),
     )
   }
   // A denied name refuses the program before any traffic to its server.
-  const denied = planRun(policy, bridges, literal, new Set())
+  const denied = planRun(policy, guards, literal, new Set())
   if (denied.kind === 'refused') return refuse(deniedReport(denied.denied))
   // A failed server that the program names connects again before the check.
   await ctx.downstream.retry(serversOf(literal), ctx.signal)
@@ -256,7 +258,7 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
 
-  const plan = planRun(policy, bridges, literal, interactiveTools(states))
+  const plan = planRun(policy, guards, literal, interactiveTools(states))
   if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
   if (plan.ask.length + plan.interactive.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan, code) : 'unsupported'
@@ -505,9 +507,9 @@ const execute = async (
       }
     }
     const check = (interactive: ReadonlySet<string>): (Reply & { code: CallError }) | undefined => {
-      const decision = callDecision(config.policy, config.bridges, approved, tool, interactive)
+      const decision = callDecision(config.policy, config.guards, approved, tool, interactive)
       decided.set(id, decision)
-      const result = checkCall(config.policy, config.bridges, approved, tool, interactive)
+      const result = checkCall(config.policy, config.guards, approved, tool, interactive)
       if (result.ok) return undefined
       if (result.needs === 'rule') unapproved.add(tool)
       if (result.needs === 'person') needPerson.add(tool)
@@ -515,7 +517,7 @@ const execute = async (
     }
     // A denied name sends nothing to its server, not even a list for a miss.
     const denied =
-      callDecision(config.policy, config.bridges, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
+      callDecision(config.policy, config.guards, approved, tool, new Set()) === 'denied' ? check(new Set()) : undefined
     if (denied !== undefined) return denied
     const server = target.server as ServerKey
     // A guarded folder in the arguments is refused under any rule or approval. The guard waits on the file system, so
@@ -524,14 +526,19 @@ const execute = async (
     const entry = config.servers.get(server)
     const folder = await guardHit(args, {
       home: ctx.home,
-      cwd: entry?.kind === 'stdio' && entry.cwd !== undefined ? entry.cwd : project,
+      cwd:
+        entry?.kind === 'stdio' && entry.cwd !== undefined
+          ? entry.cwd
+          : entry?.kind === 'workspace' && ctx.workspaceRoot !== undefined
+            ? ctx.workspaceRoot
+            : project,
       list: guarded,
       forms: guardForms,
       realpath: fs.promises.realpath,
       windows: process.platform === 'win32',
     })
     if (folder !== undefined) {
-      decided.set(id, callDecision(config.policy, config.bridges, approved, tool, interactiveNow()))
+      decided.set(id, callDecision(config.policy, config.guards, approved, tool, interactiveNow()))
       return { ok: false, error: guardedText(tool, folder), code: 'guarded' }
     }
     const fromUntrusted = (): { untrusted?: true } => (downstream.untrusted(server) ? { untrusted: true } : {})
@@ -545,7 +552,7 @@ const execute = async (
       link = await downstream.client(server, cancel.signal)
     }
     if (!link.ok) {
-      decided.set(id, callDecision(config.policy, config.bridges, approved, tool, interactiveNow()))
+      decided.set(id, callDecision(config.policy, config.guards, approved, tool, interactiveNow()))
       return { ok: false, error: link.reason, code: 'no-server', ...fromUntrusted() }
     }
     // A name that the server does not list can never run: say so before the policy offers a rule for it.
@@ -809,7 +816,7 @@ const execute = async (
     // A call still in the queue at the end was never checked.
     audits.set(id, {
       tool,
-      decision: decided.get(id) ?? callDecision(config.policy, config.bridges, approved, tool, interactiveNow()),
+      decision: decided.get(id) ?? callDecision(config.policy, config.guards, approved, tool, interactiveNow()),
       ms: 0,
       ok: false,
       error: 'unfinished',

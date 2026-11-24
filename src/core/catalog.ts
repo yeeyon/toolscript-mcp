@@ -2,7 +2,7 @@
 // entry per tool, named mcp__<server>__<tool>, and the servers that failed.
 
 import type { ServerKey } from './config.ts'
-import { decide, shownName, type Action, type Bridges, type Policy } from './policy.ts'
+import { decide, shownName, type Action, type Guards, type Policy } from './policy.ts'
 import { MAX_SHAPES, learnedShape, listsAll, rankTools, type ArgSpec, type Shapes, type ToolEntry } from './protocol.ts'
 
 /** A tool as a downstream server lists it. */
@@ -126,12 +126,12 @@ const hintOf = (annotations: unknown): ToolHint => {
 export const toolLines = (
   state: Extract<ServerState, { status: 'connected' }>,
   policy: Policy,
-  bridges: Bridges,
+  guards: Guards,
 ): ToolLine[] =>
   catalogOf([state]).map(t => ({
     name: t.name,
     hint: hintOf(t.annotations),
-    action: decide(policy, bridges, t.name).action,
+    action: decide(policy, guards, t.name).action,
     person: t.requiresUserInteraction,
   }))
 

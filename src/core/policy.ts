@@ -6,6 +6,7 @@
 
 import type { ServerKey } from './config.ts'
 import { splitToolName, type LiteralCall } from './protocol.ts'
+import { workspaceClass } from './workspace.ts'
 
 export type Action = 'allow' | 'deny' | 'ask'
 
@@ -43,14 +44,21 @@ export const matches = (glob: string, tool: string): boolean => {
 }
 
 /**
- * The keys of the servers that serve the client's own tools, such as Claude
- * Code with `claude mcp serve`: `bridges` in config.ts. A program that calls
- * such a tool skips the client's permission rules and hooks.
+ * What the policy knows of the servers besides its rules, in one value so no call site passes one part without the
+ * other. `bridges`: the keys of the servers that serve the client's own tools, such as Claude Code with
+ * `claude mcp serve` (`bridges` in config.ts): a program that calls such a tool skips the client's permission rules
+ * and hooks. `workspace`: the built-in Workspace is on (issue #144), so its read tools run with no rule.
  */
+export type Guards = { readonly bridges: Bridges; readonly workspace: boolean }
+
+/** The keys of the servers that serve the client's own tools. */
 export type Bridges = ReadonlySet<ServerKey>
 
+/** No bridge and no Workspace: the guards of a config with neither. */
+export const NO_GUARDS: Guards = { bridges: new Set(), workspace: false }
+
 /** The bridge that serves `tool`, or undefined for a tool of any other server. */
-const bridgeOf = (tool: string, bridges: Bridges): string | undefined => {
+const bridgeOf = (tool: string, { bridges }: Guards): string | undefined => {
   const server = splitToolName(tool)?.server
   return server !== undefined && (bridges as ReadonlySet<string>).has(server) ? server : undefined
 }
@@ -64,10 +72,17 @@ const bridgeOf = (tool: string, bridges: Bridges): string | undefined => {
 const counts = (rule: Rule, bridge: string | undefined): boolean =>
   rule.action !== 'allow' || bridge === undefined || rule.match.startsWith(`mcp__${bridge}__`)
 
-export const decide = (policy: Policy, bridges: Bridges, tool: string): Verdict => {
-  const bridge = bridgeOf(tool, bridges)
+/**
+ * What a tool gets when no rule matches it: the read tools of the built-in Workspace run, any other tool asks. The
+ * default holds only while the built-in is on, so a server named `workspace` in `mcpServers` gets none.
+ */
+const fallback = (tool: string, guards: Guards): Verdict =>
+  guards.workspace && workspaceClass(tool) === 'read' ? { action: 'allow' } : { action: 'ask' }
+
+export const decide = (policy: Policy, guards: Guards, tool: string): Verdict => {
+  const bridge = bridgeOf(tool, guards)
   const rule = policy.find(r => matches(r.match, tool) && counts(r, bridge))
-  return rule === undefined ? { action: 'ask' } : { action: rule.action, rule }
+  return rule === undefined ? fallback(tool, guards) : { action: rule.action, rule }
 }
 
 const escape = (c: string): string => {
@@ -135,7 +150,7 @@ const MAX_PAIRS = 10_000_000
  * The same match can repeat, so a rule of `next` does not simply pair with
  * the first rule that has its match.
  */
-export const onlyTightens = (current: Policy, next: Policy, bridges: Bridges): boolean => {
+export const onlyTightens = (current: Policy, next: Policy, { bridges }: Guards): boolean => {
   // A match whose server part has no `*` matches only the tools of that server, so no tool skips it.
   const skippable = (rule: Rule) =>
     rule.action === 'allow' && bridges.size > 0 && (splitToolName(rule.match)?.server.includes('*') ?? true)
@@ -297,19 +312,19 @@ export type Plan =
 
 export const planRun = (
   policy: Policy,
-  bridges: Bridges,
+  guards: Guards,
   calls: readonly LiteralCall[],
   interactive: ReadonlySet<string>,
 ): Plan => {
   const denied = calls.flatMap(call => {
-    const { action, rule } = decide(policy, bridges, call.tool)
+    const { action, rule } = decide(policy, guards, call.tool)
     return action === 'deny' && rule !== undefined ? [{ call, rule }] : []
   })
   if (denied.length > 0) return { kind: 'refused', denied }
   const tools = [...new Set(calls.map(c => c.tool))]
   return {
     kind: 'run',
-    ask: tools.filter(tool => !interactive.has(tool) && decide(policy, bridges, tool).action === 'ask'),
+    ask: tools.filter(tool => !interactive.has(tool) && decide(policy, guards, tool).action === 'ask'),
     interactive: tools.filter(tool => interactive.has(tool)),
   }
 }
@@ -335,12 +350,12 @@ export type CallCheck =
 
 export const checkCall = (
   policy: Policy,
-  bridges: Bridges,
+  guards: Guards,
   approved: ReadonlySet<string>,
   tool: string,
   interactive: ReadonlySet<string>,
 ): CallCheck => {
-  const { action, rule } = decide(policy, bridges, tool)
+  const { action, rule } = decide(policy, guards, tool)
   if (action === 'deny' && rule !== undefined) return { ok: false, error: `denied by ${ruleText(rule)}` }
   if (approved.has(tool) || (action === 'allow' && !interactive.has(tool))) return { ok: true }
   if (interactive.has(tool))
@@ -349,7 +364,7 @@ export const checkCall = (
       error: `not approved: ${tool} needs the person's approval at each run, and an allow rule does not replace it`,
       needs: 'person',
     }
-  const bridge = bridgeOf(tool, bridges)
+  const bridge = bridgeOf(tool, guards)
   const missing =
     bridge === undefined ? `no policy rule allows ${tool}` : `an ${bridgeRule(bridge)}, such as ${allowRule(tool)}`
   return { ok: false, error: `not approved: ${missing}, and the person did not approve it for this run`, needs: 'rule' }
@@ -372,10 +387,10 @@ export type Refusal = 'decline' | 'unsupported'
 const these = (tools: readonly unknown[]): string => (tools.length === 1 ? 'this tool' : 'these tools')
 
 /** The message of the approval prompt: the tools, and the program they run in. */
-export const askText = ({ ask, interactive }: Asks, code: string, bridges: Bridges): string => {
+export const askText = ({ ask, interactive }: Asks, code: string, guards: Guards): string => {
   const program = code.length <= 4000 ? code : `${code.slice(0, 4000)}\n… [${code.length - 4000} more characters]`
   const one = interactive.length === 1
-  const bridged = [...new Set(ask.flatMap(t => bridgeOf(t, bridges) ?? []))]
+  const bridged = [...new Set(ask.flatMap(t => bridgeOf(t, guards) ?? []))]
   return [
     ...(ask.length > 0
       ? [

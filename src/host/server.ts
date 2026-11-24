@@ -74,6 +74,8 @@ export const createServer = (
   configFile: string,
   version: string,
   log: (line: string) => void,
+  /** The session root of the built-in Workspace, when it is bound. */
+  workspaceRoot?: string,
 ): Served => {
   const mcp = new McpServer(
     { name: 'toolscript-mcp', version },
@@ -136,7 +138,7 @@ export const createServer = (
     const change = policyChange(policy, read.policy)
     if (change === '') return { policy, note: '' }
     const note = policyChange(policy, read.policy, 'note')
-    if (!onlyTightens(policy, read.policy, config.bridges)) {
+    if (!onlyTightens(policy, read.policy, config.guards)) {
       // The prompt names every changed rule uncut. The log keeps the short form, and the note no text of the file.
       const answer = await prompt(
         extra,
@@ -180,11 +182,12 @@ export const createServer = (
       shapes,
       filesDir,
       policyNote: fresh.note,
-      ask: (needed, code) => elicit(extra, askText(needed, code, config.bridges)),
+      ask: (needed, code) => elicit(extra, askText(needed, code, config.guards)),
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
       log,
       home,
+      ...(workspaceRoot !== undefined && { workspaceRoot }),
     }
     const running = runCode(ctx, code)
     runs.add(running)

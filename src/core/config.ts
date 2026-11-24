@@ -3,8 +3,9 @@
 // Parsed here, at the boundary, so the host trusts a Config. Also where the
 // file is and the self-loop guard.
 
-import { ACTIONS, type Action, type Bridges, type Policy, type Rule } from './policy.ts'
+import { ACTIONS, type Action, type Bridges, type Guards, type Policy, type Rule } from './policy.ts'
 import { classify } from './share.ts'
+import { DEFAULT_SKIP, globProblem, LIMITS, WORKSPACE_KEY, type WorkspaceConfig } from './workspace.ts'
 
 // The WHATWG URL and btoa of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
 declare const URL: {
@@ -67,10 +68,16 @@ export type HttpServer = Trust & {
 
 export type ServerConfig = StdioServer | HttpServer
 
+/**
+ * The built-in Workspace (issue #144): an in-process server that reads one approved folder. It comes from the
+ * `workspace` section, never from `mcpServers`. Each result is a file name or file content, so it is untrusted.
+ */
+export type WorkspaceServer = { readonly kind: 'workspace'; readonly untrusted: true }
+
 /** A server entry with errors. It fails alone: the other servers still start, and search_tools shows the errors. */
 export type InvalidServer = { readonly kind: 'invalid'; readonly errors: readonly string[] }
 
-export type ServerEntry = ServerConfig | InvalidServer
+export type ServerEntry = ServerConfig | WorkspaceServer | InvalidServer
 
 /** Why an invalid entry is not connected, as search_tools shows it. */
 export const invalidReason = (errors: readonly string[]): string =>
@@ -163,6 +170,10 @@ export type Config = {
   readonly servers: ReadonlyMap<ServerKey, ServerEntry>
   /** The servers that are Claude Code itself (isBridge). Only an allow rule that names one allows its tools. */
   readonly bridges: Bridges
+  /** What the policy needs besides its rules: the bridges, and whether the built-in Workspace is on. */
+  readonly guards: Guards
+  /** The valid `workspace` section. The server reads it one time, at the start: no policy reload reads it. */
+  readonly workspace?: WorkspaceConfig
   readonly sandbox: Sandbox
   readonly policy: Policy
   /** False when the config says `"log": false`: no run log. */
@@ -396,6 +407,70 @@ const parseCwd = (raw: unknown, path: string, env: Env, platform: string, errors
   return undefined
 }
 
+/** A list of at most `LIMITS.configGlobs` items, each one checked by `each`, or undefined with an error. */
+const parseList = (
+  raw: unknown,
+  path: string,
+  each: (item: unknown) => string | undefined,
+  errors: string[],
+): string[] | undefined => {
+  if (!Array.isArray(raw) || raw.length > LIMITS.configGlobs) {
+    errors.push(`${path}: must be an array of at most ${LIMITS.configGlobs} strings`)
+    return undefined
+  }
+  const found = errors.length
+  raw.forEach((item, i) => {
+    const problem = each(item)
+    if (problem !== undefined) errors.push(`${path}[${i}]: ${problem}`)
+  })
+  return errors.length === found ? (raw as string[]) : undefined
+}
+
+/** A folder name for `workspace.skip`: one part, with no `/`, and not `.` or `..`. */
+const skipProblem = (name: unknown): string | undefined =>
+  typeof name === 'string' &&
+  name !== '' &&
+  name.length <= 255 &&
+  !/[\\/\u0000-\u001f]/.test(name) &&
+  name !== '.' &&
+  name !== '..'
+    ? undefined
+    : 'must be a folder name with no / or \\'
+
+/**
+ * The `workspace` section (issue #144). Every error names the key, and none holds a value of the file. A root is an
+ * absolute path as `cwd` is. `write` is read now and has no effect before the editing tools ship.
+ */
+const parseWorkspace = (raw: unknown, env: Env, platform: string, errors: string[]): WorkspaceConfig | undefined => {
+  const here = WORKSPACE_KEY
+  const found = errors.length
+  if (!isObject(raw)) {
+    errors.push(`${here}: must be an object with "roots"`)
+    return undefined
+  }
+  unknownKeys(raw, ['roots', 'exclude', 'skip'], here, errors)
+  const roots: { path: string; write: boolean }[] = []
+  if (!Array.isArray(raw.roots) || raw.roots.length < 1 || raw.roots.length > LIMITS.roots)
+    errors.push(`${here}.roots: must be an array of 1 to ${LIMITS.roots} entries, such as [{ "path": "/home/me/app" }]`)
+  else
+    raw.roots.forEach((entry, i) => {
+      const path = `${here}.roots[${i}]`
+      if (!isObject(entry)) return void errors.push(`${path}: must be an object with "path"`)
+      unknownKeys(entry, ['path', 'write'], path, errors)
+      const before = errors.length
+      const text = expand(nonEmpty(entry.path, `${path}.path`, errors), env, `${path}.path`, errors)
+      const absolute = platform === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(text) : text.startsWith('/')
+      if (errors.length === before && !absolute)
+        errors.push(`${path}.path: must be an absolute path${platform === 'win32' ? ' with a drive letter' : ''}`)
+      if (entry.write !== undefined && typeof entry.write !== 'boolean')
+        errors.push(`${path}.write: must be true or false`)
+      if (errors.length === before) roots.push({ path: text, write: entry.write === true })
+    })
+  const exclude = raw.exclude === undefined ? [] : parseList(raw.exclude, `${here}.exclude`, globProblem, errors)
+  const skip = raw.skip === undefined ? [...DEFAULT_SKIP] : parseList(raw.skip, `${here}.skip`, skipProblem, errors)
+  return errors.length > found ? undefined : { roots, exclude: exclude ?? [], skip: skip ?? [] }
+}
+
 const parseTrust = (raw: unknown, path: string, errors: string[]): Trust => {
   if (raw === true) return { untrusted: true }
   if (raw !== undefined && raw !== false) errors.push(`${path}: must be true or false`)
@@ -614,7 +689,7 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
   const raw = json.value
   if (!isObject(raw)) return { ok: false, errors: ['the config must be a JSON object with an mcpServers object'] }
   const errors: string[] = []
-  unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox', 'policy', 'log', 'share'], 'config', errors)
+  unknownKeys(raw, ['$schema', 'mcpServers', 'sandbox', 'policy', 'log', 'share', WORKSPACE_KEY], 'config', errors)
 
   const servers = new Map<ServerKey, ServerEntry>()
   if (!isObject(raw.mcpServers)) errors.push('mcpServers: must be an object')
@@ -632,6 +707,26 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
       const server = parseServer(entry, path, env, platform, entryErrors)
       servers.set(key, server && entryErrors.length === 0 ? server : { kind: 'invalid', errors: entryErrors })
     }
+
+  // The section is an entry of its own: an error in it, or a clash with a server of the same key, makes only
+  // `workspace` invalid, and the other servers start.
+  let workspace: WorkspaceConfig | undefined
+  if (raw.workspace !== undefined) {
+    const sectionErrors: string[] = []
+    const parsed = parseWorkspace(raw.workspace, env, platform, sectionErrors)
+    if (servers.has(WORKSPACE_KEY as ServerKey))
+      servers.set(WORKSPACE_KEY as ServerKey, {
+        kind: 'invalid',
+        errors: [
+          `the config has a "workspace" section and an mcpServers entry with the key "${WORKSPACE_KEY}": the built-in Workspace uses that key. Rename the server, or remove the section`,
+        ],
+      })
+    else if (parsed === undefined) servers.set(WORKSPACE_KEY as ServerKey, { kind: 'invalid', errors: sectionErrors })
+    else {
+      servers.set(WORKSPACE_KEY as ServerKey, { kind: 'workspace', untrusted: true })
+      workspace = parsed
+    }
+  }
 
   const sandbox = parseSandbox(raw.sandbox, execPath, platform, errors)
   const policy = parsePolicy(raw.policy, errors)
@@ -667,7 +762,20 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
 
   return errors.length > 0
     ? { ok: false, errors }
-    : { ok: true, config: { servers, bridges, sandbox, policy, log, share, lazy } }
+    : {
+        ok: true,
+        config: {
+          servers,
+          bridges,
+          guards: { bridges, workspace: workspace !== undefined },
+          ...(workspace !== undefined && { workspace }),
+          sandbox,
+          policy,
+          log,
+          share,
+          lazy,
+        },
+      }
 }
 
 /**

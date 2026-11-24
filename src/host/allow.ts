@@ -53,7 +53,7 @@ export const runAllow = async (args: readonly string[], io: CheckIo): Promise<nu
     io.print([...refusals, `allow did not change ${file}.`, ALLOW_USAGE].join('\n'))
     return 2
   }
-  const plan = planAllow(loaded.config.policy, loaded.config.bridges, tools)
+  const plan = planAllow(loaded.config.policy, loaded.config.guards, tools)
   const steps = plan.steps.map(s => {
     switch (s.kind) {
       case 'add':

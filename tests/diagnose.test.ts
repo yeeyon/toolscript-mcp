@@ -17,6 +17,7 @@ import { runLine, type RunRecord } from '../src/core/runlog.ts'
 import { runRuns, runTools, type CheckIo } from '../src/host/diagnose.ts'
 import { connectAll } from '../src/host/downstream.ts'
 import { runLogin } from '../src/host/login.ts'
+import { bindWorkspace, linkOf } from '../src/host/workspace/bind.ts'
 import { runCode, type RunContext } from '../src/host/run.ts'
 import { MAX_PAGE_SIZE, OPEN_BY_AUTHOR, PULL_REQUESTS } from '../demo/data.mjs'
 
@@ -714,6 +715,70 @@ return open`,
       assert.match(s.printed.join('\n'), /mcp__demo__get_pull_request unapproved unapproved\nunapproved: /)
     } finally {
       await downstream.close()
+    }
+  })
+})
+
+describe('tools workspace', () => {
+  test('lists the four tools of the built-in Workspace, read-only and allowed with no rule', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(ROOT, 'ws-root-')))
+    const s = setup({ mcpServers: {}, workspace: { roots: [{ path: root }] } })
+    assert.equal(await s.tools('workspace'), 0, s.printed.join('\n'))
+    assert.deepEqual(s.printed, [
+      'workspace: connected, 4 tools',
+      'mcp__workspace__list read-only allow',
+      'mcp__workspace__search read-only allow',
+      'mcp__workspace__read read-only allow',
+      'mcp__workspace__stat read-only allow',
+    ])
+  })
+
+  test('says why the root is unavailable, with no path', async () => {
+    const root = path.join(ROOT, 'missing-root')
+    const s = setup({ mcpServers: {}, workspace: { roots: [{ path: root }] } })
+    assert.equal(await s.tools('workspace'), 1)
+    assert.deepEqual(s.printed, ['workspace: cannot connect: workspace.roots[0].path is not a folder that exists'])
+  })
+
+  test('runs shows the Workspace calls of a run', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(ROOT, 'ws-run-')))
+    fs.writeFileSync(path.join(root, 'a.txt'), 'x')
+    const s = setup({ mcpServers: {}, workspace: { roots: [{ path: root }] } })
+    const loaded = parseConfig(fs.readFileSync(s.config, 'utf8'), {}, process.execPath, process.platform)
+    assert.ok(loaded.ok)
+    const binding = await bindWorkspace({
+      workspace: loaded.config.workspace!,
+      start: root,
+      home: s.home,
+      configFile: s.config,
+      log: () => {},
+    })
+    const downstream = connectAll(loaded.config.servers, '0', () => {}, { home: s.home, workspace: linkOf(binding) })
+    try {
+      await downstream.settled
+      const ctx: RunContext = {
+        downstream,
+        config: loaded.config,
+        kept: newKept(),
+        written: new Map(),
+        untrustedFiles: new Set(),
+        shapes: new Map(),
+        filesDir: path.join(s.home, 'files'),
+        policyNote: '',
+        ask: async () => 'decline',
+        canAsk: () => false,
+        signal: new AbortController().signal,
+        log: () => {},
+        home: s.home,
+        workspaceRoot: root,
+      }
+      const r = await runCode(ctx, `return (await call('mcp__workspace__list', {})).entries.length`)
+      assert.equal(r.isError, false, r.text)
+      assert.equal(await runRuns(['--server', 'workspace'], s.io), 0, s.printed.join('\n'))
+      assert.match(s.printed.join('\n'), /mcp__workspace__list allow ok/)
+    } finally {
+      await downstream.close()
+      if (binding.ok) await binding.bound.provider.close()
     }
   })
 })

@@ -84,6 +84,7 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
     const config: Config = {
       servers: new Map(),
       bridges: new Set(),
+      guards: { bridges: new Set(), workspace: false },
       sandbox: { node: process.execPath, timeoutSeconds: 30, callTimeoutSeconds: 30 },
       policy: [{ match: 'mcp__*', action: 'allow', index: 0 }],
       log: false,

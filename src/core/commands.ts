@@ -6,7 +6,7 @@
 
 import type { ToolLine } from './catalog.ts'
 import type { Launch } from './config.ts'
-import { decide, matches, printable, ruleText, shownName, type Bridges, type Policy, type Rule } from './policy.ts'
+import { decide, matches, printable, ruleText, shownName, type Guards, type Policy, type Rule } from './policy.ts'
 
 /**
  * The names that a printed command holds. A person can paste a command into any shell: sh, bash, zsh, fish, tcsh,
@@ -109,13 +109,18 @@ export type AllowStep = { readonly tool: string } & (
  */
 export const planAllow = (
   policy: Policy,
-  bridges: Bridges,
+  guards: Guards,
   tools: readonly string[],
 ): { readonly steps: readonly AllowStep[]; readonly policy: Policy } => {
   const steps = [...new Set(tools)].map((tool): AllowStep => {
-    const { action, rule } = decide(policy, bridges, tool)
-    if (action === 'allow' && rule !== undefined)
-      return { tool, kind: 'keep', why: `allowed already by ${ruleText(rule)}` }
+    const { action, rule } = decide(policy, guards, tool)
+    if (action === 'allow')
+      return {
+        tool,
+        kind: 'keep',
+        why:
+          rule === undefined ? 'the built-in Workspace allows it with no rule' : `allowed already by ${ruleText(rule)}`,
+      }
     // A deny or ask rule always counts, so `decide` gives a rule when one matches. An allow rule for the exact name
     // counts for a bridge tool too, so it decides the tool when it goes before that rule. The edit names each rule
     // with its text, because the printed --apply command of a mixed run moves every index.
@@ -157,7 +162,7 @@ export const allowCommand = (start: Extract<CommandStart, { ok: true }>, tools: 
 export const allowCommands = (
   lines: readonly ToolLine[],
   policy: Policy,
-  bridges: Bridges,
+  guards: Guards,
   start: CommandStart,
 ): string[] => {
   const asked = lines.filter(l => l.action === 'ask')
@@ -167,7 +172,7 @@ export const allowCommands = (
   const plain = new Set<string>()
   const out = asked.flatMap(({ name }) => {
     if (!PLAIN_NAME.test(name)) return [label(shownName(name)), `    ${NAME_CHANGES}.`]
-    const [step] = planAllow(policy, bridges, [name]).steps
+    const [step] = planAllow(policy, guards, [name]).steps
     if (step?.kind === 'keep' || step?.kind === 'refuse') return [label(name), `    no command: ${step.why}.`]
     plain.add(name)
     return [label(name), allowCommand(start, [name], false)]

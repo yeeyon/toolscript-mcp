@@ -256,7 +256,7 @@ describe('the config', () => {
   test('an error outside the server entries stops the start, and names the bad key', () => {
     const text = JSON.stringify({ mcpServers: { a: { command: '' } }, sandbox: { node: 3 }, extra: true })
     assert.deepEqual(errors(text), [
-      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy, log, share)',
+      'config.extra: unknown key (known: $schema, mcpServers, sandbox, policy, log, share, workspace)',
       'sandbox.node: must be a non-empty string',
     ])
     assert.match(errors('{"mcpServers": ')[0]!, /^the config is not valid JSON/)
@@ -1436,5 +1436,108 @@ describe('the catalog', () => {
       text.split('\n').filter(line => line.startsWith('#')),
       ['## Not connected'],
     )
+  })
+})
+
+describe('the workspace section', () => {
+  const section = { roots: [{ path: '/work/app' }] }
+
+  test('no section: no workspace entry, the key stays free for a server and gets no default allow', () => {
+    const none = ok({ mcpServers: { a: { command: 'x' } } })
+    assert.equal(none.workspace, undefined)
+    assert.equal(none.guards.workspace, false)
+    assert.equal(none.servers.has(key('workspace')), false)
+    const own = ok({ mcpServers: { workspace: { command: 'fake-server' } } })
+    assert.equal(own.servers.get(key('workspace'))?.kind, 'stdio')
+    assert.equal(own.guards.workspace, false)
+  })
+
+  test('a valid section adds an untrusted entry of its own kind, and the defaults of the ADR', () => {
+    const config = ok({ mcpServers: { a: { command: 'x' } }, workspace: section })
+    assert.deepEqual(config.servers.get(key('workspace')), { kind: 'workspace', untrusted: true })
+    assert.deepEqual(config.workspace, {
+      roots: [{ path: '/work/app', write: false }],
+      exclude: [],
+      skip: ['node_modules', 'dist', 'build', 'target', 'vendor', 'coverage', '.venv', 'venv', '__pycache__'],
+    })
+    assert.equal(config.guards.workspace, true)
+    assert.deepEqual([...config.servers.keys()], ['a', 'workspace'])
+  })
+
+  test('reads every key, expands ${VAR} in a root and accepts a Windows drive path on Windows only', () => {
+    const config = ok(
+      {
+        mcpServers: {},
+        workspace: {
+          roots: [{ path: '${ROOT}/app', write: true }, { path: '/b' }],
+          exclude: ['*.sqlite', 'fixtures/**'],
+          skip: ['out'],
+        },
+      },
+      { ROOT: '/work' },
+    )
+    assert.deepEqual(config.workspace, {
+      roots: [
+        { path: '/work/app', write: true },
+        { path: '/b', write: false },
+      ],
+      exclude: ['*.sqlite', 'fixtures/**'],
+      skip: ['out'],
+    })
+    const win = ok({ mcpServers: {}, workspace: { roots: [{ path: 'C:/Users/me/app' }] } }, {}, 'win32')
+    assert.equal(win.workspace?.roots[0]?.path, 'C:/Users/me/app')
+    const bad = ok({ mcpServers: {}, workspace: { roots: [{ path: 'C:/Users/me/app' }] } })
+    assert.equal(bad.servers.get(key('workspace'))?.kind, 'invalid')
+  })
+
+  test('an error in the section makes only workspace invalid, and each error names its key and no value', () => {
+    const cases: [unknown, string][] = [
+      [{}, 'workspace.roots: must be an array of 1 to 16 entries'],
+      [{ roots: [] }, 'workspace.roots: must be an array of 1 to 16 entries'],
+      [{ roots: [{ path: 'relative/dir' }] }, 'workspace.roots[0].path: must be an absolute path'],
+      [{ roots: [{ path: '' }] }, 'workspace.roots[0].path: must be a non-empty string'],
+      [{ roots: [{ path: '/a', write: 'yes' }] }, 'workspace.roots[0].write: must be true or false'],
+      [{ roots: [{ path: '/a', tasks: {} }] }, 'workspace.roots[0].tasks: unknown key (known: path, write)'],
+      [{ roots: [5] }, 'workspace.roots[0]: must be an object with "path"'],
+      [{ roots: [{ path: '/a' }], extra: 1 }, 'workspace.extra: unknown key (known: roots, exclude, skip)'],
+      [{ roots: [{ path: '/a' }], exclude: ['/abs'] }, 'workspace.exclude[0]: must use / between parts'],
+      [{ roots: [{ path: '/a' }], exclude: 'x' }, 'workspace.exclude: must be an array of at most 64 strings'],
+      [{ roots: [{ path: '/a' }], skip: ['a/b'] }, 'workspace.skip[0]: must be a folder name'],
+      [{ roots: [{ path: '/${NOPE}' }] }, 'workspace.roots[0].path: the environment variable NOPE is not set'],
+      [5, 'workspace: must be an object with "roots"'],
+    ]
+    for (const [value, error] of cases) {
+      const config = ok({ mcpServers: { a: { command: 'x' } }, workspace: value })
+      const entry = config.servers.get(key('workspace'))
+      assert.equal(entry?.kind, 'invalid', JSON.stringify(value))
+      const reasons = entry?.kind === 'invalid' ? entry.errors : []
+      assert.ok(
+        reasons.some(r => r.startsWith(error)),
+        `${error} in ${JSON.stringify(reasons)}`,
+      )
+      assert.equal(config.servers.get(key('a'))?.kind, 'stdio', 'the other servers still start')
+      assert.equal(config.guards.workspace, false)
+      assert.equal(config.workspace, undefined)
+    }
+    const secretRoot = ok({ mcpServers: {}, workspace: { roots: [{ path: 'hunter2-not-absolute' }] } })
+    assert.ok(!JSON.stringify([...secretRoot.servers]).includes('hunter2'))
+  })
+
+  test('a section and an mcpServers entry with the key workspace make only workspace invalid, and the reason names both', () => {
+    const config = ok({ mcpServers: { workspace: { command: 'x' }, a: { command: 'y' } }, workspace: section })
+    const entry = config.servers.get(key('workspace'))
+    assert.equal(entry?.kind, 'invalid')
+    assert.match(
+      entry?.kind === 'invalid' ? entry.errors.join(' ') : '',
+      /"workspace" section and an mcpServers entry with the key "workspace"/,
+    )
+    assert.equal(config.servers.get(key('a'))?.kind, 'stdio')
+    assert.equal(config.guards.workspace, false, 'a clash gives no default allow to the server')
+    assert.equal(config.workspace, undefined)
+  })
+
+  test('the policy read again at a run never reads the section', () => {
+    const next = policyOf(JSON.stringify({ mcpServers: {}, workspace: { roots: [{ path: 'relative' }] }, policy: [] }))
+    assert.deepEqual(next, { ok: true, policy: [] })
   })
 })
