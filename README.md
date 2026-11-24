@@ -1201,8 +1201,8 @@ its own change, for example after it edits a file.
 - `args` is a list of strings. `cwd` is a folder relative to the `path` of the entry, `.` by default. It must exist, and it can have no link on the way.
 - `timeoutSeconds` is 60 by default. A value over `sandbox.callTimeoutSeconds` is a config error. The limit that applies
   is at most one second under `sandbox.callTimeoutSeconds`, which is 59 seconds with the default call limit. So the
-  program usually sees `timedOut` and not a cancel. A process that keeps the output open after the end of the task can
-  hold the call until the call limit, and then the program sees a cancel.
+  program usually sees `timedOut` and not a cancel. A process that keeps the output open after the task ends can hold
+  the call. The program then sees a cancel at the call limit.
 - `env` holds the variables of the task. The child gets only these, and a short list of variables of the server: `PATH`, the home and temp folders, and `SystemRoot` on Windows. No other variable of the server reaches it.
 - `${NAME}` in `command`, `args` and `env` takes the value of a variable of the server, as it does in a server entry.
 
