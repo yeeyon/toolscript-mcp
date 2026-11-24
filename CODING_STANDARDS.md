@@ -133,8 +133,9 @@ quotes and the `^` of cmd dropped, hold the
   environment from the config: the model sends only the name. The spawn is `node:child_process` with no `shell` and never
   `cross-spawn`, which starts `cmd.exe` for a `.cmd` file, so on Windows a command that is not an `.exe` or `.com` file
   makes the task invalid. The child gets the variables of `TASK_ENV_NAMES` and the `env` of the task, never any other
-  variable of the server. A task ends with its whole process tree (`endTree`) at the time limit, at a cancel and at a
-  shutdown, and one task runs at a time. A task is not contained, and no text may claim it is. `run_task` is the exec
+  variable of the server. A task ends with its process tree (`endTree`) at the time limit, at a cancel and at a
+  shutdown: the process group on Linux and macOS, the `taskkill /T` tree on Windows, which misses a process whose parent
+  already exited. One task runs at a time. A task is not contained, and no text may claim it is. `run_task` is the exec
   class: only an allow rule with its exact name allows it (`counts` and `onlyTightens` in `src/core/policy.ts`), and the
   prompt names the tasks and says that a task runs project code with the rights of the user.
   `[test: workspace-task.test.ts (argv, environment, pids gone after a timeout, a cancel and a shutdown), workspace.test.ts, run.test.ts describe run_task, workspace.e2e.mjs]`
