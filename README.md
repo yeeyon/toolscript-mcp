@@ -432,7 +432,7 @@ usage error.
 
 After the tools, `tools` prints an `allow` command for each tool that the policy asks for. The command follows the
 rules of `init --list` for names and paths. A tool whose name has another character gets no command. The block names
-the rule that stays for a tool that a deny rule matches or an ask rule names. The last command allows all such
+the rule that refuses a tool that a deny rule matches or an ask rule names. The last command allows all such
 `read-only` tools:
 
 ```
@@ -446,7 +446,11 @@ in the policy:
 
 - Each tool is `mcp__<server>__<tool>`, with a server key of the config. The tool part has only letters, digits and
   `. _ -`. For any other name, `allow` exits 2 and changes nothing.
-- A deny rule that matches the tool stays, also below an allow rule. An ask rule with the exact name stays.
+- `allow` never loosens a deny rule or an ask rule. It refuses a tool that the policy does not allow now if a deny
+  rule matches it or an ask rule names it. It prints `refused:` with the rule and the edit to make by hand, writes
+  nothing and exits 2.
+  If the run names other tools too, it writes nothing for them. It prints the command with `--apply` for the tools
+  that it can add.
 - A tool that the policy allows now gets no new rule. An allow rule with the exact name below an earlier rule moves
   to the top.
 - Without `--apply`, `allow` writes nothing. It shows the new policy and the command with `--apply` that writes it.
