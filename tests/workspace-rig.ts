@@ -13,8 +13,12 @@ import { bindWorkspace, type Bound, type BindInput } from '../src/host/workspace
 /** A random text for a secret: no test names a real one. */
 export const marker = (): string => `SECRET-${randomBytes(8).toString('hex')}`
 
-/** A new temp folder with its real path, which the test removes with `rm`. */
-export const tempDir = (): string => fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ws-test-')))
+/**
+ * A new temp folder with its real path, which the test removes with `rm`. `WS_TEST_TREES` names the folder to make it in,
+ * so a Docker run can put the trees on a bind mount of a Windows folder (a volume that ignores case).
+ */
+export const tempDir = (): string =>
+  fs.realpathSync.native(fs.mkdtempSync(path.join(process.env.WS_TEST_TREES ?? os.tmpdir(), 'ws-test-')))
 
 export const rm = (dir: string): void => fs.rmSync(dir, { recursive: true, force: true })
 

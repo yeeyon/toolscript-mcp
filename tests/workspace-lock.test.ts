@@ -172,11 +172,13 @@ describe('the lock inside one process', () => {
     // The first lookup of the first edit waits at the gate, with the lock of its file held.
     let rigHook: () => Promise<void> = async () => {}
     let gate: () => void = () => {}
+    let armed = false
     const entered = new Promise<void>(resolve => {
       let first = true
       const held = new Promise<void>(open => (gate = open))
       rigHook = async () => {
-        if (first) {
+        // Linux looks up the root when the session starts: the gate is for the first lookup of the edit.
+        if (first && armed) {
           first = false
           resolve()
           await held
@@ -185,6 +187,7 @@ describe('the lock inside one process', () => {
     })
     const rig = await rigOf(t, root, { hook: () => rigHook() })
     if (rig === undefined) return
+    armed = true
     const slow = rig.call('edit', edit('a.txt', 'v', 'slow'))
     await entered
     // The first edit is inside its lock. The second file does not wait for it.

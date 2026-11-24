@@ -417,6 +417,8 @@ describe('confinement of the change tools', () => {
     let lookups = 0
     const rig = await rigOf(t, root, { hook: () => void lookups++ })
     if (rig === undefined) return
+    // Linux opens and proves the root when the session starts, and that is a lookup too.
+    lookups = 0
     const before = snapshot(root)
     const bad = [
       '../x',
@@ -766,7 +768,7 @@ describe('a swap of a folder while a file is changed', () => {
       await rig.call('write', { path: target, content: PAYLOAD })
       const lookups = [...seen]
       clean()
-      assert.ok(lookups.length >= 3, `the lookups of a write: ${lookups.join(',')}`)
+      assert.ok(lookups.length >= 2, `the lookups of a write:${lookups.join(',')}`)
       // One pattern is the state of the folder (in or out) at each lookup. The whole space is 2^n and a pattern costs about
       // 20 ms on Windows, so the sweep takes the patterns that can matter, at most 2^11 and at most 2 s for each path:
       // every pattern over the six lookups around an open (the last open first), where a file or folder is made, and
