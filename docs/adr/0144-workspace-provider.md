@@ -276,8 +276,9 @@ Each change runs these steps, and stops at the first that fails:
 The lock file is `~/.toolscript-mcp/locks/<sha256 of the real path>.lock`, made with `wx` (`takeLock` of `src/host/oauthlock.ts`).
 A lock is stale when its process is dead or it is older than 30 seconds. A call waits 2 seconds, then fails with `busy`.
 So two sessions never lose an update: the second edit sees a new hash and fails with `stale`.
-The lock is taken before the file is opened, so its name comes from the text of the path, folded where the volume ignores
-case. The proof then gives the real spelling. If its lock name differs (a short name), the change takes that lock too, in
+The lock is taken before the file is opened, so its name comes from the text of the path, folded on every system: Linux
+opens a name as it is given, and a folder of it can be a volume that ignores case (a bind mount of a Windows folder, exFAT,
+CIFS). On a volume that tells two spellings apart, the folded key only makes the two files wait for each other. The proof then gives the real spelling. If its lock name differs (a short name), the change takes that lock too, in
 the same wait. A lock folder that cannot be made fails the change with `io`: a change never runs with no lock. The folder
 `locks` is guarded like `oauth` (`guardedDirs`, `GUARD_MARKERS`).
 Linux replaces the file with a temp file (`.toolscript-ws-<random>.tmp`, mode of the old file) and a rename in the held

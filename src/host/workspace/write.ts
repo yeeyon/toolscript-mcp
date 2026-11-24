@@ -12,13 +12,13 @@ import { dropLock, takeLock, type Held } from '../oauthlock.ts'
 
 /**
  * The name of the lock of a file: the hash of its absolute path. `root` and `parts` are real paths, so two sessions
- * with two roots name one file alike. On a volume that ignores case the path is folded, so `A.txt` and `a.txt` share a lock.
+ * with two roots name one file alike. The path is folded on every system, because Linux opens a name as it is given and
+ * a folder of it can be a volume that ignores case (a bind mount of a Windows folder, an exFAT or a CIFS share). So
+ * `A.txt` and `a.txt` share a lock there, and on a volume that tells them apart they only wait for each other.
  */
-export const lockKey = (root: string, parts: readonly string[], folds: boolean): string => {
+export const lockKey = (root: string, parts: readonly string[]): string => {
   const real = `${root.replaceAll('\\', '/')}/${parts.join('/')}`
-  return createHash('sha256')
-    .update(folds ? fold(real) : real)
-    .digest('hex')
+  return createHash('sha256').update(fold(real)).digest('hex')
 }
 
 /** The locks that one change holds. `also` takes the lock of another name of the same file, when the proof found one. */

@@ -104,6 +104,50 @@ describe('the lock inside one process', () => {
     assert.deepEqual(locksOf(rig), [], 'no lock stays')
   })
 
+  test('the lock key folds case and Unicode form on every system, so two spellings of one file share a lock', () => {
+    const root = path.join(path.parse(process.cwd()).root, 'ws-root')
+    assert.equal(lockKey(root, ['A.txt']), lockKey(root, ['a.txt']))
+    assert.equal(lockKey(root, ['Dir', 'F.TXT']), lockKey(root, ['dir', 'f.txt']))
+    assert.equal(lockKey(root, ['café.txt']), lockKey(root, ['café.txt']))
+    assert.notEqual(lockKey(root, ['a.txt']), lockKey(root, ['b.txt']))
+    assert.notEqual(lockKey(root, ['a', 'b.txt']), lockKey(root, ['ab.txt']))
+  })
+
+  test('two edits of one file under two spellings with one hash apply exactly one (a volume that ignores case)', async t => {
+    const root = tree(t)
+    write(root, { 'A.txt': 'one\ntwo\n' })
+    // Windows and macOS ignore case by default. Linux does on a bind mount of such a folder, so the probe decides.
+    if (!fs.existsSync(path.join(root, 'a.txt'))) return void t.skip('this volume tells A.txt and a.txt apart')
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    const text = 'one\ntwo\n'
+    const began = Date.now()
+    let rounds = 0
+    for (; rounds < 50 && Date.now() - began < 2000; rounds++) {
+      fs.writeFileSync(path.join(root, 'A.txt'), text)
+      const [a, b] = await Promise.all([
+        rig.client.callTool({
+          name: 'edit',
+          arguments: { path: 'A.txt', expectedHash: sha(text), edits: [{ old: 'one', new: 'ONE' }] },
+        }),
+        rig.client.callTool({
+          name: 'edit',
+          arguments: { path: 'a.txt', expectedHash: sha(text), edits: [{ old: 'two', new: 'TWO' }] },
+        }),
+      ])
+      const results = [a!, b!]
+      const wins = results.filter(r => r.isError !== true)
+      const losses = results.filter(r => r.isError === true)
+      assert.equal(wins.length, 1, `round ${rounds}`)
+      assert.equal(codeOf((losses[0]!.content as { text: string }[])[0]!.text), 'stale')
+      const now = fs.readFileSync(path.join(root, 'A.txt'), 'utf8')
+      assert.ok(now === 'ONE\ntwo\n' || now === 'one\nTWO\n', `one edit, not both: ${JSON.stringify(now)}`)
+    }
+    t.diagnostic(`${rounds} rounds`)
+    assert.ok(rounds >= 2)
+    assert.deepEqual(locksOf(rig), [], 'no lock stays')
+  })
+
   test('the lock file is named for the hash of the real path, and the change takes it before it opens the file', async t => {
     const root = tree(t)
     write(root, { 'f.txt': 'v' })
@@ -115,7 +159,7 @@ describe('the lock inside one process', () => {
     armed = true
     await rig.call('edit', edit('f.txt', 'v', 'w'))
     armed = false
-    const name = `${lockKey(rig.bound.root, ['f.txt'], process.platform !== 'linux')}.lock`
+    const name = `${lockKey(rig.bound.root, ['f.txt'])}.lock`
     assert.match(name, /^[0-9a-f]{64}\.lock$/)
     assert.ok(seen.length > 0)
     for (const files of seen) assert.deepEqual(files, [name])

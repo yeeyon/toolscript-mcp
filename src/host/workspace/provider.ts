@@ -323,8 +323,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
   // Pull request B: diff, edit and write
 
   const locker = createLocker(options.home, options.locks)
-  /** The name of the lock of a file. A volume that ignores case folds the path, so two spellings share a lock. */
-  const keyOf = (parts: readonly string[]): string => lockKey(options.root, parts, confined.method !== 'proc')
+  /** The name of the lock of a file: the path is folded on every system, so two spellings share a lock. */
+  const keyOf = (parts: readonly string[]): string => lockKey(options.root, parts)
 
   const stale = (): WorkspaceError =>
     new WorkspaceError('stale', 'the file has changed since expectedHash. Read it again, then redo the change')

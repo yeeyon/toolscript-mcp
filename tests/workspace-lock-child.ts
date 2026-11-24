@@ -43,10 +43,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     const text = (r.content as { text: string }[])[0]?.text ?? ''
     say(r.isError === true ? { id: cmd.id, ok: false, text } : { id: cmd.id, ok: true, result: r.structuredContent })
   } else if (cmd.hold !== undefined) {
-    held = await locker.hold(
-      lockKey(binding.bound.root, [cmd.hold], process.platform !== 'linux'),
-      new AbortController().signal,
-    )
+    held = await locker.hold(lockKey(binding.bound.root, [cmd.hold]), new AbortController().signal)
     say({ id: cmd.id, held: true })
   } else if (cmd.release) {
     await held?.release()
