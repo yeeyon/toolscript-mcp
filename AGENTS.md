@@ -15,8 +15,11 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
   proof of the key, the entry, `PATH` resolve), `lock.ts` (the content of the OAuth refresh lock file, its parse and
   the stale decision), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
-  note on `Promise.all`). An allow rule allows a tool of a bridge only when its match starts with `mcp__<key>__`
-  (`counts` in `policy.ts`). `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
+  note on `Promise.all`), `workspace.ts` (the built-in Workspace, issue #144: the tool table with a class for each
+  tool, the limits, the check of a path text, globs, exclusions, the refusal of a root, the binding of a session to its
+  root and the input of each tool). An allow rule allows a tool of a bridge only when its match starts with
+  `mcp__<key>__` (`counts` in `policy.ts`). `policy.ts` takes one `Guards` value: the bridges, and whether the built-in
+  Workspace is on, so that its read tools run with no rule. `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
   checks, such as `hiddenBy` (one glob covers another).
   `guard.ts` holds the guard of the folders in `guardedDirs` at each nested call: the walk of the arguments, the
   markers, the path candidates and the compare. It takes `realpath` as a parameter. `commands.ts` holds the commands
@@ -75,6 +78,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.
   - `start.ts`: how the process started, the config read and the login command, shared by the server and the CLI.
+  - `workspace/`: the built-in Workspace (issue #144, `docs/adr/0144-workspace-provider.md`). `confined.ts`: the
+    confined file system, with a proof of each open for each OS, the first-use test of the method, the identity of the
+    root and a `Hook` that runs before each lookup of a name, so a test swaps a folder between two lookups. `provider.ts`:
+    the in-process MCP server over an SDK `InMemoryTransport`, one handler for each entry of `WORKSPACE_TOOLS`. `bind.ts`:
+    the binding of a session to its root at the start (`bindWorkspace`), and the link that `downstream.ts` takes. The
+    broker never shares it, and it is never lazy. `tests/workspace-rig.ts` is the helper of its tests.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
@@ -102,6 +111,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `npm test`, `npm run typecheck`, `npm run build`, `npm run check`.
 - `node tests/runner.integration.mjs` runs the real sandbox on Linux, macOS and Windows.
 - `node tests/server.e2e.mjs` runs the built server over stdio. Run `npm run build` first.
+- `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
 - After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
 - `node scripts/start-time.mjs` measures the start, from the spawn to the `tools/list` reply. Run `npm run build` first.
 

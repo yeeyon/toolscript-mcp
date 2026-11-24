@@ -11,12 +11,14 @@ import {
   keptPolicyNote,
   loosenText,
   matches,
+  NO_GUARDS,
   onlyTightens,
   planRun,
   policyChange,
   printable,
   printableText,
   refusedReport,
+  type Guards,
   type Policy,
   type Rule,
 } from '../src/core/policy.ts'
@@ -38,7 +40,8 @@ const errors = (value: unknown, platform = 'linux'): string[] => {
 }
 const policy = (...rules: [string, 'allow' | 'deny' | 'ask'][]): Policy =>
   config({ policy: rules.map(([match, action]) => ({ match, action })) }).policy
-const NONE = new Set<ServerKey>()
+const NONE = NO_GUARDS
+const guardsOf = (bridges: ReadonlySet<ServerKey>, workspace = false): Guards => ({ bridges, workspace })
 
 describe('policy rules', () => {
   test('a glob matches the whole name, and * matches any characters, __ too', () => {
@@ -126,7 +129,7 @@ describe('a tool of a bridge', () => {
   const BRIDGE = { 'claude-code': { command: 'node', args: ['server.js'] }, github: { command: 'node' } }
   const bridged = (...rules: [string, 'allow' | 'deny' | 'ask'][]) => {
     const c = config({ mcpServers: BRIDGE, policy: rules.map(([match, action]) => ({ match, action })) })
-    return (tool: string) => decide(c.policy, c.bridges, tool).action
+    return (tool: string) => decide(c.policy, c.guards, tool).action
   }
   const LATER = ['Bash', 'Write', 'Agent', 'DesignSync', 'PublishPlugin', 'AToolOfALaterVersion']
 
@@ -266,20 +269,20 @@ describe('a tool of a bridge', () => {
         { match: '*', action: 'allow' },
       ],
     })
-    assert.equal(decide(c.policy, c.bridges, 'mcp__claude__Bash').action, 'ask')
+    assert.equal(decide(c.policy, c.guards, 'mcp__claude__Bash').action, 'ask')
     const named = [{ match: 'mcp__claude__Bash', action: 'allow' as const, index: 0 }]
-    assert.equal(decide(named, c.bridges, 'mcp__claude__Bash').action, 'allow')
+    assert.equal(decide(named, c.guards, 'mcp__claude__Bash').action, 'allow')
   })
 
   test('the check before a run asks, and the check of a call refuses a name built at run time', () => {
     const c = config({ mcpServers: BRIDGE, policy: [{ match: '*', action: 'allow' }] })
     const calls = [{ tool: 'mcp__claude-code__DesignSync', line: 1, keys: [] }]
-    assert.deepEqual(planRun(c.policy, c.bridges, calls, new Set()), {
+    assert.deepEqual(planRun(c.policy, c.guards, calls, new Set()), {
       kind: 'run',
       ask: ['mcp__claude-code__DesignSync'],
       interactive: [],
     })
-    const check = checkCall(c.policy, c.bridges, new Set(), 'mcp__claude-code__PublishPlugin', new Set())
+    const check = checkCall(c.policy, c.guards, new Set(), 'mcp__claude-code__PublishPlugin', new Set())
     assert.deepEqual(check, {
       ok: false,
       error:
@@ -287,13 +290,13 @@ describe('a tool of a bridge', () => {
       needs: 'rule',
     })
     assert.ok(
-      askText({ ask: ['mcp__claude-code__DesignSync'], interactive: [] }, 'return 1', c.bridges).includes(
+      askText({ ask: ['mcp__claude-code__DesignSync'], interactive: [] }, 'return 1', c.guards).includes(
         'which no policy rule allows:\n- mcp__claude-code__DesignSync\nAn allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__.\n\n',
       ),
     )
-    assert.ok(!askText({ ask: ['mcp__x__y'], interactive: [] }, 'return 1', c.bridges).includes('Claude Code'))
+    assert.ok(!askText({ ask: ['mcp__x__y'], interactive: [] }, 'return 1', c.guards).includes('Claude Code'))
     assert.deepEqual(
-      checkCall(c.policy, c.bridges, new Set(['mcp__claude-code__Bash']), 'mcp__claude-code__Bash', new Set()),
+      checkCall(c.policy, c.guards, new Set(['mcp__claude-code__Bash']), 'mcp__claude-code__Bash', new Set()),
       {
         ok: true,
       },
@@ -304,13 +307,13 @@ describe('a tool of a bridge', () => {
     const c = config({ mcpServers: BRIDGE })
     const from = policy(['*', 'allow'], ['mcp__claude-code__*', 'deny'])
     const to = policy(['*', 'ask'], ['mcp__claude-code__*', 'deny'])
-    assert.equal(decide(from, c.bridges, 'mcp__claude-code__Bash').action, 'deny')
-    assert.equal(decide(to, c.bridges, 'mcp__claude-code__Bash').action, 'ask')
-    assert.equal(onlyTightens(from, to, c.bridges), false)
+    assert.equal(decide(from, c.guards, 'mcp__claude-code__Bash').action, 'deny')
+    assert.equal(decide(to, c.guards, 'mcp__claude-code__Bash').action, 'ask')
+    assert.equal(onlyTightens(from, to, c.guards), false)
     assert.equal(onlyTightens(from, to, NONE), true, 'with no bridge, the same step only tightens')
     const named = policy(['mcp__claude-code__Read', 'allow'], ['mcp__claude-code__*', 'deny'])
     assert.equal(
-      onlyTightens(named, policy(['mcp__claude-code__Read', 'ask'], ['mcp__claude-code__*', 'deny']), c.bridges),
+      onlyTightens(named, policy(['mcp__claude-code__Read', 'ask'], ['mcp__claude-code__*', 'deny']), c.guards),
       true,
     )
   })
@@ -321,10 +324,10 @@ describe('a tool of a bridge', () => {
     const to = [...policy(['*', 'allow']), ...from.map(r => ({ ...r, index: r.index + 1 }))]
     for (const tool of ['Read', 'Bash', ...LATER]) {
       const name = `mcp__claude-code__${tool}`
-      assert.equal(decide(to, c.bridges, name).action, decide(from, c.bridges, name).action, tool)
+      assert.equal(decide(to, c.guards, name).action, decide(from, c.guards, name).action, tool)
     }
-    assert.equal(decide(to, c.bridges, 'mcp__github__x').action, 'allow')
-    assert.equal(onlyTightens(from, to, c.bridges), false, 'the rule loosens the tools of the other servers')
+    assert.equal(decide(to, c.guards, 'mcp__github__x').action, 'allow')
+    assert.equal(onlyTightens(from, to, c.guards), false, 'the rule loosens the tools of the other servers')
   })
 
   test('over random policies, a tool of a bridge is allowed only by the first allow rule that names its server', () => {
@@ -360,7 +363,7 @@ describe('a tool of a bridge', () => {
         index,
       }))
       for (const name of NAMES) {
-        const verdict = decide(p, bridges, name)
+        const verdict = decide(p, guardsOf(bridges), name)
         const server = name.slice('mcp__'.length, name.indexOf('__', 'mcp__'.length))
         const counted = bridges.has(server as ServerKey)
           ? p.filter(r => r.action !== 'allow' || r.match.startsWith(`mcp__${server}__`))
@@ -659,10 +662,30 @@ describe('a change of the policy in the config file', () => {
     assert.equal(looser(askThenAllow, policy(['mcp__a__*', 'allow'])), true, 'the ask is gone')
   })
 
-  const eachStepOnlyTightens = (bridges: ReadonlySet<ServerKey>) => {
-    const MATCHES = ['mcp__a__x', 'mcp__a__*', 'mcp__*', 'mcp__a__', 'mcp__*__x', 'mcp__b__y', 'mcp__a__x*', '*']
+  const eachStepOnlyTightens = (guards: Guards) => {
+    const { bridges } = guards
+    // With the built-in Workspace on, its read tools run with no rule: they join the names and the matches.
+    const workspace = guards.workspace ? ['mcp__workspace__read', 'mcp__workspace__list', 'mcp__workspace__edit'] : []
+    const MATCHES = [
+      'mcp__a__x',
+      'mcp__a__*',
+      'mcp__*',
+      'mcp__a__',
+      'mcp__*__x',
+      'mcp__b__y',
+      'mcp__a__x*',
+      '*',
+      ...(guards.workspace ? ['mcp__workspace__*', 'mcp__workspace__read'] : []),
+    ]
     // Lowered to ask, an allow rule over several servers can decide a tool of a bridge that it skipped.
-    const ONE_SERVER = ['mcp__a__x', 'mcp__a__*', 'mcp__b__y', 'mcp__a__x*']
+    const ONE_SERVER = [
+      'mcp__a__x',
+      'mcp__a__*',
+      'mcp__b__y',
+      'mcp__a__x*',
+      'mcp__workspace__*',
+      'mcp__workspace__read',
+    ]
     const NAMES = [
       'mcp__a__x',
       'mcp__a__',
@@ -672,6 +695,7 @@ describe('a change of the policy in the config file', () => {
       'mcp__b__y',
       'mcp__c__z',
       'mcp____x',
+      ...workspace,
     ]
     const ACTIONS = ['allow', 'deny', 'ask'] as const
     let seed = 7
@@ -699,16 +723,16 @@ describe('a change of the policy in the config file', () => {
       return p.toSpliced(at, 0, rule(MATCHES[next(MATCHES.length)]!, 'deny'))
     }
     const raises = (from: Policy, to: Policy): string | undefined =>
-      NAMES.find(name => RANK[decide(to, bridges, name).action] > RANK[decide(from, bridges, name).action])
+      NAMES.find(name => RANK[decide(to, guards, name).action] > RANK[decide(from, guards, name).action])
     let accepted = 0
     for (let i = 0; i < 3000; i++) {
       const from = randomPolicy()
       let to = from
       for (let n = next(4); n >= 0; n--) to = step(to)
       assert.equal(raises(from, to), undefined, policyChange(from, to))
-      assert.equal(onlyTightens(from, to, bridges), true, policyChange(from, to))
+      assert.equal(onlyTightens(from, to, guards), true, policyChange(from, to))
       const other = randomPolicy()
-      if (onlyTightens(from, other, bridges)) {
+      if (onlyTightens(from, other, guards)) {
         accepted++
         assert.equal(raises(from, other), undefined, policyChange(from, other))
       }
@@ -716,9 +740,13 @@ describe('a change of the policy in the config file', () => {
     assert.ok(accepted > 100, `${accepted} random pairs accepted`)
   }
 
-  for (const bridges of [NONE, new Set(['a' as ServerKey]), new Set(['a', 'b'] as ServerKey[])])
+  for (const bridges of [new Set<ServerKey>(), new Set(['a' as ServerKey]), new Set(['a', 'b'] as ServerKey[])])
     test(`each step only tightens, and an accepted change never raises a decision, bridges: ${[...bridges]}`, () =>
-      eachStepOnlyTightens(bridges))
+      eachStepOnlyTightens(guardsOf(bridges)))
+
+  for (const bridges of [new Set<ServerKey>(), new Set(['a' as ServerKey])])
+    test(`with the built-in Workspace on, each step only tightens and an accepted change never raises a decision, bridges: ${[...bridges]}`, () =>
+      eachStepOnlyTightens(guardsOf(bridges, true)))
 
   test('make it fail: a policy too large to compare counts as looser, and its change shows at once', () => {
     const many = policy(...Array.from({ length: 4000 }, (_, i): [string, 'deny'] => [`mcp__a__t${i}`, 'deny']))

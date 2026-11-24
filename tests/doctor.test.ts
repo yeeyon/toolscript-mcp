@@ -17,10 +17,11 @@ import {
   policyFindings,
   shareFindings,
   staleStoreKeys,
+  workspaceAclFinding,
 } from '../src/core/doctor.ts'
 import { parseConfig } from '../src/core/config.ts'
 import { appPath, oauthFolder, runLogFile } from '../src/core/paths.ts'
-import type { Rule } from '../src/core/policy.ts'
+import { NO_GUARDS, type Guards, type Rule } from '../src/core/policy.ts'
 import { runLine, type RunRecord } from '../src/core/runlog.ts'
 import type { CheckIo } from '../src/host/diagnose.ts'
 import { runDoctor } from '../src/host/doctor.ts'
@@ -87,8 +88,8 @@ describe('hiddenBy', () => {
 })
 
 describe('policyFindings', () => {
-  const none = new Set<ServerKey>()
-  const bridge = new Set([key('claude-code')])
+  const none = NO_GUARDS
+  const bridge: Guards = { bridges: new Set([key('claude-code')]), workspace: false }
 
   test('names a rule that an earlier rule always hides, with both rules', () => {
     const found = policyFindings(
@@ -255,8 +256,20 @@ describe('doctor', () => {
     ])
     assert.equal(s.of('config')[0], `ok    config   ${s.config}`)
     // The checks print in this order.
-    const names = [...new Set(s.printed.map(l => l.slice(6, 14).trim()))]
-    assert.deepEqual(names, ['node', 'config', 'servers', 'share', 'lazy', 'policy', 'sandbox', 'run-log', 'files'])
+    const names = [...new Set(s.printed.map(l => l.split(/ +/)[1]))]
+    assert.deepEqual(names, [
+      'node',
+      'config',
+      'servers',
+      'workspace',
+      'share',
+      'lazy',
+      'policy',
+      'sandbox',
+      'run-log',
+      'files',
+    ])
+    assert.deepEqual(s.of('workspace'), ['info  workspace  off: the config has no "workspace" section'])
     assert.deepEqual(s.of('lazy'), [
       'info  lazy     claude-code: starts on first use and stops after 10 min idle, tool list not cached yet (starts once at the next session)',
     ])
@@ -605,5 +618,73 @@ describe('the broker check', () => {
     assert.match(line!, /TOOLSCRIPT_SHARE=0/)
     assert.ok(!s.printed.join('\n').includes(SECRET))
     assert.ok(!fs.existsSync(path.join(s.home, '.toolscript-mcp', 'broker')), 'no broker folder made')
+  })
+})
+
+describe('the workspace check', () => {
+  test('is one line: off, the root with its grants, or the reason', async () => {
+    const off = setup({ mcpServers: {} })
+    await off.doctor()
+    assert.deepEqual(off.of('workspace'), ['info  workspace  off: the config has no "workspace" section'])
+
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(ROOT, 'ws-')))
+    const on = setup({ mcpServers: {}, workspace: { roots: [{ path: root }] } })
+    await on.doctor()
+    const lines = on.of('workspace')
+    assert.match(
+      lines[0]!,
+      new RegExp(
+        `^ok {4}workspace {2}root ${root.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}, read-only, confined by (proc|realpath|nofollow-any)$`,
+      ),
+    )
+    // On Windows a second line holds the finding on the access rules of the root, and on other systems there is none.
+    assert.equal(lines.length, process.platform === 'win32' ? 2 : 1, lines.join('\n'))
+
+    const missing = setup({ mcpServers: {}, workspace: { roots: [{ path: path.join(ROOT, 'nowhere') }] } })
+    assert.equal(await missing.doctor(), 1)
+    assert.deepEqual(missing.of('workspace'), [
+      'fail  workspace  unavailable: workspace.roots[0].path is not a folder that exists',
+    ])
+    assert.ok(missing.of('servers').some(l => l.includes('workspace.roots[0].path is not a folder that exists')))
+  })
+
+  test('an invalid section shows in the servers check only', async () => {
+    const s = setup({ mcpServers: {}, workspace: { roots: [] } })
+    assert.equal(await s.doctor(), 1)
+    assert.deepEqual(s.of('workspace'), [])
+    assert.match(
+      s.of('servers')[0]!,
+      /workspace: cannot connect: invalid entry in the toolscript-mcp config: workspace\.roots: must be an array of 1 to 16 entries/,
+    )
+  })
+})
+
+describe('workspaceAclFinding', () => {
+  const user = 'S-1-5-21-1-2-3-1001'
+  const text = (...rules: string[]) => [user, ...rules].join('\n')
+  test('is ok when only the user, SYSTEM and Administrators can write', () => {
+    const f = workspaceAclFinding(
+      text(`${user}|Allow|FullControl`, 'S-1-5-18|Allow|FullControl', 'S-1-5-32-544|Allow|FullControl'),
+    )
+    assert.equal(f.status, 'ok')
+  })
+
+  test('warns when another principal can write, and not when it can only read', () => {
+    for (const rights of ['Modify, Synchronize', 'FullControl', 'Write, ReadAndExecute', 'CreateFiles, AppendData']) {
+      const f = workspaceAclFinding(text(`${user}|Allow|FullControl`, `S-1-5-32-545|Allow|${rights}`))
+      assert.equal(f.status, 'warn', rights)
+      assert.match(f.detail, /1 other principal\(s\) can write in the root/)
+      assert.ok(!f.detail.includes('S-1-'), 'no identifier in the text')
+    }
+    assert.equal(
+      workspaceAclFinding(text(`${user}|Allow|FullControl`, 'S-1-5-32-545|Allow|ReadAndExecute, Synchronize')).status,
+      'ok',
+    )
+    assert.equal(workspaceAclFinding(text(`${user}|Allow|FullControl`, 'S-1-5-32-545|Deny|Modify')).status, 'ok')
+  })
+
+  test('says that the rules could not be read when the text is not a list of rules', () => {
+    for (const bad of ['', 'x', `${user}`, `${user}\nS-1-5-18`])
+      assert.equal(workspaceAclFinding(bad).status, 'info', bad)
   })
 })

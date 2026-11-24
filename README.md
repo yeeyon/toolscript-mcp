@@ -12,6 +12,7 @@ The goal is a server that works with any MCP client, for example Claude Code, Cl
 - [Measured](#measured)
 - [Install](#install)
 - [Configuration](#configuration)
+- [Workspace](#workspace)
 - [Claude Code as a downstream server](#claude-code-as-a-downstream-server)
 - [Comparison with Claude Code Code Mode](#toolscript-mcp-and-claude-code-code-mode)
 
@@ -23,7 +24,7 @@ The goal is a server that works with any MCP client, for example Claude Code, Cl
 | Calls | Programs can filter, join and batch results, with at most 8 downstream calls at a time per run. |
 | Servers | Local stdio and remote HTTP servers, with per-server environment variables and an optional stdio `cwd`. |
 | Authentication | HTTP headers or native OAuth login, token refresh, dynamic client registration and static client credentials. |
-| Local development | The optional `claude mcp serve` bridge offers file tools and a shell. See its [policy and risks](#claude-code-as-a-downstream-server). |
+| Local development | The built-in [Workspace](#workspace) lists, searches and reads the files of one folder, with no other process. It is off by default. The optional `claude mcp serve` bridge offers file tools and a shell. See its [policy and risks](#claude-code-as-a-downstream-server). |
 | Policy | Ordered `allow`, `deny` and `ask` rules. Tools marked for user interaction need approval for each run. |
 | Results | Compact output, `await recall(n)` for kept results, and `await saveFile(name, data)` for exports. Images and other non-text blocks become files, and a returned image shows to the model. |
 | Clients | Setup examples for Claude Code, Claude Desktop, Cursor and Codex. Tests cover Claude Code and the MCP TypeScript SDK client. A manual smoke test passed in Codex CLI 0.171.0 with `codex exec`. See the [result](bench/CODEX.md#smoke-test-result). |
@@ -1101,6 +1102,106 @@ code. Read [SECURITY.md](SECURITY.md).
   your client. Then send a program that reads the result.
 - The Claude Code bridge starts another process. It adds memory use, and `cwd` does not restrict file or shell access.
 - The Codex bench is a [test plan](bench/CODEX.md). No Codex performance results are published in this repo.
+- Workspace reads files only. It has no edit tool and no way to run a test yet. See [Workspace](#workspace).
+
+## Workspace
+
+Workspace is a built-in server that reads the files of one project folder. It runs inside toolscript-mcp, so it needs
+no Claude Code and no other process. Its tools are named `mcp__workspace__<tool>`, and a program calls them as it calls
+any tool. It is off by default.
+
+### Turn it on
+
+Add a `workspace` section to the config. The key `workspace` is then reserved: `mcpServers` cannot hold a server of
+that name.
+
+```json
+{
+  "mcpServers": {},
+  "workspace": {
+    "roots": [{ "path": "/home/me/app" }],
+    "exclude": ["fixtures/secrets/**", "*.sqlite"]
+  }
+}
+```
+
+- `roots` holds 1 to 16 entries. Each `path` is absolute and must be a folder that exists. `write` is read, and it has no effect yet.
+- `exclude` holds globs of paths that no tool reads or shows. They add to the built-in list below.
+- `skip` holds the folder names that `list` and `search` do not enter. It replaces the default list: `node_modules`, `dist`, `build`, `target`, `vendor`, `coverage`, `.venv`, `venv` and `__pycache__`. A call can still name such a folder in `path`.
+
+The server reads the section one time, at the start. A policy reload never reads it. To change a root, edit the config and
+restart toolscript-mcp. An error in the section makes only the `workspace` entry invalid, and the other servers start.
+
+### The root of a session
+
+The model never names a root. The server binds one root at the start, from the real path of each entry and of the
+folder where your client started it:
+
+1. If that folder is inside one or more entries, the deepest entry gives the grants, and the folder is the root.
+2. Else, if the config has one entry, its path is the root.
+3. Else Workspace is unavailable, and `search_tools` says to start the client in one of the entries.
+
+So two sessions in two folders under one entry see only their own folder. The folder where the client started never grants
+access alone. Workspace refuses a root in these cases, and the reason names the entry:
+
+- The root is a drive or the root of a file system.
+- The root is your home folder, or a folder that holds it.
+- The root is a Windows network path.
+- A part of the root path has a name such as `.git` or `.ssh`.
+
+### The tools
+
+| Tool | What it does |
+| --- | --- |
+| `list` | Lists entries under a folder, sorted by path, with `depth` from 1 to 8. A link shows as `link` and is never entered. |
+| `search` | Finds literal text in the text files under a folder. It returns the path, line and column of each match. |
+| `read` | Reads one text file with its line ends as they are. It returns the text, its encoding and the `sha256` of its bytes. |
+| `stat` | Tells if a path is a file, a folder, something else or missing. |
+
+Paths in arguments and results are relative to the root and use `/`. Each failed call throws in the program. The message
+starts with a code, such as `excluded`, `link`, `hard-link`, `bad-path`, `too-large`, `binary` or `not-found`.
+
+### What read-only covers
+
+- Each call goes through the policy as any call does. The read tools run with no rule while Workspace is on. An `ask` or `deny` rule that matches still decides.
+- Each result is untrusted text. The run result is in the untrusted wrapper, and the run learns no result shape.
+- The built-in exclusions hold for all four tools, with no regard to case, after Unicode NFC. They cover version control data (`.git`, `.hg` and `.svn`) and `.toolscript-mcp`.
+- They also cover secrets: `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.aws` and `.ssh`. And they cover the settings of clients: `.claude`, `.vscode` and `.mcp.json`.
+- The toolscript-mcp config file is excluded too, by its real path.
+- No tool follows a symlink or a junction, and `read` refuses a file with more than one hard link. `search` skips such a file.
+- `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8. `search` skips these files and files over 1 MiB, and counts them in `skipped`.
+- `search` and `list` stop after they visit 20,000 names, of any kind, or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. A cancel ends a `search` within one second.
+- `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
+
+### How a file is opened
+
+Workspace opens each file through a handle that it proves to be inside the root. It never opens a path by name and then
+trusts a check that it made before. The proof differs by system:
+
+| System | Proof |
+| --- | --- |
+| Linux | Each part of the path is opened with `O_NOFOLLOW`, relative to the folder that is held open. A later swap of a name changes nothing that is held. |
+| macOS | The full path is opened with `O_NOFOLLOW_ANY`, which refuses a symlink in any part. |
+| Windows | The full path is opened. Then `realpath` and `lstat` must agree with the identity of the handle, two times. |
+
+At its first use, Workspace tests its method in a temp folder. If the test fails, Workspace is unavailable and the reason
+says why. On macOS, the CI run of the repo decides if the method works. A macOS system where it does not work has Workspace unavailable.
+
+### What stays possible
+
+- On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root.
+- On Windows and macOS, a swap can alternate with each lookup of a `list` or a `stat`. Then it can show a name, a size or a kind from outside the root. It never shows the bytes of a file.
+- On Windows, the same can happen for a folder in the middle of a path, such as `b` in `list b/c`: the swap must be out at the open of `b/c` and then alternate. Later lookups can be outside in a row.
+- Both cases need a process of another account, or a process with fewer rights. Code that runs as you can read the files itself.
+- Give Workspace a root that only your account can write. On Windows, `toolscript-mcp doctor` reads the access rules of the root and warns when another account can write.
+- A program that Workspace feeds with file text can send that text to any other tool that the policy allows. Keep the policy narrow for a root with private files.
+- A tool of another server can write the config. A new root or grant applies at the next start, as a new policy does.
+
+### Check it
+
+Run `toolscript-mcp tools workspace` to list the four tools with their policy decision. Run `toolscript-mcp doctor` for one
+line on Workspace: off, the root and its grants, or the reason that it is unavailable. `toolscript-mcp runs` shows the
+Workspace calls of a run. A program or a client config that names the Claude Code bridge still works as before.
 
 ## Claude Code as a downstream server
 

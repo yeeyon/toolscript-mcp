@@ -6,7 +6,17 @@ import { catalogOf, interactiveTools, type ServerState, type SettledState } from
 import { loginReason, type Config, type ServerKey } from './config.ts'
 import { LAZY_IDLE_MS, isLazy } from './lazy.ts'
 import { classify, type Class } from './share.ts'
-import { decide, matches, printable, ruleText, shownName, type Bridges, type Policy, type Rule } from './policy.ts'
+import {
+  decide,
+  matches,
+  printable,
+  ruleText,
+  shownName,
+  type Bridges,
+  type Guards,
+  type Policy,
+  type Rule,
+} from './policy.ts'
 
 /** `info` is a fact to know, `warn` a problem that leaves the setup working, `fail` a problem that stops it. */
 export type Status = 'ok' | 'info' | 'warn' | 'fail'
@@ -16,6 +26,7 @@ export const CHECK_NAMES = [
   'node',
   'config',
   'servers',
+  'workspace',
   'share',
   'broker',
   'lazy',
@@ -114,7 +125,8 @@ const skippedBridges = (rule: Rule, bridges: Bridges): string[] => {
  * The findings of the policy: each rule that an earlier rule hides, each allow rule that matches no listed tool (only
  * when every server connected), each allow rule that skips a bridge, and each tool that needs a person at each run.
  */
-export const policyFindings = (policy: Policy, bridges: Bridges, states: readonly ServerState[]): Finding[] => {
+export const policyFindings = (policy: Policy, guards: Guards, states: readonly ServerState[]): Finding[] => {
+  const { bridges } = guards
   const hidden = policy.flatMap((later, j) => {
     const earlier = policy.slice(0, j).find(rule => hides(rule, later, bridges))
     return earlier === undefined
@@ -147,7 +159,7 @@ export const policyFindings = (policy: Policy, bridges: Bridges, states: readonl
   )
   // A deny rule wins over the mark, as in the tools command.
   const person = [...interactiveTools(states)]
-    .filter(name => decide(policy, bridges, name).action !== 'deny')
+    .filter(name => decide(policy, guards, name).action !== 'deny')
     .map(name =>
       info(
         `${shownName(name)} needs a person at each run: its server marks it, and an allow rule does not replace that`,
@@ -242,6 +254,44 @@ export const brokerFail = (reason: string, platform: string): Finding =>
 
 /** The principals that may hold the broker folder on Windows: SYSTEM and Administrators, and the user. */
 const ALLOWED_SIDS = new Set(['S-1-5-18', 'S-1-5-32-544'])
+
+/** The rights that let a principal change a folder or the files in it. */
+const WRITE_RIGHTS =
+  /FullControl|Modify|Write|CreateFiles|CreateDirectories|AppendData|Delete|ChangePermissions|TakeOwnership/
+
+/**
+ * The finding of the access rules of a Workspace root on Windows, from the text of `readAcl`. A principal other than the
+ * user, SYSTEM and Administrators with an Allow rule that can write lets a process of that account swap a folder for a
+ * link while a tool reads (the ADR names this case). The text holds no path.
+ */
+export const workspaceAclFinding = (text: string): Finding => {
+  const lines = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line !== '')
+  const user = lines[0]
+  const rules = lines.slice(1).map(line => line.split('|'))
+  if (
+    user === undefined ||
+    !/^S-1-/.test(user) ||
+    rules.length === 0 ||
+    rules.some(r => r.length < 3 || !/^S-1-/.test(r[0]!))
+  )
+    return info('the access rules of the root could not be read')
+  const extra = new Set(
+    rules
+      .filter(
+        ([sid, type, rights]) =>
+          type === 'Allow' && sid !== user && !ALLOWED_SIDS.has(sid!) && WRITE_RIGHTS.test(rights!),
+      )
+      .map(([sid]) => sid!),
+  )
+  if (extra.size === 0) return ok('only you, SYSTEM and Administrators can write in the root')
+  return warn(
+    `${extra.size} other principal(s) can write in the root, so a process of theirs could swap a folder for a link while a tool reads. ` +
+      'Look at the rules with `icacls` on the root. Give Workspace a root that only your account can write',
+  )
+}
 
 /**
  * The finding of the access rules of the broker folder on Windows. `text` holds the SID of the user on the first line and

@@ -9,7 +9,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs, promisify } from 'node:util'
 import type { SettledState } from '../core/catalog.ts'
-import { configPath, launchText, pathWord } from '../core/config.ts'
+import { configPath, launchText, pathWord, type ServerKey } from '../core/config.ts'
+import { WORKSPACE_KEY } from '../core/workspace.ts'
 import {
   aclFinding,
   brokerFail,
@@ -26,6 +27,7 @@ import {
   shareFindings,
   staleStoreKeys,
   warn,
+  workspaceAclFinding,
   type CheckName,
   type Finding,
 } from '../core/doctor.ts'
@@ -41,6 +43,7 @@ import { LAYERS, RUNNER, launch, makeExchangeDir, removeExchangeDir } from './la
 import { storeFile } from './oauth.ts'
 import { loadToolsCache, toolsKey } from './toolscache.ts'
 import { loadConfig, loginFor, otherConfig, type Loaded } from './start.ts'
+import { bindFromConfig, linkOf, type Binding } from './workspace/bind.ts'
 
 export const DOCTOR_USAGE = 'usage: toolscript-mcp doctor [--config <path>] [--help]'
 
@@ -57,6 +60,8 @@ type Context = {
   readonly loaded: Loaded
   /** The servers once each one connected or failed, or undefined without a config. The policy check reads them too. */
   readonly states: Promise<readonly SettledState[]> | undefined
+  /** The binding of the built-in Workspace, or undefined when the config has no `workspace` section. */
+  readonly workspace: Promise<Binding | undefined>
 }
 
 /** A command of the CLI with `--config` when the config is not the usual one. */
@@ -81,7 +86,7 @@ const nodeVersion = async (node: string): Promise<Finding> => {
  * The user's SID, then `SID|Allow or Deny|rights` for each access rule of the folder, by SID and not by a name that the
  * system language changes. It is empty when the read fails. The path goes in as an argument, not in the script.
  */
-const readAcl = async (folder: string): Promise<string> => {
+export const readAcl = async (folder: string): Promise<string> => {
   const script =
     '$u = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $u; ' +
     '(New-Object System.IO.DirectoryInfo $args[0]).GetAccessControl().GetAccessRules($true, $true, ' +
@@ -251,6 +256,22 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
     })
   },
 
+  // One line: off, the root with its grants, or the reason. On Windows, also the access rules of the root. A section
+  // with errors, or a clash of keys, shows in the servers check as an invalid entry.
+  workspace: async ({ io, loaded, workspace }) => {
+    if (!loaded.ok) return []
+    const entry = loaded.config.servers.get(WORKSPACE_KEY as ServerKey)
+    if (entry?.kind === 'invalid') return []
+    const bound = await workspace
+    if (bound === undefined) return [info('off: the config has no "workspace" section')]
+    if (!bound.ok) return [fail(`unavailable: ${bound.reason}`)]
+    const { root, write, method } = bound.bound
+    return [
+      ok(`root ${root}, ${write ? 'read and write grant (no editing tool yet)' : 'read-only'}, confined by ${method}`),
+      ...(io.platform === 'win32' ? [workspaceAclFinding(await readAcl(root))] : []),
+    ]
+  },
+
   share: async ({ loaded }) => (loaded.ok ? shareFindings(loaded.config) : []),
 
   broker: async ({ io, loaded }) => {
@@ -292,7 +313,7 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
 
   policy: async ({ loaded, states }) => {
     if (!loaded.ok || states === undefined) return [info('skipped, because the config did not load')]
-    return policyFindings(loaded.config.policy, loaded.config.bridges, await states)
+    return policyFindings(loaded.config.policy, loaded.config.guards, await states)
   },
 
   sandbox: async ({ loaded }) => [
@@ -345,8 +366,11 @@ export const runDoctor = async (args: readonly string[], io: CheckIo): Promise<n
   }
   const file = configPath(values.config, io.env, io.platform, io.home)
   const loaded = loadConfig(file, io.env, io.platform)
-  const states = loaded.ok ? connectStates(loaded.config.servers, io, file, 'doctor') : undefined
-  const context: Context = { io, file, loaded, states }
+  const workspace = (loaded.ok ? bindFromConfig(loaded.config, file, io) : undefined) ?? Promise.resolve(undefined)
+  const states = loaded.ok
+    ? workspace.then(binding => connectStates(loaded.config.servers, io, file, 'doctor', binding && linkOf(binding)))
+    : undefined
+  const context: Context = { io, file, loaded, states, workspace }
   // The checks run at once, and print in the order of CHECK_NAMES.
   const found = await Promise.all(
     CHECK_NAMES.map(name =>
@@ -357,6 +381,8 @@ export const runDoctor = async (args: readonly string[], io: CheckIo): Promise<n
     ),
   )
   const checks = found.flat()
+  const bound = await workspace
+  if (bound?.ok) await bound.bound.provider.close()
   io.print(checks.map(checkLine).join('\n'))
   return doctorExit(checks)
 }

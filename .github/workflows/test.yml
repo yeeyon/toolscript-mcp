@@ -33,6 +33,9 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node tests/server.e2e.mjs
+      # The workspace tests of `npm test` and this end-to-end test run on Linux, macOS and Windows. The macOS run shows
+      # whether O_NOFOLLOW_ANY refuses a symlink in a middle part.
+      - run: node tests/workspace.e2e.mjs
       - run: node tests/memory.e2e.mjs
       - run: node tests/share.e2e.mjs
       - run: node tests/lazy.e2e.mjs

@@ -1,0 +1,402 @@
+import { describe, test } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  LIMITS,
+  WORKSPACE_TOOLS,
+  WORKSPACE_TOOL_NAMES,
+  WorkspaceError,
+  bindRoot,
+  builtInExcluded,
+  compileGlob,
+  fold,
+  globMatches,
+  globProblem,
+  includeTest,
+  isInside,
+  makeExcluder,
+  parseListInput,
+  parsePathInput,
+  parseSearchInput,
+  pathParts,
+  realParts,
+  rootProblem,
+  workspaceClass,
+} from '../src/core/workspace.ts'
+import { NO_GUARDS, decide, onlyTightens, planRun, checkCall, type Guards, type Policy } from '../src/core/policy.ts'
+import type { ServerKey } from '../src/core/config.ts'
+
+const code = (f: () => unknown): string | undefined => {
+  try {
+    f()
+  } catch (err) {
+    return err instanceof WorkspaceError ? err.code : `other: ${err}`
+  }
+  return undefined
+}
+
+describe('the text of a path', () => {
+  test('refuses each bad form with bad-path, on every system', () => {
+    const bad = [
+      '',
+      '../x',
+      'a/../../x',
+      'a/..',
+      '/etc/passwd',
+      'C:/Windows/win.ini',
+      'C:x',
+      '//server/share/x',
+      '\\\\server\\share\\x',
+      'a\\b',
+      'a\u0000b',
+      'a\nb',
+      'a//b',
+      'a/',
+      './a',
+      'a/./b',
+      Array.from({ length: LIMITS.parts + 1 }, () => 'a').join('/'),
+      'x'.repeat(LIMITS.pathChars + 1),
+    ]
+    for (const text of bad)
+      for (const windows of [false, true])
+        assert.equal(
+          code(() => pathParts(text, windows)),
+          'bad-path',
+          JSON.stringify(text.slice(0, 20)),
+        )
+  })
+
+  test('refuses the Windows forms on Windows only', () => {
+    for (const text of [
+      'f.txt::$DATA',
+      'f.txt:s',
+      'f.txt.',
+      'f.txt ',
+      'NUL',
+      'CON.txt',
+      'a/com1',
+      'a/Lpt9.log',
+      'a<b',
+      'a?b',
+      'a*b',
+    ])
+      assert.equal(
+        code(() => pathParts(text, true)),
+        'bad-path',
+        text,
+      )
+    for (const text of ['f.txt:s', 'f.txt.', 'NUL', 'CON.txt']) assert.deepEqual(pathParts(text, false), [text])
+  })
+
+  test('keeps the parts of a good path, and `.` is the root', () => {
+    assert.deepEqual(pathParts('src/retry.ts', false), ['src', 'retry.ts'])
+    assert.deepEqual(pathParts('.', true), [])
+    assert.deepEqual(pathParts('a'.repeat(1), true), ['a'])
+    assert.equal(pathParts(Array.from({ length: LIMITS.parts }, () => 'a').join('/'), false).length, LIMITS.parts)
+    assert.deepEqual(pathParts('café/x', true), ['café', 'x'])
+  })
+})
+
+describe('globs', () => {
+  const m = (glob: string, path: string) => globMatches(compileGlob(glob), path.split('/'))
+  test('* and ? stay inside a part, ** spans parts', () => {
+    assert.ok(m('src/**/*.ts', 'src/a/b/c.ts'))
+    assert.ok(m('src/**/*.ts', 'src/c.ts'))
+    assert.ok(!m('src/*.ts', 'src/a/c.ts'))
+    assert.ok(m('**', 'a/b'))
+    assert.ok(m('**/x', 'x'))
+    assert.ok(m('a/**', 'a'))
+    assert.ok(m('f?.txt', 'f1.txt'))
+    assert.ok(!m('f?.txt', 'f12.txt'))
+    assert.ok(!m('*.ts', 'a/b.ts'))
+    assert.ok(m('*a*b*', 'xxaxxbxx'))
+    assert.ok(!m('src/**/*.ts', 'lib/a.ts'))
+  })
+
+  test('a hostile glob stays bounded', () => {
+    const glob = '*a*a*a*a*a*a'
+    assert.equal(globProblem(glob), undefined)
+    const started = performance.now()
+    assert.equal(m(glob, 'a'.repeat(240) + 'b'), false)
+    assert.ok(performance.now() - started < 500)
+    assert.match(globProblem('*a*a*a*a*a*a*a') ?? '', /at most 6 wildcards/)
+  })
+
+  test('globProblem names the rule and never the glob', () => {
+    for (const bad of [
+      '',
+      '/abs',
+      'a\\b',
+      'a//b',
+      '../x',
+      'a/./b',
+      'src/**x',
+      'a\u0000',
+      'x'.repeat(201),
+      5,
+      undefined,
+      null,
+    ])
+      assert.ok(globProblem(bad) !== undefined, String(bad))
+    for (const good of ['src/**/*.ts', '*.sqlite', 'fixtures/secrets/**', '.env', 'a?b'])
+      assert.equal(globProblem(good), undefined, good)
+  })
+
+  test('an empty include list matches each path', () => {
+    assert.ok(includeTest([])(['a', 'b']))
+    assert.ok(!includeTest(['src/**'])(['lib', 'a']))
+  })
+})
+
+describe('the exclusions', () => {
+  const excluded = makeExcluder(
+    '/work/app',
+    ['fixtures/secrets/**', '*.sqlite', 'private'],
+    ['/work/app/cfg/toolscript.json', '/home/me/.toolscript-mcp'],
+  )
+  test('the built-in names, in any folder, any case, after NFC', () => {
+    for (const path of [
+      '.git/config',
+      'a/.git/HEAD',
+      '.env',
+      '.ENV',
+      '.env.local',
+      'a/.Env.production',
+      'id_rsa',
+      'id_ed25519.pub',
+      'key.pem',
+      'x/server.KEY',
+      '.claude/settings.json',
+      '.mcp.json',
+      '.vscode/tasks.json',
+      '.ssh/config',
+      '.npmrc',
+      'infra/terraform.tfstate',
+      'infra/terraform.tfstate.backup',
+      '.toolscript-mcp/hints/x.md',
+    ])
+      assert.ok(excluded(path.split('/')), path)
+    for (const path of [
+      'src/retry.ts',
+      'environment.ts',
+      '.gitignore',
+      'README.md',
+      'a/env',
+      '.github/workflows/test.yml',
+    ])
+      assert.ok(!excluded(path.split('/')), path)
+  })
+
+  test('the glob of the config', () => {
+    assert.ok(excluded(['fixtures', 'secrets']))
+    assert.ok(excluded(['fixtures', 'secrets', 'a', 'b.txt']))
+    assert.ok(excluded(['data', 'app.SQLITE']))
+    assert.ok(excluded(['a', 'private']), 'a name without a slash matches a part at any depth')
+    assert.ok(excluded(['a', 'private', 'x']))
+    assert.ok(!excluded(['fixtures', 'public']))
+    assert.ok(!excluded(['fixtures']))
+  })
+
+  test('an NFD spelling matches an NFC name', () => {
+    const ex = makeExcluder('/r', ['café.txt'], [])
+    assert.ok(ex(['cafe\u0301.txt']))
+    assert.equal(fold('CAFE\u0301'), fold('café'))
+  })
+
+  test('the real path of the config file and of the folder of the home folder', () => {
+    assert.ok(excluded(['cfg', 'toolscript.json']))
+    assert.ok(excluded(['CFG', 'ToolScript.JSON']))
+    assert.ok(!excluded(['cfg', 'other.json']))
+    const inHome = makeExcluder('/home/me', [], ['/home/me/.toolscript-mcp'])
+    assert.ok(inHome(['.toolscript-mcp', 'config.json']))
+    assert.ok(builtInExcluded(['x', '.AWS']))
+  })
+})
+
+describe('the root of a session', () => {
+  const win = (path: string) => path
+  test('a root is refused for a drive, the home folder, a folder that holds it, an excluded part or a network path', () => {
+    assert.match(rootProblem('/', '/home/me', 'linux') ?? '', /file system root/)
+    assert.match(rootProblem('C:\\', 'C:\\Users\\me', 'win32') ?? '', /file system root/)
+    assert.match(rootProblem('/home/me', '/home/me', 'linux') ?? '', /home/)
+    assert.match(rootProblem('/home', '/home/me', 'linux') ?? '', /holds it/)
+    assert.match(rootProblem('C:\\Users', 'C:\\Users\\me', 'win32') ?? '', /holds it/)
+    assert.match(rootProblem('/home/me/app/.git/modules', '/home/me', 'linux') ?? '', /\.git/)
+    assert.match(rootProblem('C:\\Users\\me\\.ssh', 'C:\\Users\\me', 'win32') ?? '', /\.ssh/)
+    assert.match(rootProblem('\\\\server\\share\\app', 'C:\\Users\\me', 'win32') ?? '', /network/)
+    assert.equal(rootProblem('/home/me/app', '/home/me', 'linux'), undefined)
+    assert.equal(rootProblem('C:\\work\\app', 'C:\\Users\\me', 'win32'), undefined)
+    assert.equal(win('x'), 'x')
+  })
+
+  const roots = [
+    { path: '/work', write: false },
+    { path: '/work/app', write: true },
+    { path: '/other', write: false },
+  ]
+  test('1: a start folder inside entries takes the deepest entry, and is the root', () => {
+    assert.deepEqual(bindRoot(roots, '/work/app/src', 'linux'), { ok: true, index: 1, root: '/work/app/src' })
+    assert.deepEqual(bindRoot(roots, '/work/app', 'linux'), { ok: true, index: 1, root: '/work/app' })
+    assert.deepEqual(bindRoot(roots, '/work/lib', 'linux'), { ok: true, index: 0, root: '/work/lib' })
+    assert.deepEqual(bindRoot(roots, '/other', 'linux'), { ok: true, index: 2, root: '/other' })
+  })
+
+  test('2: one entry is the root when the start folder is outside it', () => {
+    assert.deepEqual(bindRoot([roots[0]!], '/elsewhere', 'linux'), { ok: true, index: 0, root: '/work' })
+  })
+
+  test('3: several entries and a start folder outside all of them make Workspace unavailable', () => {
+    const r = bindRoot(roots, '/elsewhere', 'linux')
+    assert.equal(r.ok, false)
+    assert.match(r.ok ? '' : r.reason, /Start the client in one of them/)
+    assert.doesNotMatch(r.ok ? '' : r.reason, /\/work|elsewhere/)
+  })
+
+  test('a backslash separates parts on Windows only: on Linux and macOS it is a letter of a name', () => {
+    const one = [{ path: '/home/me/projects/app', write: false }]
+    const two = [...one, { path: '/home/me/other', write: false }]
+    for (const platform of ['linux', 'darwin']) {
+      const start = '/home/me/projects\\app/private'
+      assert.equal(isInside(start, one[0]!.path, platform), false, platform)
+      assert.equal(bindRoot(two, start, platform).ok, false, platform)
+      assert.deepEqual(realParts(start, platform), ['home', 'me', 'projects\\app', 'private'])
+      // The folder `projects\app` is not the home folder or a part of an excluded path either.
+      assert.equal(rootProblem('/home/me/projects\\app', '/home/me/projects/app', platform), undefined)
+      assert.match(rootProblem('/home/me/projects', '/home/me/projects/app', platform) ?? '', /holds it/)
+    }
+    // On Windows the backslash is a separator, so the same text is inside the entry.
+    assert.equal(isInside('C:\\home\\me\\projects\\app\\private', 'C:\\home\\me\\projects\\app', 'win32'), true)
+    assert.equal(isInside('C:\\home\\me\\projects/app/private', 'C:\\home\\me\\projects\\app', 'win32'), true)
+    assert.deepEqual(realParts('C:\\a\\b/c', 'win32'), ['C:', 'a', 'b', 'c'])
+  })
+
+  test('a name that only starts like an entry is not inside it', () => {
+    assert.equal(bindRoot(roots, '/work2', 'linux').ok, false)
+  })
+
+  test('case variants of one path are the same folder on Windows and macOS only', () => {
+    for (const platform of ['win32', 'darwin'])
+      assert.deepEqual(bindRoot(roots, '/WORK/App/Src', platform), { ok: true, index: 1, root: '/WORK/App/Src' })
+    assert.deepEqual(bindRoot(roots, 'c:\\Work\\app', 'win32').ok, false, 'a drive letter is part of the path')
+    assert.equal(bindRoot(roots, '/WORK/App/Src', 'linux').ok, false)
+    const win32 = [{ path: 'C:\\Work\\App', write: false }]
+    assert.deepEqual(bindRoot(win32, 'c:\\work\\app\\SRC', 'win32'), { ok: true, index: 0, root: 'c:\\work\\app\\SRC' })
+  })
+})
+
+describe('the tool table', () => {
+  test('lists list, search, read and stat, each of the read class', () => {
+    assert.deepEqual(WORKSPACE_TOOL_NAMES, ['list', 'search', 'read', 'stat'])
+    for (const name of WORKSPACE_TOOL_NAMES) {
+      assert.equal(WORKSPACE_TOOLS[name].class, 'read')
+      assert.equal(WORKSPACE_TOOLS[name].inputSchema.type, 'object')
+      assert.equal((WORKSPACE_TOOLS[name].inputSchema as { additionalProperties: boolean }).additionalProperties, false)
+      assert.equal(WORKSPACE_TOOLS[name].outputSchema.type, 'object')
+      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 260)
+    }
+    assert.equal(workspaceClass('mcp__workspace__read'), 'read')
+    assert.equal(workspaceClass('mcp__workspace__edit'), undefined)
+    assert.equal(workspaceClass('mcp__other__read'), undefined)
+    assert.equal(workspaceClass('mcp__workspace__constructor'), undefined)
+  })
+
+  test('the input is checked, and a bad value is a bad-input error', () => {
+    assert.deepEqual(parseListInput({}), { path: '.', depth: 1, include: [] })
+    assert.deepEqual(parseListInput({ path: 'src', depth: 3, include: ['*.ts'] }), {
+      path: 'src',
+      depth: 3,
+      include: ['*.ts'],
+    })
+    for (const bad of [
+      { depth: 0 },
+      { depth: 9 },
+      { depth: 1.5 },
+      { path: 4 },
+      { include: 'x' },
+      { include: ['/abs'] },
+      { extra: 1 },
+      null,
+      [],
+    ])
+      assert.equal(
+        code(() => parseListInput(bad)),
+        'bad-input',
+        JSON.stringify(bad),
+      )
+    assert.deepEqual(parseSearchInput({ query: 'x' }), {
+      query: 'x',
+      path: '.',
+      include: [],
+      ignoreCase: false,
+      maxMatches: 200,
+    })
+    for (const bad of [
+      {},
+      { query: '' },
+      { query: 'a\nb' },
+      { query: 'x'.repeat(1001) },
+      { query: 'x', maxMatches: 2001 },
+      { query: 'x', ignoreCase: 'yes' },
+      { query: 'x', regex: true },
+    ])
+      assert.equal(
+        code(() => parseSearchInput(bad)),
+        'bad-input',
+        JSON.stringify(bad).slice(0, 40),
+      )
+    assert.deepEqual(parsePathInput({ path: 'a' }), { path: 'a' })
+    assert.equal(
+      code(() => parsePathInput({})),
+      'bad-input',
+    )
+  })
+})
+
+describe('the policy of the built-in Workspace', () => {
+  const on: Guards = { bridges: new Set<ServerKey>(), workspace: true }
+  const rules = (...r: [string, 'allow' | 'deny' | 'ask'][]): Policy =>
+    r.map(([match, action], index) => ({ match, action, index }))
+  const READ = 'mcp__workspace__read'
+
+  test('a read tool runs with no rule while the built-in is on, and asks without it', () => {
+    for (const name of WORKSPACE_TOOL_NAMES)
+      assert.deepEqual(decide([], on, `mcp__workspace__${name}`), { action: 'allow' })
+    assert.deepEqual(decide([], NO_GUARDS, READ), { action: 'ask' }, 'a server named workspace gets no default')
+    assert.deepEqual(decide([], on, 'mcp__workspace__edit'), { action: 'ask' })
+    assert.deepEqual(decide([], on, 'mcp__other__read'), { action: 'ask' })
+  })
+
+  test('a rule that matches still decides', () => {
+    const ask = rules(['mcp__workspace__*', 'ask'])
+    const deny = rules([READ, 'deny'], ['*', 'allow'])
+    assert.equal(decide(ask, on, READ).action, 'ask')
+    assert.equal(decide(deny, on, READ).action, 'deny')
+    assert.equal(decide(deny, on, 'mcp__workspace__list').action, 'allow')
+  })
+
+  test('the plan asks for no read tool, refuses a denied literal name and checks a built name at the call', () => {
+    const call = (tool: string) => ({ tool, line: 1 })
+    assert.deepEqual(planRun([], on, [call(READ)], new Set()), { kind: 'run', ask: [], interactive: [] })
+    const deny = rules([READ, 'deny'])
+    assert.equal(planRun(deny, on, [call(READ)], new Set()).kind, 'refused')
+    assert.deepEqual(checkCall([], on, new Set(), READ, new Set()), { ok: true })
+    assert.equal(checkCall(deny, on, new Set(), READ, new Set()).ok, false)
+    assert.equal(checkCall([], NO_GUARDS, new Set(), READ, new Set()).ok, false)
+  })
+
+  test('onlyTightens gives the same answers with the built-in on', () => {
+    const allow = rules([READ, 'allow'])
+    assert.equal(onlyTightens(allow, rules([READ, 'ask']), on), true)
+    assert.equal(onlyTightens(allow, rules([READ, 'deny']), on), true)
+    assert.equal(onlyTightens(allow, [], on), true)
+    assert.equal(onlyTightens([], rules([READ, 'deny']), on), true)
+    assert.equal(onlyTightens(rules([READ, 'ask']), rules([READ, 'allow']), on), false)
+    assert.equal(
+      onlyTightens(rules([READ, 'ask']), [], on),
+      false,
+      'removing an ask rule gives the default, which allows',
+    )
+    assert.equal(onlyTightens(rules([READ, 'deny']), [], on), false)
+    assert.equal(onlyTightens([], rules([READ, 'allow']), on), false)
+    assert.equal(onlyTightens(rules(['mcp__workspace__*', 'allow'], [READ, 'deny']), rules([READ, 'deny']), on), true)
+  })
+})

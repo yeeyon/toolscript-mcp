@@ -6,7 +6,7 @@
 // `toolscript-mcp runs`.
 
 import { serverKey, type ServerKey } from './config.ts'
-import { decide, shownName, type Bridges, type Policy } from './policy.ts'
+import { decide, shownName, type Guards, type Policy } from './policy.ts'
 import { isCallable, splitToolName } from './protocol.ts'
 import { SERVER_NAME } from './tools.ts'
 
@@ -144,13 +144,13 @@ export type RunRecord = {
  */
 export const callDecision = (
   policy: Policy,
-  bridges: Bridges,
+  guards: Guards,
   approved: ReadonlySet<string>,
   tool: string,
   interactive: ReadonlySet<string>,
 ): CallDecision => {
   if (!isCallable(tool, SERVER_NAME) || splitToolName(tool) === undefined) return 'invalid'
-  const { action } = decide(policy, bridges, tool)
+  const { action } = decide(policy, guards, tool)
   if (action === 'deny') return 'denied'
   if (approved.has(tool)) return 'ask-approved'
   return action === 'allow' && !interactive.has(tool) ? 'allow' : 'unapproved'

@@ -25,6 +25,7 @@ import { INIT_USAGE, runInit } from './init.ts'
 import { LOGIN_USAGE, runLogin } from './login.ts'
 import { createServer } from './server.ts'
 import { detectLaunch, loadConfig, loginFor } from './start.ts'
+import { bindWorkspace, linkOf } from './workspace/bind.ts'
 
 const log = (line: string) => console.error(`toolscript-mcp: ${line}`)
 
@@ -84,8 +85,27 @@ const { config } = loaded
 // A launch of Claude Code that parseConfig does not see is not a bridge: this line lets the person see the miss.
 log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 
+// The built-in Workspace binds its root one time, here. The section is never read again.
+const workspace =
+  config.workspace === undefined
+    ? undefined
+    : await bindWorkspace({
+        workspace: config.workspace,
+        start: process.cwd(),
+        home: os.homedir(),
+        configFile: file,
+        log,
+      })
+if (workspace !== undefined)
+  log(
+    workspace.ok
+      ? `Workspace: root ${workspace.bound.root}, read-only, confined by ${workspace.bound.method}`
+      : `Workspace: unavailable: ${workspace.reason}`,
+  )
+
 const downstream = connectAll(config.servers, version, log, {
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
+  ...(workspace !== undefined && { workspace: linkOf(workspace) }),
   // Lazy start (decision 028): the bridge starts on its first call and stops when idle. TOOLSCRIPT_LAZY=0 turns it off.
   ...(config.lazy && {
     lazy: {
@@ -103,12 +123,21 @@ const downstream = connectAll(config.servers, version, log, {
     },
   }),
 })
-const { server, stopRuns } = createServer(downstream, config, file, version, log)
+const { server, stopRuns } = createServer(
+  downstream,
+  config,
+  file,
+  version,
+  log,
+  workspace?.ok ? workspace.bound.root : undefined,
+)
 
 // A run in flight gets its sandbox killed and its exchange dir removed before the exit.
 let closing: Promise<void> | undefined
 const shutdown = () =>
-  (closing ??= Promise.allSettled([stopRuns(), server.close(), downstream.close()]).then(() => process.exit(0)))
+  (closing ??= Promise.allSettled([stopRuns(), server.close(), downstream.close()])
+    .then(() => (workspace?.ok ? workspace.bound.provider.close() : undefined))
+    .then(() => process.exit(0)))
 
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)

@@ -25,6 +25,7 @@ import { errorText } from '../core/protocol.ts'
 import { parseRunLine, parseSince, runsReport, type LogEntry } from '../core/runlog.ts'
 import { connectAll } from './downstream.ts'
 import { loadConfig, loginFor, otherConfig } from './start.ts'
+import { bindFromConfig, linkOf, type WorkspaceLink } from './workspace/bind.ts'
 
 export const TOOLS_USAGE = 'usage: toolscript-mcp tools <server> [--config <path>] [--help]'
 export const RUNS_USAGE =
@@ -56,12 +57,14 @@ export const connectStates = async (
   io: CheckIo,
   file: string,
   command: string,
+  workspace?: WorkspaceLink,
 ): Promise<readonly SettledState[]> => {
   const downstream = connectAll(servers, io.version, () => {}, {
     home: io.home,
     login: loginFor(io.launch, file, io.env, io.platform, io.home),
     childStderr: () => {},
     unshown: unshown(command),
+    ...(workspace !== undefined && { workspace }),
   })
   try {
     // Each retry waits for the attempts in progress, at most a few seconds: the connect itself has its time limit.
@@ -112,7 +115,13 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     )
     return 1
   }
-  const state = (await connectStates(new Map([[key, entry]]), io, file, 'tools'))[0]!
+  // The built-in Workspace binds its root here as the running server does: from the folder where this command runs.
+  const binding = entry.kind === 'workspace' ? await bindFromConfig(config, file, io) : undefined
+  const state = (
+    await connectStates(new Map([[key, entry]]), io, file, 'tools', binding && linkOf(binding)).finally(
+      () => binding?.ok && binding.bound.provider.close(),
+    )
+  )[0]!
   if (state.status === 'failed') {
     const command = loginFor(io.launch, file, io.env, io.platform, io.home)(key)
     io.print(
@@ -122,13 +131,13 @@ export const runTools = async (args: readonly string[], io: CheckIo): Promise<nu
     )
     return 1
   }
-  const lines = toolLines(state, config.policy, config.bridges)
+  const lines = toolLines(state, config.policy, config.guards)
   const start = commandStart(path.resolve(file), io.platform, io.launch, 'tools')
   io.print(
     [
       `${key}: connected, ${lines.length} tools`,
       ...lines.map(toolLineText),
-      ...allowCommands(lines, config.policy, config.bridges, start),
+      ...allowCommands(lines, config.policy, config.guards, start),
     ].join('\n'),
   )
   return 0

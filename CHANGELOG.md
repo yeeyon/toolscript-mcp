@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- A built-in Workspace (issue #144) reads the files of one project folder, with no Claude Code and no other process. It is off by default. Add a `workspace` section with `roots` to the config. Programs call `mcp__workspace__list`, `search`, `read` and `stat`. The read tools run with no policy rule, each result is untrusted text, and no tool follows a link or reads `.git`, `.env`, secrets or client settings. The editing tools and the named test tasks come in later releases. See "Workspace" in the README.
+- The policy functions take one `Guards` value, the bridges and whether Workspace is on, in place of the set of bridges.
+- `toolscript-mcp tools workspace` lists the tools of Workspace. `toolscript-mcp doctor` has a `workspace` line, and on Windows it warns when another account can write in the root.
+
 ## 1.0.3
 
 - A run that names a server still connecting is told how long the connect has run and to run again. A connect that stalls after the transport started fails after 30 s.

@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseConfig, type ServerKey } from '../src/core/config.ts'
 import { oldRunLogFile, runLogFile } from '../src/core/paths.ts'
+import { NO_GUARDS } from '../src/core/policy.ts'
 import {
   MAX_CALLS,
   MAX_LOG_BYTES,
@@ -87,7 +88,7 @@ describe('the run record', () => {
 })
 
 describe('the decision of a call', () => {
-  const NO_BRIDGES = new Set<ServerKey>()
+  const NO_BRIDGES = NO_GUARDS
   const policy = [
     { match: 'mcp__f__echo', action: 'allow' as const, index: 0 },
     { match: 'mcp__f__rm', action: 'deny' as const, index: 1 },
@@ -111,7 +112,7 @@ describe('the decision of a call', () => {
 
   test('the log names a call of a bridge tool under an allow rule for every server as unapproved', () => {
     const all = [{ match: '*', action: 'allow' as const, index: 0 }]
-    const bridges = new Set(['f' as ServerKey])
+    const bridges = { bridges: new Set(['f' as ServerKey]), workspace: false }
     assert.equal(callDecision(all, bridges, new Set(), 'mcp__f__echo', new Set()), 'unapproved')
     assert.equal(callDecision(all, NO_BRIDGES, new Set(), 'mcp__f__echo', new Set()), 'allow')
   })

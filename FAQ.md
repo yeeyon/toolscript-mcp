@@ -9,6 +9,7 @@ Do not paste a real token into a config or a bug report.
 - [How do I install and update it from npm?](#how-do-i-install-and-update-it-from-npm)
 - [How do I move a GitHub clone setup to npm?](#how-do-i-move-a-github-clone-setup-to-npm)
 - [How do I add servers?](#how-do-i-add-servers)
+- [How can a program read my project files without Claude Code?](#how-can-a-program-read-my-project-files-without-claude-code)
 - [How can I try it without an account?](#how-can-i-try-it-without-an-account)
 - [Why did the model use the server tool directly, find no tools, or stop for approval?](#why-did-the-model-use-the-server-tool-directly-find-no-tools-or-stop-for-approval)
 - [What do I try when setup fails?](#what-do-i-try-when-setup-fails)
@@ -191,6 +192,23 @@ To copy a server that Codex runs, copy its `command`, `args` and `env` from `~/.
 
 After a change, restart your client. Then ask the model to run `search_tools` with an empty query and `limit` 1. The result lists
 the servers that are not connected, with the reason.
+
+## How can a program read my project files without Claude Code?
+
+Turn on the built-in [Workspace](README.md#workspace). It lists, searches and reads the files of one folder. It runs
+inside toolscript-mcp, so it needs no Claude Code and no other process. It is off by default.
+
+1. Add a `workspace` section to the config, with the absolute path of your project as the one root:
+   `"workspace": { "roots": [{ "path": "/home/me/app" }] }`. The config also needs `"mcpServers": {}`.
+2. Restart your client. Run `toolscript-mcp tools workspace` in a terminal to see the four tools.
+3. Ask the model to search the project. It calls `mcp__workspace__search` and `mcp__workspace__read` from one program.
+
+The read tools run with no `allow` rule. Each result is untrusted text. Paths such as `.git`, `.env` and `*.pem` never show.
+A link out of the root is refused. The tools cannot edit a file or run a test yet.
+
+If `search_tools` lists Workspace under "Not connected", read the reason. With several entries in `roots`, start your client
+in one of the folders. Run `toolscript-mcp doctor` for the check of the root. See
+[What stays possible](README.md#what-stays-possible) before you give Workspace a folder that other accounts can write.
 
 ## How can I try it without an account?
 
