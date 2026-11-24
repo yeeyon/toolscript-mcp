@@ -640,6 +640,13 @@ describe('the workspace check', () => {
     // On Windows a second line holds the finding on the access rules of the root, and on other systems there is none.
     assert.equal(lines.length, process.platform === 'win32' ? 2 : 1, lines.join('\n'))
 
+    const granted = setup({ mcpServers: {}, workspace: { roots: [{ path: root, write: true }] } })
+    await granted.doctor()
+    assert.match(
+      granted.of('workspace')[0]!,
+      /^ok {4}workspace {2}root .*, read and write \(edit and write ask the person\), confined by (proc|realpath|nofollow-any)$/,
+    )
+
     const missing = setup({ mcpServers: {}, workspace: { roots: [{ path: path.join(ROOT, 'nowhere') }] } })
     assert.equal(await missing.doctor(), 1)
     assert.deepEqual(missing.of('workspace'), [
