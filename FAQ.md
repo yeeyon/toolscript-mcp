@@ -69,8 +69,9 @@ The model reads 56 characters, not the 5,000 characters of the two pages. The or
 You need Node 22.13 or later and npm. Run `node --version` to check.
 
 To write a config from the servers that your clients have now, run `npx -y toolscript-mcp init`. It prints the path that it
-wrote (`Wrote <file>.`) and the command that adds toolscript-mcp to your client, with that path. Run the printed
-command, or use that path in the steps below. If you write the config yourself, give the absolute path.
+wrote (`Wrote <file>.`). For each client that it read, it prints the command or the entry that adds toolscript-mcp
+with that path. Run the printed command or add the printed entry, or use that path in the steps below. If no client has a
+server, `init` writes nothing: write the config yourself, and give its absolute path.
 
 Then add toolscript-mcp to your client with the server name `toolscript`. The [Client setup](README.md#client-setup)
 section of the README has the `claude mcp add` command for Linux, macOS and Windows PowerShell. It also has the JSON
@@ -118,7 +119,8 @@ The new entry reads the same config and the same tokens, so you change only the 
    claude mcp add --scope <scope> toolscript -e NAME=value '--' npx -y toolscript-mcp --config "/path/to/config.json"
    ```
 
-   Use the scope that `claude mcp get toolscript` shows for the old entry. Add one `-e NAME=value` for each environment
+   Use the scope that `claude mcp get toolscript` shows for the old entry: `User config` is `user`, `Local config` is
+   `local`, and `Project config` is `project`. For `local` or `project`, run both commands in the project folder. Add one `-e NAME=value` for each environment
    variable of the old entry, such as `TOOLSCRIPT_CONFIG`. Leave out `-e` if the entry has none. Put each `-e` after
    the name `toolscript`: before the name, `-e` reads the name as one more variable.
    `claude mcp get toolscript` shows the variables.
@@ -141,13 +143,14 @@ toolscript-mcp starts a local server as a child process (stdio). It connects to 
 
 | | Local stdio | Remote HTTP |
 | --- | --- | --- |
-| Entry | `command`, `args`, `env`, `cwd` | `"type": "http"`, `url`, `headers`, `oauth` |
+| Entry | `command`, `args`, `env`, `cwd` | `"type": "http"`, `url`, `headers`, `oauth`, `sigv4` |
 | Credentials | `env` values in the entry | A `headers` value, an OAuth login, or `sigv4` for an AWS server |
 | Starts | With the session, or on first use with `"lazy": true`. The Claude Code bridge starts on first use. See [Lazy start](README.md#lazy-start). | Connects at the start |
 | Fails when | The command is not on `PATH`, or `cwd` is missing | The URL is wrong, the login is missing, or the AWS credentials cannot be read |
 
 A stdio server gets only the `env` of its entry and a short list of system variables, such as `PATH` and `HOME`.
-Your other variables stay out. With sharing on, a server in a broker has no `"lazy"` key.
+Your other variables stay out. With sharing on, do not set `"lazy"` on a shared or per-folder server: the server fails
+until you remove `"lazy"` or set `"share": false`.
 
 **Placeholders.** Write `${VAR}` in `args`, `env`, `cwd`, `url` and `headers`. toolscript-mcp reads the value from the
 environment of the process that starts it. That process is your client. Set the variable where the client starts, and
@@ -180,7 +183,8 @@ by itself. It never opens a browser while it runs as a server. See [OAuth login]
 
 See [init](README.md#init) for the full list of options.
 
-**Codex, by hand.** `init` does not read Codex. Write the config file yourself, as in the example above, and give its path
+**Codex, by hand.** `init` does not read Codex. Write the config file yourself, as in the
+[example config](README.md#configure-downstream-servers) of the README, and give its path
 in the Codex entry from the [install answer](#how-do-i-install-and-update-it-from-npm). Add an `allow` rule for each
 tool that a program must call, because `codex exec` declines the approval prompt.
 To copy a server that Codex runs, copy its `command`, `args` and `env` from `~/.codex/config.toml` into the `mcpServers` shape.
@@ -321,7 +325,7 @@ An MCP SDK test client drove the server. No real client registration was changed
 | Path | Status |
 | --- | --- |
 | `cmd /c npx -y toolscript-mcp --config <path>` on Windows | Started in a test with the SDK client |
-| `claude mcp add` commands for Claude Code | Not run. Checked against the README text only |
+| `claude mcp add` commands for Claude Code | Checked against the README text. The `-e` form was run once with a test entry |
 | Claude Desktop and Cursor JSON | Checked against the config format only |
 | Codex TOML | Checked against the config format only. The README reports a smoke test with `codex exec` in Codex CLI 0.171.0 |
 | `ask` prompt in each client | Tested with the MCP SDK client only. See [Limits](README.md#limits) |
