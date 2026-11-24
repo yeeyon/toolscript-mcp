@@ -119,8 +119,8 @@ For the second choice, use the output of step 3:
 3. With approval, run each `--apply` command, exactly as printed.
 
 If the line under a label says `no command`, show it to the person. A deny rule or an ask rule that names the tool
-refuses the tool: `allow` never loosens it, and the policy keeps denying or asking for the tool. A name that a shell can change needs a rule that the person adds in an
-editor. The other tools keep their rules, and a tool that no rule matches stays `ask`. A tool with `a person each run`
+refuses the tool: `allow` never loosens it, and the policy keeps denying or asking for the tool. A name that a shell
+can change needs a rule that the person adds in an editor. The other tools keep their rules, and a tool that no rule matches stays `ask`. A tool with `a person each run`
 still asks. A client that cannot show a prompt runs the task only with the second choice.
 
 ## 6. Run and check
