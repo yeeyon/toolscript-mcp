@@ -54,15 +54,45 @@ export const runAllow = async (args: readonly string[], io: CheckIo): Promise<nu
     return 2
   }
   const plan = planAllow(loaded.config.policy, loaded.config.bridges, tools)
-  const steps = plan.steps.map(s =>
-    s.kind === 'add' ? `add: an allow rule for ${s.tool}` : `keep: ${s.tool}: ${s.why}`,
-  )
+  const steps = plan.steps.map(s => {
+    switch (s.kind) {
+      case 'add':
+        return `add: an allow rule for ${s.tool}`
+      case 'keep':
+        return `keep: ${s.tool}: ${s.why}`
+      case 'refuse':
+        return `refused: ${s.tool}: ${s.why}.`
+    }
+  })
   const added = plan.steps.flatMap(s => (s.kind === 'add' ? [s.tool] : []))
+  const refused = plan.steps.flatMap(s => (s.kind === 'refuse' ? [s] : []))
+  const policy = plan.policy.map(rule => `  ${ruleText(rule)}`)
+  if (refused.length > 0) {
+    // A run that refuses a tool writes nothing, with or without --apply: a partial write behind exit 2 misleads.
+    const next = refused.map(s => `next: ${s.tool}: to allow it, edit the policy of ${file}: ${s.edit}.`)
+    const start = commandStart(file, io.platform, io.launch, 'allow')
+    io.print(
+      [
+        ...steps,
+        ...next,
+        `allow did not change ${file}, because it refused ${refused.length === 1 ? 'a tool' : 'tools'}.`,
+        ...(added.length === 0
+          ? []
+          : [
+              'The policy with the added tools would be:',
+              ...policy,
+              ...RELOAD,
+              'To write the added tools only, run the command below.',
+              ...(start.ok ? [allowCommand(start, added, true)] : start.lines),
+            ]),
+      ].join('\n'),
+    )
+    return 2
+  }
   if (added.length === 0) {
     io.print([...steps, `The policy needs no change. allow did not change ${file}.`].join('\n'))
     return 0
   }
-  const policy = plan.policy.map(rule => `  ${ruleText(rule)}`)
   if (!values.apply) {
     const start = commandStart(file, io.platform, io.launch, 'allow')
     io.print(

@@ -90,17 +90,22 @@ export const allowRefusal = (tool: string, keys: ReadonlySet<string>): string | 
   return keys.has(key) ? undefined : `${shownName(tool)}: the config has no server ${key}.`
 }
 
-/** What `allow` does with one tool: add an allow rule for it, or keep the policy for it, and why. */
+/**
+ * What `allow` does with one tool, so the tool is allowed after the run or not: `add` an allow rule, so it will be
+ * allowed. `keep` the policy, because it is allowed already (`why` names the rule). `refuse`, because the tool is not
+ * allowed and `allow` does not make it so: `why` is the reason and `edit` the hand edit of the policy that allows it.
+ */
 export type AllowStep = { readonly tool: string } & (
   | { readonly kind: 'add' }
   | { readonly kind: 'keep'; readonly why: string }
+  | { readonly kind: 'refuse'; readonly why: string; readonly edit: string }
 )
 
 /**
  * The steps of `allow` for `tools`, and the policy it writes: an allow rule for the exact name of each added tool,
- * first, then the old rules without an old rule of the same match. A deny rule that matches the tool anywhere in the
- * policy stays in force, also one that an earlier rule hides today, and so does an ask rule that names the tool. A
- * tool that the policy allows now keeps its rules.
+ * first, then the old rules without an old rule of the same match. A tool that the policy allows now keeps its rules.
+ * `allow` never loosens a rule: it refuses a tool that a deny rule matches anywhere in the policy, also one that an
+ * earlier rule hides today, and a tool that an ask rule names.
  */
 export const planAllow = (
   policy: Policy,
@@ -108,13 +113,27 @@ export const planAllow = (
   tools: readonly string[],
 ): { readonly steps: readonly AllowStep[]; readonly policy: Policy } => {
   const steps = [...new Set(tools)].map((tool): AllowStep => {
-    const deny = policy.find(r => r.action === 'deny' && matches(r.match, tool))
-    if (deny !== undefined) return { tool, kind: 'keep', why: `the deny rule ${ruleText(deny)} stays` }
-    const ask = policy.find(r => r.action === 'ask' && r.match === tool)
-    if (ask !== undefined) return { tool, kind: 'keep', why: `the ask rule ${ruleText(ask)} stays` }
     const { action, rule } = decide(policy, bridges, tool)
     if (action === 'allow' && rule !== undefined)
       return { tool, kind: 'keep', why: `allowed already by ${ruleText(rule)}` }
+    // An allow rule for the exact name counts for a bridge tool too, so it decides the tool when it goes first.
+    const before = rule === undefined ? 'first' : `before policy[${rule.index}]`
+    const deny = policy.find(r => r.action === 'deny' && matches(r.match, tool))
+    if (deny !== undefined)
+      return {
+        tool,
+        kind: 'refuse',
+        why: `the deny rule ${ruleText(deny)} matches it. allow never loosens a deny rule`,
+        edit: `put an allow rule for ${tool} ${before}, or narrow policy[${deny.index}]`,
+      }
+    const ask = policy.find(r => r.action === 'ask' && r.match === tool)
+    if (ask !== undefined)
+      return {
+        tool,
+        kind: 'refuse',
+        why: `the ask rule ${ruleText(ask)} names it. allow never loosens an ask rule`,
+        edit: rule === ask ? `change policy[${ask.index}] to allow` : `put an allow rule for ${tool} ${before}`,
+      }
     return { tool, kind: 'add' }
   })
   const added = new Set(steps.flatMap(s => (s.kind === 'add' ? [s.tool] : [])))
@@ -147,7 +166,7 @@ export const allowCommands = (
   const out = asked.flatMap(({ name }) => {
     if (!PLAIN_NAME.test(name)) return [label(shownName(name)), `    ${NAME_CHANGES}.`]
     const [step] = planAllow(policy, bridges, [name]).steps
-    if (step?.kind === 'keep') return [label(name), `    no command: ${step.why}.`]
+    if (step?.kind === 'keep' || step?.kind === 'refuse') return [label(name), `    no command: ${step.why}.`]
     plain.add(name)
     return [label(name), allowCommand(start, [name], false)]
   })

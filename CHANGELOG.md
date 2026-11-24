@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `toolscript-mcp allow` reports each tool as it is: a tool that an earlier allow rule allows is `keep`, and a tool that a deny rule or an exact ask rule refuses prints `refused:` with the edit to make by hand. A run that refuses a tool writes nothing and exits 2 (it exited 0 with "The policy needs no change").
+
 - SigV4: AWS credentials that fail to refresh in their last 5 minutes keep signing requests until they expire.
 - SigV4: a clear error when the AWS CLI does not answer in 30 s, or is version 1. A secret in the error line of a `credential_process` helper is hidden.
 - `toolscript-mcp login` on a `sigv4` entry says that it needs no login and names the `aws sso login` command.
