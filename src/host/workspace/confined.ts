@@ -83,7 +83,15 @@ const linkError = (): WorkspaceError =>
 const kindOf = (st: fs.Stats | fs.BigIntStats): Kind =>
   st.isSymbolicLink() ? 'link' : st.isFile() ? 'file' : st.isDirectory() ? 'folder' : 'other'
 
-const idOf = (st: fs.BigIntStats): string => `${st.dev}:${st.ino}`
+type FileId = { readonly dev: bigint; readonly ino: bigint }
+
+const idOf = (st: fs.BigIntStats): FileId => ({ dev: st.dev, ino: st.ino })
+
+/**
+ * True when two stats name one file. Node 22.13 on Windows gives `dev` 0 for `lstat` and `stat` of a path, and the volume
+ * serial for `fstat`, so a `dev` of 0 matches any: the file id alone is then compared. A real `dev` that differs never matches.
+ */
+const sameId = (a: FileId, b: FileId): boolean => a.ino === b.ino && (a.dev === b.dev || a.dev === 0n || b.dev === 0n)
 
 /** `lstat`, or undefined when nothing is there. */
 const lstatOrNothing = async (file: string): Promise<fs.Stats | undefined> => {
@@ -273,7 +281,7 @@ const below = (real: string, root: string, platform: string): string[] | undefin
 const sameParts = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((part, i) => fold(part) === fold(b[i]!))
 
-const pathConfined = (root: string, rootId: string, platform: string, hook: Hook): Confined => {
+const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook): Confined => {
   const windows = platform === 'win32'
   const full = (parts: readonly string[]) => path.join(root, ...parts)
 
@@ -298,7 +306,7 @@ const pathConfined = (root: string, rootId: string, platform: string, hook: Hook
       else if (now !== real) throw linkError()
       await hook('lstat')
       const ls = await fs.promises.lstat(now, { bigint: true })
-      if (ls.isSymbolicLink() || idOf(ls) !== id) throw linkError()
+      if (ls.isSymbolicLink() || !sameId(idOf(ls), id)) throw linkError()
     }
     const seen = insideParts(real!)
     if (!sameParts(seen, parts)) {
@@ -325,7 +333,16 @@ const pathConfined = (root: string, rootId: string, platform: string, hook: Hook
       windows
         ? fs.promises.open(full(parts), 'r')
         : fs.promises.open(full(parts), O_RDONLY | O_NOFOLLOW_ANY | (folder ? O_DIRECTORY : O_NONBLOCK))
-    ).catch(err => Promise.reject(mapError(err)))
+    ).catch(async err => {
+      // macOS: `O_DIRECTORY` on a file gives ENOTDIR, as a file in a middle part does. Only a last part that exists and is
+      // no folder is `not-folder`. A middle part that is a file, or a link, is the same as on the other systems.
+      if (!windows && folder && (err as NodeJS.ErrnoException).code === 'ENOTDIR') {
+        const st = await lstatOrNothing(full(parts)).catch(() => undefined)
+        if (st?.isSymbolicLink()) throw linkError()
+        if (st !== undefined && !st.isDirectory()) throw new WorkspaceError('not-folder', 'the path is not a folder')
+      }
+      throw mapError(err)
+    })
     try {
       return { handle, real: windows ? await proveWindows(parts, handle) : await spellMac(parts) }
     } catch (err) {
@@ -340,11 +357,11 @@ const pathConfined = (root: string, rootId: string, platform: string, hook: Hook
   // drops what it read. A swap of the folder around one read needs the folder to be inside at each proof and outside
   // at the read, in turn: the alternating case of the ADR (section What stays possible). A swap that holds for two
   // reads in a row, or for a proof, is refused.
-  const makeDir = (parts: readonly string[], id: string): Dir => {
+  const makeDir = (parts: readonly string[], id: FileId): Dir => {
     const proven = async () => {
       await hook('lstat')
       const ls = await fs.promises.lstat(full(parts), { bigint: true }).catch(err => Promise.reject(mapError(err)))
-      if (ls.isSymbolicLink() || idOf(ls) !== id) throw linkError()
+      if (ls.isSymbolicLink() || !sameId(idOf(ls), id)) throw linkError()
     }
     return {
       parts,
@@ -398,7 +415,7 @@ const pathConfined = (root: string, rootId: string, platform: string, hook: Hook
   const check = async () => {
     await hook('lstat')
     const st = await fs.promises.stat(root, { bigint: true }).catch(() => undefined)
-    if (st === undefined || idOf(st) !== rootId)
+    if (st === undefined || !sameId(idOf(st), rootId))
       throw new WorkspaceError(
         'root-changed',
         'the workspace root is not the folder that toolscript-mcp opened at its start',
@@ -459,7 +476,7 @@ export const openConfined = async (
       if (heldStat.ino === 0n) throw unavailable('the volume gives no file identity')
       await hook('lstat')
       const pathStat = await fs.promises.lstat(root, { bigint: true })
-      if (pathStat.isSymbolicLink() || idOf(pathStat) !== idOf(heldStat))
+      if (pathStat.isSymbolicLink() || !sameId(idOf(pathStat), idOf(heldStat)))
         throw new WorkspaceError(
           'root-changed',
           'the workspace root is not the folder that toolscript-mcp opened at its start',
@@ -472,7 +489,7 @@ export const openConfined = async (
   })()
   const dir = async (parts: readonly string[]): Promise<Dir> => {
     const now = await fs.promises.stat(root, { bigint: true }).catch(() => undefined)
-    if (now === undefined || idOf(now) !== rootId)
+    if (now === undefined || !sameId(idOf(now), rootId))
       throw new WorkspaceError(
         'root-changed',
         'the workspace root is not the folder that toolscript-mcp opened at its start',
