@@ -13,7 +13,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { catalogOf, searchResult, shownShapes, type ServerState } from '../src/core/catalog.ts'
-import type { Config, ServerConfig, ServerKey } from '../src/core/config.ts'
+import { parseConfig, type Config, type ServerConfig, type ServerKey } from '../src/core/config.ts'
 import { runLogFile, shapesFile } from '../src/core/paths.ts'
 import { guardedText, type Rule } from '../src/core/policy.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
@@ -3036,16 +3036,54 @@ describe('workspace', () => {
     assert.equal(list.isError, false, list.text)
   })
 
-  test('an ask rule or a deny rule that matches still decides, and a clashing server named workspace gets no default allow', async t => {
+  test('an ask rule or a deny rule that matches still decides', async t => {
     const asking = await rig(t, { policy: rules(['mcp__workspace__*', 'ask']), answer: 'decline' })
     if (asking === undefined) return
     const declined = await asking.run('return await call("mcp__workspace__read", { path: "a0.txt" })')
     assert.match(declined.text, /the program did not run, because the person did not approve/)
     assert.deepEqual(asking.asked, [['mcp__workspace__read']])
-    // The same name with no `workspace` section: a server that the config names, so it asks as any server.
-    const plain = setup({ policy: [], workspace: false })
-    const out = await plain.run('return await call("mcp__f__echo", { n: 1 })')
-    assert.deepEqual(plain.asked, [['mcp__f__echo']], out.text)
+  })
+
+  test('a stdio server keyed workspace gets no default allow, with the section absent and with it clashing', async () => {
+    const stdio = { command: 'node', args: ['server.mjs'] }
+    const named = (clash: boolean) =>
+      parseConfig(
+        JSON.stringify({
+          mcpServers: { workspace: stdio },
+          ...(clash && { workspace: { roots: [{ path: path.resolve(ROOT) }] } }),
+        }),
+        {},
+        process.execPath,
+        process.platform,
+      )
+    for (const clash of [false, true]) {
+      const parsed = named(clash)
+      assert.ok(parsed.ok, JSON.stringify(parsed))
+      const { config } = parsed
+      // The built-in is off in both: no section, or a clash that makes only the key `workspace` invalid.
+      assert.equal(config.guards.workspace, false, `clash ${clash}`)
+      assert.equal(config.servers.get(WS)?.kind, clash ? 'invalid' : 'stdio', `clash ${clash}`)
+      const tools = [{ name: 'echo', inputSchema: { type: 'object' } }]
+      const r = setup({
+        policy: [],
+        servers: config.servers,
+        workspace: config.guards.workspace,
+        others: [{ key: WS, status: 'connected', tools }],
+      })
+      const out = await r.run('return await call("mcp__workspace__echo", { n: 1 })')
+      assert.deepEqual(r.asked, [['mcp__workspace__echo']], `clash ${clash}: ${out.text}`)
+      // With a person who says no, nothing reaches the server: no default allow lets the call through.
+      const refused = setup({
+        policy: [],
+        servers: config.servers,
+        workspace: config.guards.workspace,
+        answer: 'decline',
+        others: [{ key: WS, status: 'connected', tools }],
+      })
+      const no = await refused.run('return await call("mcp__workspace__echo", { n: 1 })')
+      assert.match(no.text, /the program did not run, because the person did not approve/, `clash ${clash}`)
+      assert.deepEqual(refused.called, [], `clash ${clash}`)
+    }
   })
 
   test('8 parallel reads where 2 are excluded give 6 results and 2 errors, and no excluded byte', async t => {

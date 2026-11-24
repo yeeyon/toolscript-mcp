@@ -12,11 +12,13 @@ import {
   globMatches,
   globProblem,
   includeTest,
+  isInside,
   makeExcluder,
   parseListInput,
   parsePathInput,
   parseSearchInput,
   pathParts,
+  realParts,
   rootProblem,
   workspaceClass,
 } from '../src/core/workspace.ts'
@@ -247,6 +249,24 @@ describe('the root of a session', () => {
     assert.equal(r.ok, false)
     assert.match(r.ok ? '' : r.reason, /Start the client in one of them/)
     assert.doesNotMatch(r.ok ? '' : r.reason, /\/work|elsewhere/)
+  })
+
+  test('a backslash separates parts on Windows only: on Linux and macOS it is a letter of a name', () => {
+    const one = [{ path: '/home/me/projects/app', write: false }]
+    const two = [...one, { path: '/home/me/other', write: false }]
+    for (const platform of ['linux', 'darwin']) {
+      const start = '/home/me/projects\\app/private'
+      assert.equal(isInside(start, one[0]!.path, platform), false, platform)
+      assert.equal(bindRoot(two, start, platform).ok, false, platform)
+      assert.deepEqual(realParts(start, platform), ['home', 'me', 'projects\\app', 'private'])
+      // The folder `projects\app` is not the home folder or a part of an excluded path either.
+      assert.equal(rootProblem('/home/me/projects\\app', '/home/me/projects/app', platform), undefined)
+      assert.match(rootProblem('/home/me/projects', '/home/me/projects/app', platform) ?? '', /holds it/)
+    }
+    // On Windows the backslash is a separator, so the same text is inside the entry.
+    assert.equal(isInside('C:\\home\\me\\projects\\app\\private', 'C:\\home\\me\\projects\\app', 'win32'), true)
+    assert.equal(isInside('C:\\home\\me\\projects/app/private', 'C:\\home\\me\\projects\\app', 'win32'), true)
+    assert.deepEqual(realParts('C:\\a\\b/c', 'win32'), ['C:', 'a', 'b', 'c'])
   })
 
   test('a name that only starts like an entry is not inside it', () => {

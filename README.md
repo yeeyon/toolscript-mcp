@@ -1170,7 +1170,7 @@ starts with a code, such as `excluded`, `link`, `hard-link`, `bad-path`, `too-la
 - The toolscript-mcp config file is excluded too, by its real path.
 - No tool follows a symlink or a junction, and `read` refuses a file with more than one hard link. `search` skips such a file.
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8. `search` skips these files and files over 1 MiB, and counts them in `skipped`.
-- `search` stops at 20,000 files or 10 seconds, and `list` at 5,000 entries. Each then sets `truncated`. A cancel ends a `search` within one second.
+- `search` and `list` stop after they visit 20,000 names, of any kind, or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. A cancel ends a `search` within one second.
 - `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
 
 ### How a file is opened
@@ -1190,7 +1190,7 @@ says why. On macOS, the CI run of the repo decides if the method works. A macOS 
 ### What stays possible
 
 - On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root.
-- On macOS, a swap while a folder is listed can show names from outside.
+- On Windows and macOS, a swap can alternate with each lookup of a `list` or a `stat`. Then it can show a name, a size or a kind from outside the root. It never shows the bytes of a file.
 - Both cases need a process of another account, or a process with fewer rights. Code that runs as you can read the files itself.
 - Give Workspace a root that only your account can write. On Windows, `toolscript-mcp doctor` reads the access rules of the root and warns when another account can write.
 - A program that Workspace feeds with file text can send that text to any other tool that the policy allows. Keep the policy narrow for a root with private files.

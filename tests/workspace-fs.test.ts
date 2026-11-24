@@ -2,15 +2,25 @@
 // result holds, never a success text. A fixture is refused when the call fails with its code, no byte or name from
 // outside the root is in any result, and no file on disk changed.
 
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { LIMITS } from '../src/core/workspace.ts'
-import { openConfined, type Hook } from '../src/host/workspace/confined.ts'
+import { DEFAULT_SKIP, LIMITS, makeExcluder } from '../src/core/workspace.ts'
+import {
+  openConfined,
+  readCapped,
+  type Confined,
+  type Dir,
+  type Hook,
+  type Opened,
+} from '../src/host/workspace/confined.ts'
+import { createProvider } from '../src/host/workspace/provider.ts'
 import { codeOf, marker, open, rm, tempDir, trySymlink, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
 const win = process.platform === 'win32'
@@ -235,9 +245,37 @@ describe('list, stat, read and search', () => {
       [...new Set(files.matches.map((m: { path: string }) => m.path))],
       ['f00.txt', 'f01.txt', 'f02.txt', 'f03.txt', 'f04.txt'],
     )
-    const entries = await rig.call('list')
+    // `list` visits at most as many names as `search` (here 5), so a larger visit limit shows the limit of the entries.
+    const wide = await rigOf(t, root, { limits: { searchFiles: 50, listEntries: 7 } })
+    if (wide === undefined) return
+    const entries = await wide.call('list')
     assert.equal(entries.entries.length, 7)
     assert.equal(entries.truncated, true)
+    const visits = await rig.call('list')
+    assert.equal(visits.entries.length, 5)
+    assert.equal(visits.truncated, true)
+  })
+
+  test('an include that matches nothing, or a tree of folders only, still ends at the limit of names or of time', async t => {
+    const root = folders(t)()
+    write(root, Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`d${String(i).padStart(2, '0')}/keep`, ''])))
+    write(root, { 'a.txt': 'hit' })
+    const few = await rigOf(t, root, { limits: { searchFiles: 10 } })
+    if (few === undefined) return
+    // Before: an include with no match never reached the check, and a walk of folders only had no file to count.
+    const none = await few.call('search', { query: 'hit', include: ['**/*.nomatch'] })
+    assert.deepEqual([none.matches.length, none.truncated], [0, true])
+    const folders10 = await few.call('search', { query: 'hit', path: 'd00' })
+    assert.equal(folders10.truncated, false, 'a small folder ends by itself')
+    const listing = await few.call('list', { depth: 2, include: ['**/*.nomatch'] })
+    assert.deepEqual([listing.entries.length, listing.truncated], [0, true])
+    // The time limit is checked at each name, so a slow volume ends the walk with no file in it.
+    let slow = false
+    const timed = await rigOf(t, root, { limits: { searchMs: 20 }, hook: async () => void (slow && (await sleep(8))) })
+    if (timed === undefined) return
+    slow = true
+    const late = await timed.call('search', { query: 'hit', include: ['**/*.nomatch'] })
+    assert.deepEqual([late.matches.length, late.truncated], [0, true])
   })
 
   test('the real spelling comes back on a volume that ignores case', { skip: !win && !mac }, async t => {
@@ -257,6 +295,7 @@ describe('the text of a path', () => {
     let lookups = 0
     const rig = await rigOf(t, root, { hook: () => void lookups++ })
     if (rig === undefined) return
+    lookups = 0 // the start of the server looked at the root, which is no lookup of a path
     const bad = [
       '../x',
       'a/../../x',
@@ -498,6 +537,181 @@ describe('exclusions', () => {
   )
 })
 
+describe('the bytes that one read takes', () => {
+  /** A provider over `root` whose handles lie about their size (10 bytes) and count what they read. */
+  const lying = async (t: TestContext, root: string) => {
+    const confined = await openConfined(root)
+    t.after(() => confined.close())
+    const counted = { read: 0, readFile: 0 }
+    const wrapHandle = (handle: FileHandle): FileHandle =>
+      new Proxy(handle, {
+        get: (target, prop) => {
+          if (prop === 'readFile')
+            return (...args: unknown[]) => (
+              counted.readFile++,
+              (target.readFile as (...a: unknown[]) => unknown)(...args)
+            )
+          if (prop === 'read')
+            return async (...args: unknown[]) => {
+              const r = (await (target.read as (...a: unknown[]) => Promise<{ bytesRead: number }>)(...args)) as {
+                bytesRead: number
+              }
+              counted.read += r.bytesRead
+              return r
+            }
+          const value = Reflect.get(target, prop)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+    const wrapFile = async (opened: Opened): Promise<Opened> => ({
+      ...opened,
+      handle: wrapHandle(opened.handle),
+      size: 10,
+    })
+    const wrapDir = (dir: Dir): Dir => ({
+      ...dir,
+      openFile: async name => wrapFile(await dir.openFile(name)),
+      openDir: async name => wrapDir(await dir.openDir(name)),
+    })
+    const lies: Confined = {
+      ...confined,
+      root: async () => wrapDir(await confined.root()),
+      dir: async parts => wrapDir(await confined.dir(parts)),
+      file: async parts => wrapFile(await confined.file(parts)),
+    }
+    const provider = createProvider({
+      confined: lies,
+      excluded: makeExcluder(root, [], []),
+      skip: DEFAULT_SKIP,
+      windows: win,
+      log: () => {},
+    })
+    const client = new Client({ name: 'workspace-test', version: '0' })
+    await client.connect(await provider.serve())
+    t.after(async () => {
+      await client.close()
+      await provider.close()
+    })
+    return { client, counted }
+  }
+
+  test('read and search take at most one byte over the limit through the handle, whatever the size said', async t => {
+    const root = folders(t)()
+    write(root, {
+      'big.txt': Buffer.alloc(LIMITS.readBytes + 4000, 0x61),
+      'search/big.txt': Buffer.alloc(LIMITS.searchFileBytes + 4000, 0x61),
+    })
+    const rig = await lying(t, root).catch(err => (mac ? undefined : Promise.reject(err)))
+    if (rig === undefined) return void t.skip('Workspace is unavailable on macOS')
+    const read = await rig.client.callTool({ name: 'read', arguments: { path: 'big.txt' } })
+    assert.equal(read.isError, true)
+    assert.equal(codeOf((read.content as { text: string }[])[0]!.text), 'too-large')
+    // Before: the whole file was read to its end (readFile) and checked after.
+    assert.equal(rig.counted.readFile, 0, 'no read to the end of the file')
+    assert.equal(rig.counted.read, LIMITS.readBytes + 1)
+    rig.counted.read = 0
+    const search = await rig.client.callTool({ name: 'search', arguments: { query: 'a', path: 'search' } })
+    assert.equal(search.isError, undefined)
+    assert.deepEqual(
+      [(search.structuredContent as any).matches.length, (search.structuredContent as any).skipped],
+      [0, 1],
+    )
+    assert.equal(rig.counted.readFile, 0)
+    assert.equal(rig.counted.read, LIMITS.searchFileBytes + 1)
+  })
+
+  test('readCapped returns a file of exactly the limit, refuses one byte more, and ends at the end of a short file', async t => {
+    const root = folders(t)()
+    write(root, { 'exact.txt': Buffer.alloc(1000, 0x62), 'more.txt': Buffer.alloc(1001, 0x62), 'empty.txt': '' })
+    for (const [name, max, want] of [
+      ['exact.txt', 1000, 1000],
+      ['more.txt', 1000, undefined],
+      ['empty.txt', 1000, 0],
+      ['exact.txt', 300 * 1024, 1000],
+    ] as const) {
+      const handle = await fs.promises.open(path.join(root, name), 'r')
+      try {
+        assert.equal((await readCapped(handle, max))?.length, want, `${name} with ${max}`)
+      } finally {
+        await handle.close()
+      }
+    }
+  })
+})
+
+describe('the root of a Linux server', { skip: process.platform !== 'linux' }, () => {
+  /** Swaps `root` for a link to `outside`, and back. The real folder is kept at `root.real`. */
+  const rootSwap = (root: string, outside: string) => {
+    let out = false
+    return (want: boolean) => {
+      if (want === out) return
+      if (want) {
+        fs.renameSync(root, `${root}.real`)
+        fs.symlinkSync(outside, root, 'dir')
+      } else {
+        fs.unlinkSync(root)
+        fs.renameSync(`${root}.real`, root)
+      }
+      out = want
+    }
+  }
+
+  const attempt = async (t: TestContext, pattern: (lookup: string, at: number) => boolean | undefined) => {
+    const dirs = folders(t)
+    const root = dirs()
+    const outside = dirs()
+    const secret = marker()
+    write(root, { 'f.txt': 'inside' })
+    write(outside, { 'f.txt': secret })
+    const swap = rootSwap(root, outside)
+    t.after(() => {
+      try {
+        swap(false)
+      } catch {
+        // `folders` removed the folders first.
+      }
+      rm(`${root}.real`)
+    })
+    let at = 0
+    const result = await openConfined(root, {
+      hook: lookup => {
+        const want = pattern(lookup, at++)
+        if (want !== undefined) swap(want)
+      },
+    }).then(
+      async confined => {
+        const read = await confined.file(['f.txt']).then(
+          async o => (await o.handle.readFile('utf8').finally(() => o.handle.close())) as string,
+          (err: Error) => `refused: ${err.message}`,
+        )
+        await confined.close()
+        return { opened: true as const, read }
+      },
+      (err: Error) => ({ opened: false as const, error: err.message }),
+    )
+    return { result, secret }
+  }
+
+  test('a root that is swapped for a link before the open, or swapped for one and back around it, fails closed', async t => {
+    // Out at the open and still out at the check of the path: the path is a link.
+    const link = await attempt(t, lookup => (lookup === 'open' ? true : undefined))
+    assert.equal(link.result.opened, false)
+    assert.match((link.result as { error: string }).error, /^root-changed:/)
+    // Out at the open, back in before the check: the held folder is the outside one and the path is not.
+    // Before: the root was checked by its path first and opened after, and nothing compared the held folder.
+    const back = await attempt(t, lookup => (lookup === 'open' ? true : lookup === 'lstat' ? false : undefined))
+    assert.equal(back.result.opened, false)
+    assert.match((back.result as { error: string }).error, /^root-changed:/)
+    assert.ok(!JSON.stringify(back.result).includes(back.secret))
+    // In at the open, out at the check: the path is a link, so the server does not start.
+    const late = await attempt(t, lookup => (lookup === 'lstat' ? true : undefined))
+    assert.equal(late.result.opened, false)
+    // No swap: it opens and reads the inside file.
+    const plain = await attempt(t, () => undefined)
+    assert.deepEqual(plain.result, { opened: true, read: 'inside' })
+  })
+})
+
 describe('content', () => {
   test('refuses a file over 4 MiB, a NUL byte, invalid UTF-8 and UTF-16, and reads a file of exactly 4 MiB', async t => {
     const root = folders(t)()
@@ -543,7 +757,7 @@ describe('content', () => {
   })
 })
 
-describe('a swap of a folder while a file is read', () => {
+describe('a swap of a folder while a file is read, a folder is listed or a path is looked at', () => {
   /** Swaps `root/b` between a real folder (in) and a link to the folder outside (out). */
   const swapper = (root: string, outside: string) => {
     const b = path.join(root, 'b')
@@ -581,74 +795,156 @@ describe('a swap of a folder while a file is read', () => {
     const outside = dirs()
     const secret = marker()
     write(root, { 'b/id.txt': 'inside file' })
-    write(outside, { 'id.txt': `outside ${secret}` })
+    // The outside folder has a file of the same name with other bytes, and a file whose name is the secret.
+    write(outside, { 'id.txt': `outside ${secret}`, [`${secret}.txt`]: 'x'.repeat(777) })
     return { root, outside, secret, swap: swapper(root, outside) }
   }
 
-  test('every pattern of in and out over the lookups of one read refuses or reads the inside file', async t => {
-    const { root, outside, secret, swap } = setup(t)
-    const seen: string[] = []
+  /** A tool call, what an inside result looks like, and which lookups of it a sweep may vary. */
+  type Probe = {
+    readonly tool: string
+    readonly args: Record<string, unknown>
+    /** True when the structured result shows nothing but the inside file. */
+    readonly safe: (result: any) => boolean
+    /**
+     * The ranges `[from, to)` of lookups over which a sweep tries every pattern, given the lookups of one call and the
+     * index `cut` of the first lookup that is not the proof of the folder `b`.
+     */
+    readonly windows: (lookups: readonly string[], cut: number) => [number, number][]
+    /** The leaking patterns that the ADR names for this call and system, as a test of the mask. */
+    readonly known: (mask: number, lookups: readonly string[]) => boolean
+  }
+
+  /**
+   * The family of Windows and macOS for a folder that is listed or looked at (see `makeDir`): each lookup that is
+   * outside has a lookup that is inside right before it and right after it (the proofs of the folder), so the swap
+   * alternates and the last lookup is inside. The first lookup, which stats the root, is free.
+   */
+  const alternating = (mask: number, lookups: readonly string[]): boolean =>
+    lookups.every((_, i) => {
+      const bit = (k: number) => (mask >> k) & 1
+      return i === 0 || bit(i) === 0 || ((i === 1 || bit(i - 1) === 0) && i < lookups.length - 1 && bit(i + 1) === 0)
+    })
+
+  const inside = { path: 'b/id.txt', type: 'file', size: 'inside file'.length }
+  const probes: Record<'read' | 'list' | 'stat', Probe> = {
+    read: {
+      tool: 'read',
+      args: { path: 'b/id.txt' },
+      safe: r => r.content === 'inside file',
+      windows: lookups => [[0, lookups.length]],
+      // The case that the ADR names for Windows: out at the open, then in and out in turn.
+      known: (mask, lookups) => {
+        if (!win) return false
+        const from = lookups.indexOf('open')
+        return lookups.every((_, i) => i < from || ((mask >> i) & 1) === ((i - from) % 2 === 0 ? 1 : 0))
+      },
+    },
+    list: {
+      tool: 'list',
+      args: { path: 'b' },
+      safe: r => r.entries.every((e: unknown) => JSON.stringify(e) === JSON.stringify(inside)),
+      // The proof of the folder alone, then the enumeration alone (the proof of the folder is the code of every tool).
+      windows: (lookups, cut) => [
+        [0, cut],
+        [cut, lookups.length],
+      ],
+      known: (mask, lookups) => (win || mac) && alternating(mask, lookups),
+    },
+    stat: {
+      tool: 'stat',
+      args: { path: 'b/id.txt' },
+      safe: r => r.type === 'missing' || JSON.stringify(r) === JSON.stringify(inside),
+      windows: (lookups, cut) => [
+        [0, cut],
+        [cut, lookups.length],
+      ],
+      known: (mask, lookups) => (win || mac) && alternating(mask, lookups),
+    },
+  }
+
+  /**
+   * Every pattern of in and out over the lookups of one call of `probe`. The call must refuse, or show only the inside
+   * file. A pattern that shows more is a leak: only the patterns that `probe.known` names (the ADR, section What stays
+   * possible) may leak, and no other may. Returns the leaking patterns.
+   */
+  const sweep = async (t: TestContext, name: keyof typeof probes): Promise<number[]> => {
+    const probe = probes[name]
+    const { root, secret, swap } = setup(t)
     let hook: Hook = () => {}
     const rig = await rigOf(t, root, { hook: name => hook(name) })
-    if (rig === undefined) return
-    void outside
-    hook = name => void seen.push(name)
-    assert.equal((await rig.call('read', { path: 'b/id.txt' })).content, 'inside file')
-    const lookups = [...seen]
-    assert.ok(lookups.length >= 2 && lookups.length <= 8, `the lookups of a read: ${lookups.join(',')}`)
-    const passing: number[] = []
-    let impossible = 0
-    for (let mask = 0; mask < 1 << lookups.length; mask++) {
-      let at = 0
-      let stuck = false
-      hook = () => {
-        const want = ((mask >> at++) & 1) === 1
-        if (stuck) return
-        try {
-          swap.set(want)
-        } catch (err) {
-          // Windows: a folder above an open file cannot be renamed. A pattern that needs it cannot happen.
-          assert.ok(
-            win && ['EPERM', 'EBUSY', 'EACCES'].includes((err as NodeJS.ErrnoException).code ?? ''),
-            `swap failed: ${err}`,
-          )
-          stuck = true
-        }
-      }
-      const r = await rig.client.callTool({ name: 'read', arguments: { path: 'b/id.txt' } })
-      swap.reset()
-      const text = JSON.stringify(r)
-      if (stuck) impossible++
-      if (text.includes(secret)) {
-        if (!stuck) passing.push(mask)
-        continue
-      }
-      if (r.isError !== true)
-        assert.equal((r.structuredContent as { content: string }).content, 'inside file', `mask ${mask}`)
-      else
-        assert.match(
-          codeOf((r.content as { text: string }[])[0]!.text),
-          /^(link|not-found|not-folder|not-file|root-changed|io)$/,
-        )
+    if (rig === undefined) return []
+    const record = async (tool: string, args: Record<string, unknown>): Promise<string[]> => {
+      const seen: string[] = []
+      hook = lookup => void seen.push(lookup)
+      const r = await rig.client.callTool({ name: tool, arguments: args })
+      assert.ok(r.isError !== true, `${tool} failed with no swap: ${JSON.stringify(r.content)}`)
+      assert.ok(probe.safe(r.structuredContent) || tool !== probe.tool, `${tool} with no swap: ${JSON.stringify(r)}`)
+      return seen
     }
-    // The case that the ADR names for Windows: out at the open, then in and out in turn. Any other pattern is a bug.
-    const known = (mask: number) => {
-      const from = lookups.indexOf('open')
-      return lookups.every((_, i) => i < from || ((mask >> i) & 1) === ((i - from) % 2 === 0 ? 1 : 0))
+    const lookups = await record(probe.tool, probe.args)
+    // The lookups of the proof of `b` alone: those of a listing before its first read of the names.
+    const listed = await record('list', { path: 'b' })
+    const cut = listed.indexOf('readdir') - (rig.bound.method === 'proc' ? 0 : 1)
+    assert.ok(cut >= 1 && cut < lookups.length + 1, `the proof of a folder: ${listed.join(',')}`)
+    assert.ok(lookups.length >= 2 && lookups.length <= 12, `the lookups of ${name}: ${lookups.join(',')}`)
+    const leaks = new Set<number>()
+    let impossible = 0
+    let calls = 0
+    for (const [from, to] of probe.windows(lookups, cut)) {
+      for (let pattern = 0; pattern < 1 << (to - from); pattern++) {
+        const mask = pattern << from
+        let at = 0
+        let stuck = false
+        hook = () => {
+          const want = ((mask >> at++) & 1) === 1
+          if (stuck) return
+          try {
+            swap.set(want)
+          } catch (err) {
+            // Windows: a folder above an open file cannot be renamed. A pattern that needs it cannot happen.
+            assert.ok(
+              win && ['EPERM', 'EBUSY', 'EACCES'].includes((err as NodeJS.ErrnoException).code ?? ''),
+              `swap failed: ${err}`,
+            )
+            stuck = true
+          }
+        }
+        const r = await rig.client.callTool({ name: probe.tool, arguments: probe.args })
+        swap.reset()
+        calls++
+        if (stuck) impossible++
+        const leaked =
+          JSON.stringify(r).includes(secret) ||
+          (r.isError !== true
+            ? !probe.safe(r.structuredContent)
+            : !/^(link|not-found|not-folder|not-file|root-changed|io)$/.test(
+                codeOf((r.content as { text: string }[])[0]!.text),
+              ))
+        if (leaked && !stuck) leaks.add(mask)
+      }
     }
     t.diagnostic(
-      `lookups ${lookups.join(',')}; patterns that read outside: [${passing}]; patterns that cannot happen: ${impossible}`,
+      `${name}: ${calls} calls over lookups ${lookups.join(',')}; patterns that show outside data: [${[...leaks]}]; patterns that cannot happen: ${impossible}`,
     )
-    if (win)
-      assert.deepEqual(
-        passing.filter(mask => !known(mask)),
-        [],
-        'only the known case can read outside',
-      )
-    else assert.deepEqual(passing, [], 'no pattern reads outside')
+    const unnamed = [...leaks].filter(mask => !probe.known(mask, lookups))
+    assert.deepEqual(unnamed, [], `${name}: a pattern that the ADR does not name shows outside data`)
+    return [...leaks]
+  }
+
+  test('every pattern of in and out over the lookups of one read refuses or reads the inside file', async t => {
+    await sweep(t, 'read')
   })
 
-  test('a loop that swaps the folder for at most 2 s while at most 300 reads run reads no outside byte', async t => {
+  test('every pattern of in and out over the lookups of a listing refuses or lists only the inside entries', async t => {
+    await sweep(t, 'list')
+  })
+
+  test('every pattern of in and out over the lookups of a stat refuses or shows only the inside file', async t => {
+    await sweep(t, 'stat')
+  })
+
+  test('a loop that swaps the folder for at most 2 s while at most 300 reads, listings and stats run shows no outside byte', async t => {
     const { root, secret, swap } = setup(t)
     const rig = await rigOf(t, root)
     if (rig === undefined) return
@@ -668,10 +964,13 @@ describe('a swap of a folder while a file is read', () => {
     })()
     let reads = 0
     const outcomes = new Map<string, number>()
+    const rotation = ['read', 'list', 'stat'] as const
     while (reads < 300 && Date.now() < end) {
-      const r = await rig.client.callTool({ name: 'read', arguments: { path: 'b/id.txt' } })
+      const probe = probes[rotation[reads % rotation.length]!]
+      const r = await rig.client.callTool({ name: probe.tool, arguments: probe.args })
       assert.ok(!JSON.stringify(r).includes(secret), 'an outside byte')
-      const key = r.isError === true ? codeOf((r.content as { text: string }[])[0]!.text) : 'read'
+      if (r.isError !== true) assert.ok(probe.safe(r.structuredContent), `${probe.tool}: ${JSON.stringify(r)}`)
+      const key = r.isError === true ? codeOf((r.content as { text: string }[])[0]!.text) : probe.tool
       outcomes.set(key, (outcomes.get(key) ?? 0) + 1)
       reads++
     }

@@ -28,7 +28,7 @@ import {
   type SearchInput,
   type WorkspaceToolName,
 } from '../../core/workspace.ts'
-import type { Confined, Dir, Kind } from './confined.ts'
+import { readCapped, type Confined, type Dir, type Kind } from './confined.ts'
 
 export type ProviderOptions = {
   readonly confined: Confined
@@ -107,19 +107,32 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   /**
+   * The bound of one walk: false once it has seen `searchFiles` names (every name counts, whatever it is) or has run
+   * `searchMs`. So a tree with no match for the `include`, or one of folders only, ends too.
+   */
+  const budget = (): (() => boolean) => {
+    const began = performance.now()
+    let seen = 0
+    return () => seen++ < limits.searchFiles && performance.now() - began <= limits.searchMs
+  }
+
+  /**
    * Visits each entry below `dir` in sorted order, down to `levels` levels. A name from the listing is a candidate:
    * `lstat` and each open prove it. An excluded name is never visited, a link is visited and never entered, and a
-   * folder that vanished or became a link while the walk ran is left out.
+   * folder that vanished or became a link while the walk ran is left out. Returns false when a visit or the `within`
+   * budget stopped the walk before its end.
    */
   const walk = async (
     dir: Dir,
     levels: number,
     visit: (entry: Entry, dir: Dir, name: string) => Promise<boolean>,
     signal: AbortSignal,
+    within: () => boolean,
   ): Promise<boolean> => {
     const names = (await dir.names()).sort(byText)
     for (const name of names) {
       cancelled(signal)
+      if (!within()) return false
       const parts = [...dir.parts, name]
       if (excluded(parts)) continue
       const entry = await dir.lstat(name)
@@ -136,7 +149,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
       })
       if (child === undefined) continue
       try {
-        if (!(await walk(child, levels - 1, visit, signal))) return false
+        if (!(await walk(child, levels - 1, visit, signal, within))) return false
       } finally {
         await child.close()
       }
@@ -151,7 +164,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     let truncated = false
     const dir = await folder(start)
     try {
-      await walk(
+      const complete = await walk(
         dir,
         input.depth,
         async ({ parts, kind, size }) => {
@@ -164,7 +177,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
           return true
         },
         signal,
+        budget(),
       )
+      if (!complete) truncated = true
     } finally {
       await dir.close()
     }
@@ -176,23 +191,16 @@ export const createProvider = (options: ProviderOptions): Provider => {
     const inList = includeTest(input.include)
     const query = input.ignoreCase ? lowered(input.query) : input.query
     const matches: { path: string; line: number; column: number; text: string }[] = []
-    const began = performance.now()
     let truncated = false
-    let examined = 0
     let scanned = 0
     let skipped = 0
     const dir = await folder(start)
     try {
-      await walk(
+      const complete = await walk(
         dir,
         Infinity,
         async ({ parts, kind }, parent, name) => {
           if (kind !== 'file' || !inList(parts)) return true
-          if (examined >= limits.searchFiles || performance.now() - began > limits.searchMs) {
-            truncated = true
-            return false
-          }
-          examined++
           const opened = await parent.openFile(name).catch((err: unknown) => {
             if (err instanceof WorkspaceError && err.code !== 'cancelled' && err.code !== 'root-changed')
               return undefined
@@ -204,8 +212,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
           }
           try {
             if (excluded(opened.parts)) return true
-            const bytes = opened.size > LIMITS.searchFileBytes ? undefined : await opened.handle.readFile()
-            const text = bytes === undefined || bytes.length > LIMITS.searchFileBytes ? 'binary' : decoded(bytes)
+            const bytes =
+              opened.size > LIMITS.searchFileBytes ? undefined : await readCapped(opened.handle, LIMITS.searchFileBytes)
+            const text = bytes === undefined ? 'binary' : decoded(bytes)
             if (typeof text === 'string') {
               skipped++
               return true
@@ -230,7 +239,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
           }
         },
         signal,
+        budget(),
       )
+      if (!complete) truncated = true
     } finally {
       await dir.close()
     }
@@ -244,11 +255,11 @@ export const createProvider = (options: ProviderOptions): Provider => {
     const opened = await confined.file(parts)
     try {
       if (excluded(opened.parts)) throw new WorkspaceError('excluded', 'the path is excluded from Workspace')
-      if (opened.size > LIMITS.readBytes)
-        throw new WorkspaceError('too-large', `the file is larger than ${LIMITS.readBytes} bytes`)
-      const bytes = await opened.handle.readFile()
-      if (bytes.length > LIMITS.readBytes)
-        throw new WorkspaceError('too-large', `the file is larger than ${LIMITS.readBytes} bytes`)
+      const tooLarge = () => new WorkspaceError('too-large', `the file is larger than ${LIMITS.readBytes} bytes`)
+      if (opened.size > LIMITS.readBytes) throw tooLarge()
+      // The size can be old: read at most one byte more than the limit, and refuse when the file holds more.
+      const bytes = await readCapped(opened.handle, LIMITS.readBytes)
+      if (bytes === undefined) throw tooLarge()
       const text = decoded(bytes)
       if (text === 'binary') throw new WorkspaceError('binary', 'the file has a NUL byte, so it is not text')
       if (text === 'encoding') throw new WorkspaceError('encoding', 'the file is not valid UTF-8')

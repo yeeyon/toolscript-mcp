@@ -6,7 +6,8 @@
 //            later swap of a name changes nothing that is held.
 //   macOS    open the full path with O_NOFOLLOW_ANY: the kernel refuses a symlink in any part.
 //   Windows  open the full path, then two times realpath.native and lstat must give the identity of the handle.
-//            A process that swaps a folder at each lookup can still win (the ADR names this case).
+//            A process that swaps a folder at each lookup can still win (the ADR names this case). The names and the
+//            entries of a folder are read by path, each read between two proofs of the folder (see `makeDir`).
 // The first use tests the method. When the test fails, Workspace is unavailable, with the reason.
 // `Hook` runs before each lookup of a name, so a test can swap a folder between two lookups.
 
@@ -15,7 +16,7 @@ import type { FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { WorkspaceError, fold, isInside } from '../../core/workspace.ts'
+import { WorkspaceError, fold, isInside, realParts } from '../../core/workspace.ts'
 
 const realpathNative = promisify(fs.realpath.native)
 
@@ -107,6 +108,23 @@ const checkedFile = async (handle: FileHandle, parts: readonly string[]): Promis
     await handle.close().catch(() => {})
     throw mapError(err)
   }
+}
+
+/**
+ * The bytes of an open file, or undefined when it holds more than `max`. It reads at most `max + 1` bytes through the
+ * handle, so a file that grew after its size was read, or one that never ends, costs a bounded read.
+ */
+export const readCapped = async (handle: Pick<FileHandle, 'read'>, max: number): Promise<Buffer | undefined> => {
+  const chunks: Buffer[] = []
+  let total = 0
+  while (total <= max) {
+    const buffer = Buffer.allocUnsafe(Math.min(256 * 1024, max + 1 - total))
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, null)
+    if (bytesRead === 0) break
+    chunks.push(buffer.subarray(0, bytesRead))
+    total += bytesRead
+  }
+  return total > max ? undefined : Buffer.concat(chunks, total)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -249,8 +267,7 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
 /** The parts of `real` below `root` as the volume spells them, or undefined when `real` is not below it. */
 const below = (real: string, root: string, platform: string): string[] | undefined => {
   if (!isInside(real, root, platform)) return undefined
-  const all = real.split(/[\\/]+/).filter(p => p !== '')
-  return all.slice(root.split(/[\\/]+/).filter(p => p !== '').length)
+  return realParts(real, platform).slice(realParts(root, platform).length)
 }
 
 const sameParts = (a: readonly string[], b: readonly string[]): boolean =>
@@ -317,30 +334,50 @@ const pathConfined = (root: string, rootId: string, platform: string, hook: Hook
     }
   }
 
-  const makeDir = (parts: readonly string[], id: string): Dir => ({
-    parts,
-    names: async () => {
-      await hook('readdir')
-      const names = await fs.promises.readdir(full(parts)).catch(err => Promise.reject(mapError(err)))
-      // The names are candidates, and the folder must be the one that was proven.
+  // A folder is proven once, at its open. Its names and the metadata of its entries are then read by path, and Node has
+  // no lookup relative to a handle on these systems. So each such read is bracketed: the folder must show as the
+  // proven one (no link, same identity) right before the read and right after it, and a call that fails either proof
+  // drops what it read. A swap of the folder around one read needs the folder to be inside at each proof and outside
+  // at the read, in turn: the alternating case of the ADR (section What stays possible). A swap that holds for two
+  // reads in a row, or for a proof, is refused.
+  const makeDir = (parts: readonly string[], id: string): Dir => {
+    const proven = async () => {
       await hook('lstat')
       const ls = await fs.promises.lstat(full(parts), { bigint: true }).catch(err => Promise.reject(mapError(err)))
       if (ls.isSymbolicLink() || idOf(ls) !== id) throw linkError()
-      return names
-    },
-    lstat: async (name, spell = false) => {
-      await hook('lstat')
-      const st = await lstatOrNothing(full([...parts, name]))
-      if (st === undefined) return undefined
-      const kind = kindOf(st)
-      const real =
-        spell && kind !== 'link' ? (insideParts(await realpathNative(full([...parts, name]))).at(-1) ?? name) : name
-      return { kind, size: st.size, real }
-    },
-    openFile: name => file([...parts, name]),
-    openDir: name => dir([...parts, name]),
-    close: async () => {},
-  })
+    }
+    return {
+      parts,
+      names: async () => {
+        await proven()
+        await hook('readdir')
+        const names = await fs.promises.readdir(full(parts)).catch(err => Promise.reject(mapError(err)))
+        await proven()
+        return names
+      },
+      lstat: async (name, spell = false) => {
+        await proven()
+        await hook('lstat')
+        const st = await lstatOrNothing(full([...parts, name]))
+        let seen: Entry | undefined
+        if (st !== undefined) {
+          const kind = kindOf(st)
+          let real = name
+          if (spell && kind !== 'link') {
+            await hook('realpath')
+            const spelled = await realpathNative(full([...parts, name])).catch(err => Promise.reject(mapError(err)))
+            real = insideParts(spelled).at(-1) ?? name
+          }
+          seen = { kind, size: st.size, real }
+        }
+        await proven()
+        return seen
+      },
+      openFile: name => file([...parts, name]),
+      openDir: name => dir([...parts, name]),
+      close: async () => {},
+    }
+  }
 
   const dir = async (parts: readonly string[]): Promise<Dir> => {
     const { handle, real } = await opened(parts, true)
@@ -397,13 +434,42 @@ export const openConfined = async (
   { platform = process.platform, hook = () => {} }: ConfinedOptions = {},
 ): Promise<Confined> => {
   await ensureMethod(platform)
-  const rootStat = await fs.promises.stat(root, { bigint: true }).catch(err => Promise.reject(mapError(err)))
-  if (!rootStat.isDirectory()) throw new WorkspaceError('not-folder', 'the workspace root is not a folder')
-  if (rootStat.ino === 0n) throw unavailable('the volume gives no file identity')
-  const rootId = idOf(rootStat)
-  if (platform !== 'linux') return pathConfined(root, rootId, platform, hook)
+  if (platform !== 'linux') {
+    const rootStat = await fs.promises.stat(root, { bigint: true }).catch(err => Promise.reject(mapError(err)))
+    if (!rootStat.isDirectory()) throw new WorkspaceError('not-folder', 'the workspace root is not a folder')
+    if (rootStat.ino === 0n) throw unavailable('the volume gives no file identity')
+    return pathConfined(root, idOf(rootStat), platform, hook)
+  }
 
-  const held = await fs.promises.open(root, O_RDONLY | O_DIRECTORY)
+  // Linux holds the root from now on, so the open comes first and then the proof that the held folder is the folder
+  // at the path, with no link: a swap of the path around the open leaves the two different, or a link, and fails.
+  await hook('open')
+  const held = await fs.promises
+    .open(root, O_RDONLY | O_DIRECTORY)
+    .catch(err =>
+      Promise.reject(
+        (err as NodeJS.ErrnoException).code === 'ENOTDIR'
+          ? new WorkspaceError('not-folder', 'the workspace root is not a folder')
+          : mapError(err),
+      ),
+    )
+  const rootId = await (async () => {
+    try {
+      const heldStat = await held.stat({ bigint: true })
+      if (heldStat.ino === 0n) throw unavailable('the volume gives no file identity')
+      await hook('lstat')
+      const pathStat = await fs.promises.lstat(root, { bigint: true })
+      if (pathStat.isSymbolicLink() || idOf(pathStat) !== idOf(heldStat))
+        throw new WorkspaceError(
+          'root-changed',
+          'the workspace root is not the folder that toolscript-mcp opened at its start',
+        )
+      return idOf(heldStat)
+    } catch (err) {
+      await held.close().catch(() => {})
+      throw mapError(err)
+    }
+  })()
   const dir = async (parts: readonly string[]): Promise<Dir> => {
     const now = await fs.promises.stat(root, { bigint: true }).catch(() => undefined)
     if (now === undefined || idOf(now) !== rootId)

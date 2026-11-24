@@ -273,12 +273,16 @@ export const makeExcluder = (root: string, exclude: readonly string[], forbidden
 /** The platforms whose volumes ignore case by default. */
 export const foldsCase = (platform: string): boolean => platform === 'win32' || platform === 'darwin'
 
-/** The real path as a list of parts, `/` and `\` alike. On Windows and macOS with no regard to case. */
+/**
+ * The parts of a real path. `\` separates parts only on Windows: on Linux and macOS it is a legal character of a name,
+ * so `/home/me/projects\app` is one folder `projects\app` and never the folder `/home/me/projects/app`.
+ */
+export const realParts = (path: string, platform: string): string[] =>
+  path.split(platform === 'win32' ? /[\\/]+/ : /\/+/).filter(p => p !== '')
+
+/** The real path as a list of parts. On Windows and macOS with no regard to case. */
 const partsOf = (path: string, platform: string): string[] =>
-  path
-    .split(/[\\/]+/)
-    .filter(p => p !== '')
-    .map(p => (foldsCase(platform) ? fold(p) : p))
+  realParts(path, platform).map(p => (foldsCase(platform) ? fold(p) : p))
 
 /** True when `child` is `parent` or inside it. Both are real paths. */
 export const isInside = (child: string, parent: string, platform: string): boolean => {
@@ -293,7 +297,7 @@ export const isInside = (child: string, parent: string, platform: string): boole
  * or, on Windows, a network path.
  */
 export const rootProblem = (real: string, home: string, platform: string): string | undefined => {
-  const all = real.split(/[\\/]+/).filter(p => p !== '')
+  const all = realParts(real, platform)
   if (platform === 'win32' && /^[\\/]{2}/.test(real)) return 'it is a network path'
   if (all.length === 0 || (platform === 'win32' && all.length === 1 && /^[A-Za-z]:$/.test(all[0]!)))
     return 'it is a drive or file system root'

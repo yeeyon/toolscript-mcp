@@ -83,6 +83,8 @@ The server binds the root one time, at the start, from the real path of each ent
 3. Else Workspace is unavailable. The reason says to start the client in one of the entries.
 
 The session root must pass the same refusals as an entry. The compare of paths ignores case on Windows and macOS.
+A backslash separates the parts of a real path on Windows only. On Linux and macOS it is a letter of a name, so the start
+folder `/home/me/projects\app` is not inside the entry `/home/me/projects/app`.
 
 A start folder alone never grants access. The model never names a root. Two sessions in two worktrees have two roots,
 and they share no state. The provider records the identity of the root folder. If another folder replaces the root,
@@ -119,7 +121,11 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
   `hash` is `sha256:` and the hex digest of the bytes of the whole file.
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8.
   `search` skips such files and files over 1 MiB, and counts them in `skipped`. It cuts each `text` at 400 characters.
-- `search` stops at 20,000 files or 10 seconds, and `list` at 5,000 entries. Both then set `truncated`.
+- `search` and `list` stop after they visit 20,000 names or run 10 seconds, whatever the names are: a file, a folder, a
+  link, a name that an `include` or an exclusion drops. `list` also stops at 5,000 entries. Each then sets `truncated`.
+  So a tree with no match for the `include`, or one of folders only, ends too.
+- `read` and `search` read through the handle at most one byte more than their limit (4 MiB and 1 MiB), whatever the
+  size said when the file was opened. A file that holds more is refused by `read` and skipped by `search`.
 - `include` holds up to 16 globs with `*`, `?` and `**`, over paths from the session root, matched in bounded time: a
   glob has at most 200 characters and 6 wildcards. `list` and `search` do not enter a folder of `skip`, unless `path`
   names it or a folder inside it.
@@ -169,8 +175,12 @@ A listing by name gives candidates only. Each entry is opened and proven before 
 The provider tests its method one time for each process, at the first use, in a temp folder. If the test fails, Workspace
 is unavailable and the reason says why. Such cases are Linux with no `/proc`, a macOS kernel that ignores the flag, and a
 volume with no file identity. On every OS the root volume must also give a file identity.
-A listing (`names`) of a folder is a candidate list. On Windows and macOS the folder is proven again after the listing.
-On Linux a folder is held open, so its names are exact.
+A listing (`names`) of a folder is a candidate list, and so is the `lstat` of an entry (its kind and size). On Windows
+and macOS these are read by path, because Node has no lookup relative to a handle there. So each such read is bracketed:
+the folder must show as the proven one (no link, same identity) right before the read and right after it, and a call
+that fails a proof drops what it read. On Linux a folder is held open, so its names and entries are exact.
+The root of a Linux session is opened first and then compared with its path (`lstat` of the path, no link, same identity
+as the held folder), so a swap of the root around its open fails the start with `root-changed`.
 
 ### What was measured
 
@@ -193,9 +203,23 @@ open, and two times `realpath` and `lstat`). Exactly one family reads outside: o
 (masks 42 and 43 on Windows 11, Node 22). A swap fails with `EPERM` while the inside file is open, so each pattern that
 needs one cannot happen. The Linux run, in Docker, shows no pattern that reads outside.
 
+`list` and `stat` have a family of their own on Windows and macOS, found by the same test over every pattern. The proof of
+the folder (open, then `realpath` and `lstat` two times) shows no pattern that lists outside, because `lstat` of the
+folder itself sees the junction. The reads of the enumeration are by path: `readdir`, the `lstat` of an entry and, for
+the real spelling of `stat`, `realpath`. Each is between two proofs of the folder. The only leak is a read that is
+outside while the proof lookups right before and right after it are inside, so the folder alternates at each lookup
+(for `list b`: out at the `readdir`, or at the `lstat` of an entry, and in at every other lookup). Two lookups in a row
+that are outside, or the last lookup outside, are refused. Before the proofs, a swap out at the `readdir` and at the
+`lstat` of an entry, and in at the one proof between them, listed `b/<outside name>` with its size. The test names the
+family (`alternating` in `tests/workspace-fs.test.ts`) and fails on any other pattern. macOS has the same family for
+`list` and `stat`: its `read` is exact, because each open refuses a link in any part. An exact `list` on macOS needs an
+open of each entry with a flag that opens a link itself (`O_SYMLINK` with `O_NOFOLLOW_ANY`), which was not measured: it
+is a follow-up.
+
 | Case | Result | Who can do it |
 | --- | --- | --- |
 | Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root. A write into one whose bytes match `expectedHash`. An empty new file or folder outside. | A process that writes in the root and runs at that moment. |
+| Windows and macOS: a swap of a folder in turn with the proofs of one listing or `stat` | A name, a size or a kind from outside the root, in `list` or `stat`. No byte of a file. | The same. |
 | macOS: a swap during the make of a new folder | An empty folder outside the root. | The same. |
 | Each OS: a file or folder moved into the root | It is in the root. | The same. |
 | Each OS: a task | Any act of the user. A task is not confined. | The project code that the task runs. |
