@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- A run that names a server still connecting is told how long the connect has run and to run again. A connect that stalls fails after 30 s.
+- A run that names a server still connecting is told how long the connect has run and to run again. A connect that stalls after the transport started fails after 30 s.
 - SigV4: AWS credentials that fail to refresh in their last 5 minutes keep signing requests until they expire.
 - SigV4: a clear error when the AWS CLI does not answer in 30 s, or is version 1. A secret in the error line of a `credential_process` helper is hidden.
 - `toolscript-mcp login` on a `sigv4` entry says that it needs no login and names the `aws sso login` command.

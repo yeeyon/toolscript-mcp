@@ -880,14 +880,17 @@ describe('a connect that never finishes', () => {
       await new Promise(resolve => setTimeout(resolve, 1500))
       return original.call(this)
     }
-    const { fake, downstream, state } = await stalled(false, false, 1000)
     try {
-      await downstream.settled
-      assert.equal(state()?.status, 'connected')
+      const { fake, downstream, state } = await stalled(false, false, 1000)
+      try {
+        await downstream.settled
+        assert.equal(state()?.status, 'connected')
+      } finally {
+        await downstream.close()
+        await fake.close()
+      }
     } finally {
       proto.start = original
-      await downstream.close()
-      await fake.close()
     }
   })
 
