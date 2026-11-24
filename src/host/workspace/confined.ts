@@ -89,9 +89,10 @@ const idOf = (st: fs.BigIntStats): FileId => ({ dev: st.dev, ino: st.ino })
 
 /**
  * True when two stats name one file. Node 22.13 on Windows gives `dev` 0 for `lstat` and `stat` of a path, and the volume
- * serial for `fstat`, so a `dev` of 0 matches any: the file id alone is then compared. A real `dev` that differs never matches.
+ * serial for `fstat`, so on Windows a `dev` of 0 matches any: the file id alone is then compared. A real `dev` that differs never matches.
  */
-const sameId = (a: FileId, b: FileId): boolean => a.ino === b.ino && (a.dev === b.dev || a.dev === 0n || b.dev === 0n)
+const sameId = (a: FileId, b: FileId): boolean =>
+  a.ino === b.ino && (a.dev === b.dev || (process.platform === 'win32' && (a.dev === 0n || b.dev === 0n)))
 
 /** `lstat`, or undefined when nothing is there. */
 const lstatOrNothing = async (file: string): Promise<fs.Stats | undefined> => {

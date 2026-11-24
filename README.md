@@ -1191,6 +1191,7 @@ says why. On macOS, the CI run of the repo decides if the method works. A macOS 
 
 - On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root.
 - On Windows and macOS, a swap can alternate with each lookup of a `list` or a `stat`. Then it can show a name, a size or a kind from outside the root. It never shows the bytes of a file.
+- On Windows, the same can happen for a folder in the middle of a path, such as `b` in `list b/c`: the swap must be out at the open of `b/c` and then alternate. Later lookups can be outside in a row.
 - Both cases need a process of another account, or a process with fewer rights. Code that runs as you can read the files itself.
 - Give Workspace a root that only your account can write. On Windows, `toolscript-mcp doctor` reads the access rules of the root and warns when another account can write.
 - A program that Workspace feeds with file text can send that text to any other tool that the policy allows. Keep the policy narrow for a root with private files.

@@ -789,19 +789,23 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     }
   }
 
-  const setup = (t: TestContext) => {
+  const setup = (t: TestContext, nested = false) => {
     const dirs = folders(t)
     const root = dirs()
     const outside = dirs()
     const secret = marker()
-    write(root, { 'b/id.txt': 'inside file' })
     // The outside folder has a file of the same name with other bytes, and a file whose name is the secret.
-    write(outside, { 'id.txt': `outside ${secret}`, [`${secret}.txt`]: 'x'.repeat(777) })
+    // A nested probe looks at `b/c`, so `b` is a middle part of the path: the same files sit in `c` of each.
+    const at = nested ? 'c/' : ''
+    write(root, { [`b/${at}id.txt`]: 'inside file' })
+    write(outside, { [`${at}id.txt`]: `outside ${secret}`, [`${at}${secret}.txt`]: 'x'.repeat(777) })
     return { root, outside, secret, swap: swapper(root, outside) }
   }
 
   /** A tool call, what an inside result looks like, and which lookups of it a sweep may vary. */
   type Probe = {
+    /** True when the probe looks at `b/c`, a folder under the swapped one. */
+    readonly nested?: boolean
     readonly tool: string
     readonly args: Record<string, unknown>
     /** True when the structured result shows nothing but the inside file. */
@@ -810,6 +814,8 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
      * The ranges `[from, to)` of lookups over which a sweep tries every pattern, given the lookups of one call and the
      * index `cut` of the first lookup that is not the proof of the folder `b`.
      */
+    /** When set, a sweep varies only these lookups (at most 9), and the others stay inside. */
+    readonly free?: (lookups: readonly string[]) => number[]
     readonly windows: (lookups: readonly string[], cut: number) => [number, number][]
     /** The leaking patterns that the ADR names for this call and system, as a test of the mask. */
     readonly known: (mask: number, lookups: readonly string[]) => boolean
@@ -827,7 +833,27 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     })
 
   const inside = { path: 'b/id.txt', type: 'file', size: 'inside file'.length }
-  const probes: Record<'read' | 'list' | 'stat', Probe> = {
+  const insideNested = { ...inside, path: 'b/c/id.txt' }
+  /**
+   * The family of Windows for a folder that is a middle part of the path (`b` of `b/c`): the proof of `b/c` (open,
+   * then `realpath` and `lstat` two times) falls into the read family, because the `lstat` of `b/c` does not see a
+   * junction at `b`, and the folder then holds the outside id. Every lookup after the proof may be any. The alternating
+   * family of a flat folder holds too, and so does the first lookup, which stats the root.
+   */
+  const nestedKnown = (mask: number, lookups: readonly string[]): boolean => {
+    if (alternating(mask, lookups)) return win || mac
+    if (!win) return false
+    const from = lookups.indexOf('open')
+    return lookups.every((_, i) => i < from || i >= from + 5 || ((mask >> i) & 1) === ((i - from) % 2 === 0 ? 1 : 0))
+  }
+  /**
+   * The lookups of a nested call that a sweep varies, at most 9 (512 patterns), in one range of the mask space: all but
+   * the check of the root (the root is not the swapped folder), the `lstat` of `b/c` after the proof, and the lookups
+   * after the first 10 (the `lstat` of the entry after the first one). The others stay inside.
+   */
+  const nestedFree = (lookups: readonly string[]): number[] =>
+    lookups.map((_, i) => i).filter(i => i >= 1 && i !== 6 && i < 11)
+  const probes: Record<'read' | 'list' | 'stat' | 'listNested' | 'statNested', Probe> = {
     read: {
       tool: 'read',
       args: { path: 'b/id.txt' },
@@ -861,6 +887,25 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
       ],
       known: (mask, lookups) => (win || mac) && alternating(mask, lookups),
     },
+    // One range over the proof and the lookups after it, so that a pattern of the proof followed by any other is tried.
+    listNested: {
+      nested: true,
+      tool: 'list',
+      args: { path: 'b/c' },
+      safe: r => r.entries.every((e: unknown) => JSON.stringify(e) === JSON.stringify(insideNested)),
+      windows: lookups => [[0, lookups.length]],
+      free: nestedFree,
+      known: nestedKnown,
+    },
+    statNested: {
+      nested: true,
+      tool: 'stat',
+      args: { path: 'b/c/id.txt' },
+      safe: r => r.type === 'missing' || JSON.stringify(r) === JSON.stringify(insideNested),
+      windows: lookups => [[0, lookups.length]],
+      free: nestedFree,
+      known: nestedKnown,
+    },
   }
 
   /**
@@ -870,7 +915,7 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
    */
   const sweep = async (t: TestContext, name: keyof typeof probes): Promise<number[]> => {
     const probe = probes[name]
-    const { root, secret, swap } = setup(t)
+    const { root, secret, swap } = setup(t, probe.nested)
     let hook: Hook = () => {}
     const rig = await rigOf(t, root, { hook: name => hook(name) })
     if (rig === undefined) return []
@@ -879,12 +924,12 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
       hook = lookup => void seen.push(lookup)
       const r = await rig.client.callTool({ name: tool, arguments: args })
       assert.ok(r.isError !== true, `${tool} failed with no swap: ${JSON.stringify(r.content)}`)
-      assert.ok(probe.safe(r.structuredContent) || tool !== probe.tool, `${tool} with no swap: ${JSON.stringify(r)}`)
+      assert.ok(probe.safe(r.structuredContent) || args !== probe.args, `${tool} with no swap: ${JSON.stringify(r)}`)
       return seen
     }
     const lookups = await record(probe.tool, probe.args)
     // The lookups of the proof of `b` alone: those of a listing before its first read of the names.
-    const listed = await record('list', { path: 'b' })
+    const listed = await record('list', { path: probe.nested ? 'b/c' : 'b' })
     const cut = listed.indexOf('readdir') - (rig.bound.method === 'proc' ? 0 : 1)
     assert.ok(cut >= 1 && cut < lookups.length + 1, `the proof of a folder: ${listed.join(',')}`)
     assert.ok(lookups.length >= 2 && lookups.length <= 12, `the lookups of ${name}: ${lookups.join(',')}`)
@@ -892,8 +937,10 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     let impossible = 0
     let calls = 0
     for (const [from, to] of probe.windows(lookups, cut)) {
-      for (let pattern = 0; pattern < 1 << (to - from); pattern++) {
-        const mask = pattern << from
+      const free = probe.free?.(lookups)
+      assert.ok(free === undefined || free.length <= 9, `a nested sweep is at most 512 patterns: ${lookups.join(',')}`)
+      for (let pattern = 0; pattern < 1 << (free?.length ?? to - from); pattern++) {
+        const mask = free ? free.reduce((m, at, k) => m | (((pattern >> k) & 1) << at), 0) : pattern << from
         let at = 0
         let stuck = false
         hook = () => {
@@ -942,6 +989,14 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
 
   test('every pattern of in and out over the lookups of a stat refuses or shows only the inside file', async t => {
     await sweep(t, 'stat')
+  })
+
+  test('every pattern of in and out over the lookups of a listing of a nested folder refuses or lists only the inside entries', async t => {
+    await sweep(t, 'listNested')
+  })
+
+  test('every pattern of in and out over the lookups of a stat of a nested file refuses or shows only the inside file', async t => {
+    await sweep(t, 'statNested')
   })
 
   test('a loop that swaps the folder for at most 2 s while at most 300 reads, listings and stats run shows no outside byte', async t => {

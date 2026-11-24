@@ -208,8 +208,16 @@ the folder (open, then `realpath` and `lstat` two times) shows no pattern that l
 folder itself sees the junction. The reads of the enumeration are by path: `readdir`, the `lstat` of an entry and, for
 the real spelling of `stat`, `realpath`. Each is between two proofs of the folder. The only leak is a read that is
 outside while the proof lookups right before and right after it are inside, so the folder alternates at each lookup
-(for `list b`: out at the `readdir`, or at the `lstat` of an entry, and in at every other lookup). Two lookups in a row
-that are outside, or the last lookup outside, are refused. Before the proofs, a swap out at the `readdir` and at the
+(for `list b`: out at the `readdir`, or at the `lstat` of an entry, and in at every other lookup). For a folder that is
+the first part of the path, two lookups in a row that are outside, or the last lookup outside, are refused.
+
+A folder that is a middle part of the path (`b` of `list b/c` or `stat b/c/x`) has a second family on Windows. The
+`lstat` of `b/c` does not see a junction at `b`, so the proof of `b/c` (open, then `realpath` and `lstat` two times)
+falls into the read family: out at the open, then in and out in turn. The folder then holds the outside id, every later
+proof passes, and the lookups after the proof may be outside in a row (masks 010101111 and 110101111 of `list b/c`). A
+name, and through the `lstat` of an entry a size, from outside is listed. No byte of a file is. The nested sweep
+(`listNested` and `statNested` in the test) varies the lookups over one range of the mask space and fails on a leaking
+pattern that is in neither family. Before the proofs, a swap out at the `readdir` and at the
 `lstat` of an entry, and in at the one proof between them, listed `b/<outside name>` with its size. The test names the
 family (`alternating` in `tests/workspace-fs.test.ts`) and fails on any other pattern. macOS has the same family for
 `list` and `stat`: its `read` is exact, because each open refuses a link in any part. An exact `list` on macOS needs an
