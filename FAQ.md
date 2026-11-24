@@ -10,6 +10,7 @@ Do not paste a real token into a config or a bug report.
 - [How do I move a GitHub clone setup to npm?](#how-do-i-move-a-github-clone-setup-to-npm)
 - [How do I add servers?](#how-do-i-add-servers)
 - [How can a program read my project files without Claude Code?](#how-can-a-program-read-my-project-files-without-claude-code)
+- [How can a program run my tests?](#how-can-a-program-run-my-tests)
 - [How can I try it without an account?](#how-can-i-try-it-without-an-account)
 - [Why did the model use the server tool directly, find no tools, or stop for approval?](#why-did-the-model-use-the-server-tool-directly-find-no-tools-or-stop-for-approval)
 - [What do I try when setup fails?](#what-do-i-try-when-setup-fails)
@@ -204,11 +205,26 @@ inside toolscript-mcp, so it needs no Claude Code and no other process. It is of
 3. Ask the model to search the project. It calls `mcp__workspace__search` and `mcp__workspace__read` from one program.
 
 The read tools run with no `allow` rule. Each result is untrusted text. Paths such as `.git`, `.env` and `*.pem` never show.
-A link out of the root is refused. The tools cannot edit a file or run a test yet.
+A link out of the root is refused. The tools cannot edit a file yet. They can run your tests as a named task: see
+[How can a program run my tests?](#how-can-a-program-run-my-tests).
 
 If `search_tools` lists Workspace under "Not connected", read the reason. With several entries in `roots`, start your client
 in one of the folders. Run `toolscript-mcp doctor` for the check of the root. See
 [What stays possible](README.md#what-stays-possible) before you give Workspace a folder that other accounts can write.
+
+## How can a program run my tests?
+
+Add a named task to the root entry of the [Workspace](README.md#named-tasks). The model sends only the name, so it never
+chooses the program or the arguments.
+
+1. Add `tasks` to the entry:
+   `"tasks": { "test": { "command": "node", "args": ["--test"] } }`. Restart your client.
+2. The program calls `mcp__workspace__run_task` with `{ "task": "test" }`. It returns the exit code and the output.
+3. The call asks you first. To skip the prompt, add an `allow` rule with the exact name `mcp__workspace__run_task`.
+
+The rules `*`, `mcp__*` and `mcp__workspace__*` do not allow a task. A task runs project code with your rights, and nothing
+contains it. A non-zero exit code is a result, not an error. On Windows, a `.cmd`, `.bat` or `.ps1` file cannot be the
+command. Use `node` with the script as the first argument. Run `toolscript-mcp doctor` to see a task that cannot run.
 
 ## How can I try it without an account?
 

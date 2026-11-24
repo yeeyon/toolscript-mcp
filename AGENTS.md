@@ -17,7 +17,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   the stale decision), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
   note on `Promise.all`), `workspace.ts` (the built-in Workspace, issue #144: the tool table with a class for each
   tool, the limits, the check of a path text, globs, exclusions, the refusal of a root, the binding of a session to its
-  root and the input of each tool). An allow rule allows a tool of a bridge only when its match starts with
+  root and the input of each tool) and `task.ts` (its named tasks: the shape of a task, the checks of its text, the
+  variable list, the texts of the cap and of an unknown task). An allow rule allows a tool of the exec class
+  (`run_task`) only when its match is the exact name. An allow rule allows a tool of a bridge only when its match starts with
   `mcp__<key>__` (`counts` in `policy.ts`). `policy.ts` takes one `Guards` value: the bridges, and whether the built-in
   Workspace is on, so that its read tools run with no rule. `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
   checks, such as `hiddenBy` (one glob covers another).
@@ -83,7 +85,10 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     root and a `Hook` that runs before each lookup of a name, so a test swaps a folder between two lookups. `provider.ts`:
     the in-process MCP server over an SDK `InMemoryTransport`, one handler for each entry of `WORKSPACE_TOOLS`. `bind.ts`:
     the binding of a session to its root at the start (`bindWorkspace`), and the link that `downstream.ts` takes. The
-    broker never shares it, and it is never lazy. `tests/workspace-rig.ts` is the helper of its tests.
+    broker never shares it, and it is never lazy. `task.ts`: `resolveTasks` finds each task once at the start (`PATH`
+    lookup, the `.exe` rule of Windows, the proof of the folder), and `createTaskRunner` runs one task at a time with
+    `node:child_process` (no shell, no `cross-spawn`), the caps, the time limit and the end of the process tree
+    (`endTree` of `broker.ts`). `tests/workspace-rig.ts` is the helper of its tests, and `tests/task-child.mjs` is the child of the task tests.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only.
