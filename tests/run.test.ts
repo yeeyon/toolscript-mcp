@@ -1053,7 +1053,7 @@ describe('the check before a run', () => {
     const { run, called } = setup({
       others: [
         { key: 'g' as ServerKey, status: 'failed', reason: 'the connection closed' },
-        { key: 'h' as ServerKey, status: 'connecting' },
+        { key: 'h' as ServerKey, status: 'connecting', elapsedMs: 4200 },
       ],
     })
     const r = await run(
@@ -1064,7 +1064,7 @@ describe('the check before a run', () => {
       [
         'Error: the program did not run, because of the calls below. No call was made.',
         '- line 1: the MCP server "g" is not connected: the connection closed',
-        '- line 2: the MCP server "h" is not connected: it is still connecting',
+        '- line 2: the MCP server "h" is not connected: it is still connecting (4 s so far). Run the program again in a moment.',
         '- line 3: no MCP tool "mcp__k__echo" is connected (did you mean "mcp__f__echo"?)',
       ].join('\n'),
     )
@@ -2420,7 +2420,10 @@ describe('a run waits only for the servers that it names', () => {
       try {
         const { run } = setup({ downstream })
         const r = await run('return await call("mcp__h__probe", {})')
-        assert.ok(r.text.includes('the MCP server "h" is not connected: it is still connecting'), r.text)
+        assert.match(
+          r.text,
+          /the MCP server "h" is not connected: it is still connecting \(\d+ s so far\)\. Run the program again in a moment\./,
+        )
         assert.ok(!r.text.includes('no MCP tool'), r.text)
       } finally {
         await downstream.close()

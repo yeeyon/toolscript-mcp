@@ -14,6 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { getEventListeners } from 'node:events'
@@ -788,5 +789,120 @@ describe('settledFor', () => {
     open()
     await downstream.settled
     assert.equal(await pending(downstream.settledFor([key('f'), key('h'), key('x')])), false)
+  })
+})
+
+/** An HTTP MCP server that answers `initialize`, and while `stall.on` never answers the `initialized` notification. */
+const startStall = async () => {
+  const stall = { on: true }
+  const server = http.createServer(async (req, res) => {
+    if (req.method !== 'POST') return void res.writeHead(405).end()
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    if (body.method === 'notifications/initialized') return stall.on ? void 0 : void res.writeHead(202).end()
+    const result =
+      body.method === 'initialize'
+        ? {
+            protocolVersion: body.params.protocolVersion,
+            capabilities: { tools: {} },
+            serverInfo: { name: 's', version: '1' },
+          }
+        : { tools: [{ name: 'ping', inputSchema: { type: 'object' } }] }
+    res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'stall' })
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }))
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  return {
+    stall,
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    close: () =>
+      new Promise<void>(resolve => {
+        server.close(() => resolve())
+        server.closeAllConnections()
+      }),
+  }
+}
+
+describe('a connect that never finishes', () => {
+  const stalled = async (untrusted = false, stalling = true, connectTimeoutMs = 300) => {
+    const fake = await startStall()
+    fake.stall.on = stalling
+    const lines: string[] = []
+    const server: ServerConfig = {
+      kind: 'http',
+      url: fake.url,
+      headers: {},
+      ...(untrusted && { untrusted: true as const }),
+    }
+    const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line), {
+      connectTimeoutMs,
+      firstWaitMs: 5000,
+    })
+    opened.push(downstream)
+    const state = () => downstream.states()[0]
+    return { fake, downstream, lines, state }
+  }
+  const TIMEOUT = 'the connect did not finish within 0.3 s'
+
+  test('fails with a reason after the connect time limit, and logs one line', async () => {
+    const { fake, downstream, lines, state } = await stalled()
+    try {
+      await downstream.settled
+      const s = state()
+      assert.deepEqual(s?.status === 'failed' ? s.reason : s?.status, TIMEOUT)
+      assert.deepEqual(lines, [`p: failed: ${TIMEOUT}`])
+    } finally {
+      await downstream.close()
+      await fake.close()
+    }
+  })
+
+  test('the next use connects again, and a server that answers then ends connected', async () => {
+    const { fake, downstream, state } = await stalled()
+    try {
+      await downstream.settled
+      assert.equal(state()?.status, 'failed')
+      fake.stall.on = false
+      const link = await downstream.client(KEY)
+      assert.equal(link.ok, true)
+      assert.equal(state()?.status, 'connected')
+    } finally {
+      await downstream.close()
+      await fake.close()
+    }
+  })
+
+  test('a slow start() is not part of the limit: the time starts after it', async () => {
+    const proto = StreamableHTTPClientTransport.prototype
+    const original = proto.start
+    proto.start = async function (this: StreamableHTTPClientTransport) {
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      return original.call(this)
+    }
+    try {
+      const { fake, downstream, state } = await stalled(false, false, 1000)
+      try {
+        await downstream.settled
+        assert.equal(state()?.status, 'connected')
+      } finally {
+        await downstream.close()
+        await fake.close()
+      }
+    } finally {
+      proto.start = original
+    }
+  })
+
+  test('a marked server shows the same reason, with no text of the server', async () => {
+    const { fake, downstream, state } = await stalled(true)
+    try {
+      await downstream.settled
+      const s = state()
+      assert.deepEqual(s?.status === 'failed' ? s.reason : s?.status, TIMEOUT)
+    } finally {
+      await downstream.close()
+      await fake.close()
+    }
   })
 })

@@ -20,7 +20,7 @@ export type DownstreamTool = {
  * with the reason. A connected server whose connection closes becomes failed.
  */
 export type ServerState =
-  | { readonly key: ServerKey; readonly status: 'connecting' }
+  | { readonly key: ServerKey; readonly status: 'connecting'; readonly elapsedMs?: number }
   | { readonly key: ServerKey; readonly status: 'connected'; readonly tools: readonly DownstreamTool[] }
   | { readonly key: ServerKey; readonly status: 'failed'; readonly reason: string }
   /**
@@ -148,7 +148,7 @@ export const notConnected = (s: ServerState): string | undefined =>
           ? s.reason
           : s.status === 'asleep'
             ? 'it is asleep and did not start. After 3 starts in 60 s a wait applies, and then it starts on the next call that names it'
-            : 'it is still connecting'
+            : `it is still connecting (${Math.floor(Math.max(0, s.elapsedMs ?? 0) / 1000)} s so far). Run the program again in a moment.`
       }`
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)

@@ -209,7 +209,7 @@ export const startLists = (
  * text of the server or its child, for a server whose text is untrusted.
  */
 type Link =
-  | { readonly status: 'connecting'; readonly done: Promise<void> }
+  | { readonly status: 'connecting'; readonly done: Promise<void>; readonly since: number }
   | {
       readonly status: 'connected'
       readonly client: Client
@@ -464,6 +464,8 @@ export type ConnectOptions = {
   readonly listFloorMs?: number
   /** The longest wait in ms of `settled` and `settledFor` after the start: a test sets it. */
   readonly firstWaitMs?: number
+  /** The longest time in ms of the whole connect of one server: CONNECT_TIMEOUT_MS unless a test sets it. */
+  readonly connectTimeoutMs?: number
   /**
    * Gets what each stdio child writes to stderr. The running server passes it on to its own stderr, the log of the
    * client. `toolscript-mcp tools` drops it, so it prints only its own lines. No reason holds that text: `redact` hides
@@ -515,6 +517,7 @@ export const connectAll = (
     refreshTimeoutMs = REFRESH_TIMEOUT_MS,
     listFloorMs = LIST_FLOOR_MS,
     firstWaitMs = FIRST_WAIT_MS,
+    connectTimeoutMs = CONNECT_TIMEOUT_MS,
     childStderr = chunk => void process.stderr.write(chunk),
     unshown = UNSHOWN,
     share,
@@ -634,7 +637,30 @@ export const connectAll = (
         // A shutdown that began before this child started hurries it at once.
         if (closing) made.child.hurry()
       }
-      await client.connect(made.transport, { timeout: CONNECT_TIMEOUT_MS })
+      // The SDK limits only the initialize request, so a server that never answers the next step stays connecting.
+      // The limit starts when `start()` ends: a shared server has its own limits for the broker and the child in it.
+      let timer: NodeJS.Timeout | undefined
+      let arm!: () => void
+      const expired = new Promise<never>((_, reject) => {
+        arm = () => {
+          timer = setTimeout(
+            () => reject(new OwnError(`the connect did not finish within ${connectTimeoutMs / 1000} s`)),
+            connectTimeoutMs,
+          )
+        }
+      })
+      const start = made.transport.start.bind(made.transport)
+      made.transport.start = async () => {
+        await start()
+        arm()
+      }
+      const connecting = client.connect(made.transport, { timeout: connectTimeoutMs })
+      try {
+        await Promise.race([connecting, expired])
+      } finally {
+        clearTimeout(timer)
+        connecting.catch(() => {})
+      }
       const first = await list()
       // The old list can lack a new mark, so lists that stop fail the link, and the next use connects and lists anew.
       lists = startLists(
@@ -711,7 +737,7 @@ export const connectAll = (
       await after
       await connect(key, server, woke)
     })().finally(() => waking.delete(key))
-    links.set(key, { status: 'connecting', done })
+    links.set(key, { status: 'connecting', done, since: performance.now() })
     return done
   }
 
@@ -765,7 +791,8 @@ export const connectAll = (
   const longWait = (key: ServerKey): boolean => links.get(key)?.status === 'asleep' || waking.has(key)
 
   const stateOf = (key: ServerKey, link: Link): ServerState => {
-    if (link.status === 'connecting') return { key, status: 'connecting' }
+    if (link.status === 'connecting')
+      return { key, status: 'connecting', elapsedMs: Math.max(0, performance.now() - link.since) }
     if (link.status === 'connected') return { key, status: 'connected', tools: link.lists.tools() }
     if (link.status === 'asleep') return { key, status: 'asleep', tools: link.tools }
     const wait = closing ? 0 : capWait(key)
@@ -797,7 +824,7 @@ export const connectAll = (
             })
           : attempt(key, server)
       first.set(key, done)
-      if (!links.has(key)) links.set(key, { status: 'connecting', done })
+      if (!links.has(key)) links.set(key, { status: 'connecting', done, since: performance.now() })
       return done
     }
     const reason = invalidReason(server.errors)
