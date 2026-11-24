@@ -720,17 +720,29 @@ return open`,
 })
 
 describe('tools workspace', () => {
-  test('lists the four tools of the built-in Workspace, read-only and allowed with no rule', async () => {
+  test('lists the read tools and diff of the built-in Workspace, read-only and allowed with no rule', async () => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(ROOT, 'ws-root-')))
     const s = setup({ mcpServers: {}, workspace: { roots: [{ path: root }] } })
     assert.equal(await s.tools('workspace'), 0, s.printed.join('\n'))
     assert.deepEqual(s.printed, [
-      'workspace: connected, 4 tools',
+      'workspace: connected, 5 tools',
       'mcp__workspace__list read-only allow',
       'mcp__workspace__search read-only allow',
       'mcp__workspace__read read-only allow',
       'mcp__workspace__stat read-only allow',
+      'mcp__workspace__diff read-only allow',
     ])
+  })
+
+  test('with a write grant it also lists edit and write, which ask', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(ROOT, 'ws-write-')))
+    const s = setup({ mcpServers: {}, workspace: { roots: [{ path: root, write: true }] } })
+    assert.equal(await s.tools('workspace'), 0, s.printed.join('\n'))
+    assert.deepEqual(s.printed.slice(0, 1), ['workspace: connected, 7 tools'])
+    assert.ok(s.printed.includes('mcp__workspace__edit destructive ask'), s.printed.join('\n'))
+    assert.ok(s.printed.includes('mcp__workspace__write destructive ask'), s.printed.join('\n'))
+    // An allow rule for the exact name is the one a person can add: the printed command names it.
+    assert.match(s.printed.join('\n'), /mcp__workspace__edit/)
   })
 
   test('says why the root is unavailable, with no path', async () => {

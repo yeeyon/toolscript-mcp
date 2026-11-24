@@ -32,6 +32,18 @@ export const LIMITS = {
   queryChars: 1_000,
   roots: 16,
   configGlobs: 64,
+  /** `edits` of one call. */
+  edits: 50,
+  /** Matches of one `old` with `all: true`. */
+  replacements: 10_000,
+  /** The unified diff is cut at this many characters. */
+  diffChars: 64 * 1024,
+  /** Lines of context around each change in a diff. */
+  context: 3,
+  /** A change waits this long for the lock of its file, then fails with `busy`. */
+  lockWaitMs: 2_000,
+  /** A lock file older than this, or of a dead process, is taken over. */
+  lockStaleMs: 30_000,
 } as const
 
 /** The folders that `list` and `search` do not enter. It is not access control: `path` can name one. */
@@ -64,6 +76,13 @@ export type WorkspaceCode =
   | 'unavailable'
   | 'cancelled'
   | 'io'
+  // Pull request B: the editing tools.
+  | 'read-only'
+  | 'stale'
+  | 'busy'
+  | 'exists'
+  | 'no-match'
+  | 'many-matches'
 
 /** A failed call. The message starts with the code and holds no byte or name from outside the root. */
 export class WorkspaceError extends Error {
@@ -355,14 +374,65 @@ export type WorkspaceConfig = {
 // The tools
 
 /**
- * What a tool may do. The policy gives each class its default (policy.ts). `read`: runs with no rule. `exec`: runs
- * project code, so it asks, and only the exact allow rule for its name allows it.
+ * What a tool may do. The policy gives each class its default (policy.ts). `read`: runs with no rule. `write`: changes
+ * files under the root, so it asks, and an allow rule must name the server or the tool. `exec`: runs project code, so
+ * it asks, and only the exact allow rule for its name allows it.
  */
-export type ToolClass = 'read' | 'exec'
+export type ToolClass = 'read' | 'write' | 'exec'
 
 const entryType = { type: 'string', enum: ['file', 'folder', 'link', 'other'] } as const
 
 const pathArg = (description: string) => ({ type: 'string', description }) as const
+
+const hashArg = (description: string) => ({ type: 'string', pattern: '^sha256:[0-9a-f]{64}$', description }) as const
+
+const editsArg = {
+  type: 'array',
+  minItems: 1,
+  maxItems: LIMITS.edits,
+  description: 'The replacements. Each old is matched against the file as it was read, so no edit sees another.',
+  items: {
+    type: 'object',
+    properties: {
+      old: { type: 'string', description: 'The exact text to replace, with its line ends and spaces.' },
+      new: { type: 'string', description: 'The text that replaces it.' },
+      all: { type: 'boolean', description: 'Replace each match, not only a single one. Default false.' },
+    },
+    required: ['old', 'new'],
+    additionalProperties: false,
+  },
+} as const
+
+/** What diff, edit and write return. `applied` is false for diff, and for a call that changed no byte. */
+const changeSchema = {
+  type: 'object',
+  properties: {
+    path: { type: 'string' },
+    applied: { type: 'boolean' },
+    created: { type: 'boolean' },
+    changed: { type: 'boolean' },
+    oldHash: { type: ['string', 'null'] },
+    newHash: { type: 'string' },
+    diff: { type: 'string' },
+    diffTruncated: { type: 'boolean' },
+    added: { type: 'integer' },
+    removed: { type: 'integer' },
+    warnings: { type: 'array', items: { type: 'string' } },
+  },
+  required: [
+    'path',
+    'applied',
+    'created',
+    'changed',
+    'oldHash',
+    'newHash',
+    'diff',
+    'diffTruncated',
+    'added',
+    'removed',
+    'warnings',
+  ],
+} as const
 
 /** One tool of the provider as tools/list shows it. */
 export const WORKSPACE_TOOLS = {
@@ -526,6 +596,57 @@ export const WORKSPACE_TOOLS = {
       ],
     },
   },
+  diff: {
+    class: 'read',
+    description:
+      'Preview a change to one file and write nothing. Give edits, as edit takes them, or content (a new file, or with expectedHash a whole replacement). Returns the unified diff, the counts and the hash the file would have.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: pathArg('The file, relative to the workspace root, with /.'),
+        expectedHash: hashArg(
+          'The hash that read returned. With content it selects a replacement of an existing file.',
+        ),
+        edits: editsArg,
+        content: { type: 'string', description: 'The whole new text of the file.' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    outputSchema: changeSchema,
+  },
+  edit: {
+    class: 'write',
+    description:
+      'Replace exact text in one existing file. Each old is matched against the file as read and must occur once, unless all is true. Needs the hash from read: a changed file fails with stale. Keeps line ends, the byte order mark and the mode. Needs approval.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: pathArg('The file, relative to the workspace root, with /.'),
+        expectedHash: hashArg('The hash that read returned for this file.'),
+        edits: editsArg,
+      },
+      required: ['path', 'expectedHash', 'edits'],
+      additionalProperties: false,
+    },
+    outputSchema: changeSchema,
+  },
+  write: {
+    class: 'write',
+    description:
+      'Make a new file, or with expectedHash replace a whole file. Without it, an existing path fails with exists. Makes missing folders. Needs approval.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: pathArg('The file, relative to the workspace root, with /.'),
+        content: { type: 'string', description: 'The whole text of the file.' },
+        expectedHash: hashArg('The hash that read returned, to replace an existing file.'),
+      },
+      required: ['path', 'content'],
+      additionalProperties: false,
+    },
+    outputSchema: changeSchema,
+  },
 } as const
 
 export type WorkspaceToolName = keyof typeof WORKSPACE_TOOLS
@@ -622,4 +743,338 @@ export type TaskInput = { task: string }
 export const parseTaskInput = (args: unknown): TaskInput => {
   const o = asObject(args, ['task'])
   return { task: text(o, 'task') }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pull request B: the input of diff, edit and write
+
+export type Edit = { old: string; new: string; all: boolean }
+export type EditInput = { path: string; expectedHash: string; edits: Edit[] }
+export type WriteInput = { path: string; content: string; expectedHash?: string }
+export type DiffInput = { path: string; expectedHash?: string; edits?: Edit[]; content?: string }
+
+const HASH = /^sha256:[0-9a-f]{64}$/
+
+// A UTF-16 unit of a surrogate pair with no partner. A pattern with no `u` flag reads units, not code points.
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+
+const hash = (o: Record<string, unknown>): string | undefined => {
+  const v = o.expectedHash
+  if (v === undefined) return undefined
+  return typeof v === 'string' && HASH.test(v)
+    ? v
+    : bad('expectedHash must be sha256: and 64 hex digits, as read returns it')
+}
+
+/** The text of a file or of an edit: a string that UTF-8 can hold and that has no NUL. */
+const body = (value: unknown, what: string): string => {
+  if (typeof value !== 'string') return bad(`${what} must be a string`)
+  if (LONE_SURROGATE.test(value))
+    throw new WorkspaceError('encoding', `${what} has a lone surrogate, which UTF-8 cannot hold`)
+  if (value.includes('\0')) throw new WorkspaceError('binary', `${what} has a NUL character, so it is not text`)
+  return value
+}
+
+const editList = (value: unknown): Edit[] => {
+  if (!Array.isArray(value) || value.length < 1 || value.length > LIMITS.edits)
+    return bad(`edits must be a list of 1 to ${LIMITS.edits} items`)
+  return value.map((item, i) => {
+    const o = asObject(item, ['old', 'new', 'all'])
+    const old = body(o.old, `edits[${i}].old`)
+    if (old === '') bad(`edits[${i}].old must not be empty`)
+    const all = o.all
+    if (all !== undefined && typeof all !== 'boolean') bad(`edits[${i}].all must be true or false`)
+    return { old, new: body(o.new, `edits[${i}].new`), all: all === true }
+  })
+}
+
+export const parseEditInput = (args: unknown): EditInput => {
+  const o = asObject(args, ['path', 'expectedHash', 'edits'])
+  const expectedHash = hash(o)
+  if (expectedHash === undefined) return bad('expectedHash is required: read the file and pass its hash')
+  return { path: text(o, 'path'), expectedHash, edits: editList(o.edits) }
+}
+
+export const parseWriteInput = (args: unknown): WriteInput => {
+  const o = asObject(args, ['path', 'content', 'expectedHash'])
+  const expectedHash = hash(o)
+  return {
+    path: text(o, 'path'),
+    content: body(o.content, 'content'),
+    ...(expectedHash !== undefined && { expectedHash }),
+  }
+}
+
+export const parseDiffInput = (args: unknown): DiffInput => {
+  const o = asObject(args, ['path', 'expectedHash', 'edits', 'content'])
+  if ((o.edits === undefined) === (o.content === undefined))
+    return bad('give edits or content, not both and not neither')
+  const expectedHash = hash(o)
+  return {
+    path: text(o, 'path'),
+    ...(expectedHash !== undefined && { expectedHash }),
+    ...(o.edits !== undefined && { edits: editList(o.edits) }),
+    ...(o.content !== undefined && { content: body(o.content, 'content') }),
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Edits and the unified diff. The text of a file is its bytes decoded as UTF-8 with the byte order mark taken off, so
+// a change is exact: the new bytes differ from the old only in the replaced ranges.
+
+/** A replaced range of the old text, and the edit that made it (`edit`, an index of `edits`, for the messages). */
+export type Range = { readonly start: number; readonly end: number; readonly text: string; readonly edit: number }
+
+/** The places of `old` in `text`. Overlapping places count when `overlap`, which a single edit needs to be sure it is unique. */
+const placesOf = (text: string, old: string, overlap: boolean, cap: number): number[] => {
+  const found: number[] = []
+  for (
+    let at = text.indexOf(old);
+    at >= 0 && found.length < cap;
+    at = text.indexOf(old, at + (overlap ? 1 : old.length))
+  )
+    found.push(at)
+  return found
+}
+
+/** The other spelling of the line ends of `old`, when `text` holds `old` only with those: the hint of `no-match`. */
+const lineEndHint = (text: string, old: string): string => {
+  const lf = old.replace(/\r\n/g, '\n')
+  const variants: [string, string][] = [
+    [lf, 'LF'],
+    [lf.replace(/\n/g, '\r\n'), 'CRLF'],
+  ]
+  for (const [variant, name] of variants)
+    if (variant !== old && text.includes(variant))
+      return ` The file has this text with ${name} line ends. Match its line ends in old, or use the same line ends as the file.`
+  return ''
+}
+
+/**
+ * The ranges that `edits` replace in `text`. Each `old` is matched against `text` as it is, never against the result of
+ * another edit, so the order of the list changes nothing. Fails with `no-match`, `many-matches` or, for two edits that
+ * replace the same text, `bad-input`. Changes nothing.
+ */
+export const planEdits = (text: string, edits: readonly Edit[]): Range[] => {
+  const ranges: Range[] = []
+  edits.forEach((e, i) => {
+    const at = e.all
+      ? placesOf(text, e.old, false, LIMITS.replacements + 1)
+      : placesOf(text, e.old, true, LIMITS.replacements + 1)
+    if (at.length === 0)
+      throw new WorkspaceError('no-match', `edits[${i}].old is not in the file.${lineEndHint(text, e.old)}`)
+    if (e.all && at.length > LIMITS.replacements)
+      throw new WorkspaceError('bad-input', `edits[${i}].old occurs more than ${LIMITS.replacements} times`)
+    if (!e.all && at.length > 1)
+      throw new WorkspaceError(
+        'many-matches',
+        `edits[${i}].old occurs ${at.length > LIMITS.replacements ? `more than ${LIMITS.replacements}` : at.length} times. Add context to old so it occurs once, or set all to true`,
+      )
+    for (const start of at) ranges.push({ start, end: start + e.old.length, text: e.new, edit: i })
+  })
+  ranges.sort((a, b) => a.start - b.start || a.edit - b.edit)
+  for (let k = 1; k < ranges.length; k++)
+    if (ranges[k]!.start < ranges[k - 1]!.end)
+      throw new WorkspaceError(
+        'bad-input',
+        `edits[${ranges[k - 1]!.edit}] and edits[${ranges[k]!.edit}] replace the same text`,
+      )
+  return ranges
+}
+
+/** `text` with the sorted, separate `ranges` replaced. */
+export const applyRanges = (text: string, ranges: readonly Range[]): string => {
+  let out = ''
+  let at = 0
+  for (const r of ranges) {
+    out += text.slice(at, r.start) + r.text
+    at = r.end
+  }
+  return out + text.slice(at)
+}
+
+/** The lines of `text`, each with its own line end. The last has none when the text does not end with a line end. */
+const splitLines = (text: string): string[] => {
+  const lines: string[] = []
+  for (let at = 0; at < text.length; ) {
+    const nl = text.indexOf('\n', at)
+    const end = nl < 0 ? text.length : nl + 1
+    lines.push(text.slice(at, end))
+    at = end
+  }
+  return lines
+}
+
+export type DiffResult = { diff: string; diffTruncated: boolean; added: number; removed: number }
+
+type LineChange = { at: number; del: string[]; add: string[] }
+
+/** The line changes of `ranges` in `text`: each changed line whole, then the lines that stay the same at the edges dropped. */
+const lineChanges = (text: string, ranges: readonly Range[]): LineChange[] => {
+  const lines = splitLines(text)
+  const starts: number[] = []
+  for (let at = 0, i = 0; i < lines.length; at += lines[i]!.length, i++) starts.push(at)
+  // The number of lines that start before `offset`.
+  const before = (offset: number): number => {
+    let lo = 0
+    let hi = starts.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (starts[mid]! < offset) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+  const endsWithBreak = text.endsWith('\n')
+  // The start of the line that holds `offset`. The end of a text with a final line end holds no line.
+  const lineStart = (offset: number): number =>
+    text.length === 0 || (offset >= text.length && endsWithBreak) ? text.length : starts[before(offset + 1) - 1]!
+  const lineEnd = (offset: number): number => {
+    if (text.length === 0 || (offset >= text.length && endsWithBreak)) return text.length
+    const next = before(offset + 1)
+    return next < starts.length ? starts[next]! : text.length
+  }
+  type Region = { lo: number; hi: number; parts: Range[] }
+  const regions: Region[] = []
+  for (const r of ranges) {
+    const lo = lineStart(r.start)
+    const hi = lineEnd(r.end > r.start ? r.end - 1 : r.start)
+    const last = regions.at(-1)
+    if (last !== undefined && lo < last.hi) {
+      last.hi = Math.max(last.hi, hi)
+      last.parts.push(r)
+    } else regions.push({ lo, hi, parts: [r] })
+  }
+  const newOf = (lo: number, hi: number, parts: readonly Range[]): string =>
+    applyRanges(
+      text.slice(lo, hi),
+      parts.map(r => ({ ...r, start: r.start - lo, end: r.end - lo })),
+    )
+  // A region whose new text loses its last line end joins the next line to it: take that line in, and every edit in it.
+  for (let k = 0; k < regions.length; k++) {
+    const g = regions[k]!
+    while (g.hi < text.length && !newOf(g.lo, g.hi, g.parts).endsWith('\n')) {
+      g.hi = lineEnd(g.hi)
+      while (k + 1 < regions.length && regions[k + 1]!.lo < g.hi) {
+        const next = regions.splice(k + 1, 1)[0]!
+        g.hi = Math.max(g.hi, next.hi)
+        g.parts.push(...next.parts)
+      }
+    }
+  }
+  const changes: LineChange[] = []
+  for (const { lo, hi, parts } of regions) {
+    const old = splitLines(text.slice(lo, hi))
+    const now = splitLines(newOf(lo, hi, parts))
+    let head = 0
+    while (head < old.length && head < now.length && old[head] === now[head]) head++
+    let tail = 0
+    while (
+      tail < old.length - head &&
+      tail < now.length - head &&
+      old[old.length - 1 - tail] === now[now.length - 1 - tail]
+    )
+      tail++
+    const del = old.slice(head, old.length - tail)
+    const add = now.slice(head, now.length - tail)
+    if (del.length + add.length > 0) changes.push({ at: before(lo) + head, del, add })
+  }
+  return changes
+}
+
+const shownLine = (mark: string, line: string): string =>
+  line.endsWith('\n') ? `${mark}${line}` : `${mark}${line}\n\\ No newline at end of file\n`
+
+/**
+ * The unified diff of `ranges` in `text`, with `LIMITS.context` lines of context, cut at `LIMITS.diffChars`. It comes
+ * from the changed ranges, with no search for a shorter edit script. `text` is undefined for a new file.
+ */
+export const unifiedDiff = (path: string, text: string | undefined, ranges: readonly Range[]): DiffResult => {
+  const old = text ?? ''
+  const changes = lineChanges(old, ranges)
+  const added = changes.reduce((n, c) => n + c.add.length, 0)
+  const removed = changes.reduce((n, c) => n + c.del.length, 0)
+  const all = splitLines(old)
+  const out: string[] = []
+  const reach = 2 * LIMITS.context
+  let delta = 0
+  for (let i = 0; i < changes.length; ) {
+    let j = i
+    while (j + 1 < changes.length && changes[j + 1]!.at - (changes[j]!.at + changes[j]!.del.length) <= reach) j++
+    const group = changes.slice(i, j + 1)
+    const first = group[0]!
+    const from = Math.max(0, first.at - LIMITS.context)
+    const body: string[] = []
+    let cursor = from
+    for (const c of group) {
+      for (; cursor < c.at; cursor++) body.push(shownLine(' ', all[cursor]!))
+      for (const line of c.del) body.push(shownLine('-', line))
+      for (const line of c.add) body.push(shownLine('+', line))
+      cursor = c.at + c.del.length
+    }
+    const stop = Math.min(all.length, cursor + LIMITS.context)
+    for (; cursor < stop; cursor++) body.push(shownLine(' ', all[cursor]!))
+    const dels = group.reduce((n, c) => n + c.del.length, 0)
+    const adds = group.reduce((n, c) => n + c.add.length, 0)
+    const oldCount = stop - from
+    const newCount = oldCount - dels + adds
+    const newFrom = from + delta
+    out.push(
+      `@@ -${oldCount === 0 ? from : from + 1},${oldCount} +${newCount === 0 ? newFrom : newFrom + 1},${newCount} @@\n`,
+      ...body,
+    )
+    delta += adds - dels
+    i = j + 1
+  }
+  const header =
+    text === undefined ? `--- /dev/null\n+++ b/${path}\n` : out.length > 0 ? `--- a/${path}\n+++ b/${path}\n` : ''
+  const whole = header + out.join('')
+  if (whole.length <= LIMITS.diffChars) return { diff: whole, diffTruncated: false, added, removed }
+  const cut = whole.slice(0, LIMITS.diffChars)
+  return { diff: cut.slice(0, cut.lastIndexOf('\n') + 1), diffTruncated: true, added, removed }
+}
+
+/** What a model should know about the line ends of a change that mixes them. */
+export const lineEndWarnings = (before: string, after: string): string[] => {
+  const style = (t: string) => ({ crlf: /\r\n/.test(t), bare: /(?<!\r)\n/.test(t) })
+  const [b, a] = [style(before), style(after)]
+  if (b.crlf && !b.bare && a.bare) return ['The new text has LF line ends in a file that has CRLF line ends.']
+  if (b.bare && !b.crlf && a.crlf) return ['The new text has CRLF line ends in a file that has LF line ends.']
+  return []
+}
+
+/** What diff, edit and write return. `oldHash` is null for a new file. */
+export type Change = {
+  path: string
+  applied: boolean
+  created: boolean
+  changed: boolean
+  oldHash: string | null
+  newHash: string
+  diff: string
+  diffTruncated: boolean
+  added: number
+  removed: number
+  warnings: string[]
+}
+
+/** One applied change as the run result and the run log list it. */
+export type AppliedChange = {
+  readonly path: string
+  readonly added: number
+  readonly removed: number
+  readonly created: boolean
+}
+
+/** The applied change in the result of a tool, or undefined when `value` is no change that was applied. */
+export const appliedChange = (value: unknown): AppliedChange | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined
+  const { path, applied, created, added, removed } = value as Record<string, unknown>
+  return applied === true &&
+    typeof path === 'string' &&
+    typeof created === 'boolean' &&
+    Number.isSafeInteger(added) &&
+    Number.isSafeInteger(removed)
+    ? { path, created, added: added as number, removed: removed as number }
+    : undefined
 }

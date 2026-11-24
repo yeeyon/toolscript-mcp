@@ -143,13 +143,15 @@ const takeOver = async (file: string, staleAfterMs: number, io: LockFs): Promise
 /**
  * Takes the lock of `file` before `deadline` (an epoch time in ms). 'busy' means another process held it to the
  * deadline. 'none' means the lock cannot be made here (a full disk, a read-only folder): the caller refreshes without
- * it, as before the lock, and a line on stderr says so once for each file.
+ * it, as before the lock, and a line on stderr says so once for each file. `without` is the end of that line. The
+ * Workspace editing tools (src/host/workspace/write.ts) take their file locks here, in another folder.
  */
 export const takeLock = async (
   file: string,
   deadline: number,
   staleAfterMs: number,
   io: LockFs = fs.promises,
+  without = 'The OAuth refresh runs without a lock.',
 ): Promise<Held | 'busy' | 'none'> => {
   const lock = `${file}.lock`
   const content: LockContent = { pid: process.pid, id: randomUUID(), at: Date.now() }
@@ -159,7 +161,7 @@ export const takeLock = async (
     if (made !== 'held') {
       if (!warned.has(lock)) {
         warned.add(lock)
-        console.error(`toolscript-mcp: cannot make ${lock} (${made.failed}). The OAuth refresh runs without a lock.`)
+        console.error(`toolscript-mcp: cannot make ${lock} (${made.failed}). ${without}`)
       }
       return 'none'
     }

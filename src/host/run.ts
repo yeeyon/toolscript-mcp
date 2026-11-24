@@ -76,6 +76,7 @@ import {
 } from '../core/protocol.ts'
 import {
   callDecision,
+  changesText,
   classifyCallError,
   runLine,
   runRecord,
@@ -83,6 +84,7 @@ import {
   type CallDecision,
   type CallError,
   type CallLog,
+  type FailedChange,
   type RunEnding,
 } from '../core/runlog.ts'
 import {
@@ -94,6 +96,7 @@ import {
   type TimedCall,
 } from '../core/serial.ts'
 import { SERVER_NAME } from '../core/tools.ts'
+import { appliedChange, type AppliedChange } from '../core/workspace.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
 import { appendRunLog } from './runlog.ts'
@@ -160,7 +163,13 @@ export type ShownImage = { readonly data: string; readonly mimeType: string }
 export type RunResult = { readonly text: string; readonly isError: boolean; readonly images: readonly ShownImage[] }
 
 /** A result with what the run log needs to know about it. */
-type Ran = { readonly result: RunResult; readonly ending: RunEnding; readonly calls: readonly CallLog[] }
+type Ran = {
+  readonly result: RunResult
+  readonly ending: RunEnding
+  readonly calls: readonly CallLog[]
+  /** The Workspace changes that the run applied, for the run log. */
+  readonly changes?: readonly AppliedChange[]
+}
 
 /** `known`: the tool names of the catalog before the run. A server that closes during the run has none at its end. */
 type Attempt = Ran & { readonly known: ReadonlySet<string> }
@@ -188,7 +197,7 @@ const serversOf = (calls: readonly { readonly tool: string }[]): ServerKey[] =>
 /** One run_code call, and one line in the run log unless the config turns it off. */
 export const runCode = async (ctx: RunContext, code: string): Promise<RunResult> => {
   const startedAt = performance.now()
-  const { result, ending, calls, known: before } = await attempt(ctx, code)
+  const { result, ending, calls, changes, known: before } = await attempt(ctx, code)
   if (ctx.config.log) {
     const known = new Set([...before, ...catalogOf(ctx.downstream.states()).map(t => t.name)])
     const record = runRecord({
@@ -199,6 +208,7 @@ export const runCode = async (ctx: RunContext, code: string): Promise<RunResult>
       chars: result.text.length,
       calls,
       known,
+      ...(changes !== undefined && { changes }),
     })
     await appendRunLog(ctx.home, runLine(record), ctx.log)
   }
@@ -452,6 +462,9 @@ const execute = async (
   // The shape that the session holds for each tool whose result worked in this run, for the shapes file.
   const learned = new Map<string, StoredShape>()
   const answers: Promise<void>[] = []
+  // The changes of the built-in Workspace that this run applied, and the ones it asked for and did not get.
+  const changes: AppliedChange[] = []
+  const failedChanges: FailedChange[] = []
   const limit = limiter(MAX_PARALLEL_CALLS)
   const fileFor = runFiles(extension => path.join(ctx.filesDir, `${randomUUID()}${extension}`))
   // Cancels the nested calls still running after the settle wait.
@@ -625,6 +638,21 @@ const execute = async (
     }
   }
 
+  // A change of the built-in Workspace shows in the result and in the run log, also when the program returns nothing.
+  // `failure`: the code of a call that failed. Only a reply of the provider counts, not a refusal of the policy.
+  const noteChange = (tool: string, args: Record<string, unknown>, r: Reply, failure: CallError | undefined): void => {
+    const target = splitToolName(tool)
+    if (target === undefined || config.servers.get(target.server as ServerKey)?.kind !== 'workspace') return
+    if (target.name !== 'edit' && target.name !== 'write') return
+    if (r.ok) {
+      const change = appliedChange(r.value)
+      if (change !== undefined) changes.push(change)
+    } else if (failure === 'tool-error') {
+      const code = /^([a-z-]+):/.exec(r.error)?.[1] ?? 'error'
+      failedChanges.push({ tool: target.name, path: typeof args.path === 'string' ? args.path : '', code })
+    }
+  }
+
   const answerCall = async (
     id: number,
     tool: string,
@@ -646,6 +674,7 @@ const execute = async (
       ...(r.ok ? {} : { error: failure ?? 'failed' }),
       ...(r.ok || cls === undefined ? {} : { class: cls }),
     })
+    noteChange(tool, args, r, failure)
     // The call counts as finished before its reply is written: the runner can read the reply and send its next call
     // at once, and that call must find this one done. A throw here ends only this run, through `answer`.
     const key = sentKey ?? callKey(tool, args)
@@ -858,6 +887,7 @@ const execute = async (
     untrusted ? randomBytes(16).toString('hex') : undefined,
     shown.note,
     notes,
+    changesText(changes, failedChanges),
   )
   const seconds = ((performance.now() - startedAt) / 1000).toFixed(1)
   ctx.log(`run_code: ${calls.length} calls, ${seconds} s, ${outcome?.t ?? (ending?.kind || 'no ending')}`)
@@ -868,6 +898,7 @@ const execute = async (
     result,
     ending: endingOf(outcome, ctx.signal.aborted),
     calls: [...audits].sort((a, b) => a[0] - b[0]).map(([, c]) => c),
+    changes,
   }
 }
 

@@ -99,7 +99,7 @@ const workspace =
 if (workspace !== undefined) {
   log(
     workspace.ok
-      ? `Workspace: root ${workspace.bound.root}, read-only, confined by ${workspace.bound.method}${workspace.bound.tasks.names.length > 0 ? `, tasks: ${workspace.bound.tasks.names.join(', ')}` : ''}`
+      ? `Workspace: root ${workspace.bound.root}, ${workspace.bound.write ? 'read and write' : 'read-only'}, confined by ${workspace.bound.method}${workspace.bound.tasks.names.length > 0 ? `, tasks: ${workspace.bound.tasks.names.join(', ')}` : ''}`
       : `Workspace: unavailable: ${workspace.reason}`,
   )
   if (workspace.ok)

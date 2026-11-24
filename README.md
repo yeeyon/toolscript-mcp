@@ -24,7 +24,7 @@ The goal is a server that works with any MCP client, for example Claude Code, Cl
 | Calls | Programs can filter, join and batch results, with at most 8 downstream calls at a time per run. |
 | Servers | Local stdio and remote HTTP servers, with per-server environment variables and an optional stdio `cwd`. |
 | Authentication | HTTP headers or native OAuth login, token refresh, dynamic client registration and static client credentials. |
-| Local development | The built-in [Workspace](#workspace) lists, searches and reads the files of one folder, with no other process. It is off by default. The optional `claude mcp serve` bridge offers file tools and a shell. See its [policy and risks](#claude-code-as-a-downstream-server). |
+| Local development | The built-in [Workspace](#workspace) lists, searches and reads the files of one folder, and with a write grant it edits them, with no other process. It is off by default. The optional `claude mcp serve` bridge offers file tools and a shell. See its [policy and risks](#claude-code-as-a-downstream-server). |
 | Policy | Ordered `allow`, `deny` and `ask` rules. Tools marked for user interaction need approval for each run. |
 | Results | Compact output, `await recall(n)` for kept results, and `await saveFile(name, data)` for exports. Images and other non-text blocks become files, and a returned image shows to the model. |
 | Clients | Setup examples for Claude Code, Claude Desktop, Cursor and Codex. Tests cover Claude Code and the MCP TypeScript SDK client. A manual smoke test passed in Codex CLI 0.171.0 with `codex exec`. See the [result](bench/CODEX.md#smoke-test-result). |
@@ -1102,13 +1102,13 @@ code. Read [SECURITY.md](SECURITY.md).
   your client. Then send a program that reads the result.
 - The Claude Code bridge starts another process. It adds memory use, and `cwd` does not restrict file or shell access.
 - The Codex bench is a [test plan](bench/CODEX.md). No Codex performance results are published in this repo.
-- Workspace reads files and runs the named tasks that you put in the config. A task is not contained. See [Named tasks](#named-tasks).
+- Workspace reads files, runs the named tasks that you put in the config, and with a write grant changes files. A task is not contained. Its change tools write in place on Windows and macOS. See [Workspace](#workspace) and [Named tasks](#named-tasks).
 
 ## Workspace
 
-Workspace is a built-in server that reads the files of one project folder and runs its named tasks. It runs inside toolscript-mcp, so it needs
-no Claude Code and no other process. Its tools are named `mcp__workspace__<tool>`, and a program calls them as it calls
-any tool. It is off by default.
+Workspace is a built-in server that reads the files of one project folder and runs its named tasks. With a write grant,
+it also changes the files. It runs inside toolscript-mcp, so it needs no Claude Code and no other process. Its tools are
+named `mcp__workspace__<tool>`, and a program calls them as it calls any tool. It is off by default.
 
 ### Turn it on
 
@@ -1125,7 +1125,7 @@ that name.
 }
 ```
 
-- `roots` holds 1 to 16 entries. Each `path` is absolute and must be a folder that exists. `write` is read, and it has no effect yet. `tasks` holds the [named tasks](#named-tasks) of the entry.
+- `roots` holds 1 to 16 entries. Each `path` is absolute and must be a folder that exists. `write` is `false` by default. See [Change files](#change-files). `tasks` holds the [named tasks](#named-tasks) of the entry.
 - `exclude` holds globs of paths that no tool reads or shows. They add to the built-in list below.
 - `skip` holds the folder names that `list` and `search` do not enter. It replaces the default list: `node_modules`, `dist`, `build`, `target`, `vendor`, `coverage`, `.venv`, `venv` and `__pycache__`. A call can still name such a folder in `path`.
 
@@ -1158,15 +1158,19 @@ access alone. Workspace refuses a root in these cases, and the reason names the 
 | `read` | Reads one text file with its line ends as they are. It returns the text, its encoding and the `sha256` of its bytes. |
 | `stat` | Tells if a path is a file, a folder, something else or missing. |
 | `run_task` | Runs one [named task](#named-tasks) from the config. It exists only when the entry of the root has a valid task. It asks first. |
+| `diff` | Previews a change and writes nothing. It takes the arguments of `edit` or of `write`, and returns the unified diff. |
+| `edit` | Replaces exact text in one file. It is listed only with `"write": true`. |
+| `write` | Makes a new file, or replaces a whole file. It is listed only with `"write": true`. |
 
 Paths in arguments and results are relative to the root and use `/`. Each failed call throws in the program. The message
-starts with a code, such as `excluded`, `link`, `hard-link`, `bad-path`, `too-large`, `binary` or `not-found`.
+starts with a code, such as `excluded`, `link`, `hard-link`, `bad-path`, `too-large`, `binary` or `not-found`. The change
+tools add `stale`, `busy`, `exists`, `no-match`, `many-matches` and `read-only`.
 
-### What read-only covers
+### What the read tools cover
 
-- Each call goes through the policy as any call does. The read tools run with no rule while Workspace is on. An `ask` or `deny` rule that matches still decides.
+- Each call goes through the policy as any call does. The read tools and `diff` run with no rule while Workspace is on. An `ask` or `deny` rule that matches still decides.
 - Each result is untrusted text. The run result is in the untrusted wrapper, and the run learns no result shape.
-- The built-in exclusions hold for all four tools, with no regard to case, after Unicode NFC. They cover version control data (`.git`, `.hg` and `.svn`) and `.toolscript-mcp`.
+- The built-in exclusions hold for all tools, with no regard to case, after Unicode NFC. They cover version control data (`.git`, `.hg` and `.svn`) and `.toolscript-mcp`.
 - They also cover secrets: `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.aws` and `.ssh`. And they cover the settings of clients: `.claude`, `.vscode` and `.mcp.json`.
 - The toolscript-mcp config file is excluded too, by its real path.
 - No tool follows a symlink or a junction, and `read` refuses a file with more than one hard link. `search` skips such a file.
@@ -1228,6 +1232,58 @@ How a task runs:
 - On Windows, a `.cmd`, `.bat` or `.ps1` file cannot be a command: a shell must parse it. Set `command` to `node` and give the script as the first argument.
 - A background process that a task leaves behind is ended with the task on Linux and macOS. On Windows it can stay when the task has already exited.
 
+### Change files
+
+Set `"write": true` on the root entry to list `edit` and `write`. Without it, the tools are not listed, and a call of one
+fails with `read-only`. The grant belongs to the entry that holds the root of the session. The server reads it one time,
+at the start.
+
+```json
+{ "workspace": { "roots": [{ "path": "/home/me/app", "write": true }] } }
+```
+
+A change goes in three steps. First, preview it with `diff`. Then call `edit` with the hash that `read` returned. Then
+check the result:
+
+```js
+const file = await call("mcp__workspace__read", { path: "src/retry.ts" })
+const edits = [{ old: "maxAttempts: 3", new: "maxAttempts: 5" }]
+const preview = await call("mcp__workspace__diff", { path: file.path, expectedHash: file.hash, edits })
+const change = await call("mcp__workspace__edit", { path: file.path, expectedHash: file.hash, edits })
+return { diff: change.diff, newHash: change.newHash }
+```
+
+**The approval.** `edit` and `write` ask the person, one time for each program. The prompt names the session root. A
+client that cannot ask gets no change. The rules `*` and `mcp__*` do not allow these tools. A rule that starts with
+`mcp__workspace__` does, for example `mcp__workspace__*` or `mcp__workspace__edit`. A name that a program builds at run
+time runs only under such a rule. A `deny` rule wins. The approval covers one run, and each call still checks the hash.
+
+**The hash rule.** `edit` needs `expectedHash`. If the file changed after the `read`, the call fails with `stale` and
+changes nothing. `write` with no `expectedHash` makes a new file, or fails with `exists`. `write` with `expectedHash`
+replaces the whole file. Two calls with one hash change the file one time. The second fails with `stale`.
+
+**Exact bytes.** Each `old` is matched against the file as `read` returned it, and the order of the edits changes
+nothing. An `old` must occur one time, or `all` must be `true`. Two edits cannot replace the same text. No line end, byte
+order mark or space is changed for you. If `old` matches only with other line ends, the error says so. A changed file
+keeps its byte order mark and its mode. A file over 4 MiB, a binary file and a file that is not UTF-8 are refused.
+
+**The lock.** A change holds a lock in the process and a lock file in the folder `.toolscript-mcp/locks` of your home.
+Two sessions never lose an update. A call waits 2 seconds for a lock, then fails with `busy`. A lock of a dead process, or
+one older than 30 seconds, is taken over. The lock goes after a failed or cancelled call.
+
+**In-place writes.** Linux writes a temp file in the held folder and renames it, so a failed write leaves the old file.
+Windows and macOS write in place through the proven handle. A write that fails part way can leave that file damaged, and
+the error names the file. Atomic replace on these systems is a follow-up.
+
+**The audit.** A run result lists each applied change, also when the program returns nothing:
+`- changed src/retry.ts (+1 -1)`. The run log keeps the relative path and the counts of added and removed lines. No log
+holds file content, `old` or `new` text, or a diff.
+
+**What stays possible.** A change tool can edit any file that the root allows, for example a build script. A later run
+of your tests or your editor then runs that code. Keep `write` off for a root that you do not trust. The cases of
+[What stays possible](#what-stays-possible) also hold for a write: on Windows a swap can write a file outside the root
+whose bytes match the hash.
+
 ### How a file is opened
 
 Workspace opens each file through a handle that it proves to be inside the root. It never opens a path by name and then
@@ -1244,9 +1300,10 @@ says why. On macOS, the CI run of the repo decides if the method works. A macOS 
 
 ### What stays possible
 
-- On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root.
+- On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root. `edit` and `write` can write a file outside the root whose bytes match `expectedHash`, and make an empty file or folder there.
 - On Windows and macOS, a swap can alternate with each lookup of a `list` or a `stat`. Then it can show a name, a size or a kind from outside the root. It never shows the bytes of a file.
 - On Windows, the same can happen for a folder in the middle of a path, such as `b` in `list b/c`: the swap must be out at the open of `b/c` and then alternate. Later lookups can be outside in a row.
+- On macOS, a swap while a new folder is made can make an empty folder outside the root.
 - Both cases need a process of another account, or a process with fewer rights. Code that runs as you can read the files itself.
 - Give Workspace a root that only your account can write. On Windows, `toolscript-mcp doctor` reads the access rules of the root and warns when another account can write.
 - A program that Workspace feeds with file text can send that text to any other tool that the policy allows. Keep the policy narrow for a root with private files.

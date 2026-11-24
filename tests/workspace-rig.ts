@@ -13,8 +13,12 @@ import { bindWorkspace, type Bound, type BindInput } from '../src/host/workspace
 /** A random text for a secret: no test names a real one. */
 export const marker = (): string => `SECRET-${randomBytes(8).toString('hex')}`
 
-/** A new temp folder with its real path, which the test removes with `rm`. */
-export const tempDir = (): string => fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ws-test-')))
+/**
+ * A new temp folder with its real path, which the test removes with `rm`. `WS_TEST_TREES` names the folder to make it in,
+ * so a Docker run can put the trees on a bind mount of a Windows folder (a volume that ignores case).
+ */
+export const tempDir = (): string =>
+  fs.realpathSync.native(fs.mkdtempSync(path.join(process.env.WS_TEST_TREES ?? os.tmpdir(), 'ws-test-')))
 
 export const rm = (dir: string): void => fs.rmSync(dir, { recursive: true, force: true })
 
@@ -40,9 +44,11 @@ export type Rig = {
   readonly close: () => Promise<void>
 }
 
-export type RigOptions = Partial<Pick<BindInput, 'hook' | 'limits' | 'platform' | 'env'>> & {
+export type RigOptions = Partial<Pick<BindInput, 'hook' | 'limits' | 'platform' | 'env' | 'locks'>> & {
   /** The tasks of each entry, by the path of the entry. */
   readonly tasks?: Readonly<Record<string, readonly TaskConfig[]>>
+  /** The `write` grant of every entry. Default false. */
+  readonly write?: boolean
   readonly exclude?: readonly string[]
   readonly skip?: readonly string[]
   /** The folder of the session: the root unless set. */
@@ -67,7 +73,7 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
     workspace: {
       roots: (options.roots ?? [root]).map(p => ({
         path: p,
-        write: false,
+        write: options.write === true,
         ...(options.tasks?.[p] !== undefined && { tasks: options.tasks[p] }),
       })),
       exclude: options.exclude ?? [],
@@ -79,6 +85,7 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
     log: line => options.lines?.push(line),
     ...(options.hook !== undefined && { hook: options.hook }),
     ...(options.limits !== undefined && { limits: options.limits }),
+    ...(options.locks !== undefined && { locks: options.locks }),
     ...(options.platform !== undefined && { platform: options.platform }),
     ...(options.env !== undefined && { env: options.env }),
   })

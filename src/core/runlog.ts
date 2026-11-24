@@ -1,14 +1,16 @@
 // The run log: one JSON line per run_code call, so a person can see what the
-// programs did. A line holds tool names, decisions, times and short codes. It
-// never holds an argument, a result, program text or a message from a server,
-// because any of them can hold data. The host writes the file; this file shapes
-// a line, decides when the file rotates, and reads the lines back for
-// `toolscript-mcp runs`.
+// programs did. A line holds tool names, decisions, times and short codes, and
+// for each applied Workspace change the relative path and the counts of added
+// and removed lines. It never holds an argument, a result, program text, file
+// content, a diff or a message from a server, because any of them can hold
+// data. The host writes the file; this file shapes a line, decides when the
+// file rotates, and reads the lines back for `toolscript-mcp runs`.
 
 import { serverKey, type ServerKey } from './config.ts'
-import { decide, shownName, type Guards, type Policy } from './policy.ts'
+import { decide, printableText, shownName, type Guards, type Policy } from './policy.ts'
 import { isCallable, splitToolName } from './protocol.ts'
 import { SERVER_NAME } from './tools.ts'
+import { LIMITS, type AppliedChange } from './workspace.ts'
 
 const RUN_ENDINGS = ['done', 'error', 'timeout', 'refused', 'cancelled', 'failed'] as const
 /** How a run ended. `refused`: it never started. `failed`: the sandbox gave no answer. */
@@ -136,7 +138,12 @@ export type RunRecord = {
   readonly calls: readonly CallLog[]
   /** Calls past MAX_CALLS that the line does not list. */
   readonly omitted?: number
+  /** The Workspace changes that this run applied, in the order they finished. At most MAX_CHANGES. */
+  readonly changes?: readonly AppliedChange[]
 }
+
+/** The most applied changes that one line lists. */
+export const MAX_CHANGES = 200
 
 /**
  * The decision of the policy for one nested call, with the tools the person
@@ -174,9 +181,18 @@ export type RunInput = {
    * can build any other name, and a name can hold data.
    */
   readonly known: ReadonlySet<string>
+  readonly changes?: readonly AppliedChange[]
 }
 
 export const runRecord = (input: RunInput): RunRecord => {
+  const changes = (input.changes ?? []).slice(0, MAX_CHANGES).map(
+    (c): AppliedChange => ({
+      path: c.path.slice(0, LIMITS.pathChars),
+      added: c.added,
+      removed: c.removed,
+      created: c.created,
+    }),
+  )
   // Each field is copied by name: a stray field of an input never reaches the line.
   const calls = input.calls.slice(0, MAX_CALLS).map(
     (c): CallLog => ({
@@ -197,6 +213,7 @@ export const runRecord = (input: RunInput): RunRecord => {
     chars: input.chars,
     calls,
     ...(omitted > 0 ? { omitted } : {}),
+    ...(changes.length > 0 ? { changes } : {}),
   }
 }
 
@@ -251,11 +268,62 @@ export const parseRunLine = (line: string): LogEntry => {
     return 'unreadable'
   }
   if (!isObject(v)) return 'unreadable'
-  const { time, id, ms, ending, chars, calls, omitted } = v
+  const { time, id, ms, ending, chars, calls, omitted, changes } = v
   if (typeof time !== 'string' || typeof id !== 'string' || !isCount(ms) || !oneOf(RUN_ENDINGS, ending))
     return 'unreadable'
   if (!isCount(chars) || !Array.isArray(calls) || (omitted !== undefined && !isCount(omitted))) return 'unreadable'
-  return { time, id, ms, ending, chars, calls: calls.map(readCall), ...(omitted === undefined ? {} : { omitted }) }
+  const read = changes === undefined ? [] : readChanges(changes)
+  if (read === undefined) return 'unreadable'
+  return {
+    time,
+    id,
+    ms,
+    ending,
+    chars,
+    calls: calls.map(readCall),
+    ...(omitted === undefined ? {} : { omitted }),
+    ...(read.length > 0 ? { changes: read } : {}),
+  }
+}
+
+/** The changes of a line, or undefined when they are not in the form that runRecord writes. */
+const readChanges = (v: unknown): AppliedChange[] | undefined => {
+  if (!Array.isArray(v) || v.length > MAX_CHANGES) return undefined
+  const read: AppliedChange[] = []
+  for (const c of v) {
+    if (!isObject(c) || typeof c.path !== 'string' || typeof c.created !== 'boolean') return undefined
+    if (!isCount(c.added) || !isCount(c.removed)) return undefined
+    read.push({ path: c.path, added: c.added, removed: c.removed, created: c.created })
+  }
+  return read
+}
+
+/** A Workspace change that a program asked for and that was not applied: the tool, the path as the program wrote it, the code. */
+export type FailedChange = { readonly tool: string; readonly path: string; readonly code: string }
+
+const SHOWN_CHANGES = 50
+const SHOWN_PATH = 200
+
+/**
+ * The part of a run result that lists the Workspace changes of the run, also for a program that returns nothing. It
+ * goes inside the wrapper of untrusted content: a path is a name from the disk. A failed call shows the code of its
+ * error, so a program that stops at a stale file shows which change was not made.
+ */
+export const changesText = (applied: readonly AppliedChange[], failed: readonly FailedChange[]): string => {
+  if (applied.length + failed.length === 0) return ''
+  const shown = (path: string) => printableText(path.length > SHOWN_PATH ? `${path.slice(0, SHOWN_PATH)}…` : path)
+  const lines = [
+    ...applied.map(c => `- ${c.created ? 'created' : 'changed'} ${shown(c.path)} (+${c.added} -${c.removed})`),
+    ...failed.map(
+      f => `- not applied: ${f.tool} ${shown(f.path)} (${/^[a-z-]{1,20}$/.test(f.code) ? f.code : 'error'})`,
+    ),
+  ]
+  const more = lines.length - SHOWN_CHANGES
+  return [
+    `## Workspace changes (${applied.length} applied)`,
+    ...lines.slice(0, SHOWN_CHANGES),
+    ...(more > 0 ? [`- and ${more} more`] : []),
+  ].join('\n')
 }
 
 /** The next step for each code of a failed call. `tools` is the command that checks its server, when its key is valid. */
@@ -389,6 +457,9 @@ export const runsReport = (
     `${shownName(run.time)} ${run.ending} ${run.ms} ms`,
     ...run.calls.map(callText),
     ...(run.omitted === undefined ? [] : [`  ${run.omitted} more calls`]),
+    ...(run.changes ?? []).map(
+      c => `  ${c.created ? 'created' : 'changed'} ${shownName(c.path)} +${c.added} -${c.removed}`,
+    ),
   ])
   // The tool-error and failed calls shown: those with a class count under it, the others under `no class`.
   const reached = shown

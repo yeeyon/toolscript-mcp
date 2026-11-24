@@ -139,6 +139,14 @@ quotes and the `^` of cmd dropped, hold the
   class: only an allow rule with its exact name allows it (`counts` and `onlyTightens` in `src/core/policy.ts`), and the
   prompt names the tasks and says that a task runs project code with the rights of the user.
   `[test: workspace-task.test.ts (argv, environment, pids gone after a timeout, a cancel and a shutdown), workspace.test.ts, run.test.ts describe run_task, workspace.e2e.mjs]`
+- The change tools of the Workspace (`edit`, `write`, class `write`) are listed only with `"write": true`, and their
+  handlers refuse without it. They write only through `confined.ts` (Linux: a temp file and a rename in the held folder,
+  Windows and macOS: in place through the proven handle). A change takes the lock of its file first (`write.ts`), checks
+  the hash of the bytes that it read, and drops the lock after a failed or cancelled call. Each `old` is matched against
+  the file as read, and the new bytes differ from the old only in the replaced ranges. No log holds file content, `old` or
+  `new` text, or a diff: the run log has the relative path and the line counts of an applied change. An allow rule allows
+  a change tool only when its match starts with `mcp__workspace__` (`needs` in `src/core/policy.ts`).
+  `[test: workspace.test.ts, workspace-write.test.ts, workspace-lock.test.ts, run.test.ts describe workspace, runlog.test.ts, workspace.e2e.mjs]`
 - Every run removes its exchange dir, also after a timeout, a kill or a shutdown.
   `[test: run.test.ts and server.e2e.mjs check the temp dir after the runs]`
 - Never weaken a sandbox layer, the policy check, the guard of hint and function files or the approval of proposals

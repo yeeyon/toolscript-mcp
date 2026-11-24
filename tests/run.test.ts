@@ -2957,7 +2957,12 @@ describe('workspace', () => {
   const dir = (prefix: string) => fs.mkdtempSync(path.join(ROOT, prefix))
 
   /** A real provider over a temp project, linked by connectAll as the running server links it. */
-  const rig = async (t: TestContext, extra: Partial<Options> = {}, tasks: readonly TaskConfig[] = []) => {
+  const rig = async (
+    t: TestContext,
+    extra: Partial<Options> = {},
+    tasks: readonly TaskConfig[] = [],
+    write = false,
+  ) => {
     const root = fs.realpathSync.native(dir('ws-root-'))
     const outside = fs.realpathSync.native(dir('ws-out-'))
     const secret = `SECRET-${randomBytes(8).toString('hex')}`
@@ -2973,7 +2978,7 @@ describe('workspace', () => {
     }
     const home = fs.realpathSync.native(dir('ws-home-'))
     const binding = await bindWorkspace({
-      workspace: { roots: [{ path: root, write: false, ...(tasks.length > 0 && { tasks }) }], exclude: [], skip: [] },
+      workspace: { roots: [{ path: root, write, ...(tasks.length > 0 && { tasks }) }], exclude: [], skip: [] },
       start: root,
       home,
       configFile: path.join(home, 'c.json'),
@@ -3257,5 +3262,127 @@ describe('workspace', () => {
     t.after(() => none.close())
     await none.settled
     assert.match(JSON.stringify(none.states()[0]), /not available in this process/)
+  })
+
+  // Pull request B: the change tools, with the real sandbox, the real policy and a real provider.
+  const EDIT_RETRY =
+    'const f = await call("mcp__workspace__read", { path: "src/retry.ts" })\nreturn await call("mcp__workspace__edit", { path: "src/retry.ts", expectedHash: f.hash, edits: [{ old: "maxAttempts: 3", new: "maxAttempts: 5" }] })'
+  const BUILT_EDIT =
+    'const f = await call("mcp__workspace__read", { path: "src/retry.ts" })\nconst name = ["mcp", "workspace", "edit"].join("__")\ntry { await call(name, { path: "src/retry.ts", expectedHash: f.hash, edits: [{ old: "maxAttempts: 3", new: "maxAttempts: 5" }] }) } catch (e) { return e.message }'
+  const retry = (r: { root: string }) => fs.readFileSync(path.join(r.root, 'src', 'retry.ts'), 'utf8')
+  const BEFORE = 'export const maxAttempts: 3\n'
+  const AFTER = 'export const maxAttempts: 5\n'
+
+  test('edit and write ask by default: accept applies, decline changes no byte, a client that cannot ask is refused', async t => {
+    const accept = await rig(t, { policy: [] }, [], true)
+    if (accept === undefined) return
+    const done = await accept.run(EDIT_RETRY)
+    assert.equal(done.isError, false, done.text)
+    assert.deepEqual(accept.asked, [['mcp__workspace__edit']], 'one prompt, for the change tool only')
+    assert.equal(retry(accept), AFTER)
+    const declined = await rig(t, { policy: [], answer: 'decline' }, [], true)
+    if (declined === undefined) return
+    assert.match((await declined.run(EDIT_RETRY)).text, /the program did not run, because the person did not approve/)
+    assert.equal(retry(declined), BEFORE)
+    const silent = await rig(t, { policy: [], canAsk: false }, [], true)
+    if (silent === undefined) return
+    assert.match((await silent.run(EDIT_RETRY)).text, /this MCP client cannot ask the person/)
+    assert.deepEqual(silent.asked, [])
+    assert.equal(retry(silent), BEFORE)
+  })
+
+  test('the rules * and mcp__* do not allow a change, mcp__workspace__* and the exact name do, and a deny rule wins', async t => {
+    for (const match of ['*', 'mcp__*']) {
+      const r = await rig(t, { policy: rules([match, 'allow']), answer: 'decline' }, [], true)
+      if (r === undefined) return
+      await r.run(EDIT_RETRY)
+      assert.deepEqual(r.asked, [['mcp__workspace__edit']], `${match} still asks`)
+      assert.equal(retry(r), BEFORE, match)
+    }
+    for (const match of ['mcp__workspace__*', 'mcp__workspace__edit']) {
+      const r = await rig(t, { policy: rules([match, 'allow']), answer: 'decline' }, [], true)
+      if (r === undefined) return
+      const out = await r.run(EDIT_RETRY)
+      assert.equal(out.isError, false, out.text)
+      assert.deepEqual(r.asked, [], `${match} allows with no prompt`)
+      assert.equal(retry(r), AFTER, match)
+    }
+    const denied = await rig(
+      t,
+      { policy: rules(['mcp__workspace__edit', 'deny'], ['mcp__workspace__*', 'allow']) },
+      true,
+    )
+    if (denied === undefined) return
+    assert.match(
+      (await denied.run(EDIT_RETRY)).text,
+      /the program did not run, because the toolscript-mcp policy denies a tool/,
+    )
+    assert.equal(retry(denied), BEFORE)
+  })
+
+  test('a name built at run time with no rule that starts with mcp__workspace__ is refused before any change', async t => {
+    for (const policy of [[], rules(['*', 'allow']), rules(['mcp__*', 'allow'])]) {
+      const r = await rig(t, { policy }, [], true)
+      if (r === undefined) return
+      const out = await r.run(BUILT_EDIT)
+      assert.match(out.text, /not approved: an allow rule for a Workspace change tool must start with mcp__workspace__/)
+      assert.equal(retry(r), BEFORE)
+    }
+    const allowed = await rig(t, { policy: rules(['mcp__workspace__*', 'allow']) }, [], true)
+    if (allowed === undefined) return
+    assert.equal((await allowed.run(BUILT_EDIT)).isError, false)
+    assert.equal(retry(allowed), AFTER, 'a rule that names the server allows a built name')
+  })
+
+  test('a program that returns nothing still shows each applied change, and the run log keeps the path and the counts and no content', async t => {
+    const r = await rig(t, { policy: rules(['mcp__workspace__*', 'allow']) }, [], true)
+    if (r === undefined) return
+    const content = `file 0 ${r.secret}\nsecond line\n`
+    fs.writeFileSync(path.join(r.root, 'a0.txt'), content)
+    const out = await r.run(
+      `const f = await call("mcp__workspace__read", { path: "a0.txt" })\nawait call("mcp__workspace__edit", { path: "a0.txt", expectedHash: f.hash, edits: [{ old: "second line", new: "2nd\\nthird" }] })\nawait call("mcp__workspace__write", { path: "docs/new.md", content: "# new\\n" })`,
+    )
+    assert.equal(out.isError, false, out.text)
+    assert.equal(fs.readFileSync(path.join(r.root, 'a0.txt'), 'utf8'), content.replace('second line', '2nd\nthird'))
+    const inside = hostMark(out.text)?.inside ?? ''
+    assert.ok(
+      inside.includes('## Workspace changes (2 applied)\n- changed a0.txt (+2 -1)\n- created docs/new.md (+1 -0)'),
+      out.text,
+    )
+    assert.deepEqual(r.lines()[0]?.changes, [
+      { path: 'a0.txt', added: 2, removed: 1, created: false },
+      { path: 'docs/new.md', added: 1, removed: 0, created: true },
+    ])
+    const log = fs.readFileSync(runLogFile(r.ctx.home), 'utf8')
+    for (const text of [r.secret, 'second line', '2nd', '# new', '@@', 'sha256:'])
+      assert.ok(!log.includes(text), `the run log holds no ${text}`)
+    assert.ok(!out.text.includes(r.secret), 'the secret in the file content is not in the result')
+  })
+
+  test('a program that edits three files and meets a stale one leaves the first changed and the others as they were, and the result says which', async t => {
+    const r = await rig(t, { policy: rules(['mcp__workspace__*', 'allow']) }, [], true)
+    if (r === undefined) return
+    const out = await r.run(
+      `const edit = (path, expectedHash, old, now) => call("mcp__workspace__edit", { path, expectedHash, edits: [{ old, new: now }] })\nconst a = await call("mcp__workspace__read", { path: "a0.txt" })\nconst b = await call("mcp__workspace__read", { path: "a1.txt" })\nconst c = await call("mcp__workspace__read", { path: "a2.txt" })\nawait edit("a0.txt", a.hash, "file 0", "changed 0")\nawait edit("a1.txt", "sha256:${'0'.repeat(64)}", "file 1", "changed 1")\nawait edit("a2.txt", c.hash, "file 2", "changed 2")`,
+    )
+    assert.equal(out.isError, true)
+    assert.equal(fs.readFileSync(path.join(r.root, 'a0.txt'), 'utf8'), 'changed 0')
+    assert.equal(fs.readFileSync(path.join(r.root, 'a1.txt'), 'utf8'), 'file 1')
+    assert.equal(fs.readFileSync(path.join(r.root, 'a2.txt'), 'utf8'), 'file 2')
+    const inside = hostMark(out.text)?.inside ?? ''
+    assert.ok(inside.includes('- changed a0.txt (+1 -1)'), out.text)
+    assert.ok(inside.includes('- not applied: edit a1.txt (stale)'), out.text)
+    assert.ok(!inside.includes('a2.txt'), 'the third edit never ran')
+    assert.deepEqual(r.lines()[0]?.changes, [{ path: 'a0.txt', added: 1, removed: 1, created: false }])
+  })
+
+  test('the guard refuses a path in the lock folder of toolscript-mcp, whatever the rules say', async t => {
+    const r = await rig(t, { policy: rules(['mcp__workspace__*', 'allow']) }, [], true)
+    if (r === undefined) return
+    const out = await r.run(
+      'try { await call("mcp__workspace__write", { path: ".toolscript-mcp/locks/a.lock", content: "x" }) } catch (e) { return e.message }',
+    )
+    assert.match(out.text, /refused: an argument of mcp__workspace__write names/)
+    assert.deepEqual(r.lines()[0]?.changes, undefined)
   })
 })

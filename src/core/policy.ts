@@ -7,7 +7,7 @@
 
 import type { ServerKey } from './config.ts'
 import { splitToolName, type LiteralCall } from './protocol.ts'
-import { toolsOfClass, workspaceClass } from './workspace.ts'
+import { toolsOfClass, WORKSPACE_KEY, workspaceClass } from './workspace.ts'
 
 export type Action = 'allow' | 'deny' | 'ask'
 
@@ -65,14 +65,29 @@ const bridgeOf = (tool: string, { bridges }: Guards): string | undefined => {
 }
 
 /**
- * False for an allow rule over a tool of `bridge` whose match does not start
- * with `mcp__<bridge>__`. So `*` or `mcp__*__Bash` never allows a tool of a
- * bridge, also one that the bridge adds later: only a rule that names the
- * server does. The next rule that matches decides. Deny and ask rules count.
+ * What an allow rule over `tool` must have, or undefined when any rule can allow it. A tool of a bridge needs a match
+ * that starts with `mcp__<bridge>__`, and a change tool of the built-in Workspace (class `write`) needs one that starts
+ * with `mcp__workspace__`. A tool of the exec class (`run_task`) needs its exact name. So `*` or `mcp__*` never allows
+ * them, also a tool that is added later: only a rule that names the server does, or for exec the tool.
  */
-const counts = (rule: Rule, bridge: string | undefined, execTool = false, tool = ''): boolean =>
+type Need = { readonly start: string; readonly exact: boolean }
+
+const needs = (tool: string, guards: Guards): Need | undefined => {
+  const bridge = bridgeOf(tool, guards)
+  if (bridge !== undefined) return { start: `mcp__${bridge}__`, exact: false }
+  const cls = guards.workspace ? workspaceClass(tool) : undefined
+  if (cls === 'exec') return { start: tool, exact: true }
+  return cls === 'write' ? { start: `mcp__${WORKSPACE_KEY}__`, exact: false } : undefined
+}
+
+/**
+ * False for an allow rule over a tool that `needs` a start or a name, when the match does not have it. The next rule
+ * that matches decides. Deny and ask rules count.
+ */
+const counts = (rule: Rule, need: Need | undefined): boolean =>
   rule.action !== 'allow' ||
-  ((bridge === undefined || rule.match.startsWith(`mcp__${bridge}__`)) && (!execTool || rule.match === tool))
+  need === undefined ||
+  (need.exact ? rule.match === need.start : rule.match.startsWith(need.start))
 
 /**
  * What a tool gets when no rule matches it: the read tools of the built-in Workspace run, any other tool asks. The
@@ -88,9 +103,8 @@ const fallback = (tool: string, guards: Guards): Verdict =>
 const execOf = (tool: string, { workspace }: Guards): boolean => workspace && workspaceClass(tool) === 'exec'
 
 export const decide = (policy: Policy, guards: Guards, tool: string): Verdict => {
-  const bridge = bridgeOf(tool, guards)
-  const exec = execOf(tool, guards)
-  const rule = policy.find(r => matches(r.match, tool) && counts(r, bridge, exec, tool))
+  const need = needs(tool, guards)
+  const rule = policy.find(r => matches(r.match, tool) && counts(r, need))
   return rule === undefined ? fallback(tool, guards) : { action: rule.action, rule }
 }
 
@@ -150,9 +164,10 @@ const MAX_PAIRS = 10_000_000
  * No step raises the decision of any name, so `next` lets no tool run with
  * less approval. It reads the rules alone, never a tool name.
  *
- * An allow rule that a tool of a bridge skips (`counts`) can stand before a
- * deny of that tool. Lowered to ask, it would then decide that tool. So that
- * step counts only for an allow rule that no tool skips.
+ * An allow rule that a tool of a bridge or a change tool of the built-in
+ * Workspace skips (`counts`) can stand before a deny of that tool. Lowered to
+ * ask, it would then decide that tool. So that step counts only for an allow
+ * rule that no tool skips.
  *
  * The loop reads `current` from its last rule back. `fits[j]`: the rules of
  * `next` from j on come by the steps from the rules of `current` read so far.
@@ -160,12 +175,12 @@ const MAX_PAIRS = 10_000_000
  * the first rule that has its match.
  */
 export const onlyTightens = (current: Policy, next: Policy, { bridges, workspace }: Guards): boolean => {
-  // A match whose server part has no `*` matches only the tools of that server, so no tool of a bridge skips it.
-  // A tool of the exec class of the Workspace skips each allow rule that matches it and is not its exact name.
+  // A match whose server part has no `*` matches only the tools of that server, so no tool of a bridge or change tool
+  // skips it. A tool of the exec class of the Workspace skips each allow rule that matches it and is not its exact name.
   const execTools = workspace ? toolsOfClass('exec') : []
   const skippable = (rule: Rule) =>
     rule.action === 'allow' &&
-    ((bridges.size > 0 && (splitToolName(rule.match)?.server.includes('*') ?? true)) ||
+    (((bridges.size > 0 || workspace) && (splitToolName(rule.match)?.server.includes('*') ?? true)) ||
       execTools.some(tool => tool !== rule.match && matches(rule.match, tool)))
   const lowers = (now: Rule, was: Rule) =>
     LOOSENESS[now.action] <= LOOSENESS[was.action] && !(now.action === 'ask' && skippable(was))
@@ -380,9 +395,11 @@ export const checkCall = (
   const bridge = bridgeOf(tool, guards)
   const missing = execOf(tool, guards)
     ? `an allow rule for ${tool} must name it exactly, such as ${allowRule(tool)}`
-    : bridge === undefined
-      ? `no policy rule allows ${tool}`
-      : `an ${bridgeRule(bridge)}, such as ${allowRule(tool)}`
+    : bridge !== undefined
+      ? `an ${bridgeRule(bridge)}, such as ${allowRule(tool)}`
+      : needs(tool, guards) !== undefined
+        ? `an ${changeRule}, such as ${allowRule(tool)}`
+        : `no policy rule allows ${tool}`
   return { ok: false, error: `not approved: ${missing}, and the person did not approve it for this run`, needs: 'rule' }
 }
 
@@ -396,6 +413,9 @@ export const guardedText = (tool: string, folder: string): string =>
 // Why `*` or `mcp__*__Bash` does not allow a tool of the bridge `bridge`.
 const bridgeRule = (bridge: string): string =>
   `allow rule for a tool of the Claude Code bridge ${bridge} must start with mcp__${bridge}__`
+
+// Why `*` or `mcp__*` does not allow a change tool of the built-in Workspace.
+const changeRule = `allow rule for a Workspace change tool must start with mcp__${WORKSPACE_KEY}__`
 
 /** Why the tools that need approval did not get it. */
 export type Refusal = 'decline' | 'unsupported'
@@ -421,9 +441,11 @@ const execLines = (ask: readonly string[], guards: Guards, scope: Scope): string
 
 /** The message of the approval prompt: the tools, and the program they run in. */
 export const askText = ({ ask, interactive }: Asks, code: string, guards: Guards, scope: Scope = {}): string => {
+  const workspaceRoot = scope.root
   const program = code.length <= 4000 ? code : `${code.slice(0, 4000)}\n… [${code.length - 4000} more characters]`
   const one = interactive.length === 1
   const bridged = [...new Set(ask.flatMap(t => bridgeOf(t, guards) ?? []))]
+  const changes = ask.some(t => guards.workspace && workspaceClass(t) === 'write')
   return [
     ...(ask.length > 0
       ? [
@@ -431,6 +453,12 @@ export const askText = ({ ask, interactive }: Asks, code: string, guards: Guards
           ...ask.map(t => `- ${t}`),
           ...bridged.map(b => `An ${bridgeRule(b)}.`),
           ...execLines(ask, guards, scope),
+          ...(changes
+            ? [
+                `A Workspace change writes files under the session root${workspaceRoot === undefined ? '' : `: ${printableText(workspaceRoot)}`}`,
+                `An ${changeRule}.`,
+              ]
+            : []),
           '',
         ]
       : []),

@@ -1,7 +1,8 @@
 // End-to-end test of the built server (dist/host/main.js) with the built-in Workspace (issue #144), on Linux, macOS and
 // Windows. A client starts toolscript-mcp over stdio with a temp config that has one root, no bridge and no other server,
 // a fake HOME and a PATH with no Claude. One program searches a disposable project and reads the file that it finds.
-// Pull request A: the search and read part. Run `npm run build` first.
+// The first describe is the search and read part, then the named tasks, the change tools and, last, the whole chain in
+// one program: search, read, diff, edit, run_task. Run `npm run build` first.
 //
 //   node tests/workspace.e2e.mjs
 
@@ -114,14 +115,21 @@ class RecordingTransport {
   }
 }
 
-/** A client that can ask the person and says yes. `prompts` keeps each prompt. */
-const connect = async (config, cwd) => {
+/**
+ * A client that can ask the person and says yes. `prompts` keeps each prompt. `answer`: 'decline' says no, and 'none'
+ * is a client that cannot ask at all.
+ */
+const connect = async (config, cwd, answer = 'accept') => {
   const prompts = []
-  const client = new Client({ name: 'workspace-e2e', version: '0' }, { capabilities: { elicitation: {} } })
-  client.setRequestHandler(ElicitRequestSchema, req => {
-    prompts.push(req.params.message)
-    return { action: 'accept' }
-  })
+  const client = new Client(
+    { name: 'workspace-e2e', version: '0' },
+    { capabilities: answer === 'none' ? {} : { elicitation: {} } },
+  )
+  if (answer !== 'none')
+    client.setRequestHandler(ElicitRequestSchema, req => {
+      prompts.push(req.params.message)
+      return { action: answer }
+    })
   const transport = new RecordingTransport(config, cwd)
   await client.connect(transport)
   const run = async code => {
@@ -160,11 +168,14 @@ const file = await call("mcp__workspace__read", { path })
 return { path, content: file.content, hash: file.hash, line: hits.matches[0].line, column: hits.matches[0].column }
 `
 
-/** The JSON of a run that returned a value: the text before the footer, inside the untrusted wrapper. */
+/**
+ * The JSON of a run that returned a value: the text before the footer, inside the untrusted wrapper. A run that applied a
+ * change lists it after the value, in a section of its own.
+ */
 const returned = text => {
   const m = /^<<([0-9a-f]{32})>> \[UNTRUSTED TOOL CONTENT: [^\]\n]*\] <<\1>>\n([\s\S]*)\n<<\/\1>>\n\n---/.exec(text)
   assert.ok(m, `the result is in the untrusted wrapper: ${text.slice(0, 200)}`)
-  return JSON.parse(m[2].split('\n\n---')[0])
+  return JSON.parse(m[2].split('\n\n---')[0].split('\n\n## Workspace changes')[0])
 }
 
 describe('the built server with the Workspace', () => {
@@ -231,10 +242,11 @@ describe('the built server with the Workspace', () => {
     ])
   })
 
-  test('search_tools shows the four tools with their result types, and the server lists only its own two tools', async () => {
+  test('search_tools shows the read tools and diff with their result types and no change tool, and the server lists only its own two tools', async () => {
     const shown = await session.search('workspace')
-    for (const name of ['list', 'search', 'read', 'stat'])
+    for (const name of ['list', 'search', 'read', 'stat', 'diff'])
       assert.match(shown, new RegExp(`### mcp__workspace__${name}\\n`))
+    assert.doesNotMatch(shown, /mcp__workspace__(edit|write)/, 'no write grant, so no change tool')
     assert.match(shown, /}\): Promise<\{\n {2}path: string\n {2}content: string\n {2}hash: string/)
     const tools = await session.client.listTools()
     assert.deepEqual(tools.tools.map(t => t.name).sort(), ['run_code', 'search_tools'])
@@ -427,5 +439,222 @@ describe('the built server with named tasks', () => {
     assert.equal(alive(server), false, 'the server is gone')
     assert.ok(await waitFor(() => !alive(pid)), 'the task process is gone')
     for (const line of session.transport.lines) assert.doesNotThrow(() => JSON.parse(line))
+  })
+})
+
+// Pull request B: preview, edit and diff, on a copy of the project with the write grant.
+describe('the built server with the write grant', () => {
+  const writable = path.join(base, 'writable')
+  fs.cpSync(project, writable, { recursive: true })
+  const retryFile = path.join(writable, 'src', 'retry.ts')
+  const withWrite = configWith('write.json', {
+    mcpServers: {},
+    workspace: { roots: [{ path: writable, write: true }] },
+  })
+  const logFile = path.join(home, '.toolscript-mcp', 'runs.jsonl')
+  const locksDir = path.join(home, '.toolscript-mcp', 'locks')
+  const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+
+  const FIND = `
+const hits = await call("mcp__workspace__search", { query: "maxAttempts: 3", include: ["src/**/*.ts"] })
+if (hits.matches.length !== 1) throw Error("Expected one match")
+const path = hits.matches[0].path
+const file = await call("mcp__workspace__read", { path })
+const edits = [{ old: "maxAttempts: 3", new: "maxAttempts: 5" }]
+const preview = await call("mcp__workspace__diff", { path, expectedHash: file.hash, edits })
+`
+  const DIFF_PROGRAM = `${FIND}return { path, preview: preview.diff, newHash: preview.newHash, applied: preview.applied }`
+  const EDIT_PROGRAM = `${FIND}const change = await call("mcp__workspace__edit", { path, expectedHash: file.hash, edits })
+return { path, preview: preview.diff, diff: change.diff, applied: change.applied, newHash: change.newHash }`
+
+  test('a program with only search, read and diff changes no byte and no modified time, asks no one and takes no lock', async () => {
+    const s = await connect(withWrite, writable)
+    try {
+      const before = stat(retryFile)
+      const r = await s.run(DIFF_PROGRAM)
+      assert.equal(r.isError, false, r.text)
+      const value = returned(r.text)
+      assert.equal(value.applied, false)
+      assert.ok(value.preview.includes('-  maxAttempts: 3,\r\n+  maxAttempts: 5,\r\n'), value.preview)
+      assert.deepEqual(stat(retryFile), before, 'the bytes and the modified time of the file are as they were')
+      assert.deepEqual(s.prompts, [])
+      assert.equal(fs.existsSync(locksDir), false, 'diff takes no lock')
+      assert.match(await s.search('workspace'), /### mcp__workspace__edit\n/)
+    } finally {
+      await s.close()
+    }
+  })
+
+  test('a person who declines, and a client that cannot ask, get no change', async () => {
+    for (const answer of ['decline', 'none']) {
+      const s = await connect(withWrite, writable, answer)
+      try {
+        const before = stat(retryFile)
+        const r = await s.run(EDIT_PROGRAM)
+        assert.equal(r.isError, true, answer)
+        assert.match(r.text, answer === 'decline' ? /did not approve/ : /cannot ask the person/)
+        assert.deepEqual(stat(retryFile), before, answer)
+        assert.equal(s.prompts.length, answer === 'decline' ? 1 : 0)
+      } finally {
+        await s.close()
+      }
+    }
+  })
+
+  test('an approved edit changes only the replaced bytes, and the result, the log and the prompt hold no secret', async () => {
+    const s = await connect(withWrite, writable)
+    try {
+      const before = stat(retryFile)
+      const r = await s.run(EDIT_PROGRAM)
+      assert.equal(r.isError, false, r.text)
+      const value = returned(r.text)
+      const expected = Buffer.from(before.bytes.toString('utf8').replace('maxAttempts: 3', 'maxAttempts: 5'))
+      assert.notDeepEqual(expected, before.bytes)
+      assert.deepEqual(fs.readFileSync(retryFile), expected, 'the old bytes with the one replacement')
+      assert.deepEqual([value.path, value.applied, value.newHash], ['src/retry.ts', true, sha(expected)])
+      assert.equal(value.preview, value.diff, 'the preview is the diff of the change')
+      const lines = value.diff.split('\n')
+      assert.equal(lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length, 1)
+      assert.equal(lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length, 1)
+      // Exactly one prompt: it names the tool and the root.
+      assert.equal(s.prompts.length, 1)
+      assert.ok(s.prompts[0].includes('mcp__workspace__edit'), s.prompts[0])
+      assert.ok(s.prompts[0].includes(writable), s.prompts[0])
+      // The log has the four calls, and the changed path with its counts.
+      const log = fs.readFileSync(logFile, 'utf8')
+      const record = JSON.parse(log.trim().split('\n').at(-1))
+      assert.deepEqual(
+        record.calls.map(c => [c.tool, c.decision, c.ok]),
+        [
+          ['mcp__workspace__search', 'allow', true],
+          ['mcp__workspace__read', 'allow', true],
+          ['mcp__workspace__diff', 'allow', true],
+          ['mcp__workspace__edit', 'ask-approved', true],
+        ],
+      )
+      assert.deepEqual(record.changes, [{ path: 'src/retry.ts', added: 1, removed: 1, created: false }])
+      for (const [name, text] of [
+        ['result', r.text],
+        ['log', log],
+        ['stderr', s.transport.stderr],
+        ['prompt', s.prompts.join('\n')],
+      ]) {
+        assert.ok(!text.includes(MARKER), `the secret is in the ${name}`)
+        if (name === 'log' || name === 'stderr')
+          assert.ok(!text.includes('maxAttempts'), `file content is in the ${name}`)
+      }
+      assert.deepEqual(fs.existsSync(locksDir) ? fs.readdirSync(locksDir) : [], [], 'no lock file stays')
+      // The hash of the first read is old now: a second edit with it fails with stale and changes nothing.
+      const stale = await s.run(
+        `try { await call("mcp__workspace__edit", { path: "src/retry.ts", expectedHash: ${JSON.stringify(sha(before.bytes))}, edits: [{ old: "maxAttempts: 5", new: "maxAttempts: 7" }] }) } catch (e) { return e.message.split(":")[0] }`,
+      )
+      assert.equal(returned(stale.text), 'stale')
+      assert.deepEqual(fs.readFileSync(retryFile), expected)
+      const pid = await s.close()
+      assert.equal(alive(pid), false, 'no process of the server is left')
+      for (const line of s.transport.lines) assert.doesNotThrow(() => JSON.parse(line))
+      assert.match(s.transport.stderr, /Workspace: root .*, read and write, confined by (proc|realpath|nofollow-any)/)
+    } finally {
+      await s.close()
+    }
+  })
+})
+
+// The whole chain in one program, on a disposable project with the write grant and one task: search, read, diff, edit,
+// run_task. The task runs the real test, which passes only when `maxAttempts` is 5.
+describe('the built server runs the whole chain in one program', () => {
+  const chain = path.join(base, 'chain')
+  const retryFile = path.join(chain, 'src', 'retry.ts')
+  fs.mkdirSync(path.join(chain, 'src'), { recursive: true })
+  fs.mkdirSync(path.join(chain, 'test'), { recursive: true })
+  fs.writeFileSync(retryFile, files['src/retry.ts'])
+  fs.writeFileSync(path.join(chain, '.env'), `TOKEN=${MARKER}\n`)
+  fs.writeFileSync(path.join(chain, 'notes.crlf.txt'), 'one\r\ntwo\r\n')
+  fs.writeFileSync(
+    path.join(chain, 'test', 'retry.test.mjs'),
+    "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport fs from 'node:fs'\n" +
+      "test('five attempts', () => assert.match(fs.readFileSync('src/retry.ts', 'utf8'), /maxAttempts: 5/))\n",
+  )
+  const chainConfig = configWith('chain.json', {
+    mcpServers: {},
+    workspace: {
+      roots: [{ path: chain, write: true, tasks: { 'test-retry': { command: 'node', args: ['--test'] } } }],
+    },
+  })
+  const logFile = path.join(home, '.toolscript-mcp', 'runs.jsonl')
+  const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+  const PROGRAM = `
+const hits = await call("mcp__workspace__search", { query: "maxAttempts: 3", include: ["src/**/*.ts"] })
+if (hits.matches.length !== 1) throw Error("Expected one match")
+const path = hits.matches[0].path
+const file = await call("mcp__workspace__read", { path })
+const edits = [{ old: "maxAttempts: 3", new: "maxAttempts: 5" }]
+const preview = await call("mcp__workspace__diff", { path, expectedHash: file.hash, edits })
+const change = await call("mcp__workspace__edit", { path, expectedHash: file.hash, edits })
+const tests = await call("mcp__workspace__run_task", { task: "test-retry" })
+return { path, preview: preview.diff, diff: change.diff, applied: change.applied, newHash: change.newHash, exitCode: tests.exitCode }
+`
+
+  test('the same task fails before the edit: it runs the real test', async () => {
+    const s = await connect(chainConfig, chain)
+    try {
+      const r = await s.run('return await call("mcp__workspace__run_task", { task: "test-retry" })')
+      assert.equal(r.isError, false, r.text)
+      const result = returned(r.text)
+      assert.deepEqual([result.exitCode, result.timedOut], [1, false])
+    } finally {
+      await s.close()
+    }
+  })
+
+  test('search, read, diff, edit and run_task in one program change one thing, ask once, and leak nothing', async () => {
+    const s = await connect(chainConfig, chain)
+    try {
+      const before = stat(retryFile)
+      const r = await s.run(PROGRAM)
+      assert.equal(r.isError, false, r.text)
+      const value = returned(r.text)
+      const expected = Buffer.from(before.bytes.toString('utf8').replace('maxAttempts: 3', 'maxAttempts: 5'))
+      assert.notDeepEqual(expected, before.bytes)
+      assert.deepEqual(fs.readFileSync(retryFile), expected, 'the old bytes with the one replacement')
+      assert.deepEqual(
+        [value.path, value.applied, value.newHash, value.exitCode],
+        ['src/retry.ts', true, sha(expected), 0],
+      )
+      assert.equal(value.preview, value.diff, 'the preview is the diff of the change')
+      const lines = value.diff.split('\n')
+      assert.equal(lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length, 1)
+      assert.equal(lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length, 1)
+      // Exactly one prompt, for the edit and the task together: it names both tools, the root and the task.
+      assert.equal(s.prompts.length, 1)
+      for (const part of ['mcp__workspace__edit', 'mcp__workspace__run_task', `Workspace root: ${chain}`, 'test-retry'])
+        assert.ok(s.prompts[0].includes(part), `${part} is in the prompt: ${s.prompts[0]}`)
+      // The run log has the five calls and the changed path, and the secret is in no result, log, prompt or stderr.
+      const log = fs.readFileSync(logFile, 'utf8')
+      const record = JSON.parse(log.trim().split('\n').at(-1))
+      assert.deepEqual(
+        record.calls.map(c => [c.tool, c.decision, c.ok]),
+        [
+          ['mcp__workspace__search', 'allow', true],
+          ['mcp__workspace__read', 'allow', true],
+          ['mcp__workspace__diff', 'allow', true],
+          ['mcp__workspace__edit', 'ask-approved', true],
+          ['mcp__workspace__run_task', 'ask-approved', true],
+        ],
+      )
+      assert.deepEqual(record.changes, [{ path: 'src/retry.ts', added: 1, removed: 1, created: false }])
+      for (const [name, text] of [
+        ['result', r.text],
+        ['log', log],
+        ['stderr', s.transport.stderr],
+        ['prompt', s.prompts.join('\n')],
+      ])
+        assert.ok(!text.includes(MARKER), `the secret is in the ${name}`)
+      const pid = await s.close()
+      assert.equal(alive(pid), false, 'no process of the server is left')
+      for (const line of s.transport.lines) assert.doesNotThrow(() => JSON.parse(line))
+    } finally {
+      await s.close()
+    }
   })
 })

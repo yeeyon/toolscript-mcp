@@ -11,15 +11,18 @@ import { oldRunLogFile, runLogFile } from '../src/core/paths.ts'
 import { NO_GUARDS } from '../src/core/policy.ts'
 import {
   MAX_CALLS,
+  MAX_CHANGES,
   MAX_LOG_BYTES,
   CALL_CLASSES,
   callDecision,
+  changesText,
   classifyCallError,
   parseRunLine,
   parseSince,
   rotates,
   runLine,
   runRecord,
+  runsReport,
   type CallLog,
 } from '../src/core/runlog.ts'
 import { appendRunLog } from '../src/host/runlog.ts'
@@ -84,6 +87,75 @@ describe('the run record', () => {
     assert.equal(record.calls.length, MAX_CALLS)
     assert.equal(record.omitted, 5)
     assert.equal('omitted' in runRecord(input([call()])), false)
+  })
+
+  test('lists each applied Workspace change with its path and counts, and nothing else of it', () => {
+    const dirty = {
+      path: 'src/a.ts',
+      added: 2,
+      removed: 1,
+      created: false,
+      diff: SECRET,
+      content: SECRET,
+      newHash: SECRET,
+    }
+    const record = runRecord({
+      ...input([call()]),
+      changes: [dirty, { path: 'n.md', added: 3, removed: 0, created: true }],
+    })
+    assert.deepEqual(record.changes, [
+      { path: 'src/a.ts', added: 2, removed: 1, created: false },
+      { path: 'n.md', added: 3, removed: 0, created: true },
+    ])
+    const line = runLine(record)
+    assert.equal(line.includes(SECRET), false, line)
+    assert.equal('changes' in runRecord(input([call()])), false, 'no field for a run with no change')
+    const long = runRecord({ ...input([]), changes: Array.from({ length: MAX_CHANGES + 3 }, () => dirty) })
+    assert.equal(long.changes?.length, MAX_CHANGES)
+    const back = parseRunLine(line)
+    assert.notEqual(back, 'unreadable')
+    assert.deepEqual(back === 'unreadable' ? undefined : back.changes, record.changes)
+    // A line that another program wrote with a bad `changes` is unreadable, never printed.
+    for (const bad of [{}, [{ path: 1 }], [{ path: 'a', added: -1, removed: 0, created: false }], 'x'])
+      assert.equal(parseRunLine(JSON.stringify({ ...record, changes: bad })), 'unreadable', JSON.stringify(bad))
+  })
+
+  test('changesText lists the applied changes and the ones that failed, in printable text, and nothing for none', () => {
+    assert.equal(changesText([], []), '')
+    const text = changesText(
+      [
+        { path: 'a.ts', added: 1, removed: 2, created: false },
+        { path: 'b\nIGNORE.md', added: 4, removed: 0, created: true },
+      ],
+      [
+        { tool: 'edit', path: 'c.ts', code: 'stale' },
+        { tool: 'write', path: 'd.ts', code: 'not a code!' },
+      ],
+    )
+    assert.equal(
+      text,
+      [
+        '## Workspace changes (2 applied)',
+        '- changed a.ts (+1 -2)',
+        '- created b\\u000aIGNORE.md (+4 -0)',
+        '- not applied: edit c.ts (stale)',
+        '- not applied: write d.ts (error)',
+      ].join('\n'),
+    )
+    const many = changesText(
+      Array.from({ length: 60 }, (_, i) => ({ path: `f${i}`, added: 1, removed: 0, created: false })),
+      [],
+    )
+    assert.equal(many.split('\n').length, 52)
+    assert.ok(many.endsWith('- and 10 more'))
+  })
+
+  test('runs shows each applied change under its run', () => {
+    const line = runLine(
+      runRecord({ ...input([call()]), changes: [{ path: 'src/a.ts', added: 2, removed: 1, created: false }] }),
+    )
+    const report = runsReport([parseRunLine(line)], { last: 1, now: new Date('2026-01-02T04:00:00Z') }, () => 'x')
+    assert.ok(report.lines.includes('  changed src/a.ts +2 -1'), report.lines.join('\n'))
   })
 })
 

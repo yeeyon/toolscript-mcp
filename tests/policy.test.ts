@@ -723,8 +723,9 @@ describe('a change of the policy in the config file', () => {
         const { match, action } = p[i]!
         // Lowered to ask, an allow rule that run_task skips would decide it: only the exact name can be lowered.
         const execSkips = guards.workspace && match !== EXEC && matches(match, EXEC)
-        const toAsk =
-          action === 'allow' && next(2) === 0 && !execSkips && (bridges.size === 0 || ONE_SERVER.includes(match))
+        // The change tools of the built-in Workspace skip an allow rule too (`needs` in policy.ts), as a bridge does.
+        const skipped = bridges.size > 0 || guards.workspace
+        const toAsk = action === 'allow' && next(2) === 0 && !execSkips && (!skipped || ONE_SERVER.includes(match))
         return p.with(i, rule(match, toAsk ? 'ask' : 'deny'))
       }
       return p.toSpliced(at, 0, rule(MATCHES[next(MATCHES.length)]!, 'deny'))
