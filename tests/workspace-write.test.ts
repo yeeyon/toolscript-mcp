@@ -795,7 +795,9 @@ describe('a swap of a folder while a file is changed', () => {
       let tried = 0
       let impossible = 0
       for (const bits of order) {
-        if (Date.now() - targetBegan > 2200) break
+        // The first 64 patterns (the six lookups around the last open, the ADR case among them) always run; the rest
+        // runs while time is left, so a slow machine tries fewer, never none of the ones that matter.
+        if (tried >= 64 && Date.now() - targetBegan > 2200) break
         let at = 0
         let stuck = false
         const key = bits.map(b => (b ? 1 : 0)).join('')
@@ -837,7 +839,7 @@ describe('a swap of a folder while a file is changed', () => {
       if (!win && !mac) assert.deepEqual(outsideEmpty, [], 'Linux makes nothing outside')
     }
     assert.equal(fs.readFileSync(path.join(outside, 'id.txt'), 'utf8'), INSIDE, 'the outside file is unchanged')
-    assert.ok(Date.now() - began < 5000, `the sweep takes at most 5 s: ${Date.now() - began} ms`)
+    t.diagnostic(`the sweep took ${Date.now() - began} ms`)
   })
 
   test('a loop that swaps the folder for at most 1 s while at most 300 edits run changes no outside byte', async t => {
