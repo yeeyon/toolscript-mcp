@@ -79,10 +79,10 @@ export const runAllow = async (args: readonly string[], io: CheckIo): Promise<nu
         ...(added.length === 0
           ? []
           : [
-              'The policy with the added tools would be:',
+              'The command below adds the other tools only. It writes this policy:',
               ...policy,
               ...RELOAD,
-              'To write the added tools only, run the command below.',
+              'To write this policy, run the command below.',
               ...(start.ok ? [allowCommand(start, added, true)] : start.lines),
             ]),
       ].join('\n'),

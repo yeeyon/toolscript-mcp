@@ -446,8 +446,9 @@ in the policy:
 
 - Each tool is `mcp__<server>__<tool>`, with a server key of the config. The tool part has only letters, digits and
   `. _ -`. For any other name, `allow` exits 2 and changes nothing.
-- `allow` never loosens a rule. It refuses a tool that a deny rule decides or hides behind an earlier rule, and a tool
-  that an ask rule names. It prints `refused:` with the rule and the edit to make by hand, writes nothing and exits 2.
+- `allow` never loosens a deny rule or an ask rule. It refuses a tool that the policy does not allow now if a deny
+  rule matches it or an ask rule names it. It prints `refused:` with the rule and the edit to make by hand, writes
+  nothing and exits 2.
   If the run names other tools too, it writes nothing for them. It prints the command with `--apply` for the tools
   that it can add.
 - A tool that the policy allows now gets no new rule. An allow rule with the exact name below an earlier rule moves

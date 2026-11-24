@@ -116,15 +116,16 @@ export const planAllow = (
     const { action, rule } = decide(policy, bridges, tool)
     if (action === 'allow' && rule !== undefined)
       return { tool, kind: 'keep', why: `allowed already by ${ruleText(rule)}` }
-    // An allow rule for the exact name counts for a bridge tool too, so it decides the tool when it goes first.
-    const before = rule === undefined ? 'first' : `before policy[${rule.index}]`
+    // A deny or ask rule always counts, so `decide` gives a rule when one matches. An allow rule for the exact name
+    // counts for a bridge tool too, so it decides the tool when it goes before that rule.
+    const before = (found: Rule) => `put an allow rule for ${tool} before policy[${(rule ?? found).index}]`
     const deny = policy.find(r => r.action === 'deny' && matches(r.match, tool))
     if (deny !== undefined)
       return {
         tool,
         kind: 'refuse',
         why: `the deny rule ${ruleText(deny)} matches it. allow never loosens a deny rule`,
-        edit: `put an allow rule for ${tool} ${before}, or narrow policy[${deny.index}]`,
+        edit: before(deny),
       }
     const ask = policy.find(r => r.action === 'ask' && r.match === tool)
     if (ask !== undefined)
@@ -132,7 +133,7 @@ export const planAllow = (
         tool,
         kind: 'refuse',
         why: `the ask rule ${ruleText(ask)} names it. allow never loosens an ask rule`,
-        edit: rule === ask ? `change policy[${ask.index}] to allow` : `put an allow rule for ${tool} ${before}`,
+        edit: rule === ask ? `change policy[${ask.index}] to allow` : before(ask),
       }
     return { tool, kind: 'add' }
   })

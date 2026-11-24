@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allowRefusal, planAllow } from '../src/core/commands.ts'
 import type { Launch, ServerKey } from '../src/core/config.ts'
-import type { Action, Policy } from '../src/core/policy.ts'
+import { decide, type Action, type Policy } from '../src/core/policy.ts'
 import { runAllow } from '../src/host/allow.ts'
 import { runTools, type CheckIo } from '../src/host/diagnose.ts'
 import { SHELLS } from './shells.ts'
@@ -61,7 +61,7 @@ describe('planAllow', () => {
     const { steps, policy } = plan(old, ['mcp__fake__hidden'])
     const [step] = steps
     assert.equal(step?.kind, 'refuse')
-    assert.match(step?.kind === 'refuse' ? step.edit : '', /before policy\[0\], or narrow policy\[1\]/)
+    assert.equal(step?.kind === 'refuse' ? step.edit : '', 'put an allow rule for mcp__fake__hidden before policy[0]')
     assert.deepEqual(shape(policy), shape(old))
   })
 
@@ -84,7 +84,10 @@ describe('planAllow', () => {
     const { steps, policy } = plan(old, ['mcp__claude-code__Read'], bridges)
     const [step] = steps
     assert.equal(step?.kind, 'refuse')
-    assert.match(step?.kind === 'refuse' ? step.edit : '', /before policy\[1\], or narrow policy\[1\]/)
+    assert.equal(
+      step?.kind === 'refuse' ? step.edit : '',
+      'put an allow rule for mcp__claude-code__Read before policy[1]',
+    )
     assert.deepEqual(shape(policy), shape(old))
   })
 
@@ -117,17 +120,53 @@ describe('planAllow with a deny rule behind an allow rule (issue 139)', () => {
 
   test('keeps a tool that an earlier allow rule already allows', () => {
     const { steps, policy } = plan('mcp__fake__search')
-    assert.equal(String(steps[0]?.kind), 'keep')
-    assert.match(steps[0]?.kind === 'keep' ? steps[0].why : '', /^allowed already by policy\[0\]/)
+    assert.deepEqual(steps, [
+      {
+        tool: 'mcp__fake__search',
+        kind: 'keep',
+        why: 'allowed already by policy[0] {"match": "mcp__fake__search", "action": "allow"}',
+      },
+    ])
     assert.deepEqual(shape(policy), shape(old))
   })
 
   test('refuses a tool that the deny rule decides, and names the rule', () => {
     const { steps, policy } = plan('mcp__fake__fetch')
-    assert.equal(String(steps[0]?.kind), 'refuse')
-    assert.match(JSON.stringify(steps[0]), /policy\[1\]/)
+    assert.deepEqual(steps, [
+      {
+        tool: 'mcp__fake__fetch',
+        kind: 'refuse',
+        why: 'the deny rule policy[1] {"match": "mcp__fake__*", "action": "deny"} matches it. allow never loosens a deny rule',
+        edit: 'put an allow rule for mcp__fake__fetch before policy[1]',
+      },
+    ])
     assert.deepEqual(shape(policy), shape(old))
   })
+})
+
+describe('the hand edit of a refused tool', () => {
+  const bridges = new Set(['claude-code' as ServerKey])
+  const cases: [Policy, string][] = [
+    [rules(['allow', 'mcp__fake__search'], ['deny', 'mcp__fake__*']), 'mcp__fake__fetch'],
+    [rules(['ask', 'mcp__fake__hid*'], ['deny', 'mcp__fake__hidden']), 'mcp__fake__hidden'],
+    [rules(['allow', '*'], ['deny', 'mcp__claude-code__*']), 'mcp__claude-code__Read'],
+    [rules(['deny', 'mcp__gh__f*'], ['deny', 'mcp__gh__fetch'], ['allow', '*']), 'mcp__gh__fetch'],
+    [rules(['ask', 'mcp__gh__*'], ['ask', 'mcp__gh__a']), 'mcp__gh__a'],
+    [rules(['ask', 'mcp__claude-code__Read']), 'mcp__claude-code__Read'],
+  ]
+  for (const [old, tool] of cases)
+    test(`allows ${tool} once a person makes it`, () => {
+      const [step] = planAllow(old, bridges, [tool]).steps
+      assert.equal(step?.kind, 'refuse')
+      const edit = step?.kind === 'refuse' ? step.edit : ''
+      const before = /^put an allow rule for \S+ before policy\[(\d+)\]$/.exec(edit)
+      const change = /^change policy\[(\d+)\] to allow$/.exec(edit)
+      assert.ok(before !== null || change !== null, edit)
+      const pairs = old.map((r): [Action, string] => [r.action, r.match])
+      if (before !== null) pairs.splice(Number(before[1]), 0, ['allow', tool])
+      if (change !== null) pairs[Number(change[1])] = ['allow', old[Number(change[1])]?.match ?? '']
+      assert.equal(decide(rules(...pairs), bridges, tool).action, 'allow', edit)
+    })
 })
 
 describe('allowRefusal', () => {
@@ -259,7 +298,7 @@ describe('toolscript-mcp allow', () => {
         'add: an allow rule for mcp__fake__list_a',
         'refused: mcp__fake__hidden: the deny rule policy[4] {"match": "mcp__fake__hidden", "action": "deny"} matches it. allow never loosens a deny rule.',
         'keep: mcp__fake__open: allowed already by policy[0] {"match": "mcp__fake__open", "action": "allow"}',
-        `next: mcp__fake__hidden: to allow it, edit the policy of ${s.config}: put an allow rule for mcp__fake__hidden before policy[3], or narrow policy[4].`,
+        `next: mcp__fake__hidden: to allow it, edit the policy of ${s.config}: put an allow rule for mcp__fake__hidden before policy[3].`,
         `allow did not change ${s.config}, because it refused a tool.`,
       ])
       assert.ok(!text.includes('Dry run'), text)
@@ -309,7 +348,7 @@ describe('toolscript-mcp allow', () => {
       assert.ok(!text.includes('stays'), text)
       assert.ok(
         printed.includes(
-          `next: mcp__fake__fetch: to allow it, edit the policy of ${s.config}: put an allow rule for mcp__fake__fetch before policy[1], or narrow policy[1].`,
+          `next: mcp__fake__fetch: to allow it, edit the policy of ${s.config}: put an allow rule for mcp__fake__fetch before policy[1].`,
         ),
         text,
       )
