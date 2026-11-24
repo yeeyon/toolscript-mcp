@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- SigV4: AWS credentials that fail to refresh in their last 5 minutes keep signing requests until they expire.
+- SigV4: a clear error when the AWS CLI does not answer in 30 s, or is version 1. A secret in the error line of a `credential_process` helper is hidden.
+- `toolscript-mcp login` on a `sigv4` entry says that it needs no login and names the `aws sso login` command.
+- SigV4: a `+` in a query string is signed as a plus sign, as the server reads it.
+
 ## 1.0.2
 
 - An HTTP server entry can sign its requests with AWS SigV4: `"sigv4": { "profile": "<name>" }`. toolscript-mcp gets the credentials from the AWS CLI profile, so an `aws sso login` session works. You can use the AWS MCP Server without `mcp-proxy-for-aws` and without an OAuth login. See "AWS SigV4" in the README.

@@ -242,6 +242,8 @@ const serverOf = (name: string, file: string, io: LoginIo): Found | string => {
   if (key === undefined || entry === undefined) return `the config ${file} has no server "${name}"`
   if (entry.kind === 'invalid') return `${name}: ${invalidReason(entry.errors)}`
   if (entry.kind === 'stdio') return `${name} is a stdio server. Only an HTTP server logs in with OAuth.`
+  if (entry.sigv4 !== undefined)
+    return `${name} signs its requests with AWS credentials (SigV4), so it needs no login. For an SSO profile, run: aws sso login --profile ${entry.sigv4.profile}`
   if (entry.oauth === undefined)
     return `${name} does not log in with OAuth: it has headers, or "oauth": false. To log in, remove an Authorization header and set "oauth": true.`
   return { key, server: entry, oauth: entry.oauth }

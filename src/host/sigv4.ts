@@ -5,7 +5,8 @@
 import { createHash, createHmac } from 'node:crypto'
 import crossSpawn from 'cross-spawn'
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { SigV4 } from '../core/config.ts'
+import { hideArgSecrets, type SigV4 } from '../core/config.ts'
+import { endTree } from './broker.ts'
 
 export type AwsCredentials = {
   readonly accessKeyId: string
@@ -25,9 +26,26 @@ const encode = (text: string): string =>
 /** The canonical path: each segment as sent, encoded once more, as AWS computes it for a service other than S3. */
 const canonicalPath = (pathname: string): string => pathname.split('/').map(encode).join('/') || '/'
 
-const canonicalQuery = (params: URLSearchParams): string =>
-  [...params]
-    .map(([k, v]) => [encode(k), encode(v)] as const)
+/** A percent-decode that never reads `+` as a space. A bad escape stays as it is. */
+const decode = (text: string): string => {
+  try {
+    return decodeURIComponent(text)
+  } catch {
+    return text
+  }
+}
+
+/** The canonical query: the raw parts, split at the first `=`, decoded and encoded again. A `+` stays a plus sign. */
+const canonicalQuery = (search: string): string =>
+  search
+    .replace(/^\?/, '')
+    .split('&')
+    .filter(part => part !== '')
+    .map(part => {
+      const at = part.indexOf('=')
+      return (at < 0 ? [part, ''] : [part.slice(0, at), part.slice(at + 1)]) as [string, string]
+    })
+    .map(([k, v]) => [encode(decode(k)), encode(decode(v))] as const)
     .sort(([a, av], [b, bv]) => (a < b ? -1 : a > b ? 1 : av < bv ? -1 : av > bv ? 1 : 0))
     .map(([k, v]) => `${k}=${v}`)
     .join('&')
@@ -59,7 +77,7 @@ export const signRequest = (
   const canonical = [
     request.method.toUpperCase(),
     canonicalPath(url.pathname),
-    canonicalQuery(url.searchParams),
+    canonicalQuery(url.search),
     names.map(n => `${n}:${signed[n]!.trim().replace(/\s+/g, ' ')}\n`).join(''),
     names.join(';'),
     sha256(request.body),
@@ -113,14 +131,39 @@ const failure = (profile: string, why: string): AwsCredentialsError =>
       `If it is an SSO profile, run: aws sso login --profile ${profile}`,
   )
 
-/** Runs `aws configure export-credentials` for a profile. `command` is for tests. */
-export const exportCredentials = (profile: string, command = 'aws'): Promise<AwsCredentials> =>
+/** The reason when the AWS CLI does not answer within `limitMs`. */
+export const timeoutReason = (limitMs: number): string =>
+  `the AWS CLI did not answer in ${Math.round(limitMs / 100) / 10} s`
+
+/**
+ * The reason that the first line of stderr gives (an expired SSO token, an unknown profile), or undefined for no line.
+ * A credential_process helper can print a secret in its error, so the line goes through the redaction of the config
+ * rules before it is cut. The usage text of AWS CLI version 1, which has no `export-credentials`, becomes a short hint.
+ */
+export const stderrReason = (stderr: string): string | undefined => {
+  const line = stderr
+    .split(/\r?\n/)
+    .find(l => l.trim() !== '')
+    ?.trim()
+  if (line === undefined) return undefined
+  if (/^usage:/i.test(line)) return 'needs AWS CLI version 2'
+  return hideArgSecrets([line]).args[0]!.slice(0, 300)
+}
+
+/** Runs `aws configure export-credentials` for a profile. `command` and `limitMs` are for tests. */
+export const exportCredentials = (
+  profile: string,
+  command = 'aws',
+  limitMs = CLI_TIMEOUT_MS,
+): Promise<AwsCredentials> =>
   new Promise((resolve, reject) => {
     let child: ReturnType<typeof crossSpawn>
     try {
       child = crossSpawn(command, ['configure', 'export-credentials', '--profile', profile, '--format', 'process'], {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        // A process group, so endTree ends a helper that the CLI started.
+        detached: process.platform !== 'win32',
       })
     } catch {
       reject(failure(profile, 'the AWS CLI did not start'))
@@ -128,31 +171,51 @@ export const exportCredentials = (profile: string, command = 'aws'): Promise<Aws
     }
     let out = ''
     let err = ''
-    child.stdout?.on('data', (b: Buffer) => void (out.length < MAX_OUTPUT && (out += b.toString('utf8'))))
-    child.stderr?.on('data', (b: Buffer) => void (err.length < MAX_OUTPUT && (err += b.toString('utf8'))))
-    const timer = setTimeout(() => child.kill(), CLI_TIMEOUT_MS)
-    child.on('error', (e: NodeJS.ErrnoException) => {
+    let settled = false
+    const settle = (end: () => void): void => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
-      reject(failure(profile, e.code === 'ENOENT' ? 'the AWS CLI "aws" is not on PATH' : 'the AWS CLI did not start'))
-    })
-    child.on('close', code => {
-      clearTimeout(timer)
-      const credentials = code === 0 ? parseExported(out) : undefined
-      if (credentials) return resolve(credentials)
-      // The first line of stderr says why (an expired SSO token, an unknown profile). It holds no secret.
-      const line = err
-        .split(/\r?\n/)
-        .find(l => l.trim() !== '')
-        ?.trim()
-        .slice(0, 300)
-      reject(failure(profile, line ?? (code === 0 ? 'the AWS CLI printed no credentials' : `exit ${code}`)))
-    })
+      end()
+    }
+    // A pipe error after the destroy would otherwise be an uncaught exception.
+    for (const stream of [child.stdout, child.stderr]) stream?.on('error', () => {})
+    child.stdout?.on('data', (b: Buffer) => void (!settled && out.length < MAX_OUTPUT && (out += b.toString('utf8'))))
+    child.stderr?.on('data', (b: Buffer) => void (!settled && err.length < MAX_OUTPUT && (err += b.toString('utf8'))))
+    const timer = setTimeout(
+      () =>
+        settle(() => {
+          reject(failure(profile, timeoutReason(limitMs)))
+          // A grandchild can keep the pipes open, so the reject does not wait for close.
+          endTree(child)
+          child.stdout?.destroy()
+          child.stderr?.destroy()
+        }),
+      limitMs,
+    )
+    child.on('error', (e: NodeJS.ErrnoException) =>
+      settle(() =>
+        reject(
+          failure(profile, e.code === 'ENOENT' ? 'the AWS CLI "aws" is not on PATH' : 'the AWS CLI did not start'),
+        ),
+      ),
+    )
+    child.on('close', (code, signal) =>
+      settle(() => {
+        const credentials = code === 0 ? parseExported(out) : undefined
+        if (credentials) return resolve(credentials)
+        const why =
+          code === 0 ? 'the AWS CLI printed no credentials' : code === null ? `killed by ${signal}` : `exit ${code}`
+        reject(failure(profile, stderrReason(err) ?? why))
+      }),
+    )
   })
 
 /**
  * A fetch that signs each request to the origin of the server with the credentials of the profile. The credentials
- * stay in memory until 5 minutes before they expire. A failed read is not kept: the next request tries again, so a
- * new `aws sso login` works without a restart.
+ * stay in memory until 5 minutes before they expire, then the next request reads them again. A failed read is not
+ * kept: the next request tries again, so a new `aws sso login` works without a restart. When the read fails before
+ * the expiry, the request is signed with the credentials in use.
  */
 export const sigv4Fetch = (
   server: { readonly url: string; readonly sigv4: SigV4; readonly headers?: Readonly<Record<string, string>> },
@@ -166,8 +229,14 @@ export const sigv4Fetch = (
   const credentials = async (): Promise<AwsCredentials> => {
     if (current && (current.expiresAt === undefined || current.expiresAt - EARLY_MS > clock())) return current
     pending ??= load(server.sigv4.profile).finally(() => (pending = undefined))
-    current = await pending
-    return current
+    try {
+      current = await pending
+      return current
+    } catch (error) {
+      // Inside the last 5 minutes the credentials in use still work. A failed read keeps them until they expire.
+      if (current?.expiresAt !== undefined && current.expiresAt > clock()) return current
+      throw error
+    }
   }
   const signed: FetchLike = async (url, init) => {
     const target = new URL(url)

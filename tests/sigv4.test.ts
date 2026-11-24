@@ -233,3 +233,87 @@ test('the canonical path encodes the path as sent once more, so a raw and an enc
   assert.notEqual(sign('https://h.us-east-1.api.aws/a/arn:x'), sign('https://h.us-east-1.api.aws/a/arn%3Ax'))
   assert.doesNotThrow(() => sign('https://h.us-east-1.api.aws/a%zz'))
 })
+
+test('the canonical query reads a plus sign as a plus sign, and keeps the signatures of the other queries', () => {
+  const sign = (path: string) =>
+    signRequest(
+      { method: 'GET', url: `https://example.amazonaws.com${path}`, headers: new Headers(), body: '' },
+      EXAMPLE,
+      { region: 'us-east-1', service: 'service' },
+      SUITE_DATE,
+    )
+      .authorization!.split('Signature=')
+      .pop()
+  const UNRESERVED = '-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+  const cases: Record<string, string> = {
+    '/?Param2=value2&Param1=value1': 'b97d918cfa904a5beff61c982a1b6f458b799221646efd99d3219ec94cdf2500',
+    '/?Param1=value1': 'a67d582fa61cc504c4bae71f336f98b97f1ea3c7a6bfe1b6e45aec72011b9aeb',
+    [`/?${UNRESERVED}=${UNRESERVED}`]: '9c3e54bfcdf0b19771a7f523ee5669cdf59bc7cc0884027167c21bb143a40197',
+    '/?ሴ=bar': '2cdec8eed098649ff3a119c94853b13c643bcf08f8b0a1d91e12c9027818dd04',
+    '/?Param1=value2&Param1=value1': '5772eed61e12b33fae39ee5e7012498b51d56abc0abb7c60486157bd471c4694',
+    '/?flag': '9f9b0c928ba3d7888545d212afed3457f82dc628c584247c6a0d461202def1fb',
+    '/?a=': '619ba5d08fb595f852ef4ad6f7ac2d4f66b99ca820d12b6a23a8d1e5771336bc',
+    '/?a=b=c': 'bd04800977503c61a562775203fd57986d4b5209699c101d60e6dd12e4d7d457',
+    '/': '5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31',
+    '/?': '5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31',
+    '/?q=a%20b': '87ff43fc767921116dce7f8d6f2b33a53470d1f0784a931ee9319fdc2d81e9e2',
+    '/?q=a+b': 'e6944a72739df54de065943a2df52b1b1fa41d9c64bfe314bdc6d9730bbcfb13',
+    '/?q=a%2Bb': 'e6944a72739df54de065943a2df52b1b1fa41d9c64bfe314bdc6d9730bbcfb13',
+  }
+  for (const [path, signature] of Object.entries(cases)) assert.equal(sign(path), signature, path)
+  for (const path of ['/?a=%zz', '/?a=%FF', '/?a=1&&b=2', '/?a=1&', '/?=x']) assert.doesNotThrow(() => sign(path), path)
+})
+
+test('sigv4Fetch sends the URL as it got it, with a plus sign in the query', async () => {
+  let sent = ''
+  const signed = sigv4Fetch(
+    { url: 'https://aws-mcp.us-east-1.api.aws/mcp', sigv4: { profile: 'p', region: 'us-east-1', service: 'aws-mcp' } },
+    async url => {
+      sent = String(url)
+      return new Response('{}')
+    },
+    async () => EXAMPLE,
+  )
+  await signed('https://aws-mcp.us-east-1.api.aws/mcp?q=a+b')
+  assert.equal(sent, 'https://aws-mcp.us-east-1.api.aws/mcp?q=a+b')
+})
+
+test('sigv4Fetch keeps signing with the credentials in use when a read inside the last 5 minutes fails', async () => {
+  let now = Date.UTC(2026, 10, 23, 8)
+  const expiry = now + 60 * 60_000
+  let step: 'ok' | 'fail' | 'new' = 'ok'
+  let loads = 0
+  const load = async (): Promise<AwsCredentials> => {
+    loads++
+    if (step === 'fail') throw 'refused'
+    return { ...EXAMPLE, sessionToken: step === 'ok' ? 'OLD' : 'NEW', expiresAt: expiry }
+  }
+  const seen: Headers[] = []
+  const signed = sigv4Fetch(
+    { url: 'https://aws-mcp.us-east-1.api.aws/mcp', sigv4: { profile: 'p', region: 'us-east-1', service: 'aws-mcp' } },
+    async (_url, init) => {
+      seen.push(new Headers(init?.headers))
+      return new Response('{}')
+    },
+    load,
+    () => now,
+  )
+  const send = () => signed('https://aws-mcp.us-east-1.api.aws/mcp', { method: 'POST', body: '{}' })
+  await send()
+  now = expiry - 4 * 60_000
+  step = 'fail'
+  await send()
+  assert.equal(seen[1]!.get('x-amz-security-token'), 'OLD', 'the old credentials sign it')
+  assert.equal(loads, 2)
+  now = expiry - 3 * 60_000
+  step = 'new'
+  await send()
+  assert.equal(loads, 3, 'the next request reads again')
+  assert.equal(seen[2]!.get('x-amz-security-token'), 'NEW')
+  now = expiry
+  step = 'fail'
+  await assert.rejects(send(), error => error === 'refused', 'at the expiry the error of the read comes back')
+  now = expiry - 1
+  await send()
+  assert.equal(seen[3]!.get('x-amz-security-token'), 'NEW', 'one ms before the expiry the credentials still sign')
+})

@@ -89,6 +89,27 @@ describe('plugin config helper', () => {
     for (const secret of SECRETS) assert.ok(!out.includes(secret), secret)
   })
 
+  it('labels an entry with sigv4 as sigv4 and never as oauth, with no profile or region', () => {
+    const url = 'https://aws-mcp.us-east-1.api.aws/mcp'
+    const file = makeConfig(
+      JSON.stringify({
+        mcpServers: {
+          a: { type: 'http', url, sigv4: { profile: 'fakeprofile' } },
+          b: { type: 'http', url, sigv4: { profile: 'fakeprofile', region: 'us-east-1', service: 'aws-mcp' } },
+          c: { type: 'http', url, headers: { 'X-Fake': 'fake-h' }, sigv4: { profile: 'fakeprofile' } },
+          d: { type: 'http', url, oauth: true, sigv4: { profile: 'fakeprofile' } },
+          e: { type: 'http', url, sigv4: 'fake-text' },
+        },
+      }),
+    )
+    const { code, out } = run(file)
+    assert.equal(code, 0)
+    const lines = out.split('\n')
+    for (const name of ['a', 'b', 'c', 'd'])
+      assert.ok(lines.includes(`${name}  http  https://aws-mcp.us-east-1.api.aws  sigv4`), name)
+    for (const secret of ['fakeprofile', 'fake-h', 'fake-text', '/mcp']) assert.ok(!out.includes(secret), secret)
+  })
+
   it('says when the policy is empty', () => {
     const file = makeConfig(JSON.stringify({ mcpServers: {} }))
     assert.match(run(file).out, /policy: empty, so each tool is ask/)
