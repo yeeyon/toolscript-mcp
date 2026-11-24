@@ -53,7 +53,9 @@ and `await tools.mcp__bench__<tool>(args)`, and the REPL keeps variables between
 ## Result
 
 All 54 answers were correct. toolscript-mcp adds the fewest tokens to the context, makes the fewest API calls and
-is the fastest. Code Mode reads the fewest input tokens in all, because its fixed context is half the size.
+is the fastest. Code Mode reads the fewest input tokens in all, because its fixed context is half the size. Most of
+that difference is Claude Code's `Artifact` tool: with it off, toolscript reads the fewest input tokens in all too
+(see "Rerun with Artifact off").
 
 - Tokens added to the context (cache writes), median per warm run: 25,518 direct, 11,819 codemode, 8,148
   toolscript.
@@ -127,6 +129,50 @@ Median API calls / output tokens.
 toolscript against codemode: on messages, issues, ticket and cross the 3 costs of one arm do not overlap the 3
 costs of the other. On deploys and logs they overlap.
 
+## Rerun with Artifact off
+
+The account of this bench has Claude Code's `Artifact` tool. Its schema is about 38,000 characters, and normal
+mode lists it in full on every API call. Code Mode hides it behind `searchTools`. A user who sets
+`"enableArtifact": false` in `~/.claude/settings.json` does not pay it. The bench uses `--setting-sources project`,
+so the user setting does not reach it, and the run above had `Artifact` on in every arm.
+
+This rerun turns it off in every arm, with no change to toolscript-mcp or to `bench/interactive.mjs`:
+
+- Each arm's cwd holds `.claude/settings.json` with `{ "enableArtifact": false }`. `--setting-sources project`
+  loads it. Project settings can turn `Artifact` off, not on.
+- toolscript-mcp at `4cee29c`, built with `npm run build`. The same 6 tasks, 3 reps, 54 runs, Sonnet 5.5, Claude
+  Code 2.1.331.
+- Rerun: create the 3 files under a new root, then `node bench/interactive.mjs --root C:/tsbench-noart --reps 3
+  --max-spend 6 --out <dir>`.
+
+All 54 answers were correct. 0 failed tool calls and 0 repeated MCP calls in every arm.
+
+| metric | direct | codemode | toolscript |
+|---|---:|---:|---:|
+| first-call input tokens | 25,937 | 18,467 | 27,057 |
+| first-call input tokens with `Artifact` on (run above) | 39,462 | 21,459 | 40,580 |
+| input tokens read in all, median per run | 132,251 | 94,431 | 83,204 |
+| input tokens read in all, sum of the 6 task medians | 893,899 | 543,455 | 524,241 |
+| mean cost of rep 1 (6 runs) | 0.1002 | 0.0575 | 0.0399 |
+| mean cost of all 18 runs | 0.0714 | 0.0405 | 0.0246 |
+| tool result chars in context, median | 40,482 | 11,377 | 1,767 |
+| API calls, median | 4 | 4 | 3 |
+| seconds, median | 12.7 | 9.0 | 7.9 |
+
+- The fixed-context gap of toolscript against Code Mode falls from 19,121 to 8,590 tokens. `Artifact` was 13,523
+  tokens of toolscript's first call, and 2,992 of Code Mode's.
+- toolscript now reads the fewest input tokens in all: 12% fewer than Code Mode per run (median), and 4% fewer over
+  the 6 tasks. In the run above, Code Mode read 12% fewer than toolscript.
+- toolscript still adds the fewest tokens to the context, and has the lowest mean cost per arm. Per task, direct
+  costs less on ticket ($0.0105 against $0.0116, median).
+- Code Mode's `searchTools` result no longer holds the `Artifact` schema: its tool result chars fell from 15,225 to
+  11,377 (median).
+
+**Cache between reps.** In this rerun, reps 2 and 3 of a task found most of rep 1's cache entries: toolscript
+wrote 0 to 1,992 tokens in reps 2 and 3, against 7,382 to 8,746 in rep 1. The run above wrote about the same in
+every rep. The cause was not checked. So the mean of all 18 runs is not comparable with the run above. The mean of
+rep 1 is, and the input tokens read in all do not depend on the cache.
+
 ## What the numbers are made of
 
 **Two kinds of tokens.** The tokens a task adds to the context are written to the cache once and read again on
@@ -193,9 +239,10 @@ which the REPL refused.
 
 ## Gaps of toolscript-mcp against Code Mode
 
-1. **The fixed context.** About 19,000 more tokens read on every API call. It is Claude Code's built-in tool list, not
-   toolscript-mcp's code. Fix to try: a lean Claude Code setup that denies the built-in tools a session does not
-   use, measured as a fourth arm. toolscript-mcp's own 1,100 tokens can be trimmed too.
+1. **The fixed context.** About 19,000 more tokens read on every API call with `Artifact` on, and 8,590 with it off
+   (see "Rerun with Artifact off"). It is Claude Code's built-in tool list, not toolscript-mcp's code: toolscript-mcp's
+   own part is about 1,100 tokens. With `Artifact` off, toolscript reads fewer input tokens in all than Code Mode.
+   Next to try: deny the other built-in tools a session does not use, and trim toolscript-mcp's own text.
 2. **Memory.** About 60 MB per session for the host, which sharing does not remove.
 
 ## Fairness and limits
@@ -224,6 +271,9 @@ $4.8066 in all, under the cap of $6.00:
 - A smoke run of the ticket task in the 3 arms, all cold: $0.4602.
 - The 54 runs: $4.3466.
 - The 6 memory sessions are not counted: their transcripts were removed with their project folders.
+
+Rerun with Artifact off: $2.7810 in all, under its cap of $6.00. A smoke run of the ticket task in the 3 arms,
+all cold: $0.3249. The 54 runs: $2.4561.
 
 ## Every run
 
