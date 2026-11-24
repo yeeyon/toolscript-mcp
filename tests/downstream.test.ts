@@ -14,6 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { getEventListeners } from 'node:events'
@@ -824,8 +825,9 @@ const startStall = async () => {
 }
 
 describe('a connect that never finishes', () => {
-  const stalled = async (untrusted = false) => {
+  const stalled = async (untrusted = false, stalling = true, connectTimeoutMs = 300) => {
     const fake = await startStall()
+    fake.stall.on = stalling
     const lines: string[] = []
     const server: ServerConfig = {
       kind: 'http',
@@ -834,8 +836,8 @@ describe('a connect that never finishes', () => {
       ...(untrusted && { untrusted: true as const }),
     }
     const downstream = connectAll(new Map([[KEY, server]]), '0', line => lines.push(line), {
-      connectTimeoutMs: 300,
-      firstWaitMs: 800,
+      connectTimeoutMs,
+      firstWaitMs: 5000,
     })
     opened.push(downstream)
     const state = () => downstream.states()[0]
@@ -866,6 +868,24 @@ describe('a connect that never finishes', () => {
       assert.equal(link.ok, true)
       assert.equal(state()?.status, 'connected')
     } finally {
+      await downstream.close()
+      await fake.close()
+    }
+  })
+
+  test('a slow start() is not part of the limit: the time starts after it', async () => {
+    const proto = StreamableHTTPClientTransport.prototype
+    const original = proto.start
+    proto.start = async function (this: StreamableHTTPClientTransport) {
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      return original.call(this)
+    }
+    const { fake, downstream, state } = await stalled(false, false, 1000)
+    try {
+      await downstream.settled
+      assert.equal(state()?.status, 'connected')
+    } finally {
+      proto.start = original
       await downstream.close()
       await fake.close()
     }

@@ -638,14 +638,23 @@ export const connectAll = (
         if (closing) made.child.hurry()
       }
       // The SDK limits only the initialize request, so a server that never answers the next step stays connecting.
-      const connecting = client.connect(made.transport, { timeout: connectTimeoutMs })
+      // The limit starts when `start()` ends: a shared server has its own limits for the broker and the child in it.
       let timer: NodeJS.Timeout | undefined
+      let arm!: () => void
       const expired = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new OwnError(`the connect did not finish within ${connectTimeoutMs / 1000} s`)),
-          connectTimeoutMs,
-        )
+        arm = () => {
+          timer = setTimeout(
+            () => reject(new OwnError(`the connect did not finish within ${connectTimeoutMs / 1000} s`)),
+            connectTimeoutMs,
+          )
+        }
       })
+      const start = made.transport.start.bind(made.transport)
+      made.transport.start = async () => {
+        await start()
+        arm()
+      }
+      const connecting = client.connect(made.transport, { timeout: connectTimeoutMs })
       try {
         await Promise.race([connecting, expired])
       } finally {
