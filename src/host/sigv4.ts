@@ -5,7 +5,8 @@
 import { createHash, createHmac } from 'node:crypto'
 import crossSpawn from 'cross-spawn'
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { SigV4 } from '../core/config.ts'
+import { hideArgSecrets, type SigV4 } from '../core/config.ts'
+import { endTree } from './broker.ts'
 
 export type AwsCredentials = {
   readonly accessKeyId: string
@@ -130,14 +131,39 @@ const failure = (profile: string, why: string): AwsCredentialsError =>
       `If it is an SSO profile, run: aws sso login --profile ${profile}`,
   )
 
-/** Runs `aws configure export-credentials` for a profile. `command` is for tests. */
-export const exportCredentials = (profile: string, command = 'aws'): Promise<AwsCredentials> =>
+/** The reason when the AWS CLI does not answer within `limitMs`. */
+export const timeoutReason = (limitMs: number): string =>
+  `the AWS CLI did not answer in ${Math.round(limitMs / 100) / 10} s`
+
+/**
+ * The reason that the first line of stderr gives (an expired SSO token, an unknown profile), or undefined for no line.
+ * A credential_process helper can print a secret in its error, so the line goes through the redaction of the config
+ * rules before it is cut. The usage text of AWS CLI version 1, which has no `export-credentials`, becomes a short hint.
+ */
+export const stderrReason = (stderr: string): string | undefined => {
+  const line = stderr
+    .split(/\r?\n/)
+    .find(l => l.trim() !== '')
+    ?.trim()
+  if (line === undefined) return undefined
+  if (/^usage:/i.test(line)) return 'needs AWS CLI version 2'
+  return hideArgSecrets([line]).args[0]!.slice(0, 300)
+}
+
+/** Runs `aws configure export-credentials` for a profile. `command` and `limitMs` are for tests. */
+export const exportCredentials = (
+  profile: string,
+  command = 'aws',
+  limitMs = CLI_TIMEOUT_MS,
+): Promise<AwsCredentials> =>
   new Promise((resolve, reject) => {
     let child: ReturnType<typeof crossSpawn>
     try {
       child = crossSpawn(command, ['configure', 'export-credentials', '--profile', profile, '--format', 'process'], {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        // A process group, so endTree ends a helper that the CLI started.
+        detached: process.platform !== 'win32',
       })
     } catch {
       reject(failure(profile, 'the AWS CLI did not start'))
@@ -145,25 +171,44 @@ export const exportCredentials = (profile: string, command = 'aws'): Promise<Aws
     }
     let out = ''
     let err = ''
-    child.stdout?.on('data', (b: Buffer) => void (out.length < MAX_OUTPUT && (out += b.toString('utf8'))))
-    child.stderr?.on('data', (b: Buffer) => void (err.length < MAX_OUTPUT && (err += b.toString('utf8'))))
-    const timer = setTimeout(() => child.kill(), CLI_TIMEOUT_MS)
-    child.on('error', (e: NodeJS.ErrnoException) => {
+    let settled = false
+    const settle = (end: () => void): void => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
-      reject(failure(profile, e.code === 'ENOENT' ? 'the AWS CLI "aws" is not on PATH' : 'the AWS CLI did not start'))
-    })
-    child.on('close', code => {
-      clearTimeout(timer)
-      const credentials = code === 0 ? parseExported(out) : undefined
-      if (credentials) return resolve(credentials)
-      // The first line of stderr says why (an expired SSO token, an unknown profile). It holds no secret.
-      const line = err
-        .split(/\r?\n/)
-        .find(l => l.trim() !== '')
-        ?.trim()
-        .slice(0, 300)
-      reject(failure(profile, line ?? (code === 0 ? 'the AWS CLI printed no credentials' : `exit ${code}`)))
-    })
+      end()
+    }
+    // A pipe error after the destroy would otherwise be an uncaught exception.
+    for (const stream of [child.stdout, child.stderr]) stream?.on('error', () => {})
+    child.stdout?.on('data', (b: Buffer) => void (!settled && out.length < MAX_OUTPUT && (out += b.toString('utf8'))))
+    child.stderr?.on('data', (b: Buffer) => void (!settled && err.length < MAX_OUTPUT && (err += b.toString('utf8'))))
+    const timer = setTimeout(
+      () =>
+        settle(() => {
+          reject(failure(profile, timeoutReason(limitMs)))
+          // A grandchild can keep the pipes open, so the reject does not wait for close.
+          endTree(child)
+          child.stdout?.destroy()
+          child.stderr?.destroy()
+        }),
+      limitMs,
+    )
+    child.on('error', (e: NodeJS.ErrnoException) =>
+      settle(() =>
+        reject(
+          failure(profile, e.code === 'ENOENT' ? 'the AWS CLI "aws" is not on PATH' : 'the AWS CLI did not start'),
+        ),
+      ),
+    )
+    child.on('close', (code, signal) =>
+      settle(() => {
+        const credentials = code === 0 ? parseExported(out) : undefined
+        if (credentials) return resolve(credentials)
+        const why =
+          code === 0 ? 'the AWS CLI printed no credentials' : code === null ? `killed by ${signal}` : `exit ${code}`
+        reject(failure(profile, stderrReason(err) ?? why))
+      }),
+    )
   })
 
 /**
