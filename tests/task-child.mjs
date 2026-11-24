@@ -46,6 +46,10 @@ else if (mode === 'exit') {
   const body = `HEAD${'x'.repeat(size - 8)}TAIL`
   process.stdout.write(body)
   process.stderr.write(body)
+} else if (mode === 'utf8') {
+  // 'a' then two-byte characters: the 64 KiB head ends in the middle of one, and so does the tail start.
+  const body = `a${'é'.repeat(Number(rest[0]))}b`
+  process.stdout.write(body)
 } else if (mode === 'stamp') {
   fs.appendFileSync(rest[0], `start ${Date.now()}\n`)
   setTimeout(() => fs.appendFileSync(rest[0], `end ${Date.now()}\n`), Number(rest[1]))

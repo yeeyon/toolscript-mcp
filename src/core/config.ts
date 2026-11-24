@@ -519,6 +519,8 @@ const parseTasks = (
         errors.push(
           `${at(`${here}.env`, key)}: the name must have letters, digits and underscores, and the value at most ${TASK_LIMITS.envChars} characters and no NUL character`,
         )
+    // The timer of the task fires one second before the call limit, so the program sees `timedOut`, not a cancel.
+    timeoutSeconds = Math.max(1, Math.min(timeoutSeconds, callTimeout - 1))
     return errors.length > found ? [] : [{ name, command, args, cwd, timeoutSeconds, env: variables }]
   })
 }

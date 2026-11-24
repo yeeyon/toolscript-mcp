@@ -5,7 +5,8 @@
 // A task is NOT contained: it runs project code with the rights of the user. What this file guarantees is narrower:
 // no shell (`shell` is never set, and `cross-spawn` is not used, because it starts `cmd.exe` for a `.cmd` file), the
 // arguments reach the child as given, the child gets a short list of variables, the output is capped, the time is
-// limited, and the whole process tree ends at the time limit, at a cancel and at a shutdown.
+// limited, and the process tree ends at the time limit, at a cancel and at a shutdown. Outside Windows that is the
+// process group. On Windows it is the tree that `taskkill /T` walks: a process whose parent already exited can outlive it.
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
@@ -197,6 +198,24 @@ export const resolveTasks = async (input: {
 // ---------------------------------------------------------------------------------------------------------------
 // Run
 
+/** The head without a last character that is cut in two: it backs off to the lead byte of that character. */
+const wholeHead = (bytes: Buffer): Buffer => {
+  for (let i = bytes.length - 1; i >= Math.max(0, bytes.length - 4); i--) {
+    const b = bytes[i]!
+    if ((b & 0xc0) === 0x80) continue
+    const need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1
+    return i + need > bytes.length ? bytes.subarray(0, i) : bytes
+  }
+  return bytes
+}
+
+/** The tail without a first character that is cut in two: it drops the continuation bytes at its start. */
+const wholeTail = (bytes: Buffer): Buffer => {
+  let i = 0
+  while (i < 3 && i < bytes.length && (bytes[i]! & 0xc0) === 0x80) i++
+  return bytes.subarray(i)
+}
+
 /** Keeps the first `HEAD` and the last `TAIL` bytes of a stream, and counts the rest. */
 const capture = () => {
   const head: Buffer[] = []
@@ -219,11 +238,15 @@ const capture = () => {
       while (tail.length > 1 && tailLen - tail[0]!.length >= TASK_LIMITS.tailBytes) tailLen -= tail.shift()!.length
     },
     done(): { text: string; truncated: boolean } {
-      const first = Buffer.concat(head)
-      let last = Buffer.concat(tail)
+      let first: Buffer = Buffer.concat(head)
+      let last: Buffer = Buffer.concat(tail)
       if (last.length > TASK_LIMITS.tailBytes) last = last.subarray(last.length - TASK_LIMITS.tailBytes)
+      if (total - first.length - last.length === 0)
+        return { text: Buffer.concat([first, last]).toString('utf8'), truncated: false }
+      // The cut falls on a character border, so no character is split into two broken ones.
+      first = wholeHead(first)
+      last = wholeTail(last)
       const cut = total - first.length - last.length
-      if (cut === 0) return { text: Buffer.concat([first, last]).toString('utf8'), truncated: false }
       return { text: first.toString('utf8') + cutNote(cut) + last.toString('utf8'), truncated: true }
     },
   }
@@ -346,6 +369,7 @@ export const createTaskRunner = (set: TaskSet): TaskRunner => {
       })
       signal.addEventListener('abort', onAbort, { once: true })
       live.add(entry)
+      if (signal.aborted) onAbort()
     })
     return result
   }
@@ -379,6 +403,9 @@ export const createTaskRunner = (set: TaskSet): TaskRunner => {
         await turn(previous, signal)
         if (halted) throw new WorkspaceError('cancelled', 'Workspace is closing')
         await task.proveCwd()
+        // A cancel or a shutdown during the proof must not start the task.
+        if (halted) throw new WorkspaceError('cancelled', 'Workspace is closing')
+        if (signal.aborted) throw new WorkspaceError('cancelled', 'the call was cancelled')
         return execute(task, signal)
       })()
       // The next call waits for this one to end, and for the one before it.

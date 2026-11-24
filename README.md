@@ -1199,7 +1199,9 @@ its own change, for example after it edits a file.
 - A task name has 1 to 32 characters from `a-z`, `0-9`, `-` and `_`. An entry has at most 32 tasks.
 - `command` is needed. It is an absolute path, or a bare name that toolscript-mcp looks up on its `PATH` one time, at the start.
 - `args` is a list of strings. `cwd` is a folder relative to the `path` of the entry, `.` by default. It must exist, and it can have no link on the way.
-- `timeoutSeconds` is 60 by default. A value over `sandbox.callTimeoutSeconds` is a config error.
+- `timeoutSeconds` is 60 by default. A value over `sandbox.callTimeoutSeconds` is a config error. The limit that applies
+  is at most one second under `sandbox.callTimeoutSeconds`, which is 59 seconds with the default call limit. So the
+  program sees `timedOut` and not a cancel.
 - `env` holds the variables of the task. The child gets only these, and a short list of variables of the server: `PATH`, the home and temp folders, and `SystemRoot` on Windows. No other variable of the server reaches it.
 - `${NAME}` in `command`, `args` and `env` takes the value of a variable of the server, as it does in a server entry.
 
@@ -1213,7 +1215,9 @@ How a task runs:
 - Each stream keeps the first 64 KiB and the last 192 KiB, and the result sets `stdoutTruncated` or `stderrTruncated`.
 - A non-zero exit code is a result, not an error. At the time limit, `timedOut` is `true`.
 - One task runs at a time in a session. A second call waits for the first.
-- At the time limit, at a cancel and at a shutdown, toolscript-mcp ends the whole process tree of the task.
+- At the time limit, at a cancel and at a shutdown, toolscript-mcp ends the process tree of the task. On Linux and
+  macOS it ends the process group. On Windows it ends the tree that `taskkill /T` walks. A process whose parent
+  already exited can outlive the time limit, a cancel or a shutdown.
 
 #### Set a task up safely
 

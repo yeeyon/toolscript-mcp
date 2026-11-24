@@ -275,7 +275,10 @@ A write in place is not atomic. If it fails part way, the error names the file a
   No other variable of the server reaches it.
 - `timeoutSeconds` is 60 by default, or `sandbox.callTimeoutSeconds` when that is lower.
   A value over `sandbox.callTimeoutSeconds` is a config error.
-  At the time limit, a cancel or a shutdown, the provider ends the whole process tree.
+  The limit that applies is at most one second under `sandbox.callTimeoutSeconds`, so the task timer fires first.
+  At the time limit, a cancel or a shutdown, the provider ends the process tree: on Linux and macOS the process group,
+  on Windows the tree that `taskkill /T` walks. On Windows a process whose parent already exited can outlive it. A Job
+  Object would close the gap but needs a native helper, so the claim is narrower instead.
 - One task runs at a time in a session. A second call waits for its turn, and a call that ends while it waits starts
   nothing. Each stream keeps the first 64 KiB and the last 192 KiB, with a note of the cut bytes between them.
   A non-zero exit code is data, not an error. An unknown task fails and lists the task names.

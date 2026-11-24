@@ -17,7 +17,7 @@ import {
   taskEnv,
   type TaskConfig,
 } from '../src/core/task.ts'
-import { findOnPath, launchProblem } from '../src/host/workspace/task.ts'
+import { createTaskRunner, findOnPath, launchProblem, type ResolvedTask } from '../src/host/workspace/task.ts'
 import { codeOf, open, rm, tempDir, trySymlink, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
 const win = process.platform === 'win32'
@@ -636,6 +636,57 @@ describe('run_task: finding the program', () => {
     const r = await rigOf(t, [task('plain', ['argv'], { command: file })])
     if (r === undefined) return
     assert.equal(r.bound.tasks.invalid[0]?.reason, 'its command is not executable')
+  })
+})
+
+describe('run_task: the cut of the output', () => {
+  test('the head and the tail are cut on character borders, so no replacement character appears', async t => {
+    const r = await rigOf(t, [task('wide', ['utf8', String(300 * 1024)])])
+    if (r === undefined) return
+    const out = await r.call('run_task', { task: 'wide' })
+    assert.equal(out.stdoutTruncated, true)
+    assert.ok(!out.stdout.includes('�'), 'no split character')
+    assert.ok(out.stdout.startsWith('aé') && out.stdout.endsWith('éb'))
+    const cut = /… \[(\d+) bytes cut\] …/.exec(out.stdout)
+    const kept = Buffer.byteLength(out.stdout) - Buffer.byteLength(`\n… [${cut![1]} bytes cut] …\n`)
+    assert.equal(kept + Number(cut![1]), 1 + 2 * 300 * 1024 + 1, 'the note counts every byte that is not shown')
+  })
+})
+
+describe('run_task: a cancel or a shutdown during the proof of the folder', () => {
+  const slowProof = (name: string, cwd: string): ResolvedTask => ({
+    name,
+    file: process.execPath,
+    args: [CHILD, 'stamp', path.join(cwd, 'stamp.txt'), '30000'],
+    cwd,
+    timeoutMs: 60_000,
+    env: { ...process.env } as Record<string, string>,
+    proveCwd: () => sleep(200),
+  })
+
+  test('a cancel at 100 ms starts no child', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner({ valid: [slowProof('slow', dir)], invalid: [] })
+    t.after(() => runner.stop())
+    const controller = new AbortController()
+    const call = runner.run('slow', controller.signal)
+    await sleep(100)
+    controller.abort()
+    await assert.rejects(call, /cancelled/)
+    await sleep(500)
+    assert.equal(fs.existsSync(path.join(dir, 'stamp.txt')), false, 'the child never started')
+  })
+
+  test('a shutdown at 100 ms starts no child', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner({ valid: [slowProof('slow', dir)], invalid: [] })
+    const call = runner.run('slow', new AbortController().signal)
+    call.catch(() => {})
+    await sleep(100)
+    await runner.stop()
+    await assert.rejects(call, /closing/)
+    await sleep(500)
+    assert.equal(fs.existsSync(path.join(dir, 'stamp.txt')), false, 'the child never started')
   })
 })
 

@@ -1550,12 +1550,12 @@ describe('the tasks of the workspace section', () => {
   })
   const task = { command: 'node', args: ['--test'], cwd: '.', timeoutSeconds: 30, env: { CI: '1' } }
 
-  test('a task reads every key, and the defaults are no args, the entry as folder and 60 seconds', () => {
+  test('a task reads every key, and the defaults are no args, the entry as folder and one second under the call limit', () => {
     const config = ok(withTasks({ test: task, build: { command: 'tsc' }, 'a_b-1': { command: '/usr/bin/make' } }))
     assert.deepEqual(config.workspace?.roots[0]?.tasks, [
       { name: 'test', command: 'node', args: ['--test'], cwd: [], timeoutSeconds: 30, env: { CI: '1' } },
-      { name: 'build', command: 'tsc', args: [], cwd: [], timeoutSeconds: 60, env: {} },
-      { name: 'a_b-1', command: '/usr/bin/make', args: [], cwd: [], timeoutSeconds: 60, env: {} },
+      { name: 'build', command: 'tsc', args: [], cwd: [], timeoutSeconds: 59, env: {} },
+      { name: 'a_b-1', command: '/usr/bin/make', args: [], cwd: [], timeoutSeconds: 59, env: {} },
     ])
     assert.equal(config.guards.workspace, true)
     const folder = ok(withTasks({ t: { command: 'node', cwd: 'packages/app' } }))
@@ -1563,16 +1563,16 @@ describe('the tasks of the workspace section', () => {
     assert.equal(ok({ mcpServers: {}, workspace: { roots: [{ path: '/a' }] } }).workspace?.roots[0]?.tasks, undefined)
   })
 
-  test('the default time is 60 seconds or the call limit when that is lower, and a task may use all of the call limit', () => {
+  test('the default time is 59 seconds, and a time at or over the call limit is kept one second under it', () => {
     const lower = ok(withTasks({ t: { command: 'node' } }, { sandbox: { callTimeoutSeconds: 20 } }))
-    assert.equal(lower.workspace?.roots[0]?.tasks?.[0]?.timeoutSeconds, 20)
+    assert.equal(lower.workspace?.roots[0]?.tasks?.[0]?.timeoutSeconds, 19)
     const high = ok(
       withTasks(
         { t: { command: 'node', timeoutSeconds: 300 } },
         { sandbox: { timeoutSeconds: 400, callTimeoutSeconds: 300 } },
       ),
     )
-    assert.equal(high.workspace?.roots[0]?.tasks?.[0]?.timeoutSeconds, 300)
+    assert.equal(high.workspace?.roots[0]?.tasks?.[0]?.timeoutSeconds, 299)
   })
 
   test('expands ${VAR} in the command, the arguments and the variables, and an unset one is an error that names it', () => {
