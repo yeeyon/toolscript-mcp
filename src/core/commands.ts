@@ -117,8 +117,9 @@ export const planAllow = (
     if (action === 'allow' && rule !== undefined)
       return { tool, kind: 'keep', why: `allowed already by ${ruleText(rule)}` }
     // A deny or ask rule always counts, so `decide` gives a rule when one matches. An allow rule for the exact name
-    // counts for a bridge tool too, so it decides the tool when it goes before that rule.
-    const before = (found: Rule) => `put an allow rule for ${tool} before policy[${(rule ?? found).index}]`
+    // counts for a bridge tool too, so it decides the tool when it goes before that rule. The edit names each rule
+    // with its text, because the printed --apply command of a mixed run moves every index.
+    const before = (found: Rule) => `put an allow rule for ${tool} before the rule ${ruleText(rule ?? found)}`
     const deny = policy.find(r => r.action === 'deny' && matches(r.match, tool))
     if (deny !== undefined)
       return {
@@ -133,7 +134,7 @@ export const planAllow = (
         tool,
         kind: 'refuse',
         why: `the ask rule ${ruleText(ask)} names it. allow never loosens an ask rule`,
-        edit: rule === ask ? `change policy[${ask.index}] to allow` : before(ask),
+        edit: rule === ask ? `change the rule ${ruleText(ask)} to allow` : before(ask),
       }
     return { tool, kind: 'add' }
   })
