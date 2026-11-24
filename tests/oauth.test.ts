@@ -598,6 +598,18 @@ describe('login', () => {
     assert.match(s.lines.join('\n'), /fake does not log in with OAuth/)
     assert.ok(!s.lines.join('\n').includes('fake-header-token-1'))
   })
+
+  test('login on a sigv4 entry says it needs no login and names the AWS command, with no browser', async () => {
+    const fake = await startFake()
+    const s = setup(fake, { sigv4: { profile: 'dev', region: 'us-east-1', service: 'fake' } })
+    const opens: string[] = []
+    assert.equal(await s.login(url => void opens.push(url)), 1)
+    const text = s.lines.join('\n')
+    assert.match(text, /needs no login/)
+    assert.match(text, /aws sso login --profile dev/)
+    assert.doesNotMatch(text, /oauth/i)
+    assert.deepEqual(opens, [])
+  })
 })
 
 describe('the running server', () => {

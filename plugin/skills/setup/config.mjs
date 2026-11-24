@@ -102,6 +102,8 @@ function describeLink(name, entry) {
         origin = new URL(entry.url).origin
       } catch {}
     }
+    // A signed entry logs in with no OAuth. Print the label only: the profile and the region stay out of the line.
+    if (isObject(entry.sigv4)) return `${name}  http  ${origin}  sigv4`
     const hasHeaders = isObject(entry.headers) && Object.keys(entry.headers).length > 0
     const oauth = isObject(entry.oauth) || entry.oauth === true || (!hasHeaders && entry.oauth !== false)
     return `${name}  http  ${origin}${oauth ? '  oauth' : ''}`
