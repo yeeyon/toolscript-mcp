@@ -278,12 +278,15 @@ A lock is stale when its process is dead or it is older than 30 seconds. A call 
 So two sessions never lose an update: the second edit sees a new hash and fails with `stale`.
 The lock is taken before the file is opened, so its name comes from the text of the path, folded on every system: Linux
 opens a name as it is given, and a folder of it can be a volume that ignores case (a bind mount of a Windows folder, exFAT,
-CIFS). On a volume that tells two spellings apart, the folded key only makes the two files wait for each other. The proof then gives the real spelling. If its lock name differs (a short name), the change takes that lock too, in
-the same wait. A lock folder that cannot be made fails the change with `io`: a change never runs with no lock. The folder
+CIFS). On a volume that tells two spellings apart, the folded key only makes the two files wait for each other. The
+proof then gives the real spelling. If its lock name differs (a short name), the change takes that lock too, in the same wait. A lock folder that cannot be made fails the change with `io`: a change never runs with no lock. The folder
 `locks` is guarded like `oauth` (`guardedDirs`, `GUARD_MARKERS`).
 Linux replaces the file with a temp file (`.toolscript-ws-<random>.tmp`, mode of the old file) and a rename in the held
 folder. Windows and macOS write the new bytes in place, then cut the file to their length, so it is never empty.
 A write in place is not atomic. If it fails part way, the error names the file and says that the file can be damaged.
+A rename ignores the mode of the old file, so Linux asks the system whether the proven file can be written
+(`access` with `W_OK` on the magic link of the open handle) and refuses a read-only file or volume with `io` and the code
+of the error, as the open for writing does on Windows and macOS.
 
 ## Tasks
 

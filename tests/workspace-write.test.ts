@@ -236,6 +236,35 @@ describe('exact bytes', () => {
     }
   })
 
+  test('a read-only file is refused by edit and write on every system, and nothing changes', async t => {
+    // Root can write a read-only file on Linux and macOS, as it can with any other tool.
+    if (!win && process.getuid?.() === 0) return void t.skip('the test runs as root')
+    const root = folders(t)()
+    const file = path.join(root, 'locked.txt')
+    write(root, { 'locked.txt': 'old\n', 'plain.txt': 'old\n' })
+    fs.chmodSync(file, 0o444)
+    t.after(() => void (fs.existsSync(file) && fs.chmodSync(file, 0o644)))
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    const before = snapshot(root)
+    const read = await rig.call('read', { path: 'locked.txt' })
+    const calls = [
+      ['edit', { path: 'locked.txt', expectedHash: read.hash, edits: edit1('old', 'new') }],
+      ['write', { path: 'locked.txt', expectedHash: read.hash, content: 'new\n' }],
+    ] as const
+    for (const [tool, args] of calls) {
+      const message = await rig.fail(tool, args)
+      assert.equal(codeOf(message), 'io', `${tool}: ${message}`)
+      assert.match(message, /\((EACCES|EPERM)\)/, tool)
+    }
+    assert.deepEqual(snapshot(root), before, 'no byte changed and no temp file is left')
+    assert.equal(fs.statSync(file).mode & 0o222, 0, 'the mode is as it was')
+    // A writable file next to it still changes.
+    const plain = await rig.call('read', { path: 'plain.txt' })
+    await rig.call('edit', { path: 'plain.txt', expectedHash: plain.hash, edits: edit1('old', 'new') })
+    assert.equal(bytes(root, 'plain.txt').toString(), 'new\n')
+  })
+
   test('no-match and many-matches change nothing, all replaces each match, and an old with other line ends gets the hint', async t => {
     const root = folders(t)()
     write(root, { 'a.txt': 'x y x y x\n', 'crlf.txt': 'one\r\ntwo\r\n' })
@@ -699,6 +728,114 @@ describe('a swap of a folder while a file is changed', () => {
         'only the known case can write outside',
       )
     else assert.deepEqual(passing, [], 'no pattern writes outside')
+  })
+
+  test('every pattern of in and out over the lookups of a write of a new file, and of a new folder with it, leaves no payload outside', async t => {
+    const { root, outside, swap } = setup(t)
+    const seen: string[] = []
+    let hook: Hook = () => {}
+    const rig = await rigOf(t, root, { hook: name => hook(name) })
+    if (rig === undefined) return
+    const PAYLOAD = 'payload that must never be outside\n'
+    /** Everything in `outside` except its own file, as a path to its size (a folder is -1). */
+    const leaked = (): Record<string, number> => {
+      const found: Record<string, number> = {}
+      const visit = (sub: string) => {
+        for (const name of fs.readdirSync(path.join(outside, sub))) {
+          const rel = sub === '' ? name : `${sub}/${name}`
+          if (rel === 'id.txt') continue
+          const st = fs.statSync(path.join(outside, rel))
+          found[rel] = st.isDirectory() ? -1 : st.size
+          if (st.isDirectory()) visit(rel)
+        }
+      }
+      visit('')
+      return found
+    }
+    const clean = () => {
+      for (const name of fs.readdirSync(outside))
+        if (name !== 'id.txt') fs.rmSync(path.join(outside, name), { recursive: true, force: true })
+      fs.rmSync(path.join(root, 'b', 'c'), { recursive: true, force: true })
+      fs.rmSync(path.join(root, 'b', 'new.txt'), { force: true })
+    }
+    const began = Date.now()
+    for (const target of ['b/new.txt', 'b/c/new.txt']) {
+      // `b/c/new.txt` has no `c`: the write makes the folder and the file, so it looks up more names.
+      seen.length = 0
+      hook = name => void seen.push(name)
+      await rig.call('write', { path: target, content: PAYLOAD })
+      const lookups = [...seen]
+      clean()
+      assert.ok(lookups.length >= 3, `the lookups of a write: ${lookups.join(',')}`)
+      // One pattern is the state of the folder (in or out) at each lookup. The whole space is 2^n and a pattern costs about
+      // 20 ms on Windows, so the sweep takes the patterns that can matter, at most 2^11 and at most 2 s for each path:
+      // every pattern over the six lookups around an open (the last open first), where a file or folder is made, and
+      // every pattern with at most two changes of state. The alternating case of the ADR (out at the open, then in
+      // and out in turn) is in the first set.
+      const n = lookups.length
+      const patterns = new Map<string, boolean[]>()
+      const add = (bits: boolean[]) => void patterns.set(bits.map(b => (b ? 1 : 0)).join(''), bits)
+      const opens = lookups.flatMap((name, i) => (name === 'open' ? [i] : [])).reverse()
+      const around = (o: number) => {
+        for (let w = 0; w < 64; w++)
+          add(Array.from({ length: n }, (_, i) => i >= o - 1 && i < o + 5 && ((w >> (i - o + 1)) & 1) === 1))
+      }
+      around(opens[0]!)
+      for (const start of [false, true])
+        for (let a = 0; a <= n; a++)
+          for (let b = a; b <= n; b++)
+            add(Array.from({ length: n }, (_, i) => (i < a ? start : i < b ? !start : start)))
+      for (const o of opens.slice(1)) around(o)
+      const order = [...patterns.values()].slice(0, 1 << 11)
+      const outsideBytes: string[] = []
+      const outsideEmpty: string[] = []
+      const targetBegan = Date.now()
+      let tried = 0
+      let impossible = 0
+      for (const bits of order) {
+        if (Date.now() - targetBegan > 2200) break
+        let at = 0
+        let stuck = false
+        const key = bits.map(b => (b ? 1 : 0)).join('')
+        hook = () => {
+          const want = bits[at++] === true
+          if (stuck) return
+          try {
+            swap.set(want)
+          } catch (err) {
+            // Windows: a folder above an open file cannot be renamed. A pattern that needs it cannot happen.
+            assert.ok(
+              win && ['EPERM', 'EBUSY', 'EACCES'].includes((err as NodeJS.ErrnoException).code ?? ''),
+              `swap failed: ${err}`,
+            )
+            stuck = true
+          }
+        }
+        const r = await rig.client.callTool({ name: 'write', arguments: { path: target, content: PAYLOAD } })
+        swap.reset()
+        tried++
+        if (stuck) impossible++
+        const found = leaked()
+        if (Object.values(found).some(size => size > 0)) outsideBytes.push(key)
+        else if (Object.keys(found).length > 0) outsideEmpty.push(key)
+        if (r.isError === true)
+          assert.match(
+            codeOf((r.content as { text: string }[])[0]!.text),
+            /^(link|not-found|not-folder|not-file|root-changed|io|exists|hard-link)$/,
+          )
+        clean()
+      }
+      t.diagnostic(
+        `${target}: lookups ${lookups.join(',')}; patterns tried ${tried} of ${order.length}; empty entries outside: ${outsideEmpty.length}; impossible: ${impossible}`,
+      )
+      assert.ok(tried >= Math.min(order.length, 64), `the sweep is bounded by time (${tried} patterns)`)
+      assert.deepEqual(outsideBytes, [], 'no byte of the payload is outside')
+      // Windows and macOS: the file or folder is made before it is proven, so an empty entry can be left outside (the ADR
+      // names it). Linux makes nothing outside.
+      if (!win && !mac) assert.deepEqual(outsideEmpty, [], 'Linux makes nothing outside')
+    }
+    assert.equal(fs.readFileSync(path.join(outside, 'id.txt'), 'utf8'), INSIDE, 'the outside file is unchanged')
+    assert.ok(Date.now() - began < 5000, `the sweep takes at most 5 s: ${Date.now() - began} ms`)
   })
 
   test('a loop that swaps the folder for at most 1 s while at most 300 edits run changes no outside byte', async t => {

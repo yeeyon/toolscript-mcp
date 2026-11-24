@@ -334,6 +334,13 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
     },
     openUpdate: async name => {
       const opened = await dir.openFile(name)
+      // Windows and macOS open the file for writing, and the system refuses a read-only file or a read-only volume. A
+      // temp file and a rename ignore the mode of the old file, so Linux asks the system on the proven handle (the magic
+      // link of the open file, which is the file itself) and refuses in the same way, with the same code of error.
+      await fs.promises.access(`/proc/self/fd/${opened.handle.fd}`, fs.constants.W_OK).catch(async err => {
+        await opened.handle.close().catch(() => {})
+        throw mapError(err)
+      })
       return {
         parts: opened.parts,
         size: opened.size,
