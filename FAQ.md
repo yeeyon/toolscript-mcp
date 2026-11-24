@@ -205,8 +205,11 @@ inside toolscript-mcp, so it needs no Claude Code and no other process. It is of
 3. Ask the model to search the project. It calls `mcp__workspace__search` and `mcp__workspace__read` from one program.
 
 The read tools run with no `allow` rule. Each result is untrusted text. Paths such as `.git`, `.env` and `*.pem` never show.
-A link out of the root is refused. The tools cannot edit a file yet. They can run your tests as a named task: see
+A link out of the root is refused. The tools can run your tests as a named task: see
 [How can a program run my tests?](#how-can-a-program-run-my-tests).
+
+To let a program edit files, add `"write": true` to the root entry and restart. Then `edit` and `write` are listed.
+Each program that calls them asks you first. See [Change files](README.md#change-files) for the hash rule and the lock.
 
 If `search_tools` lists Workspace under "Not connected", read the reason. With several entries in `roots`, start your client
 in one of the folders. Run `toolscript-mcp doctor` for the check of the root. See

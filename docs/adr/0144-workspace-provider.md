@@ -133,7 +133,8 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
 - A failed call throws in the program. The message starts with a fixed code and holds no name or byte from outside the
   root. The codes of pull request A: `bad-input`, `bad-path`, `excluded`, `link`, `hard-link`, `not-found`, `not-file`,
   `not-folder`, `too-large`, `binary`, `encoding`, `root-changed`, `unavailable`, `cancelled` and `io`. Pull request B
-  adds `stale`, `busy`, `exists`, `no-match` and `many-matches`.
+  adds `stale`, `busy`, `exists`, `no-match`, `many-matches` and `read-only` (a change tool on a root with no `write`
+  grant: the handler refuses, though the tool is not listed).
 
 ## Paths and exclusions
 
@@ -241,13 +242,27 @@ A native binding with folder-relative opens can close the Windows case. It is a 
 
 ## Edits
 
-- `edit` replaces each `old` with `new`, in order. Each `old` must occur exactly one time, unless `all` is `true`.
+- `edit` replaces each `old` with `new`. Each `old` must occur exactly one time, unless `all` is `true`.
+  Each `old` is matched against the file as it was read, never against the result of an earlier edit, so the order of
+  the list changes nothing. Two edits that replace the same text fail with `bad-input`. (Built as "in order" first, an
+  edit could match text that another edit had just written, and the diff had no range in the old file to show.)
+  A single `old` counts overlapping places, so an `old` that can match two ways is `many-matches`. With `all`, the
+  places do not overlap, and more than 10,000 of them is `bad-input`.
 - The match is exact. No line end, byte order mark or space is changed for the model.
   If `old` matches only with other line ends, the error says so.
-- `write` with no `expectedHash` makes a new file and fails with `exists` if the path exists. It makes missing folders.
+- `write` with no `expectedHash` makes a new file and fails with `exists` if the path exists, also when a link, a folder
+  or a file with other names is there. It makes missing folders. The folders above the file are proven one at a time,
+  and the exclusions see the real spelling of each before the next is made.
 - `write` with `expectedHash` replaces the whole content. A changed file keeps its byte order mark and its mode.
-- `diff` takes the arguments of `edit` or of `write`, and returns the same `Change` with `applied: false`.
-- The unified diff has 3 lines of context and is cut at 64 KiB. It comes from the changed ranges, with no diff search.
+  Content is given as is, with no line end change. A `\0` or a lone surrogate in `content`, `old` or `new` is refused.
+- `diff` takes the arguments of `edit` or of `write`, and returns the same `Change` with `applied: false`. It makes
+  nothing and takes no lock, and a preview of a new file proves each existing folder on the way.
+- A change that changes no byte (the new bytes equal the old) writes nothing and returns `applied: false`,
+  `changed: false`, so the modified time stays.
+- The unified diff has 3 lines of context and is cut at 64 KiB (characters, at a line end), with `diffTruncated`. It
+  comes from the changed ranges: each range grows to whole lines, then the lines that stay the same at the start and end
+  of that block drop out. There is no diff search, so `added` and `removed` can count a moved line twice.
+  `warnings` names a change that puts LF line ends in a CRLF file, or CRLF in an LF file.
 
 Each change runs these steps, and stops at the first that fails:
 
@@ -261,6 +276,12 @@ Each change runs these steps, and stops at the first that fails:
 The lock file is `~/.toolscript-mcp/locks/<sha256 of the real path>.lock`, made with `wx` (`takeLock` of `src/host/oauthlock.ts`).
 A lock is stale when its process is dead or it is older than 30 seconds. A call waits 2 seconds, then fails with `busy`.
 So two sessions never lose an update: the second edit sees a new hash and fails with `stale`.
+The lock is taken before the file is opened, so its name comes from the text of the path, folded where the volume ignores
+case. The proof then gives the real spelling. If its lock name differs (a short name), the change takes that lock too, in
+the same wait. A lock folder that cannot be made fails the change with `io`: a change never runs with no lock. The folder
+`locks` is guarded like `oauth` (`guardedDirs`, `GUARD_MARKERS`).
+Linux replaces the file with a temp file (`.toolscript-ws-<random>.tmp`, mode of the old file) and a rename in the held
+folder. Windows and macOS write the new bytes in place, then cut the file to their length, so it is never empty.
 A write in place is not atomic. If it fails part way, the error names the file and says that the file can be damaged.
 
 ## Tasks
@@ -318,6 +339,9 @@ Decisions that the code made while it built pull request C (this section holds t
 | `edit`, `write` | ask, one time for each program | A match that starts with `mcp__workspace__`. |
 | `run_task` | ask, one time for each program | The match `mcp__workspace__run_task` exactly. |
 
+- The prompt for a change tool names the session root. `needs` in `src/core/policy.ts` gives the start that an allow
+  rule must have for a tool (a bridge: `mcp__<key>__`, a change tool: `mcp__workspace__`). `onlyTightens` counts an allow
+  rule whose server part has a `*` as skippable while Workspace is on, as it does while a bridge is on.
 - These defaults hold only while the built-in Workspace is on. `decide` in `src/core/policy.ts` owns them. One value,
   `Guards`, carries the bridges and the Workspace flag to `decide`, `planRun`, `checkCall`, `askText` and `onlyTightens`,
   so no call site passes one without the other. `config.guards.workspace` is true only for a valid section that does not
@@ -335,5 +359,7 @@ Decisions that the code made while it built pull request C (this section holds t
 - The run log keeps what it keeps today for each call: the tool, the decision, the time and the outcome code.
 - For each applied change it also keeps the relative path and the counts of added and removed lines.
 - The result of a run lists each applied change, also when the program returns nothing, inside the untrusted wrapper.
+  It also lists each `edit` or `write` that failed in the Workspace (path as the program wrote it, and the code), so a
+  program that stops at a stale file shows which change was not made. The run log record has `changes`, up to 200.
 - The server log has one line at the start: the session root, read or write, and the task names.
 - No log holds file content, a query, `old` or `new` text, a diff, task output or a value of `env`.
