@@ -945,15 +945,27 @@ const lineChanges = (text: string, ranges: readonly Range[]): LineChange[] => {
       last.parts.push(r)
     } else regions.push({ lo, hi, parts: [r] })
   }
+  const newOf = (lo: number, hi: number, parts: readonly Range[]): string =>
+    applyRanges(
+      text.slice(lo, hi),
+      parts.map(r => ({ ...r, start: r.start - lo, end: r.end - lo })),
+    )
+  // A region whose new text loses its last line end joins the next line to it: take that line in, and every edit in it.
+  for (let k = 0; k < regions.length; k++) {
+    const g = regions[k]!
+    while (g.hi < text.length && !newOf(g.lo, g.hi, g.parts).endsWith('\n')) {
+      g.hi = lineEnd(g.hi)
+      while (k + 1 < regions.length && regions[k + 1]!.lo < g.hi) {
+        const next = regions.splice(k + 1, 1)[0]!
+        g.hi = Math.max(g.hi, next.hi)
+        g.parts.push(...next.parts)
+      }
+    }
+  }
   const changes: LineChange[] = []
   for (const { lo, hi, parts } of regions) {
     const old = splitLines(text.slice(lo, hi))
-    const now = splitLines(
-      applyRanges(
-        text.slice(lo, hi),
-        parts.map(r => ({ ...r, start: r.start - lo, end: r.end - lo })),
-      ),
-    )
+    const now = splitLines(newOf(lo, hi, parts))
     let head = 0
     while (head < old.length && head < now.length && old[head] === now[head]) head++
     let tail = 0

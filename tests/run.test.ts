@@ -2957,7 +2957,12 @@ describe('workspace', () => {
   const dir = (prefix: string) => fs.mkdtempSync(path.join(ROOT, prefix))
 
   /** A real provider over a temp project, linked by connectAll as the running server links it. */
-  const rig = async (t: TestContext, extra: Partial<Options> = {}, tasks: readonly TaskConfig[] = [], write = false) => {
+  const rig = async (
+    t: TestContext,
+    extra: Partial<Options> = {},
+    tasks: readonly TaskConfig[] = [],
+    write = false,
+  ) => {
     const root = fs.realpathSync.native(dir('ws-root-'))
     const outside = fs.realpathSync.native(dir('ws-out-'))
     const secret = `SECRET-${randomBytes(8).toString('hex')}`

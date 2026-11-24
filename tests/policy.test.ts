@@ -725,8 +725,7 @@ describe('a change of the policy in the config file', () => {
         const execSkips = guards.workspace && match !== EXEC && matches(match, EXEC)
         // The change tools of the built-in Workspace skip an allow rule too (`needs` in policy.ts), as a bridge does.
         const skipped = bridges.size > 0 || guards.workspace
-        const toAsk =
-          action === 'allow' && next(2) === 0 && !execSkips && (!skipped || ONE_SERVER.includes(match))
+        const toAsk = action === 'allow' && next(2) === 0 && !execSkips && (!skipped || ONE_SERVER.includes(match))
         return p.with(i, rule(match, toAsk ? 'ask' : 'deny'))
       }
       return p.toSpliced(at, 0, rule(MATCHES[next(MATCHES.length)]!, 'deny'))

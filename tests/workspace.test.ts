@@ -805,3 +805,69 @@ describe('the policy of the change tools', () => {
     assert.match(refused.ok ? '' : refused.error, /Workspace change tool must start with mcp__workspace__/)
   })
 })
+
+describe('unified diff of an edit that crosses a line boundary', () => {
+  const run = (text: string, old: string, now: string) => {
+    const edits = [{ old, new: now }]
+    const ranges = planEdits(text, edits as Parameters<typeof planEdits>[1])
+    const after = applyRanges(text, ranges)
+    return { after, ...unifiedDiff('f.txt', text, ranges) }
+  }
+  // The lines of the new side of the hunks must be the lines of the new file.
+  const newSide = (diff: string): string =>
+    diff
+      .split('\n')
+      .filter(l => l.startsWith('+') || l.startsWith(' '))
+      .filter(l => !l.startsWith('+++'))
+      .map(l => l.slice(1))
+      .join('\n')
+
+  test('a join takes the next line into the change', () => {
+    const r = run('a\nb\n', 'a\n', 'a')
+    assert.equal(r.after, 'ab\n')
+    assert.equal(r.diff, '--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,1 @@\n-a\n-b\n+ab\n')
+    assert.deepEqual([r.added, r.removed], [1, 2])
+    assert.equal(newSide(r.diff), 'ab')
+  })
+
+  test('a split is one removed line and two added', () => {
+    const r = run('ab\n', 'ab', 'a\nb')
+    assert.equal(r.after, 'a\nb\n')
+    assert.equal(r.diff, '--- a/f.txt\n+++ b/f.txt\n@@ -1,1 +1,2 @@\n-ab\n+a\n+b\n')
+    assert.deepEqual([r.added, r.removed], [2, 1])
+  })
+
+  test('a join over CRLF line ends', () => {
+    const r = run('a\r\nb\r\n', 'a\r\n', 'a')
+    assert.equal(r.after, 'ab\r\n')
+    assert.equal(r.diff, '--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,1 @@\n-a\r\n-b\r\n+ab\r\n')
+    assert.deepEqual([r.added, r.removed], [1, 2])
+  })
+
+  test('an edit at the end of a file with no final line end', () => {
+    const r = run('a\nb', 'b', 'c')
+    assert.equal(
+      r.diff,
+      '--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n',
+    )
+    assert.deepEqual([r.added, r.removed], [1, 1])
+    const j = run('a\nb', '\n', '')
+    assert.equal(j.after, 'ab')
+    assert.equal(
+      j.diff,
+      '--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,1 @@\n-a\n-b\n\\ No newline at end of file\n+ab\n\\ No newline at end of file\n',
+    )
+  })
+
+  test('a join that reaches the next edit merges the two', () => {
+    const edits = [
+      { old: 'a\n', new: 'a' },
+      { old: 'b\n', new: 'B\n' },
+    ]
+    const ranges = planEdits('a\nb\nc\n', edits as Parameters<typeof planEdits>[1])
+    const d = unifiedDiff('f.txt', 'a\nb\nc\n', ranges)
+    assert.equal(applyRanges('a\nb\nc\n', ranges), 'aB\nc\n')
+    assert.equal(d.diff, '--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,2 @@\n-a\n-b\n+aB\n c\n')
+    assert.deepEqual([d.added, d.removed], [1, 2])
+  })
+})
