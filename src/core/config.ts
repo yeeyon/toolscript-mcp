@@ -49,12 +49,20 @@ export type OAuth = {
   readonly callbackPort?: number
 }
 
+/** AWS SigV4 signing of each request with the credentials of an AWS CLI profile, in place of an OAuth login. */
+export type SigV4 = {
+  readonly profile: string
+  readonly region: string
+  readonly service: string
+}
+
 export type HttpServer = Trust & {
   readonly kind: 'http'
   readonly url: string
   readonly headers: Readonly<Record<string, string>>
-  /** Absent when the server takes no OAuth login: it has headers, or `"oauth": false`. */
+  /** Absent when the server takes no OAuth login: it has headers, `"oauth": false` or `"sigv4"`. */
   readonly oauth?: OAuth
+  readonly sigv4?: SigV4
 }
 
 export type ServerConfig = StdioServer | HttpServer
@@ -262,6 +270,66 @@ const nonEmpty = (v: unknown, path: string, errors: string[]): string => {
 }
 
 const OAUTH_KEYS = ['clientId', 'clientSecret', 'scopes', 'callbackPort']
+const SIGV4_KEYS = ['profile', 'region', 'service']
+
+/** A profile name of the AWS CLI. It goes to `aws --profile` as one argument, so a plain name only. */
+const AWS_PROFILE = /^[A-Za-z0-9][A-Za-z0-9_.+=@-]{0,127}$/
+const AWS_REGION = /^[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/
+const AWS_SERVICE = /^[a-z0-9][a-z0-9-]{0,62}$/
+
+/** The service and region of an AWS endpoint host such as `aws-mcp.us-east-1.api.aws`, or undefined. */
+export const awsEndpoint = (url: string): { service: string; region: string } | undefined => {
+  if (!URL.canParse(url)) return undefined
+  const host = /^https:\/\/([^/?#@:]+)(?::\d+)?(?:[/?#]|$)/i.exec(url)?.[1]?.toLowerCase() ?? ''
+  const m = /^([a-z0-9-]+)\.([a-z]{2}(?:-[a-z]+)+-\d{1,2})\.(?:api\.aws|amazonaws\.com)$/.exec(host)
+  return m ? { service: m[1]!, region: m[2]! } : undefined
+}
+
+/**
+ * The SigV4 signing of an HTTP server. The region and service default to the ones in the host of the URL. It never
+ * goes with an OAuth login or an Authorization header: the signature is the Authorization header.
+ */
+const parseSigV4 = (
+  raw: unknown,
+  url: string,
+  headers: Readonly<Record<string, string>>,
+  oauth: unknown,
+  path: string,
+  env: Env,
+  errors: string[],
+): SigV4 | undefined => {
+  if (raw === undefined) return undefined
+  if (!isObject(raw)) {
+    errors.push(`${path}: must be an object with "profile"`)
+    return undefined
+  }
+  unknownKeys(raw, SIGV4_KEYS, path, errors)
+  if (oauth !== undefined && oauth !== false)
+    errors.push(`${path}: an entry with "sigv4" does not log in: remove "oauth"`)
+  if (Object.keys(headers).some(name => name.toLowerCase() === 'authorization'))
+    errors.push(`${path}: an entry with an Authorization header cannot sign with SigV4: remove one of them`)
+  const field = (key: string, rule: RegExp, fallback: string | undefined): string | undefined => {
+    const value = raw[key]
+    if (value === undefined) {
+      if (fallback === undefined) errors.push(`${path}.${key}: is needed, because the URL is not an AWS endpoint`)
+      return fallback
+    }
+    const text = expand(nonEmpty(value, `${path}.${key}`, errors), env, `${path}.${key}`, errors)
+    if (text !== '' && !rule.test(text)) {
+      errors.push(`${path}.${key}: is not a valid ${key}`)
+      return undefined
+    }
+    return text
+  }
+  const endpoint = awsEndpoint(url)
+  const found = errors.length
+  if (raw.profile === undefined) errors.push(`${path}.profile: is needed`)
+  const profile = raw.profile === undefined ? undefined : field('profile', AWS_PROFILE, undefined)
+  const region = field('region', AWS_REGION, endpoint?.region)
+  const service = field('service', AWS_SERVICE, endpoint?.service)
+  if (errors.length !== found || !profile || !region || !service) return undefined
+  return { profile, region, service }
+}
 
 /**
  * The OAuth login of an HTTP server. A server without headers logs in by default. A server with headers logs in
@@ -394,7 +462,7 @@ const parseServer = (
     }
   }
   if (type === 'http') {
-    unknownKeys(raw, ['type', 'url', 'headers', 'oauth', 'untrusted'], path, errors)
+    unknownKeys(raw, ['type', 'url', 'headers', 'oauth', 'sigv4', 'untrusted'], path, errors)
     const found = errors.length
     const url = expand(nonEmpty(raw.url, `${path}.url`, errors), env, `${path}.url`, errors)
     // An empty or unexpanded url has its error already. The text names only the
@@ -404,12 +472,15 @@ const parseServer = (
       else if (!URL.canParse(url)) errors.push(`${path}.url: must be a valid URL`)
     }
     const headers = stringMap(raw.headers, `${path}.headers`, env, errors)
-    const oauth = parseOAuth(raw.oauth, headers, `${path}.oauth`, env, errors)
+    const sigv4 = parseSigV4(raw.sigv4, url, headers, raw.oauth, `${path}.sigv4`, env, errors)
+    // A signed entry takes no OAuth login: its errors are in the sigv4 check.
+    const oauth = raw.sigv4 === undefined ? parseOAuth(raw.oauth, headers, `${path}.oauth`, env, errors) : undefined
     return {
       kind: 'http',
       url,
       headers,
       ...(oauth && { oauth }),
+      ...(sigv4 && { sigv4 }),
       ...parseTrust(raw.untrusted, `${path}.untrusted`, errors),
     }
   }

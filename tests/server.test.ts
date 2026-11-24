@@ -209,7 +209,7 @@ describe('the config', () => {
       good: { kind: 'stdio', command: 'fake', args: [], env: {} },
       b: invalid('mcpServers.b.type: must be "stdio" or "http", not "sse"'),
       c: invalid(
-        'mcpServers.c.header: unknown key (known: type, url, headers, oauth, untrusted)',
+        'mcpServers.c.header: unknown key (known: type, url, headers, oauth, sigv4, untrusted)',
         'mcpServers.c.url: must start with http:// or https://',
       ),
       d: invalid('mcpServers.d.args[0]: must be a string', 'mcpServers.d.env.N: must be a string'),
@@ -409,7 +409,7 @@ describe('the share keys', () => {
     const config = ok({ mcpServers: { a: { type: 'http', url: 'https://mcp.example.com/mcp', share: true } } })
     assert.deepEqual(entry(config), {
       kind: 'invalid',
-      errors: ['mcpServers.a.share: unknown key (known: type, url, headers, oauth, untrusted)'],
+      errors: ['mcpServers.a.share: unknown key (known: type, url, headers, oauth, sigv4, untrusted)'],
     })
   })
 
