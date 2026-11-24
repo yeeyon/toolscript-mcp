@@ -319,7 +319,7 @@ describe('the tool table', () => {
     assert.equal(workspaceClass('mcp__workspace__diff'), 'read')
     assert.equal(workspaceClass('mcp__workspace__edit'), 'write')
     assert.equal(workspaceClass('mcp__workspace__write'), 'write')
-    assert.equal(workspaceClass('mcp__workspace__run_task'), undefined)
+    assert.equal(workspaceClass('mcp__workspace__run_task'), 'exec')
     assert.equal(workspaceClass('mcp__other__read'), undefined)
     assert.equal(workspaceClass('mcp__workspace__constructor'), undefined)
   })
@@ -758,11 +758,14 @@ describe('the policy of the change tools', () => {
       { tool: 'mcp__workspace__read', line: 2 },
     ]
     assert.deepEqual(planRun([], on, calls, new Set()), { kind: 'run', ask: [EDIT], interactive: [] })
-    const text = askText({ ask: [EDIT, WRITE], interactive: [] }, 'return 1', on, '/work/app')
+    const text = askText({ ask: [EDIT, WRITE], interactive: [] }, 'return 1', on, { root: '/work/app' })
     assert.match(text, /mcp__workspace__edit/)
     assert.match(text, /mcp__workspace__write/)
     assert.match(text, /session root: \/work\/app/)
-    assert.doesNotMatch(askText({ ask: ['mcp__x__y'], interactive: [] }, 'return 1', on, '/work/app'), /session root/)
+    assert.doesNotMatch(
+      askText({ ask: ['mcp__x__y'], interactive: [] }, 'return 1', on, { root: '/work/app' }),
+      /session root/,
+    )
   })
 
   test('onlyTightens treats an allow rule that a change tool skips as one that a tool can skip', () => {
@@ -771,8 +774,34 @@ describe('the policy of the change tools', () => {
     assert.equal(onlyTightens(current, rules(['*', 'ask'], [EDIT, 'deny']), on), false)
     assert.equal(onlyTightens(current, rules(['*', 'ask'], [EDIT, 'deny']), NO_GUARDS), true)
     assert.equal(onlyTightens(current, rules(['*', 'deny'], [EDIT, 'deny']), on), true)
-    assert.equal(onlyTightens(rules(['mcp__workspace__*', 'allow']), rules(['mcp__workspace__*', 'ask']), on), true)
+    // `mcp__workspace__*` matches no change tool by skipping it, but run_task (exec) skips it, so lowering it counts as looser.
+    assert.equal(onlyTightens(rules(['mcp__workspace__*', 'allow']), rules(['mcp__workspace__*', 'ask']), on), false)
+    assert.equal(onlyTightens(rules([EDIT, 'allow']), rules([EDIT, 'ask']), on), true)
     assert.equal(onlyTightens(rules([EDIT, 'ask']), rules([EDIT, 'allow']), on), false)
     assert.equal(onlyTightens(rules([EDIT, 'allow']), [], on), true, 'no rule is ask for a change tool')
+  })
+
+  test('one policy holds all three classes: read has no rule, write needs the server or the tool, exec needs its name', () => {
+    const TASK = 'mcp__workspace__run_task'
+    const wide = rules(['*', 'allow'], ['mcp__*', 'allow'])
+    for (const name of [EDIT, WRITE, TASK]) assert.equal(decide(wide, on, name).action, 'ask', name)
+    assert.equal(decide(wide, on, 'mcp__workspace__read').action, 'allow')
+    const server = rules(['mcp__workspace__*', 'allow'])
+    assert.deepEqual(
+      [EDIT, WRITE, TASK].map(name => decide(server, on, name).action),
+      ['allow', 'allow', 'ask'],
+    )
+    const exact = rules([TASK, 'allow'])
+    assert.deepEqual(
+      [EDIT, WRITE, TASK].map(name => decide(exact, on, name).action),
+      ['ask', 'ask', 'allow'],
+    )
+    assert.deepEqual(
+      [EDIT, TASK].map(name => decide(rules([name, 'allow']), on, name).action),
+      ['allow', 'allow'],
+    )
+    const refused = checkCall(wide, on, new Set(), EDIT, new Set())
+    assert.deepEqual([refused.ok, refused.ok ? '' : refused.needs], [false, 'rule'])
+    assert.match(refused.ok ? '' : refused.error, /Workspace change tool must start with mcp__workspace__/)
   })
 })

@@ -1,7 +1,8 @@
 // End-to-end test of the built server (dist/host/main.js) with the built-in Workspace (issue #144), on Linux, macOS and
 // Windows. A client starts toolscript-mcp over stdio with a temp config that has one root, no bridge and no other server,
 // a fake HOME and a PATH with no Claude. One program searches a disposable project and reads the file that it finds.
-// Pull request A: the search and read part. Run `npm run build` first.
+// The first describe is the search and read part, then the named tasks, the change tools and, last, the whole chain in
+// one program: search, read, diff, edit, run_task. Run `npm run build` first.
 //
 //   node tests/workspace.e2e.mjs
 
@@ -553,6 +554,105 @@ return { path, preview: preview.diff, diff: change.diff, applied: change.applied
       assert.equal(alive(pid), false, 'no process of the server is left')
       for (const line of s.transport.lines) assert.doesNotThrow(() => JSON.parse(line))
       assert.match(s.transport.stderr, /Workspace: root .*, read and write, confined by (proc|realpath|nofollow-any)/)
+    } finally {
+      await s.close()
+    }
+  })
+})
+
+// The whole chain in one program, on a disposable project with the write grant and one task: search, read, diff, edit,
+// run_task. The task runs the real test, which passes only when `maxAttempts` is 5.
+describe('the built server runs the whole chain in one program', () => {
+  const chain = path.join(base, 'chain')
+  const retryFile = path.join(chain, 'src', 'retry.ts')
+  fs.mkdirSync(path.join(chain, 'src'), { recursive: true })
+  fs.mkdirSync(path.join(chain, 'test'), { recursive: true })
+  fs.writeFileSync(retryFile, files['src/retry.ts'])
+  fs.writeFileSync(path.join(chain, '.env'), `TOKEN=${MARKER}\n`)
+  fs.writeFileSync(path.join(chain, 'notes.crlf.txt'), 'one\r\ntwo\r\n')
+  fs.writeFileSync(
+    path.join(chain, 'test', 'retry.test.mjs'),
+    "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport fs from 'node:fs'\n" +
+      "test('five attempts', () => assert.match(fs.readFileSync('src/retry.ts', 'utf8'), /maxAttempts: 5/))\n",
+  )
+  const chainConfig = configWith('chain.json', {
+    mcpServers: {},
+    workspace: {
+      roots: [{ path: chain, write: true, tasks: { 'test-retry': { command: 'node', args: ['--test'] } } }],
+    },
+  })
+  const logFile = path.join(home, '.toolscript-mcp', 'runs.jsonl')
+  const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+  const PROGRAM = `
+const hits = await call("mcp__workspace__search", { query: "maxAttempts: 3", include: ["src/**/*.ts"] })
+if (hits.matches.length !== 1) throw Error("Expected one match")
+const path = hits.matches[0].path
+const file = await call("mcp__workspace__read", { path })
+const edits = [{ old: "maxAttempts: 3", new: "maxAttempts: 5" }]
+const preview = await call("mcp__workspace__diff", { path, expectedHash: file.hash, edits })
+const change = await call("mcp__workspace__edit", { path, expectedHash: file.hash, edits })
+const tests = await call("mcp__workspace__run_task", { task: "test-retry" })
+return { path, preview: preview.diff, diff: change.diff, applied: change.applied, newHash: change.newHash, exitCode: tests.exitCode }
+`
+
+  test('the same task fails before the edit: it runs the real test', async () => {
+    const s = await connect(chainConfig, chain)
+    try {
+      const r = await s.run('return await call("mcp__workspace__run_task", { task: "test-retry" })')
+      assert.equal(r.isError, false, r.text)
+      const result = returned(r.text)
+      assert.deepEqual([result.exitCode, result.timedOut], [1, false])
+    } finally {
+      await s.close()
+    }
+  })
+
+  test('search, read, diff, edit and run_task in one program change one thing, ask once, and leak nothing', async () => {
+    const s = await connect(chainConfig, chain)
+    try {
+      const before = stat(retryFile)
+      const r = await s.run(PROGRAM)
+      assert.equal(r.isError, false, r.text)
+      const value = returned(r.text)
+      const expected = Buffer.from(before.bytes.toString('utf8').replace('maxAttempts: 3', 'maxAttempts: 5'))
+      assert.notDeepEqual(expected, before.bytes)
+      assert.deepEqual(fs.readFileSync(retryFile), expected, 'the old bytes with the one replacement')
+      assert.deepEqual(
+        [value.path, value.applied, value.newHash, value.exitCode],
+        ['src/retry.ts', true, sha(expected), 0],
+      )
+      assert.equal(value.preview, value.diff, 'the preview is the diff of the change')
+      const lines = value.diff.split('\n')
+      assert.equal(lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length, 1)
+      assert.equal(lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length, 1)
+      // Exactly one prompt, for the edit and the task together: it names both tools, the root and the task.
+      assert.equal(s.prompts.length, 1)
+      for (const part of ['mcp__workspace__edit', 'mcp__workspace__run_task', `Workspace root: ${chain}`, 'test-retry'])
+        assert.ok(s.prompts[0].includes(part), `${part} is in the prompt: ${s.prompts[0]}`)
+      // The run log has the five calls and the changed path, and the secret is in no result, log, prompt or stderr.
+      const log = fs.readFileSync(logFile, 'utf8')
+      const record = JSON.parse(log.trim().split('\n').at(-1))
+      assert.deepEqual(
+        record.calls.map(c => [c.tool, c.decision, c.ok]),
+        [
+          ['mcp__workspace__search', 'allow', true],
+          ['mcp__workspace__read', 'allow', true],
+          ['mcp__workspace__diff', 'allow', true],
+          ['mcp__workspace__edit', 'ask-approved', true],
+          ['mcp__workspace__run_task', 'ask-approved', true],
+        ],
+      )
+      assert.deepEqual(record.changes, [{ path: 'src/retry.ts', added: 1, removed: 1, created: false }])
+      for (const [name, text] of [
+        ['result', r.text],
+        ['log', log],
+        ['stderr', s.transport.stderr],
+        ['prompt', s.prompts.join('\n')],
+      ])
+        assert.ok(!text.includes(MARKER), `the secret is in the ${name}`)
+      const pid = await s.close()
+      assert.equal(alive(pid), false, 'no process of the server is left')
+      for (const line of s.transport.lines) assert.doesNotThrow(() => JSON.parse(line))
     } finally {
       await s.close()
     }
