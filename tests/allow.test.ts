@@ -86,6 +86,25 @@ describe('planAllow', () => {
   })
 })
 
+describe('planAllow with a deny rule behind an allow rule (issue 139)', () => {
+  const old = rules(['allow', 'mcp__fake__search'], ['deny', 'mcp__fake__*'])
+  const plan = (tool: string) => planAllow(old, NO_BRIDGE, [tool])
+
+  test('keeps a tool that an earlier allow rule already allows', () => {
+    const { steps, policy } = plan('mcp__fake__search')
+    assert.equal(String(steps[0]?.kind), 'keep')
+    assert.match(steps[0]?.kind === 'keep' ? steps[0].why : '', /^allowed already by policy\[0\]/)
+    assert.deepEqual(shape(policy), shape(old))
+  })
+
+  test('refuses a tool that the deny rule decides, and names the rule', () => {
+    const { steps, policy } = plan('mcp__fake__fetch')
+    assert.equal(String(steps[0]?.kind), 'refuse')
+    assert.match(JSON.stringify(steps[0]), /policy\[1\]/)
+    assert.deepEqual(shape(policy), shape(old))
+  })
+})
+
 describe('allowRefusal', () => {
   const keys = new Set(['gh', 'my_notes', '-dash'])
   test('takes the exact name of one tool of a server of the config, with a plain tool part', () => {
@@ -205,6 +224,25 @@ describe('toolscript-mcp allow', () => {
     ])
     assert.equal(fs.readFileSync(s.config, 'utf8'), s.text)
   })
+
+  for (const apply of [[], ['--apply']])
+    test(`${apply.join('') || 'a dry run'} with a deny rule behind an allow rule reports each tool, exits 2, writes nothing`, async () => {
+      const s = setup({
+        mcpServers: { fake: { command: 'node', args: ['x.mjs'] } },
+        policy: [
+          { match: 'mcp__fake__search', action: 'allow' },
+          { match: 'mcp__fake__*', action: 'deny' },
+        ],
+      })
+      assert.equal(await s.allow(...apply, 'mcp__fake__fetch', 'mcp__fake__search'), 2)
+      const printed = s.take()
+      const text = printed.join('\n')
+      assert.equal(printed.filter(l => l.startsWith('refused: mcp__fake__fetch: ')).length, 1, text)
+      assert.equal(printed.filter(l => /^keep: mcp__fake__search: allowed already/.test(l)).length, 1, text)
+      assert.ok(!text.includes('needs no change'), text)
+      assert.ok(!text.includes('stays'), text)
+      assert.equal(fs.readFileSync(s.config, 'utf8'), s.text)
+    })
 
   test('--apply keeps the share keys', async () => {
     const config = {
