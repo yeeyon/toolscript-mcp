@@ -115,11 +115,12 @@ The new entry reads the same config and the same tokens, so you change only the 
 
    ```sh
    claude mcp remove --scope <scope> toolscript
-   claude mcp add --scope <scope> -e NAME=value toolscript '--' npx -y toolscript-mcp --config "/path/to/config.json"
+   claude mcp add --scope <scope> toolscript -e NAME=value '--' npx -y toolscript-mcp --config "/path/to/config.json"
    ```
 
    Use the scope that `claude mcp get toolscript` shows for the old entry. Add one `-e NAME=value` for each environment
-   variable of the old entry, such as `TOOLSCRIPT_CONFIG`. Leave out `-e` if the entry has none.
+   variable of the old entry, such as `TOOLSCRIPT_CONFIG`. Leave out `-e` if the entry has none. Put each `-e` after
+   the name `toolscript`: before the name, `-e` reads the name as one more variable.
    `claude mcp get toolscript` shows the variables.
    On Windows, use the PowerShell form in [Client setup](README.md#client-setup).
 4. Restart the client. Check the setup with `npx -y toolscript-mcp doctor --config "/path/to/config.json"`.
