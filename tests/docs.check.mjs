@@ -1,4 +1,4 @@
-// The user docs (README.md and the setup skill) follow the rules in
+// The user docs (README.md, FAQ.md and the setup, start and doctor skills) follow the rules in
 // CODING_STANDARDS.md, section "Docs".
 //
 // Checked here: front matter and H1, GitHub-safe MDX, the mechanical
@@ -18,6 +18,7 @@ import { runChecks } from './check.mjs'
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const USER_DOCS = [
   'README.md',
+  'FAQ.md',
   'plugin/skills/setup/SKILL.md',
   'plugin/skills/start/SKILL.md',
   'plugin/skills/doctor/SKILL.md',

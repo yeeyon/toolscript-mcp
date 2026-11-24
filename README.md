@@ -115,6 +115,8 @@ and prints the client changes. Use [Client setup](#client-setup) for Codex or a 
 To update, run `npx -y toolscript-mcp@latest --help` and restart your client. If your client entry pins a version,
 change the version in that entry before you restart.
 
+Questions about setup, the demo, approval prompts or a failed check? Read the [FAQ](FAQ.md).
+
 #### Move an existing clone setup to npm
 
 1. Find the config path in the existing client entry. If it uses the default path, keep that default.
