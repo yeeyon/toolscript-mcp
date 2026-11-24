@@ -268,7 +268,7 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
     const { root, write, method, tasks } = bound.bound
     return [
       ok(
-        `root ${root}, ${write ? 'read and write grant (no editing tool yet)' : 'read-only'}, confined by ${method}${tasks.names.length > 0 ? `, tasks: ${tasks.names.join(', ')}` : ''}`,
+        `root ${root}, ${write ? 'read and write (edit and write ask the person)' : 'read-only'}, confined by ${method}${tasks.names.length > 0 ? `, tasks: ${tasks.names.join(', ')}` : ''}`,
       ),
       ...tasks.invalid.map(t => warn(`task ${t.name} is invalid: ${t.reason}`)),
       ...(io.platform === 'win32' ? [workspaceAclFinding(await readAcl(root))] : []),

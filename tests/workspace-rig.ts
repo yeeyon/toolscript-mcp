@@ -40,9 +40,11 @@ export type Rig = {
   readonly close: () => Promise<void>
 }
 
-export type RigOptions = Partial<Pick<BindInput, 'hook' | 'limits' | 'platform' | 'env'>> & {
+export type RigOptions = Partial<Pick<BindInput, 'hook' | 'limits' | 'platform' | 'env' | 'locks'>> & {
   /** The tasks of each entry, by the path of the entry. */
   readonly tasks?: Readonly<Record<string, readonly TaskConfig[]>>
+  /** The `write` grant of every entry. Default false. */
+  readonly write?: boolean
   readonly exclude?: readonly string[]
   readonly skip?: readonly string[]
   /** The folder of the session: the root unless set. */
@@ -67,7 +69,7 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
     workspace: {
       roots: (options.roots ?? [root]).map(p => ({
         path: p,
-        write: false,
+        write: options.write === true,
         ...(options.tasks?.[p] !== undefined && { tasks: options.tasks[p] }),
       })),
       exclude: options.exclude ?? [],
@@ -79,6 +81,7 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
     log: line => options.lines?.push(line),
     ...(options.hook !== undefined && { hook: options.hook }),
     ...(options.limits !== undefined && { limits: options.limits }),
+    ...(options.locks !== undefined && { locks: options.locks }),
     ...(options.platform !== undefined && { platform: options.platform }),
     ...(options.env !== undefined && { env: options.env }),
   })

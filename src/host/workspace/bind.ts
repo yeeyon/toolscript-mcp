@@ -31,7 +31,7 @@ export type WorkspaceLink =
 export type Bound = {
   /** The real path of the session root. */
   readonly root: string
-  /** The grant of the entry that the root is in. Before the editing tools, it has no effect. */
+  /** The `write` grant of the entry that the root is in: `edit` and `write` are listed only with it. */
   readonly write: boolean
   readonly method: Method
   readonly provider: Provider
@@ -53,6 +53,7 @@ export type BindInput = {
   readonly limits?: ProviderOptions['limits']
   /** The environment of the server: its `PATH` finds the command of a task, and a short list of it reaches the task. */
   readonly env?: Readonly<Record<string, string | undefined>>
+  readonly locks?: ProviderOptions['locks']
 }
 
 const real = (file: string): Promise<string> => realpathNative(file)
@@ -67,6 +68,7 @@ export const bindWorkspace = async ({
   hook,
   limits,
   env = process.env,
+  locks,
 }: BindInput): Promise<Binding> => {
   const refuse = (reason: string): Binding => ({ ok: false, reason })
   const homeReal = await real(home).catch(() => home)
@@ -122,12 +124,16 @@ export const bindWorkspace = async ({
     }
     const made = createProvider({
       confined,
+      root: bound.root,
+      home: homeReal,
+      write: entry.write,
       excluded,
       skip: workspace.skip,
       windows: platform === 'win32',
       log,
       ...(limits !== undefined && { limits }),
       ...(tasks !== undefined && { tasks }),
+      ...(locks !== undefined && { locks }),
     })
     // The handle of an entry other than the root closes with the provider.
     const provider: Provider =

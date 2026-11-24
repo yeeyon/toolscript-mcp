@@ -15,27 +15,46 @@ import {
   WORKSPACE_TOOL_NAMES,
   WORKSPACE_VERSION,
   WorkspaceError,
+  applyRanges,
   fold,
   includeTest,
+  lineEndWarnings,
+  parseDiffInput,
+  parseEditInput,
   parseListInput,
   parsePathInput,
   parseSearchInput,
   parseTaskInput,
+  parseWriteInput,
   pathParts,
+  planEdits,
   showPath,
+  unifiedDiff,
+  type Change,
+  type DiffInput,
+  type EditInput,
   type Excluder,
   type ListInput,
   type PathInput,
+  type Range,
   type SearchInput,
   type WorkspaceToolName,
+  type WriteInput,
 } from '../../core/workspace.ts'
 import { readCapped, type Confined, type Dir, type Kind } from './confined.ts'
 import type { TaskRunner } from './task.ts'
+import { createLocker, lockKey, type Hold, type LockerOptions } from './write.ts'
 
 export type ProviderOptions = {
   readonly confined: Confined
   /** The tasks of the root entry of the session. `run_task` is listed only when one of them is valid. */
   readonly tasks?: TaskRunner
+  /** The real path of the session root: the name of the lock of a file is the hash of its real path. */
+  readonly root: string
+  /** HOME: the lock files of the changes are under it. */
+  readonly home: string
+  /** The `write` grant of the root entry. Without it `edit` and `write` are not listed and their handlers refuse. */
+  readonly write: boolean
   readonly excluded: Excluder
   /** The folder names that `list` and `search` do not enter. */
   readonly skip: readonly string[]
@@ -44,6 +63,8 @@ export type ProviderOptions = {
   readonly log: (line: string) => void
   /** Tests only: smaller limits, so a test needs fewer files. */
   readonly limits?: { readonly searchFiles?: number; readonly listEntries?: number; readonly searchMs?: number }
+  /** Tests only: shorter lock times. */
+  readonly locks?: LockerOptions
 }
 
 export type Provider = {
@@ -71,6 +92,15 @@ const lowered = (text: string): string => {
     ? whole
     : text.replace(/[^]/g, c => (c.toLowerCase().length === 1 ? c.toLowerCase() : c))
 }
+
+const BOM = Buffer.from([0xef, 0xbb, 0xbf])
+
+const sha = (bytes: Uint8Array): string => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+
+const excludedError = (): WorkspaceError => new WorkspaceError('excluded', 'the path is excluded from Workspace')
+
+/** A file whose bytes were read: the bytes, their text without the byte order mark, and the hash of the bytes. */
+type Loaded = { readonly bytes: Buffer; readonly text: string; readonly bom: boolean; readonly hash: string }
 
 /** The text of a file, or why it is no text. A byte order mark is dropped from the text. */
 const decoded = (bytes: Uint8Array): { text: string; bom: boolean } | 'binary' | 'encoding' => {
@@ -255,27 +285,208 @@ export const createProvider = (options: ProviderOptions): Provider => {
     return { matches, truncated, filesScanned: scanned, skipped }
   }
 
+  /**
+   * The bytes of a file through `read`, as text: the limits and the refusals of `read`. The size can be old, so `read`
+   * returns at most `max + 1` bytes of the file, or undefined when the file holds more than `max`.
+   */
+  const loadText = async (size: number, read: (max: number) => Promise<Buffer | undefined>): Promise<Loaded> => {
+    const tooLarge = () => new WorkspaceError('too-large', `the file is larger than ${LIMITS.readBytes} bytes`)
+    if (size > LIMITS.readBytes) throw tooLarge()
+    const bytes = await read(LIMITS.readBytes)
+    if (bytes === undefined) throw tooLarge()
+    const text = decoded(bytes)
+    if (text === 'binary') throw new WorkspaceError('binary', 'the file has a NUL byte, so it is not text')
+    if (text === 'encoding') throw new WorkspaceError('encoding', 'the file is not valid UTF-8')
+    return { bytes, text: text.text, bom: text.bom, hash: sha(bytes) }
+  }
+
   const read = async (input: PathInput) => {
     const parts = target(input.path)
     if (parts.length === 0) throw new WorkspaceError('not-file', 'the path is the root, which is a folder')
     const opened = await confined.file(parts)
     try {
-      if (excluded(opened.parts)) throw new WorkspaceError('excluded', 'the path is excluded from Workspace')
-      const tooLarge = () => new WorkspaceError('too-large', `the file is larger than ${LIMITS.readBytes} bytes`)
-      if (opened.size > LIMITS.readBytes) throw tooLarge()
-      // The size can be old: read at most one byte more than the limit, and refuse when the file holds more.
-      const bytes = await readCapped(opened.handle, LIMITS.readBytes)
-      if (bytes === undefined) throw tooLarge()
-      const text = decoded(bytes)
-      if (text === 'binary') throw new WorkspaceError('binary', 'the file has a NUL byte, so it is not text')
-      if (text === 'encoding') throw new WorkspaceError('encoding', 'the file is not valid UTF-8')
+      if (excluded(opened.parts)) throw excludedError()
+      const loaded = await loadText(opened.size, max => readCapped(opened.handle, max))
       return {
         path: showPath(opened.parts),
-        content: text.text,
-        hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-        encoding: text.bom ? ('utf-8-bom' as const) : ('utf-8' as const),
-        size: bytes.length,
+        content: loaded.text,
+        hash: loaded.hash,
+        encoding: loaded.bom ? ('utf-8-bom' as const) : ('utf-8' as const),
+        size: loaded.bytes.length,
       }
+    } finally {
+      await opened.handle.close().catch(() => {})
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------------------------
+  // Pull request B: diff, edit and write
+
+  const locker = createLocker(options.home, options.locks)
+  /** The name of the lock of a file. A volume that ignores case folds the path, so two spellings share a lock. */
+  const keyOf = (parts: readonly string[]): string => lockKey(options.root, parts, confined.method !== 'proc')
+
+  const stale = (): WorkspaceError =>
+    new WorkspaceError('stale', 'the file has changed since expectedHash. Read it again, then redo the change')
+
+  /** The path of a file: the root is a folder. */
+  const fileTarget = (text: string): string[] => {
+    const parts = target(text)
+    if (parts.length === 0) throw new WorkspaceError('not-file', 'the path is the root, which is a folder')
+    return parts
+  }
+
+  const writable = (): void => {
+    if (!options.write)
+      throw new WorkspaceError(
+        'read-only',
+        'the root of this session has no "write": true, so Workspace changes nothing',
+      )
+  }
+
+  /**
+   * The change of `ranges` in `old` (undefined for a new file): the new bytes, the diff and the hashes. It keeps the
+   * byte order mark of the old file and changes no byte outside the ranges. `applied` is the caller's word.
+   */
+  const changeOf = (
+    parts: readonly string[],
+    old: Loaded | undefined,
+    ranges: readonly Range[],
+    applied: boolean,
+  ): { change: Change; bytes: Buffer } => {
+    const next = applyRanges(old?.text ?? '', ranges)
+    const bytes = Buffer.concat([old?.bom === true ? BOM : Buffer.alloc(0), Buffer.from(next, 'utf8')])
+    if (bytes.length > LIMITS.readBytes)
+      throw new WorkspaceError('too-large', `the new file would be larger than ${LIMITS.readBytes} bytes`)
+    const { diff, diffTruncated, added, removed } = unifiedDiff(showPath(parts), old?.text, ranges)
+    return {
+      bytes,
+      change: {
+        path: showPath(parts),
+        applied,
+        created: old === undefined,
+        changed: old === undefined || !bytes.equals(old.bytes),
+        oldHash: old?.hash ?? null,
+        newHash: sha(bytes),
+        diff,
+        diffTruncated,
+        added,
+        removed,
+        warnings: old === undefined ? [] : lineEndWarnings(old.text, next),
+      },
+    }
+  }
+
+  const whole = (text: string, content: string): Range[] => [{ start: 0, end: text.length, text: content, edit: 0 }]
+
+  /**
+   * Runs `fn` with the lock of the file. The lock is taken before the file is opened, under the spelling of the text
+   * of the path. `fn` takes the lock of the real spelling too, when the proof found another one. The lock goes after
+   * a failed or cancelled call as after a good one.
+   */
+  const locked = async <T>(
+    parts: readonly string[],
+    signal: AbortSignal,
+    fn: (hold: Hold) => Promise<T>,
+  ): Promise<T> => {
+    const hold = await locker.hold(keyOf(parts), signal)
+    try {
+      cancelled(signal)
+      return await fn(hold)
+    } finally {
+      await hold.release()
+    }
+  }
+
+  /** A change to a file that exists: lock, open and prove, hash check, write. Stops at the first step that fails. */
+  const replace = (
+    parts: readonly string[],
+    expectedHash: string,
+    signal: AbortSignal,
+    plan: (text: string) => Range[],
+  ): Promise<Change> =>
+    locked(parts, signal, async hold => {
+      const file = await confined.update(parts)
+      try {
+        if (excluded(file.parts)) throw excludedError()
+        await hold.also(keyOf(file.parts))
+        const old = await loadText(file.size, max => file.read(max))
+        if (old.hash !== expectedHash) throw stale()
+        const { change, bytes } = changeOf(file.parts, old, plan(old.text), true)
+        if (!change.changed) return { ...change, applied: false }
+        // The last point where a cancel changes nothing: after it the write starts.
+        cancelled(signal)
+        await file.replace(bytes)
+        return change
+      } finally {
+        await file.close()
+      }
+    })
+
+  const edit = (input: EditInput, signal: AbortSignal): Promise<Change> => {
+    writable()
+    return replace(fileTarget(input.path), input.expectedHash, signal, text => planEdits(text, input.edits))
+  }
+
+  const write = async (input: WriteInput, signal: AbortSignal): Promise<Change> => {
+    writable()
+    const parts = fileTarget(input.path)
+    if (input.expectedHash !== undefined)
+      return replace(parts, input.expectedHash, signal, text => whole(text, input.content))
+    return locked(parts, signal, async () => {
+      const { change, bytes } = changeOf(parts, undefined, whole('', input.content), true)
+      cancelled(signal)
+      const made = await confined.create(parts, bytes, real => {
+        if (excluded(real)) throw excludedError()
+      })
+      return { ...change, path: showPath(made) }
+    })
+  }
+
+  /** Nothing is at `parts`, and no folder on the way is a link: a new file can go there. Changes nothing. */
+  const vacant = async (parts: readonly string[]): Promise<void> => {
+    for (let k = 0; k < parts.length; k++) {
+      const dir = await folder(parts.slice(0, k)).catch((err: unknown) => {
+        if (err instanceof WorkspaceError && err.code === 'not-found') return undefined
+        throw err
+      })
+      // A folder is missing, so the file is.
+      if (dir === undefined) return
+      await dir.close()
+    }
+    const present = await confined.file(parts).then(
+      async opened => {
+        await opened.handle.close().catch(() => {})
+        return true
+      },
+      (err: unknown) => {
+        if (!(err instanceof WorkspaceError)) throw err
+        if (err.code === 'not-found') return false
+        // A link, a folder or a file with other names is something: a new file cannot take its place.
+        if (err.code === 'link' || err.code === 'not-file' || err.code === 'hard-link') return true
+        throw err
+      },
+    )
+    if (present)
+      throw new WorkspaceError(
+        'exists',
+        'something is already at this path. To replace a file, read it and pass its hash as expectedHash',
+      )
+  }
+
+  const diff = async (input: DiffInput): Promise<Change> => {
+    const parts = fileTarget(input.path)
+    if (input.edits === undefined && input.expectedHash === undefined) {
+      await vacant(parts)
+      return changeOf(parts, undefined, whole('', input.content ?? ''), false).change
+    }
+    const opened = await confined.file(parts)
+    try {
+      if (excluded(opened.parts)) throw excludedError()
+      const old = await loadText(opened.size, max => readCapped(opened.handle, max))
+      if (input.expectedHash !== undefined && input.expectedHash !== old.hash) throw stale()
+      const ranges = input.edits !== undefined ? planEdits(old.text, input.edits) : whole(old.text, input.content ?? '')
+      return changeOf(opened.parts, old, ranges, false).change
     } finally {
       await opened.handle.close().catch(() => {})
     }
@@ -313,6 +524,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
     search: (args, signal) => search(parseSearchInput(args), signal),
     read: args => read(parsePathInput(args)),
     stat: args => stat(parsePathInput(args)),
+    diff: args => diff(parseDiffInput(args)),
+    edit: (args, signal) => edit(parseEditInput(args), signal),
+    write: (args, signal) => write(parseWriteInput(args), signal),
     // Only a root entry with a valid task has the tool: a session whose entry has none runs no task.
     ...(runner !== undefined && { run_task: (args, signal) => runner.run(parseTaskInput(args).task, signal) }),
   }
@@ -336,7 +550,10 @@ export const createProvider = (options: ProviderOptions): Provider => {
       description,
       inputSchema,
       outputSchema,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations:
+        toolClass === 'read'
+          ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+          : { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     }
   }
 
@@ -345,8 +562,11 @@ export const createProvider = (options: ProviderOptions): Provider => {
       { name: 'toolscript-workspace', version: WORKSPACE_VERSION },
       { capabilities: { tools: {} } },
     )
+    // The tool list is the capability list: a change tool is listed only with the `write` grant.
     server.setRequestHandler(ListToolsRequestSchema, () => ({
-      tools: WORKSPACE_TOOL_NAMES.filter(name => run[name] !== undefined).map(described) as never,
+      tools: WORKSPACE_TOOL_NAMES.filter(
+        name => run[name] !== undefined && (options.write || WORKSPACE_TOOLS[name].class !== 'write'),
+      ).map(described) as never,
     }))
     server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => {
       const fail = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true })

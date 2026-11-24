@@ -11,16 +11,17 @@
 // The first use tests the method. When the test fails, Workspace is unavailable, with the reason.
 // `Hook` runs before each lookup of a name, so a test can swap a folder between two lookups.
 
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { WorkspaceError, fold, isInside, realParts } from '../../core/workspace.ts'
+import { WorkspaceError, fold, isInside, realParts, showPath } from '../../core/workspace.ts'
 
 const realpathNative = promisify(fs.realpath.native)
 
-const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+const { O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
 /** `O_NOFOLLOW_ANY` of macOS (sys/fcntl.h): fails when any part of the path is a symlink. Node has no name for it. */
 const O_NOFOLLOW_ANY = 0x20000000
 
@@ -32,8 +33,30 @@ export type Entry = { readonly kind: Kind; readonly size: number; readonly real:
 /** Runs before each lookup of a name. A test swaps a folder in it. */
 export type Hook = (lookup: 'open' | 'realpath' | 'lstat' | 'readdir') => void | Promise<void>
 
-/** A proven open file. The caller reads through `handle` and closes it. `parts`: its path as the volume spells it. */
-export type Opened = { readonly handle: FileHandle; readonly size: number; readonly parts: readonly string[] }
+/**
+ * A proven open file. The caller reads through `handle` and closes it. `parts`: its path as the volume spells it.
+ * `mode`: the permission bits.
+ */
+export type Opened = {
+  readonly handle: FileHandle
+  readonly size: number
+  readonly parts: readonly string[]
+  readonly mode: number
+}
+
+/**
+ * A proven existing file that a change reads and then replaces. Linux replaces it with a temp file and a rename in the
+ * held folder, so a failed write leaves the old file. Windows and macOS write in place, through the proven handle, so a
+ * write that fails part way can leave the file damaged. The caller closes it.
+ */
+export type Updatable = {
+  readonly parts: readonly string[]
+  readonly size: number
+  /** At most `max` bytes, or undefined when the file holds more. */
+  read(max: number): Promise<Buffer | undefined>
+  replace(bytes: Uint8Array): Promise<void>
+  close(): Promise<void>
+}
 
 /** A proven folder. `parts`: its path from the root as the volume spells it. */
 export type Dir = {
@@ -44,6 +67,12 @@ export type Dir = {
   lstat(name: string, spell?: boolean): Promise<Entry | undefined>
   openFile(name: string): Promise<Opened>
   openDir(name: string): Promise<Dir>
+  /** The file `name` for a change. */
+  openUpdate(name: string): Promise<Updatable>
+  /** Makes the file `name` with `bytes`, or fails with `exists`. A write that fails removes the new file. */
+  create(name: string, bytes: Uint8Array): Promise<void>
+  /** The proven folder `name`, made when it is missing. */
+  mkdir(name: string): Promise<Dir>
   close(): Promise<void>
 }
 
@@ -55,6 +84,13 @@ export type Confined = {
   root(): Promise<Dir>
   dir(parts: readonly string[]): Promise<Dir>
   file(parts: readonly string[]): Promise<Opened>
+  /** The existing file at `parts` for a change. */
+  update(parts: readonly string[]): Promise<Updatable>
+  /**
+   * Makes the file at `parts` with `bytes`, and the missing folders above it. `guard` runs on the real parts of each
+   * folder and of the file before anything is made below it, and throws to stop. Returns the parts of the file.
+   */
+  create(parts: readonly string[], bytes: Uint8Array, guard: (parts: readonly string[]) => void): Promise<string[]>
   close(): Promise<void>
 }
 
@@ -74,6 +110,11 @@ const mapError = (err: unknown): WorkspaceError => {
   if (code === 'ENOENT' || code === 'ENOTDIR') return new WorkspaceError('not-found', 'there is nothing at this path')
   if (code === 'ELOOP' || code === 'EMLINK') return new WorkspaceError('link', 'the path goes through a link')
   if (code === 'EISDIR') return new WorkspaceError('not-file', 'the path is a folder')
+  if (code === 'EEXIST')
+    return new WorkspaceError(
+      'exists',
+      'something is already at this path. To replace a file, read it and pass its hash as expectedHash',
+    )
   return new WorkspaceError('io', `the file system refused the call (${typeof code === 'string' ? code : 'error'})`)
 }
 
@@ -112,7 +153,7 @@ const checkedFile = async (handle: FileHandle, parts: readonly string[]): Promis
     if (!st.isFile()) throw new WorkspaceError('not-file', 'the path is not a file')
     if (st.ino === 0n) throw unavailable('the volume gives no file identity')
     if (st.nlink > 1n) throw new WorkspaceError('hard-link', 'the file has more than one name (a hard link)')
-    return { handle, size: Number(st.size), parts }
+    return { handle, size: Number(st.size), parts, mode: Number(st.mode & 0o7777n) }
   } catch (err) {
     await handle.close().catch(() => {})
     throw mapError(err)
@@ -135,6 +176,34 @@ export const readCapped = async (handle: Pick<FileHandle, 'read'>, max: number):
   }
   return total > max ? undefined : Buffer.concat(chunks, total)
 }
+
+/** Writes all of `bytes` from the start of the file. `handle.write` can write less than it is given. */
+const writeAll = async (handle: FileHandle, bytes: Uint8Array): Promise<void> => {
+  for (let at = 0; at < bytes.length; ) {
+    const { bytesWritten } = await handle.write(bytes, at, bytes.length - at, at)
+    at += bytesWritten
+  }
+}
+
+const REFUSED_WRITE = (code: unknown): string =>
+  `the file system refused the write (${typeof code === 'string' ? code : 'error'})`
+
+/** A replace that failed in the atomic way: the temp file is gone and the old file is as it was. */
+const unchanged = (err: unknown): WorkspaceError =>
+  err instanceof WorkspaceError
+    ? err
+    : new WorkspaceError('io', `${REFUSED_WRITE((err as NodeJS.ErrnoException)?.code)}. The file is unchanged`)
+
+/** A write in place that failed: the file can hold part of the new bytes. */
+const damaged = (parts: readonly string[], err: unknown): WorkspaceError =>
+  new WorkspaceError(
+    'io',
+    `${REFUSED_WRITE((err as NodeJS.ErrnoException)?.code)} while it wrote ${showPath(parts)} in place, so that file can be damaged. Read it again before any other change`,
+  )
+
+/** A new file whose write failed. It is removed, so nothing is left. */
+const notMade = (err: unknown): WorkspaceError =>
+  new WorkspaceError('io', `${REFUSED_WRITE((err as NodeJS.ErrnoException)?.code)}. No file was made`)
 
 // ---------------------------------------------------------------------------------------------------------------
 // The test of the method
@@ -263,6 +332,63 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
       })
       return procDir(opened, [...parts, name], true, hook)
     },
+    openUpdate: async name => {
+      const opened = await dir.openFile(name)
+      return {
+        parts: opened.parts,
+        size: opened.size,
+        read: max => readCapped(opened.handle, max),
+        // A temp file in the held folder, with the mode of the old file, then a rename of one name over the other. Both
+        // names are relative to the held folder, so a swap of a folder above it changes nothing here.
+        replace: async bytes => {
+          const temp = `.toolscript-ws-${randomBytes(8).toString('hex')}.tmp`
+          let made = false
+          try {
+            await hook('open')
+            const h = await fs.promises.open(at(temp), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+            made = true
+            try {
+              await h.chmod(opened.mode)
+              await writeAll(h, bytes)
+              await h.sync()
+            } finally {
+              await h.close()
+            }
+            await hook('open')
+            await fs.promises.rename(at(temp), at(name))
+            made = false
+          } catch (err) {
+            throw unchanged(err)
+          } finally {
+            if (made) await fs.promises.unlink(at(temp)).catch(() => {})
+          }
+        },
+        close: () => opened.handle.close().catch(() => {}),
+      }
+    },
+    create: async (name, bytes) => {
+      await hook('open')
+      const h = await fs.promises.open(at(name), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o666).catch(async err => {
+        throw (err as NodeJS.ErrnoException).code === 'EEXIST' ? mapError(err) : await refused(err, name)
+      })
+      try {
+        await writeAll(h, bytes)
+        await h.sync()
+      } catch (err) {
+        await h.close().catch(() => {})
+        await fs.promises.unlink(at(name)).catch(() => {})
+        throw notMade(err)
+      }
+      await h.close()
+    },
+    mkdir: async name => {
+      await hook('open')
+      await fs.promises.mkdir(at(name)).catch(err => {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw mapError(err)
+      })
+      // The name can be a link by now (made by another process): the open proves it.
+      return dir.openDir(name)
+    },
     close: async () => {
       if (owned) await handle.close().catch(() => {})
     },
@@ -328,12 +454,22 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
     return seen
   }
 
-  const opened = async (parts: readonly string[], folder: boolean): Promise<{ handle: FileHandle; real: string[] }> => {
+  // `how`: for reading, for a change in place, or to make a new file (which fails with `exists` when a name is there).
+  const OPEN = {
+    read: { windows: 'r', mac: O_RDONLY },
+    update: { windows: 'r+', mac: O_RDWR },
+    create: { windows: 'wx', mac: O_WRONLY | O_CREAT | O_EXCL },
+  } as const
+  const opened = async (
+    parts: readonly string[],
+    folder: boolean,
+    how: keyof typeof OPEN = 'read',
+  ): Promise<{ handle: FileHandle; real: string[] }> => {
     await hook('open')
     const handle = await (
       windows
-        ? fs.promises.open(full(parts), 'r')
-        : fs.promises.open(full(parts), O_RDONLY | O_NOFOLLOW_ANY | (folder ? O_DIRECTORY : O_NONBLOCK))
+        ? fs.promises.open(full(parts), OPEN[how].windows)
+        : fs.promises.open(full(parts), OPEN[how].mac | O_NOFOLLOW_ANY | (folder ? O_DIRECTORY : O_NONBLOCK), 0o666)
     ).catch(async err => {
       // macOS: `O_DIRECTORY` on a file gives ENOTDIR, as a file in a middle part does. Only a last part that exists and is
       // no folder is `not-folder`. A middle part that is a file, or a link, is the same as on the other systems.
@@ -393,6 +529,20 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
       },
       openFile: name => file([...parts, name]),
       openDir: name => dir([...parts, name]),
+      openUpdate: name => update([...parts, name]),
+      create: async (name, bytes) => {
+        await proven()
+        await createFile([...parts, name], bytes)
+      },
+      mkdir: async name => {
+        await proven()
+        await hook('open')
+        await fs.promises.mkdir(full([...parts, name])).catch(err => {
+          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw mapError(err)
+        })
+        // The name can be a link by now: the proof of the folder refuses it.
+        return dir([...parts, name])
+      },
       close: async () => {},
     }
   }
@@ -411,6 +561,43 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
   const file = async (parts: readonly string[]): Promise<Opened> => {
     const { handle, real } = await opened(parts, false)
     return checkedFile(handle, real)
+  }
+
+  // In place, through the proven handle: the new bytes, then the cut to their length, so the file is never empty.
+  const update = async (parts: readonly string[]): Promise<Updatable> => {
+    const { handle, real } = await opened(parts, false, 'update')
+    const proven = await checkedFile(handle, real)
+    return {
+      parts: proven.parts,
+      size: proven.size,
+      read: max => readCapped(handle, max),
+      replace: async bytes => {
+        try {
+          await writeAll(handle, bytes)
+          await handle.truncate(bytes.length)
+          await handle.sync()
+        } catch (err) {
+          throw damaged(proven.parts, err)
+        }
+      },
+      close: () => handle.close().catch(() => {}),
+    }
+  }
+
+  // The folder above is proven. The file is made with O_EXCL (a link at the name is `exists`) and then proven as an open
+  // file is. On Windows a swap between the make and the proof leaves an empty file outside (the ADR names it).
+  const createFile = async (parts: readonly string[], bytes: Uint8Array): Promise<string[]> => {
+    const { handle, real } = await opened(parts, false, 'create')
+    try {
+      await writeAll(handle, bytes)
+      await handle.sync()
+    } catch (err) {
+      await handle.close().catch(() => {})
+      await fs.promises.unlink(full(real)).catch(() => {})
+      throw notMade(err)
+    }
+    await handle.close()
+    return real
   }
 
   const check = async () => {
@@ -436,6 +623,30 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
     file: async parts => {
       await check()
       return file(parts)
+    },
+    update: async parts => {
+      await check()
+      return update(parts)
+    },
+    create: async (parts, bytes, guard) => {
+      await check()
+      const last = parts.at(-1)
+      if (last === undefined) throw new WorkspaceError('not-file', 'the path is the root, which is a folder')
+      // Each folder is proven before the next is made below it: the first missing one is made, and the guard has seen
+      // the real spelling of every folder above it.
+      let parent = makeDir([], rootId)
+      guard(parent.parts)
+      for (let k = 1; k < parts.length; k++) {
+        const next = await dir(parts.slice(0, k)).catch(err => {
+          if (!(err instanceof WorkspaceError && err.code === 'not-found')) throw err
+          return parent.mkdir(parts[k - 1]!)
+        })
+        guard(next.parts)
+        parent = next
+      }
+      guard([...parent.parts, last])
+      await parent.create(last, bytes)
+      return [...parent.parts, last]
     },
     close: async () => {},
   }
@@ -506,16 +717,59 @@ export const openConfined = async (
     }
     return current
   }
+  const split = (parts: readonly string[]): string => {
+    const last = parts.at(-1)
+    if (last === undefined) throw new WorkspaceError('not-file', 'the path is the root, which is a folder')
+    return last
+  }
   return {
     method: 'proc',
     root: () => dir([]),
     dir,
     file: async parts => {
-      const last = parts.at(-1)
-      if (last === undefined) throw new WorkspaceError('not-file', 'the path is the root, which is a folder')
+      const last = split(parts)
       const parent = await dir(parts.slice(0, -1))
       try {
         return await parent.openFile(last)
+      } finally {
+        await parent.close()
+      }
+    },
+    update: async parts => {
+      const last = split(parts)
+      const parent = await dir(parts.slice(0, -1))
+      try {
+        const opened = await parent.openUpdate(last)
+        // The folder stays open until the change is done: the temp file and the rename use its handle.
+        return {
+          ...opened,
+          close: async () => {
+            await opened.close()
+            await parent.close()
+          },
+        }
+      } catch (err) {
+        await parent.close()
+        throw err
+      }
+    },
+    create: async (parts, bytes, guard) => {
+      const last = split(parts)
+      let parent = await dir([])
+      try {
+        guard(parent.parts)
+        for (const name of parts.slice(0, -1)) {
+          const next = await parent.openDir(name).catch(err => {
+            if (!(err instanceof WorkspaceError && err.code === 'not-found')) throw err
+            return parent.mkdir(name)
+          })
+          await parent.close()
+          parent = next
+          guard(parent.parts)
+        }
+        guard([...parent.parts, last])
+        await parent.create(last, bytes)
+        return [...parent.parts, last]
       } finally {
         await parent.close()
       }
