@@ -9,6 +9,7 @@ const FUNCTIONS = 'functions'
 const LEARNED = 'learned'
 const OAUTH = 'oauth'
 const BROKER = 'broker'
+const LOCKS = 'locks'
 
 /**
  * An absolute path with empty, `.` and `..` parts resolved. A Windows path
@@ -75,11 +76,19 @@ export const toolsFile = (home: string): string => `${shapesFolder(home)}/tools.
 export const brokerFolder = (home: string): string => appPath(home, BROKER)
 
 /**
+ * The folder of the lock files of the Workspace editing tools under HOME (issue #144): one `<hash>.lock` for each file
+ * that a change holds. They are alone in it, so the guard on the folder covers nothing else.
+ */
+export const locksFolder = (home: string): string => appPath(home, LOCKS)
+
+/**
  * The text that names a guarded folder in any root: `.toolscript-mcp/hints` and the four others, never the bare
  * `.toolscript-mcp`, which also holds `files/`, the run log and the config. `src/core/guard.ts` looks for them in
  * the text of a call, where `~`, `$HOME` or a relative path hides the root.
  */
-export const GUARD_MARKERS: readonly string[] = [HINTS, FUNCTIONS, LEARNED, OAUTH, BROKER].map(name => `${APP}/${name}`)
+export const GUARD_MARKERS: readonly string[] = [HINTS, FUNCTIONS, LEARNED, OAUTH, BROKER, LOCKS].map(
+  name => `${APP}/${name}`,
+)
 
 /**
  * The folders whose files steer the model, or hold its secrets, as written: the person's and the
@@ -96,7 +105,14 @@ export const guardedDirs = (home: string, project: string, pluginRoot = ''): str
   const plugins = normalizePath(`${home}/.claude/plugins`)
   return [
     ...(home
-      ? [hintsFolder(home), functionsFolder(home), shapesFolder(home), oauthFolder(home), brokerFolder(home)]
+      ? [
+          hintsFolder(home),
+          functionsFolder(home),
+          shapesFolder(home),
+          oauthFolder(home),
+          brokerFolder(home),
+          locksFolder(home),
+        ]
       : []),
     ...(project ? [hintsFolder(project)] : []),
     ...(home && plugin.startsWith(`${plugins}/`) ? [plugin] : []),

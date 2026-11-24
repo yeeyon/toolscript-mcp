@@ -654,6 +654,9 @@ const resultText = (json: string, max: number, whole?: number): string => {
  * `imageNote` (hiddenImagesNote) follows the result and the console.
  * `notes` follow the footer, or with `nonce` the image note in the wrapper:
  * a note can name a tool that the untrusted text chose.
+ * `changes` (changesText in runlog.ts) lists the Workspace changes that the run
+ * applied. It comes after the console and the image note, inside the wrapper:
+ * a path in it is a name from the disk.
  */
 export const formatOutcome = (
   outcome: RunnerDone | RunnerError | undefined,
@@ -664,6 +667,7 @@ export const formatOutcome = (
   nonce?: string,
   imageNote = '',
   notes = '',
+  changes = '',
 ): string => {
   const parts: string[] = []
   if (outcome === undefined) {
@@ -678,6 +682,7 @@ export const formatOutcome = (
   const logs = outcome?.logs ?? []
   if (logs.length > 0) parts.push(`--- console (${logs.length} lines) ---\n${clip(logs.join('\n'), 4000)}`)
   if (imageNote !== '') parts.push(imageNote)
+  if (changes !== '') parts.push(changes)
   if (nonce !== undefined && notes !== '') parts.push(notes)
   const footer =
     projection === undefined
