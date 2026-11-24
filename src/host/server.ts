@@ -76,6 +76,8 @@ export const createServer = (
   log: (line: string) => void,
   /** The session root of the built-in Workspace, when it is bound. */
   workspaceRoot?: string,
+  /** The names of the tasks of its root entry, for the approval prompt. */
+  workspaceTasks?: readonly string[],
 ): Served => {
   const mcp = new McpServer(
     { name: 'toolscript-mcp', version },
@@ -182,7 +184,14 @@ export const createServer = (
       shapes,
       filesDir,
       policyNote: fresh.note,
-      ask: (needed, code) => elicit(extra, askText(needed, code, config.guards)),
+      ask: (needed, code) =>
+        elicit(
+          extra,
+          askText(needed, code, config.guards, {
+            ...(workspaceRoot !== undefined && { root: workspaceRoot }),
+            ...(workspaceTasks !== undefined && { tasks: workspaceTasks }),
+          }),
+        ),
       canAsk,
       signal: AbortSignal.any([extra.signal, stopping.signal]),
       log,

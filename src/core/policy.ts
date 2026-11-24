@@ -7,7 +7,7 @@
 
 import type { ServerKey } from './config.ts'
 import { splitToolName, type LiteralCall } from './protocol.ts'
-import { workspaceClass } from './workspace.ts'
+import { toolsOfClass, workspaceClass } from './workspace.ts'
 
 export type Action = 'allow' | 'deny' | 'ask'
 
@@ -70,8 +70,9 @@ const bridgeOf = (tool: string, { bridges }: Guards): string | undefined => {
  * bridge, also one that the bridge adds later: only a rule that names the
  * server does. The next rule that matches decides. Deny and ask rules count.
  */
-const counts = (rule: Rule, bridge: string | undefined): boolean =>
-  rule.action !== 'allow' || bridge === undefined || rule.match.startsWith(`mcp__${bridge}__`)
+const counts = (rule: Rule, bridge: string | undefined, execTool = false, tool = ''): boolean =>
+  rule.action !== 'allow' ||
+  ((bridge === undefined || rule.match.startsWith(`mcp__${bridge}__`)) && (!execTool || rule.match === tool))
 
 /**
  * What a tool gets when no rule matches it: the read tools of the built-in Workspace run, any other tool asks. The
@@ -80,9 +81,16 @@ const counts = (rule: Rule, bridge: string | undefined): boolean =>
 const fallback = (tool: string, guards: Guards): Verdict =>
   guards.workspace && workspaceClass(tool) === 'read' ? { action: 'allow' } : { action: 'ask' }
 
+/**
+ * True for a tool of the exec class of the built-in Workspace (`run_task`). It runs project code, so only an allow rule
+ * with the exact name allows it: `*`, `mcp__*` and `mcp__workspace__*` never do, also when a later version adds tools.
+ */
+const execOf = (tool: string, { workspace }: Guards): boolean => workspace && workspaceClass(tool) === 'exec'
+
 export const decide = (policy: Policy, guards: Guards, tool: string): Verdict => {
   const bridge = bridgeOf(tool, guards)
-  const rule = policy.find(r => matches(r.match, tool) && counts(r, bridge))
+  const exec = execOf(tool, guards)
+  const rule = policy.find(r => matches(r.match, tool) && counts(r, bridge, exec, tool))
   return rule === undefined ? fallback(tool, guards) : { action: rule.action, rule }
 }
 
@@ -151,10 +159,14 @@ const MAX_PAIRS = 10_000_000
  * The same match can repeat, so a rule of `next` does not simply pair with
  * the first rule that has its match.
  */
-export const onlyTightens = (current: Policy, next: Policy, { bridges }: Guards): boolean => {
-  // A match whose server part has no `*` matches only the tools of that server, so no tool skips it.
+export const onlyTightens = (current: Policy, next: Policy, { bridges, workspace }: Guards): boolean => {
+  // A match whose server part has no `*` matches only the tools of that server, so no tool of a bridge skips it.
+  // A tool of the exec class of the Workspace skips each allow rule that matches it and is not its exact name.
+  const execTools = workspace ? toolsOfClass('exec') : []
   const skippable = (rule: Rule) =>
-    rule.action === 'allow' && bridges.size > 0 && (splitToolName(rule.match)?.server.includes('*') ?? true)
+    rule.action === 'allow' &&
+    ((bridges.size > 0 && (splitToolName(rule.match)?.server.includes('*') ?? true)) ||
+      execTools.some(tool => tool !== rule.match && matches(rule.match, tool)))
   const lowers = (now: Rule, was: Rule) =>
     LOOSENESS[now.action] <= LOOSENESS[was.action] && !(now.action === 'ask' && skippable(was))
   if ((current.length + 1) * (next.length + 1) > MAX_PAIRS) return false
@@ -366,8 +378,11 @@ export const checkCall = (
       needs: 'person',
     }
   const bridge = bridgeOf(tool, guards)
-  const missing =
-    bridge === undefined ? `no policy rule allows ${tool}` : `an ${bridgeRule(bridge)}, such as ${allowRule(tool)}`
+  const missing = execOf(tool, guards)
+    ? `an allow rule for ${tool} must name it exactly, such as ${allowRule(tool)}`
+    : bridge === undefined
+      ? `no policy rule allows ${tool}`
+      : `an ${bridgeRule(bridge)}, such as ${allowRule(tool)}`
   return { ok: false, error: `not approved: ${missing}, and the person did not approve it for this run`, needs: 'rule' }
 }
 
@@ -387,8 +402,25 @@ export type Refusal = 'decline' | 'unsupported'
 
 const these = (tools: readonly unknown[]): string => (tools.length === 1 ? 'this tool' : 'these tools')
 
+/**
+ * What the prompt says of the built-in Workspace: the session root, and the names of the tasks of its entry. Both come
+ * from the config and the start of the server, never from the program.
+ */
+export type Scope = { readonly root?: string; readonly tasks?: readonly string[] }
+
+/** The lines for a tool of the exec class that is asked: what it runs, where, and that nothing contains it. */
+const execLines = (ask: readonly string[], guards: Guards, scope: Scope): string[] => {
+  if (!ask.some(t => execOf(t, guards))) return []
+  const tasks = scope.tasks ?? []
+  return [
+    'A task runs project code with your rights. Nothing contains it.',
+    ...(tasks.length > 0 ? [`Tasks: ${tasks.map(shownName).join(', ')}.`] : []),
+    ...(scope.root !== undefined ? [`Workspace root: ${printableText(scope.root)}`] : []),
+  ]
+}
+
 /** The message of the approval prompt: the tools, and the program they run in. */
-export const askText = ({ ask, interactive }: Asks, code: string, guards: Guards): string => {
+export const askText = ({ ask, interactive }: Asks, code: string, guards: Guards, scope: Scope = {}): string => {
   const program = code.length <= 4000 ? code : `${code.slice(0, 4000)}\n… [${code.length - 4000} more characters]`
   const one = interactive.length === 1
   const bridged = [...new Set(ask.flatMap(t => bridgeOf(t, guards) ?? []))]
@@ -398,6 +430,7 @@ export const askText = ({ ask, interactive }: Asks, code: string, guards: Guards
           `A toolscript program wants to call ${these(ask)}, which no policy rule allows:`,
           ...ask.map(t => `- ${t}`),
           ...bridged.map(b => `An ${bridgeRule(b)}.`),
+          ...execLines(ask, guards, scope),
           '',
         ]
       : []),

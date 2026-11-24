@@ -291,3 +291,141 @@ describe('the built server with no workspace section', () => {
     }
   })
 })
+
+// Pull request C: `run_task` alone. A second project, whose task runs a real `node:test` file that passes only when
+// `maxAttempts` is 5 (this test changes the file itself: editing is another pull request). The command `node` is
+// found on the PATH of the server, and the server holds a variable that no task may see.
+describe('the built server with named tasks', () => {
+  const taskProject = path.join(base, 'task-project')
+  const retry = path.join(taskProject, 'src', 'retry.ts')
+  const FAKE = `FAKE-${randomBytes(8).toString('hex')}`
+  const nodeTask = (args, extra = {}) => ({ command: 'node', args, ...extra })
+  fs.mkdirSync(path.join(taskProject, 'src'), { recursive: true })
+  fs.mkdirSync(path.join(taskProject, 'test'), { recursive: true })
+  fs.writeFileSync(retry, 'export const config = { maxAttempts: 3 }\n')
+  fs.writeFileSync(path.join(taskProject, '.env'), `TOKEN=${MARKER}\n`)
+  fs.writeFileSync(
+    path.join(taskProject, 'test', 'retry.test.mjs'),
+    "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport fs from 'node:fs'\n" +
+      "test('five attempts', () => assert.match(fs.readFileSync('src/retry.ts', 'utf8'), /maxAttempts: 5/))\n",
+  )
+  const taskConfig = configWith('tasks.json', {
+    mcpServers: {},
+    workspace: {
+      roots: [
+        {
+          path: taskProject,
+          tasks: {
+            'test-retry': nodeTask(['--test']),
+            'env-keys': nodeTask(['-p', 'JSON.stringify(Object.keys(process.env))'], { env: { FROM_TASK: 'yes' } }),
+            'argv-echo': nodeTask([
+              '-p',
+              'JSON.stringify(process.argv.slice(1))',
+              'a && echo INJECTED',
+              '$(id)',
+              '%PATH%',
+            ]),
+            hang: nodeTask([
+              '-e',
+              "require('fs').writeFileSync('pid.txt', String(process.pid)); setInterval(() => {}, 1000)",
+            ]),
+          },
+        },
+      ],
+    },
+  })
+  const run = (s, name) =>
+    s.run(`const r = await call("mcp__workspace__run_task", { task: ${JSON.stringify(name)} })\nreturn r`)
+  const waitFor = async (check, ms = 8000) => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise(resolve => setTimeout(resolve, 50)))
+      if (check()) return true
+    return check()
+  }
+  let session
+  before(async () => {
+    process.env.FAKE_TOKEN = FAKE
+    env.FAKE_TOKEN = FAKE
+    session = await connect(taskConfig, taskProject)
+  })
+  after(() => {
+    delete env.FAKE_TOKEN
+    delete process.env.FAKE_TOKEN
+  })
+
+  test('the task runs the real test: exit code 1 while the value is 3, and 0 after it is 5', async () => {
+    const shown = await session.search('workspace run_task')
+    assert.match(shown, /### mcp__workspace__run_task\n/)
+    assert.match(shown, /Tasks: test-retry, env-keys, argv-echo, hang\./)
+    const first = await run(session, 'test-retry')
+    assert.equal(first.isError, false, first.text)
+    const before = returned(first.text)
+    assert.deepEqual([before.exitCode, before.timedOut, before.signal], [1, false, null], 'the real test failed')
+    fs.writeFileSync(retry, 'export const config = { maxAttempts: 5 }\n')
+    const second = returned((await run(session, 'test-retry')).text)
+    assert.deepEqual([second.exitCode, second.timedOut], [0, false], 'the same task passes after the change')
+    assert.match(second.stdout, /five attempts/)
+    // One prompt for each run, naming the tool, the task names, the root and what a task is.
+    assert.equal(session.prompts.length, 2)
+    for (const prompt of session.prompts) {
+      assert.match(prompt, /- mcp__workspace__run_task\n/)
+      assert.match(prompt, /A task runs project code with your rights\. Nothing contains it\./)
+      assert.match(prompt, /Tasks: test-retry, env-keys, argv-echo, hang\./)
+      assert.ok(prompt.includes(`Workspace root: ${taskProject}`), prompt)
+    }
+  })
+
+  test('the child gets the arguments as given, the task env, and no variable of the server', async () => {
+    const keys = returned((await run(session, 'env-keys')).text)
+    const seen = JSON.parse(keys.stdout)
+    assert.ok(seen.includes('FROM_TASK') && seen.includes('PATH'), keys.stdout)
+    assert.ok(!seen.includes('FAKE_TOKEN'), 'a variable of the server is in the child')
+    assert.ok(!keys.stdout.includes(FAKE))
+    const argv = returned((await run(session, 'argv-echo')).text)
+    assert.deepEqual(JSON.parse(argv.stdout), ['a && echo INJECTED', '$(id)', '%PATH%'])
+  })
+
+  test('the run log has the calls, and the secret of .env is in no result, log, prompt or stderr', async () => {
+    const log = fs.readFileSync(path.join(home, '.toolscript-mcp', 'runs.jsonl'), 'utf8')
+    // The runs of the first describe share this log: the last four are the four runs of this one.
+    const records = log
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line))
+      .slice(-4)
+    assert.equal(records.length, 4)
+    for (const record of records)
+      assert.deepEqual(
+        record.calls.map(c => [c.tool, c.decision, c.ok]),
+        [['mcp__workspace__run_task', 'ask-approved', true]],
+      )
+    assert.ok(!log.includes(FAKE) && !log.includes('INJECTED'), 'no task output in the log')
+    for (const [name, text] of [
+      ['log', log],
+      ['stderr', session.transport.stderr],
+      ['prompts', session.prompts.join('\n')],
+    ])
+      assert.ok(!text.includes(MARKER), `the secret is in the ${name}`)
+    assert.match(session.transport.stderr, /Workspace: root .*, tasks: test-retry, env-keys, argv-echo, hang/)
+  })
+
+  test('a task that is still running when the server closes is ended with its process', async () => {
+    const pidFile = path.join(taskProject, 'pid.txt')
+    const pending = session.client
+      .callTool({
+        name: 'run_code',
+        arguments: { code: 'return await call("mcp__workspace__run_task", { task: "hang" })' },
+      })
+      .catch(() => undefined)
+    assert.ok(
+      await waitFor(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8') !== ''),
+      'the task started',
+    )
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+    assert.equal(alive(pid), true)
+    const server = await session.close()
+    await pending
+    assert.equal(alive(server), false, 'the server is gone')
+    assert.ok(await waitFor(() => !alive(pid)), 'the task process is gone')
+    for (const line of session.transport.lines) assert.doesNotThrow(() => JSON.parse(line))
+  })
+})

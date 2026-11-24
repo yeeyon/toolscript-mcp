@@ -5,6 +5,7 @@
 
 import { ACTIONS, type Action, type Bridges, type Guards, type Policy, type Rule } from './policy.ts'
 import { classify } from './share.ts'
+import { TASK_LIMITS, TASK_NAME, commandProblem, cwdParts, type TaskConfig } from './task.ts'
 import { DEFAULT_SKIP, globProblem, LIMITS, WORKSPACE_KEY, type WorkspaceConfig } from './workspace.ts'
 
 // The WHATWG URL and btoa of every JavaScript runtime. The core loads no DOM or Node types, so it declares what it uses.
@@ -437,11 +438,103 @@ const skipProblem = (name: unknown): string | undefined =>
     ? undefined
     : 'must be a folder name with no / or \\'
 
+const TASK_KEYS = ['command', 'args', 'cwd', 'timeoutSeconds', 'env']
+
+/**
+ * The tasks of one root entry (issue #144, pull request C). Only text is checked here: a command is an absolute path
+ * or a bare name, and a folder is a relative path. The host looks them up at the start and marks a task invalid with a
+ * reason when it cannot run. `callTimeout` is `sandbox.callTimeoutSeconds`: no task may run longer than one call.
+ */
+const parseTasks = (
+  raw: unknown,
+  path: string,
+  env: Env,
+  platform: string,
+  callTimeout: number,
+  errors: string[],
+): TaskConfig[] => {
+  if (raw === undefined) return []
+  if (!isObject(raw)) {
+    errors.push(`${path}: must be an object of tasks, such as { "test": { "command": "node", "args": ["--test"] } }`)
+    return []
+  }
+  const names = Object.keys(raw)
+  if (names.length > TASK_LIMITS.tasks) {
+    errors.push(`${path}: must have at most ${TASK_LIMITS.tasks} tasks`)
+    return []
+  }
+  const windows = platform === 'win32'
+  return names.flatMap((name): TaskConfig[] => {
+    const here = at(path, name)
+    const task = raw[name]
+    if (!TASK_NAME.test(name)) {
+      errors.push(`${here}: a task name has 1 to ${TASK_LIMITS.nameChars} characters from a-z, 0-9, - and _`)
+      return []
+    }
+    if (!isObject(task)) {
+      errors.push(`${here}: must be an object with "command"`)
+      return []
+    }
+    const found = errors.length
+    unknownKeys(task, TASK_KEYS, here, errors)
+    const command = expand(nonEmpty(task.command, `${here}.command`, errors), env, `${here}.command`, errors)
+    const problem = command === '' ? undefined : commandProblem(command, windows)
+    if (problem !== undefined) errors.push(`${here}.command: ${problem}`)
+    const args: string[] = []
+    if (task.args !== undefined) {
+      if (!Array.isArray(task.args) || task.args.length > TASK_LIMITS.args)
+        errors.push(`${here}.args: must be an array of at most ${TASK_LIMITS.args} strings`)
+      else
+        task.args.forEach((a, i) => {
+          const where = `${here}.args[${i}]`
+          if (typeof a !== 'string') return void errors.push(`${where}: must be a string`)
+          const text = expand(a, env, where, errors)
+          if (text.length > TASK_LIMITS.argChars || text.includes('\u0000'))
+            errors.push(`${where}: must hold at most ${TASK_LIMITS.argChars} characters and no NUL character`)
+          args.push(text)
+        })
+    }
+    let cwd: readonly string[] = []
+    if (task.cwd !== undefined) {
+      const parts = typeof task.cwd === 'string' ? cwdParts(task.cwd, windows) : 'must be a string'
+      if (typeof parts === 'string') errors.push(`${here}.cwd: ${parts}`)
+      else cwd = parts
+    }
+    const limit = Math.min(callTimeout, TASK_LIMITS.defaultSeconds)
+    let timeoutSeconds = limit
+    const t = task.timeoutSeconds
+    if (t !== undefined) {
+      if (typeof t === 'number' && Number.isInteger(t) && t >= 1 && t <= callTimeout) timeoutSeconds = t
+      else
+        errors.push(
+          `${here}.timeoutSeconds: must be a whole number of seconds from 1 to ${callTimeout}, the value of sandbox.callTimeoutSeconds`,
+        )
+    }
+    const variables = stringMap(task.env, `${here}.env`, env, errors)
+    const entries = Object.entries(variables)
+    if (entries.length > TASK_LIMITS.envVars)
+      errors.push(`${here}.env: must have at most ${TASK_LIMITS.envVars} variables`)
+    for (const [key, value] of entries)
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || value.length > TASK_LIMITS.envChars || value.includes('\u0000'))
+        errors.push(
+          `${at(`${here}.env`, key)}: the name must have letters, digits and underscores, and the value at most ${TASK_LIMITS.envChars} characters and no NUL character`,
+        )
+    return errors.length > found ? [] : [{ name, command, args, cwd, timeoutSeconds, env: variables }]
+  })
+}
+
 /**
  * The `workspace` section (issue #144). Every error names the key, and none holds a value of the file. A root is an
  * absolute path as `cwd` is. `write` is read now and has no effect before the editing tools ship.
+ * `callTimeout` is `sandbox.callTimeoutSeconds`, the limit of a task.
  */
-const parseWorkspace = (raw: unknown, env: Env, platform: string, errors: string[]): WorkspaceConfig | undefined => {
+const parseWorkspace = (
+  raw: unknown,
+  env: Env,
+  platform: string,
+  callTimeout: number,
+  errors: string[],
+): WorkspaceConfig | undefined => {
   const here = WORKSPACE_KEY
   const found = errors.length
   if (!isObject(raw)) {
@@ -449,14 +542,14 @@ const parseWorkspace = (raw: unknown, env: Env, platform: string, errors: string
     return undefined
   }
   unknownKeys(raw, ['roots', 'exclude', 'skip'], here, errors)
-  const roots: { path: string; write: boolean }[] = []
+  const roots: { path: string; write: boolean; tasks?: readonly TaskConfig[] }[] = []
   if (!Array.isArray(raw.roots) || raw.roots.length < 1 || raw.roots.length > LIMITS.roots)
     errors.push(`${here}.roots: must be an array of 1 to ${LIMITS.roots} entries, such as [{ "path": "/home/me/app" }]`)
   else
     raw.roots.forEach((entry, i) => {
       const path = `${here}.roots[${i}]`
       if (!isObject(entry)) return void errors.push(`${path}: must be an object with "path"`)
-      unknownKeys(entry, ['path', 'write'], path, errors)
+      unknownKeys(entry, ['path', 'write', 'tasks'], path, errors)
       const before = errors.length
       const text = expand(nonEmpty(entry.path, `${path}.path`, errors), env, `${path}.path`, errors)
       const absolute = platform === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(text) : text.startsWith('/')
@@ -464,7 +557,9 @@ const parseWorkspace = (raw: unknown, env: Env, platform: string, errors: string
         errors.push(`${path}.path: must be an absolute path${platform === 'win32' ? ' with a drive letter' : ''}`)
       if (entry.write !== undefined && typeof entry.write !== 'boolean')
         errors.push(`${path}.write: must be true or false`)
-      if (errors.length === before) roots.push({ path: text, write: entry.write === true })
+      const tasks = parseTasks(entry.tasks, `${path}.tasks`, env, platform, callTimeout, errors)
+      if (errors.length === before)
+        roots.push({ path: text, write: entry.write === true, ...(tasks.length > 0 && { tasks }) })
     })
   const exclude = raw.exclude === undefined ? [] : parseList(raw.exclude, `${here}.exclude`, globProblem, errors)
   const skip = raw.skip === undefined ? [...DEFAULT_SKIP] : parseList(raw.skip, `${here}.skip`, skipProblem, errors)
@@ -708,12 +803,15 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
       servers.set(key, server && entryErrors.length === 0 ? server : { kind: 'invalid', errors: entryErrors })
     }
 
+  // Read before the section: no task may run longer than one call (`sandbox.callTimeoutSeconds`).
+  const sandbox = parseSandbox(raw.sandbox, execPath, platform, errors)
+
   // The section is an entry of its own: an error in it, or a clash with a server of the same key, makes only
   // `workspace` invalid, and the other servers start.
   let workspace: WorkspaceConfig | undefined
   if (raw.workspace !== undefined) {
     const sectionErrors: string[] = []
-    const parsed = parseWorkspace(raw.workspace, env, platform, sectionErrors)
+    const parsed = parseWorkspace(raw.workspace, env, platform, sandbox.callTimeoutSeconds, sectionErrors)
     if (servers.has(WORKSPACE_KEY as ServerKey))
       servers.set(WORKSPACE_KEY as ServerKey, {
         kind: 'invalid',
@@ -728,7 +826,6 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
     }
   }
 
-  const sandbox = parseSandbox(raw.sandbox, execPath, platform, errors)
   const policy = parsePolicy(raw.policy, errors)
   if (raw.log !== undefined && typeof raw.log !== 'boolean')
     errors.push(`log: must be true or false, not ${JSON.stringify(raw.log)}`)

@@ -16,6 +16,7 @@ import { catalogOf, searchResult, shownShapes, type ServerState } from '../src/c
 import { parseConfig, type Config, type ServerConfig, type ServerKey } from '../src/core/config.ts'
 import { runLogFile, shapesFile } from '../src/core/paths.ts'
 import { guardedText, type Rule } from '../src/core/policy.ts'
+import type { TaskConfig } from '../src/core/task.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
 import { newKept, type Kept } from '../src/core/protocol.ts'
 import { TOOL } from '../src/core/tools.ts'
@@ -2956,7 +2957,7 @@ describe('workspace', () => {
   const dir = (prefix: string) => fs.mkdtempSync(path.join(ROOT, prefix))
 
   /** A real provider over a temp project, linked by connectAll as the running server links it. */
-  const rig = async (t: TestContext, extra: Partial<Options> = {}) => {
+  const rig = async (t: TestContext, extra: Partial<Options> = {}, tasks: readonly TaskConfig[] = []) => {
     const root = fs.realpathSync.native(dir('ws-root-'))
     const outside = fs.realpathSync.native(dir('ws-out-'))
     const secret = `SECRET-${randomBytes(8).toString('hex')}`
@@ -2972,7 +2973,7 @@ describe('workspace', () => {
     }
     const home = fs.realpathSync.native(dir('ws-home-'))
     const binding = await bindWorkspace({
-      workspace: { roots: [{ path: root, write: false }], exclude: [], skip: [] },
+      workspace: { roots: [{ path: root, write: false, ...(tasks.length > 0 && { tasks }) }], exclude: [], skip: [] },
       start: root,
       home,
       configFile: path.join(home, 'c.json'),
@@ -3121,6 +3122,114 @@ describe('workspace', () => {
     )
     assert.match(out.text, /refused: an argument of mcp__workspace__read names/)
     assert.equal(r.lines()[0]?.calls[0]?.ok, false)
+  })
+
+  describe('run_task', () => {
+    const TASK = 'mcp__workspace__run_task'
+    const CHILD = path.join(import.meta.dirname, 'task-child.mjs')
+    const taskOf = (name: string, ...args: string[]): TaskConfig => ({
+      name,
+      command: process.execPath,
+      args: [CHILD, ...args],
+      cwd: [],
+      timeoutSeconds: 10,
+      env: {},
+    })
+    const PROGRAM = `const out = await call("${TASK}", { task: "argv" })\nreturn JSON.parse(out.stdout)`
+    const stamps = () => path.join(fs.mkdtempSync(path.join(ROOT, 'ws-stamp-')), 'stamp.log')
+
+    test('it asks by default, runs after the person accepts, and its result is wrapped as untrusted', async t => {
+      const r = await rig(t, { policy: [] }, [taskOf('argv', 'argv', 'a && echo INJECTED')])
+      if (r === undefined) return
+      const out = await r.run(PROGRAM)
+      assert.equal(out.isError, false, out.text)
+      assert.deepEqual(r.asked, [[TASK]])
+      assert.ok(hostMark(out.text)?.inside.includes('a && echo INJECTED'), out.text)
+      assert.equal(r.ctx.shapes.size, 0, 'a run that read task output learns no shape')
+      assert.deepEqual(
+        r.lines()[0]?.calls.map(c => [c.tool, c.decision, c.ok]),
+        [[TASK, 'ask-approved', true]],
+      )
+    })
+
+    test('a decline runs no task', async t => {
+      const log = stamps()
+      const r = await rig(t, { policy: [], answer: 'decline' }, [taskOf('stamp', 'stamp', log, '1')])
+      if (r === undefined) return
+      const out = await r.run(`return await call("${TASK}", { task: "stamp" })`)
+      assert.match(out.text, /the program did not run, because the person did not approve/)
+      assert.deepEqual(r.asked, [[TASK]])
+      await new Promise(resolve => setTimeout(resolve, 150))
+      assert.equal(fs.existsSync(log), false, 'no child ran')
+    })
+
+    test('a client that cannot ask is refused, and no task runs', async t => {
+      const log = stamps()
+      const r = await rig(t, { policy: [], canAsk: false }, [taskOf('stamp', 'stamp', log, '1')])
+      if (r === undefined) return
+      const out = await r.run(`return await call("${TASK}", { task: "stamp" })`)
+      assert.match(out.text, /this MCP client cannot ask the person/)
+      assert.deepEqual(r.asked, [])
+      await new Promise(resolve => setTimeout(resolve, 150))
+      assert.equal(fs.existsSync(log), false, 'no child ran')
+    })
+
+    test('*, mcp__* and mcp__workspace__* allow rules do not allow it, and the exact name does', async t => {
+      for (const match of ['*', 'mcp__*', 'mcp__workspace__*']) {
+        const r = await rig(t, { policy: rules([match, 'allow']), answer: 'decline' }, [taskOf('argv', 'argv')])
+        if (r === undefined) return
+        await r.run(PROGRAM)
+        assert.deepEqual(r.asked, [[TASK]], `${match} still asks`)
+      }
+      const exact = await rig(t, { policy: rules([TASK, 'allow']) }, [taskOf('argv', 'argv', 'x')])
+      if (exact === undefined) return
+      const out = await exact.run(PROGRAM)
+      assert.equal(out.isError, false, out.text)
+      assert.deepEqual(exact.asked, [], 'no prompt under the exact rule')
+      assert.ok(out.text.includes('"x"'))
+      assert.equal(exact.lines()[0]?.calls[0]?.decision, 'allow')
+    })
+
+    test('a name built at run time is refused with a wildcard allow, runs with the exact rule, and a deny wins', async t => {
+      const built = `const name = ["mcp", "workspace", "run_task"].join("__")\ntry { return await call(name, { task: "argv" }) } catch (e) { return e.message }`
+      const wild = await rig(t, { policy: rules(['mcp__workspace__*', 'allow']) }, [taskOf('argv', 'argv')])
+      if (wild === undefined) return
+      const refused = await wild.run(built)
+      assert.match(refused.text, /not approved: an allow rule for mcp__workspace__run_task must name it exactly/)
+      assert.deepEqual(wild.asked, [], 'a built name is never asked')
+      const exact = await rig(t, { policy: rules([TASK, 'allow']) }, [taskOf('argv', 'argv', 'y')])
+      if (exact === undefined) return
+      assert.ok((await exact.run(built)).text.includes('"stdout"'))
+      const denied = await rig(t, { policy: rules([TASK, 'deny'], ['*', 'allow']) }, [taskOf('argv', 'argv')])
+      if (denied === undefined) return
+      assert.match((await denied.run(built)).text, /denied by policy\[0\]/)
+      assert.match(
+        (await denied.run(PROGRAM)).text,
+        /the program did not run, because the toolscript-mcp policy denies/,
+      )
+    })
+
+    test('a task that runs too long is ended at its time limit and the program gets timedOut', async t => {
+      const dir = fs.mkdtempSync(path.join(ROOT, 'ws-tree-'))
+      const slow = { ...taskOf('hang', 'tree', dir), timeoutSeconds: 1 }
+      const r = await rig(t, { policy: rules([TASK, 'allow']), callSeconds: 10 }, [slow])
+      if (r === undefined) return
+      const out = await r.run(`const r = await call("${TASK}", { task: "hang" })\nreturn [r.timedOut, r.exitCode]`)
+      assert.equal(out.isError, false, out.text)
+      assert.ok(hostMark(out.text)?.inside.replace(/\s/g, '') === '[true,null]', out.text)
+      const pid = Number(fs.readFileSync(path.join(dir, 'grand.pid'), 'utf8'))
+      const end = Date.now() + 6000
+      const alive = () => {
+        try {
+          process.kill(pid, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+      while (alive() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 50))
+      assert.equal(alive(), false, 'the grandchild is gone')
+    })
   })
 
   test('search_tools shows each tool with its result type and the read-only mark, and an unavailable root shows its reason whole', async t => {

@@ -665,7 +665,11 @@ describe('a change of the policy in the config file', () => {
   const eachStepOnlyTightens = (guards: Guards) => {
     const { bridges } = guards
     // With the built-in Workspace on, its read tools run with no rule: they join the names and the matches.
-    const workspace = guards.workspace ? ['mcp__workspace__read', 'mcp__workspace__list', 'mcp__workspace__edit'] : []
+    // run_task is the exec class: an allow rule that is not its exact name is skipped for it.
+    const EXEC = 'mcp__workspace__run_task'
+    const workspace = guards.workspace
+      ? ['mcp__workspace__read', 'mcp__workspace__list', 'mcp__workspace__edit', EXEC]
+      : []
     const MATCHES = [
       'mcp__a__x',
       'mcp__a__*',
@@ -675,7 +679,7 @@ describe('a change of the policy in the config file', () => {
       'mcp__b__y',
       'mcp__a__x*',
       '*',
-      ...(guards.workspace ? ['mcp__workspace__*', 'mcp__workspace__read'] : []),
+      ...(guards.workspace ? ['mcp__workspace__*', 'mcp__workspace__read', EXEC] : []),
     ]
     // Lowered to ask, an allow rule over several servers can decide a tool of a bridge that it skipped.
     const ONE_SERVER = [
@@ -717,7 +721,10 @@ describe('a change of the policy in the config file', () => {
       if (kind === 2 && raised.length > 0) {
         const i = raised[next(raised.length)]!
         const { match, action } = p[i]!
-        const toAsk = action === 'allow' && next(2) === 0 && (bridges.size === 0 || ONE_SERVER.includes(match))
+        // Lowered to ask, an allow rule that run_task skips would decide it: only the exact name can be lowered.
+        const execSkips = guards.workspace && match !== EXEC && matches(match, EXEC)
+        const toAsk =
+          action === 'allow' && next(2) === 0 && !execSkips && (bridges.size === 0 || ONE_SERVER.includes(match))
         return p.with(i, rule(match, toAsk ? 'ask' : 'deny'))
       }
       return p.toSpliced(at, 0, rule(MATCHES[next(MATCHES.length)]!, 'deny'))

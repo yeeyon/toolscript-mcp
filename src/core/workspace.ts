@@ -3,6 +3,8 @@
 // root and the binding of a session to its root. The code that touches files is in src/host/workspace/.
 // The table holds a class for each tool, so a later tool is one more entry (decision 144).
 
+import type { TaskConfig } from './task.ts'
+
 /** The server key of the built-in Workspace. With a `workspace` section, `mcpServers` cannot use it. */
 export const WORKSPACE_KEY = 'workspace'
 
@@ -337,7 +339,12 @@ export const bindRoot = (roots: readonly RealRoot[], start: string, platform: st
 
 /** The `workspace` section of the config, checked by `parseConfig`. */
 export type WorkspaceConfig = {
-  readonly roots: readonly { readonly path: string; readonly write: boolean }[]
+  /** `tasks`: the named tasks of the entry, present only when the entry has some (`run_task`). */
+  readonly roots: readonly {
+    readonly path: string
+    readonly write: boolean
+    readonly tasks?: readonly TaskConfig[]
+  }[]
   /** Added to the built-in exclusions. */
   readonly exclude: readonly string[]
   /** The folder names that `list` and `search` do not enter. */
@@ -347,8 +354,11 @@ export type WorkspaceConfig = {
 // ---------------------------------------------------------------------------------------------------------------
 // The tools
 
-/** What a tool may do. The policy gives each class its default (policy.ts). A later class is one more entry. */
-export type ToolClass = 'read'
+/**
+ * What a tool may do. The policy gives each class its default (policy.ts). `read`: runs with no rule. `exec`: runs
+ * project code, so it asks, and only the exact allow rule for its name allows it.
+ */
+export type ToolClass = 'read' | 'exec'
 
 const entryType = { type: 'string', enum: ['file', 'folder', 'link', 'other'] } as const
 
@@ -479,11 +489,54 @@ export const WORKSPACE_TOOLS = {
       required: ['path', 'type'],
     },
   },
+  // Listed only when the root entry of the session has a valid task. The provider adds the task names to the text.
+  run_task: {
+    class: 'exec',
+    description:
+      'Run one named task of this project, such as its tests. The task is fixed in the config: you choose only the name. A non-zero exit code is a result, not an error. One task runs at a time.',
+    inputSchema: {
+      type: 'object',
+      properties: { task: { type: 'string', description: 'The name of the task.' } },
+      required: ['task'],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string' },
+        exitCode: { type: ['integer', 'null'] },
+        signal: { type: ['string', 'null'] },
+        timedOut: { type: 'boolean' },
+        ms: { type: 'integer' },
+        stdout: { type: 'string' },
+        stderr: { type: 'string' },
+        stdoutTruncated: { type: 'boolean' },
+        stderrTruncated: { type: 'boolean' },
+      },
+      required: [
+        'task',
+        'exitCode',
+        'signal',
+        'timedOut',
+        'ms',
+        'stdout',
+        'stderr',
+        'stdoutTruncated',
+        'stderrTruncated',
+      ],
+    },
+  },
 } as const
 
 export type WorkspaceToolName = keyof typeof WORKSPACE_TOOLS
 
 export const WORKSPACE_TOOL_NAMES = Object.keys(WORKSPACE_TOOLS) as WorkspaceToolName[]
+
+/** The full names of the tools of one class, as a program calls them. */
+export const toolsOfClass = (toolClass: ToolClass): string[] =>
+  WORKSPACE_TOOL_NAMES.filter(name => WORKSPACE_TOOLS[name].class === toolClass).map(
+    name => `mcp__${WORKSPACE_KEY}__${name}`,
+  )
 
 /** The class of the tool `tool` (a full name `mcp__workspace__<tool>`), or undefined for any other name. */
 export const workspaceClass = (tool: string): ToolClass | undefined => {
@@ -562,4 +615,11 @@ export const parseSearchInput = (args: unknown): SearchInput => {
 export const parsePathInput = (args: unknown): PathInput => {
   const o = asObject(args, ['path'])
   return { path: text(o, 'path') }
+}
+
+export type TaskInput = { task: string }
+
+export const parseTaskInput = (args: unknown): TaskInput => {
+  const o = asObject(args, ['task'])
+  return { task: text(o, 'task') }
 }
