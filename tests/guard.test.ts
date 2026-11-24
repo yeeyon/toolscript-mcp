@@ -45,13 +45,14 @@ const hit = (args: unknown, f = fake(), cwd = PROJECT, windows = false) =>
   })
 
 describe('the markers', () => {
-  test('are the five folders, never the bare state folder', () => {
+  test('are the six folders, never the bare state folder', () => {
     assert.deepEqual(GUARD_MARKERS, [
       '.toolscript-mcp/hints',
       '.toolscript-mcp/functions',
       '.toolscript-mcp/learned',
       '.toolscript-mcp/oauth',
       '.toolscript-mcp/broker',
+      '.toolscript-mcp/locks',
     ])
   })
 
@@ -132,7 +133,7 @@ describe('a path candidate', () => {
 })
 
 describe('the folders', () => {
-  test('are the five of the home and the project hints, each with the name that a refusal gives', () => {
+  test('are the six of the home and the project hints, each with the name that a refusal gives', () => {
     assert.deepEqual(
       LIST.map(l => l.label),
       [
@@ -141,6 +142,7 @@ describe('the folders', () => {
         '~/.toolscript-mcp/learned',
         '~/.toolscript-mcp/oauth',
         '~/.toolscript-mcp/broker',
+        '~/.toolscript-mcp/locks',
         '.toolscript-mcp/hints',
       ],
     )
