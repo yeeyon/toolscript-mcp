@@ -1272,6 +1272,7 @@ Two sessions never lose an update. A call waits 2 seconds for a lock, then fails
 one older than 30 seconds, is taken over. The lock goes after a failed or cancelled call.
 
 **In-place writes.** Linux writes a temp file in the held folder and renames it, so a failed write leaves the old file.
+The new file keeps the mode, but not the access lists, the extended attributes or another owner of the old file.
 Windows and macOS write in place through the proven handle. A write that fails part way can leave that file damaged, and
 the error names the file. Atomic replace on these systems is a follow-up.
 
@@ -1315,6 +1316,17 @@ says why. On macOS, the CI run of the repo decides if the method works. A macOS 
 Run `toolscript-mcp tools workspace` to list the tools with their policy decision. Run `toolscript-mcp doctor` for one
 line on Workspace: off, the root with its grants and task names, or the reason that it is unavailable. A task that cannot run has its own line. `toolscript-mcp runs` shows the
 Workspace calls of a run. A program or a client config that names the Claude Code bridge still works as before.
+
+### Tested clients
+
+One program did search, read, diff, edit and `run_task` on a test project, with Workspace as the only server and no
+Claude Code bridge. The file bytes, the hash and the task exit code were checked after each run.
+
+| Client | Version | Result |
+| --- | --- | --- |
+| Codex CLI | 0.172.0 | Passed. `codex exec` declines every prompt, so the config held allow rules for `edit` and `run_task`. |
+| Claude Code | 2.1.331 | Passed, with `claude -p --restricted --strict-mcp-config`. |
+| Cursor | | Not tested. |
 
 ## Claude Code as a downstream server
 
