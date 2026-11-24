@@ -129,23 +129,28 @@ type Child = {
 /**
  * Ends the tree of a child: `taskkill /T /F` on Windows, the process group elsewhere. Windows needs a live top process.
  * Elsewhere the group is also ended after the top process exited, so a wrapper that leaves on EOF takes no grandchild
- * that ignores EOF with it. Call it at the exit, when the group id cannot have been reused.
+ * that ignores EOF with it. Call it at the exit, when the group id cannot have been reused. The promise settles when
+ * the kill was sent (on Windows, when `taskkill` ended), so a caller that must know that the tree is gone can wait.
  */
-export const endTree = (proc: ChildProcess): void => {
-  if (proc.pid === undefined) return
+export const endTree = (proc: ChildProcess): Promise<void> => {
+  if (proc.pid === undefined) return Promise.resolve()
   if (process.platform === 'win32') {
-    if (proc.exitCode !== null || proc.signalCode !== null) return
-    nodeSpawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on(
-      'error',
-      () => {},
-    )
-    return
+    if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve()
+    return new Promise(resolve => {
+      const killer = nodeSpawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+      killer.on('error', () => resolve())
+      killer.on('close', () => resolve())
+    })
   }
   try {
     process.kill(-proc.pid, 'SIGKILL')
   } catch {
     proc.kill('SIGKILL')
   }
+  return Promise.resolve()
 }
 
 /** How long a contender waits for the recovery of a stale socket before it gives up. The host polls for 10 s. */

@@ -22,7 +22,16 @@ import {
   rootProblem,
   workspaceClass,
 } from '../src/core/workspace.ts'
-import { NO_GUARDS, decide, onlyTightens, planRun, checkCall, type Guards, type Policy } from '../src/core/policy.ts'
+import {
+  NO_GUARDS,
+  askText,
+  checkCall,
+  decide,
+  onlyTightens,
+  planRun,
+  type Guards,
+  type Policy,
+} from '../src/core/policy.ts'
 import type { ServerKey } from '../src/core/config.ts'
 
 const code = (f: () => unknown): string | undefined => {
@@ -284,10 +293,10 @@ describe('the root of a session', () => {
 })
 
 describe('the tool table', () => {
-  test('lists list, search, read and stat, each of the read class', () => {
-    assert.deepEqual(WORKSPACE_TOOL_NAMES, ['list', 'search', 'read', 'stat'])
+  test('lists list, search, read and stat of the read class, and run_task of the exec class', () => {
+    assert.deepEqual(WORKSPACE_TOOL_NAMES, ['list', 'search', 'read', 'stat', 'run_task'])
     for (const name of WORKSPACE_TOOL_NAMES) {
-      assert.equal(WORKSPACE_TOOLS[name].class, 'read')
+      assert.equal(WORKSPACE_TOOLS[name].class, name === 'run_task' ? 'exec' : 'read')
       assert.equal(WORKSPACE_TOOLS[name].inputSchema.type, 'object')
       assert.equal((WORKSPACE_TOOLS[name].inputSchema as { additionalProperties: boolean }).additionalProperties, false)
       assert.equal(WORKSPACE_TOOLS[name].outputSchema.type, 'object')
@@ -358,8 +367,9 @@ describe('the policy of the built-in Workspace', () => {
   const READ = 'mcp__workspace__read'
 
   test('a read tool runs with no rule while the built-in is on, and asks without it', () => {
-    for (const name of WORKSPACE_TOOL_NAMES)
+    for (const name of WORKSPACE_TOOL_NAMES.filter(n => WORKSPACE_TOOLS[n].class === 'read'))
       assert.deepEqual(decide([], on, `mcp__workspace__${name}`), { action: 'allow' })
+    assert.deepEqual(decide([], on, 'mcp__workspace__run_task'), { action: 'ask' }, 'a task asks by default')
     assert.deepEqual(decide([], NO_GUARDS, READ), { action: 'ask' }, 'a server named workspace gets no default')
     assert.deepEqual(decide([], on, 'mcp__workspace__edit'), { action: 'ask' })
     assert.deepEqual(decide([], on, 'mcp__other__read'), { action: 'ask' })
@@ -398,5 +408,91 @@ describe('the policy of the built-in Workspace', () => {
     assert.equal(onlyTightens(rules([READ, 'deny']), [], on), false)
     assert.equal(onlyTightens([], rules([READ, 'allow']), on), false)
     assert.equal(onlyTightens(rules(['mcp__workspace__*', 'allow'], [READ, 'deny']), rules([READ, 'deny']), on), true)
+  })
+})
+
+describe('the policy of run_task, the exec class', () => {
+  const on: Guards = { bridges: new Set<ServerKey>(), workspace: true }
+  const rules = (...r: [string, 'allow' | 'deny' | 'ask'][]): Policy =>
+    r.map(([match, action], index) => ({ match, action, index }))
+  const TASK = 'mcp__workspace__run_task'
+
+  test('only the exact name allows it: *, mcp__* and mcp__workspace__* are skipped', () => {
+    for (const match of ['*', 'mcp__*', 'mcp__workspace__*', 'mcp__workspace__run_*', 'mcp__*__run_task'])
+      assert.deepEqual(decide(rules([match, 'allow']), on, TASK), { action: 'ask' }, match)
+    assert.equal(decide(rules([TASK, 'allow']), on, TASK).action, 'allow')
+    // The next rule that counts decides: a wildcard allow before an exact deny or ask does not hide it.
+    assert.equal(decide(rules(['*', 'allow'], [TASK, 'deny']), on, TASK).action, 'deny')
+    assert.equal(decide(rules(['mcp__workspace__*', 'allow'], [TASK, 'allow']), on, TASK).action, 'allow')
+    // A wildcard allow still allows the read tools.
+    assert.equal(decide(rules(['mcp__workspace__*', 'allow']), on, 'mcp__workspace__read').action, 'allow')
+  })
+
+  test('a deny rule and an ask rule count, with any match', () => {
+    assert.equal(decide(rules(['mcp__workspace__*', 'deny']), on, TASK).action, 'deny')
+    assert.equal(decide(rules(['mcp__*', 'ask']), on, TASK).action, 'ask')
+    assert.equal(decide(rules(['*', 'deny'], [TASK, 'allow']), on, TASK).action, 'deny')
+  })
+
+  test('a server named workspace has no exec class: its tools follow the rules as any server', () => {
+    assert.equal(decide(rules(['mcp__workspace__*', 'allow']), NO_GUARDS, TASK).action, 'allow')
+  })
+
+  test('the plan asks for it, a name built at run time is refused, and the exact rule lets both run', () => {
+    const call = { tool: TASK, line: 1 }
+    assert.deepEqual(planRun(rules(['*', 'allow']), on, [call], new Set()), {
+      kind: 'run',
+      ask: [TASK],
+      interactive: [],
+    })
+    assert.deepEqual(planRun(rules([TASK, 'allow']), on, [call], new Set()), { kind: 'run', ask: [], interactive: [] })
+    const wildcard = rules(['mcp__workspace__*', 'allow'])
+    const refused = checkCall(wildcard, on, new Set(), TASK, new Set())
+    assert.equal(refused.ok, false)
+    assert.match(
+      !refused.ok ? refused.error : '',
+      /must name it exactly, such as \{"match": "mcp__workspace__run_task"/,
+    )
+    assert.deepEqual(checkCall(wildcard, on, new Set([TASK]), TASK, new Set()), { ok: true }, 'the person approved it')
+    assert.deepEqual(checkCall(rules([TASK, 'allow']), on, new Set(), TASK, new Set()), { ok: true })
+  })
+
+  test('onlyTightens: an allow rule that run_task skips cannot be lowered to ask in front of a deny of it', () => {
+    const before = rules(['mcp__workspace__*', 'allow'], [TASK, 'deny'])
+    // The allow rule is skipped for run_task, so the deny decides. Lowered to ask, the ask rule would decide: looser.
+    assert.equal(decide(before, on, TASK).action, 'deny')
+    const lowered = rules(['mcp__workspace__*', 'ask'], [TASK, 'deny'])
+    assert.equal(decide(lowered, on, TASK).action, 'ask')
+    assert.equal(onlyTightens(before, lowered, on), false)
+    for (const match of ['*', 'mcp__*', 'mcp__workspace__run_*'])
+      assert.equal(
+        onlyTightens(rules([match, 'allow'], [TASK, 'deny']), rules([match, 'ask'], [TASK, 'deny']), on),
+        false,
+        match,
+      )
+    // Lowered to deny, removed, or with a deny inserted, it only tightens.
+    assert.equal(onlyTightens(before, rules(['mcp__workspace__*', 'deny'], [TASK, 'deny']), on), true)
+    assert.equal(onlyTightens(before, rules([TASK, 'deny']), on), true)
+    // The exact allow rule decides the tool, so lowering it to ask only tightens.
+    assert.equal(onlyTightens(rules([TASK, 'allow']), rules([TASK, 'ask']), on), true)
+    // With the built-in off, the same rules lower in place as before.
+    assert.equal(onlyTightens(before, lowered, NO_GUARDS), true)
+  })
+
+  test('the prompt says that a task runs project code with your rights, and names the tasks and the root', () => {
+    const text = askText({ ask: [TASK], interactive: [] }, 'return 1', on, {
+      root: '/work/app',
+      tasks: ['test', 'lint'],
+    })
+    assert.match(
+      text,
+      /- mcp__workspace__run_task\nA task runs project code with your rights\. Nothing contains it\.\nTasks: test, lint\.\nWorkspace root: \/work\/app\n/,
+    )
+    const read = askText({ ask: ['mcp__other__x'], interactive: [] }, 'return 1', on, {
+      root: '/work/app',
+      tasks: ['test'],
+    })
+    assert.doesNotMatch(read, /project code|Tasks:|Workspace root/, 'a prompt with no task names none')
+    assert.doesNotMatch(askText({ ask: [TASK], interactive: [] }, 'return 1', NO_GUARDS, {}), /project code/)
   })
 })

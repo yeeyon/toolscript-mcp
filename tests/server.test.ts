@@ -1497,7 +1497,7 @@ describe('the workspace section', () => {
       [{ roots: [{ path: 'relative/dir' }] }, 'workspace.roots[0].path: must be an absolute path'],
       [{ roots: [{ path: '' }] }, 'workspace.roots[0].path: must be a non-empty string'],
       [{ roots: [{ path: '/a', write: 'yes' }] }, 'workspace.roots[0].write: must be true or false'],
-      [{ roots: [{ path: '/a', tasks: {} }] }, 'workspace.roots[0].tasks: unknown key (known: path, write)'],
+      [{ roots: [{ path: '/a', shell: {} }] }, 'workspace.roots[0].shell: unknown key (known: path, write, tasks)'],
       [{ roots: [5] }, 'workspace.roots[0]: must be an object with "path"'],
       [{ roots: [{ path: '/a' }], extra: 1 }, 'workspace.extra: unknown key (known: roots, exclude, skip)'],
       [{ roots: [{ path: '/a' }], exclude: ['/abs'] }, 'workspace.exclude[0]: must use / between parts'],
@@ -1539,5 +1539,122 @@ describe('the workspace section', () => {
   test('the policy read again at a run never reads the section', () => {
     const next = policyOf(JSON.stringify({ mcpServers: {}, workspace: { roots: [{ path: 'relative' }] }, policy: [] }))
     assert.deepEqual(next, { ok: true, policy: [] })
+  })
+})
+
+describe('the tasks of the workspace section', () => {
+  const withTasks = (tasks: unknown, extra: Record<string, unknown> = {}) => ({
+    mcpServers: { a: { command: 'x' } },
+    ...extra,
+    workspace: { roots: [{ path: '/work/app', tasks }] },
+  })
+  const task = { command: 'node', args: ['--test'], cwd: '.', timeoutSeconds: 30, env: { CI: '1' } }
+
+  test('a task reads every key, and the defaults are no args, the entry as folder and one second under the call limit', () => {
+    const config = ok(withTasks({ test: task, build: { command: 'tsc' }, 'a_b-1': { command: '/usr/bin/make' } }))
+    assert.deepEqual(config.workspace?.roots[0]?.tasks, [
+      { name: 'test', command: 'node', args: ['--test'], cwd: [], timeoutSeconds: 30, env: { CI: '1' } },
+      { name: 'build', command: 'tsc', args: [], cwd: [], timeoutSeconds: 59, env: {} },
+      { name: 'a_b-1', command: '/usr/bin/make', args: [], cwd: [], timeoutSeconds: 59, env: {} },
+    ])
+    assert.equal(config.guards.workspace, true)
+    const folder = ok(withTasks({ t: { command: 'node', cwd: 'packages/app' } }))
+    assert.deepEqual(folder.workspace?.roots[0]?.tasks?.[0]?.cwd, ['packages', 'app'])
+    assert.equal(ok({ mcpServers: {}, workspace: { roots: [{ path: '/a' }] } }).workspace?.roots[0]?.tasks, undefined)
+  })
+
+  test('the default time is 59 seconds, and a time at or over the call limit is kept one second under it', () => {
+    const lower = ok(withTasks({ t: { command: 'node' } }, { sandbox: { callTimeoutSeconds: 20 } }))
+    assert.equal(lower.workspace?.roots[0]?.tasks?.[0]?.timeoutSeconds, 19)
+    const high = ok(
+      withTasks(
+        { t: { command: 'node', timeoutSeconds: 300 } },
+        { sandbox: { timeoutSeconds: 400, callTimeoutSeconds: 300 } },
+      ),
+    )
+    assert.equal(high.workspace?.roots[0]?.tasks?.[0]?.timeoutSeconds, 299)
+  })
+
+  test('expands ${VAR} in the command, the arguments and the variables, and an unset one is an error that names it', () => {
+    const config = ok(withTasks({ t: { command: '${TOOLS}/run', args: ['--k=${KEY}'], env: { TOKEN: '${KEY}' } } }), {
+      TOOLS: '/opt/tools',
+      KEY: 'v1',
+    })
+    const [t] = config.workspace?.roots[0]?.tasks ?? []
+    assert.deepEqual([t?.command, t?.args, t?.env], ['/opt/tools/run', ['--k=v1'], { TOKEN: 'v1' }])
+    const bad = ok(withTasks({ t: { command: 'node', args: ['${NOPE}'] } }))
+    assert.equal(bad.servers.get(key('workspace'))?.kind, 'invalid')
+  })
+
+  test('each error names its key, holds no value of the file, and makes only workspace invalid', () => {
+    const T = 'workspace.roots[0].tasks'
+    const cases: [unknown, string][] = [
+      ['x', `${T}: must be an object of tasks`],
+      [{ 'Bad Name': { command: 'x' } }, `${T}["Bad Name"]: a task name has 1 to 32 characters`],
+      [{ ['a'.repeat(33)]: { command: 'x' } }, `${T}.${'a'.repeat(33)}: a task name has 1 to 32 characters`],
+      [{ t: 5 }, `${T}.t: must be an object with "command"`],
+      [{ t: {} }, `${T}.t.command: must be a non-empty string`],
+      [
+        { t: { command: 'x', shell: true } },
+        `${T}.t.shell: unknown key (known: command, args, cwd, timeoutSeconds, env)`,
+      ],
+      [{ t: { command: './run.sh' } }, `${T}.t.command: must be an absolute path, or a bare command name`],
+      [{ t: { command: 'bin/run' } }, `${T}.t.command: must be an absolute path, or a bare command name`],
+      [{ t: { command: 'a\u0000b' } }, `${T}.t.command: must hold no control character`],
+      [{ t: { command: 'x', args: 'a' } }, `${T}.t.args: must be an array of at most 64 strings`],
+      [{ t: { command: 'x', args: [1] } }, `${T}.t.args[0]: must be a string`],
+      [{ t: { command: 'x', args: ['a\u0000b'] } }, `${T}.t.args[0]: must hold at most 4096 characters and no NUL`],
+      [{ t: { command: 'x', cwd: '../up' } }, `${T}.t.cwd: must be a folder inside the root entry`],
+      [{ t: { command: 'x', cwd: '/abs' } }, `${T}.t.cwd: must be a folder inside the root entry`],
+      [{ t: { command: 'x', cwd: 'a/../b' } }, `${T}.t.cwd: must be a folder inside the root entry`],
+      [{ t: { command: 'x', cwd: 'a\\b' } }, `${T}.t.cwd: must be a folder inside the root entry`],
+      [{ t: { command: 'x', cwd: 7 } }, `${T}.t.cwd: must be a string`],
+      [
+        { t: { command: 'x', timeoutSeconds: 61 } },
+        `${T}.t.timeoutSeconds: must be a whole number of seconds from 1 to 60`,
+      ],
+      [
+        { t: { command: 'x', timeoutSeconds: 0 } },
+        `${T}.t.timeoutSeconds: must be a whole number of seconds from 1 to 60`,
+      ],
+      [{ t: { command: 'x', timeoutSeconds: 1.5 } }, `${T}.t.timeoutSeconds: must be a whole number of seconds`],
+      [
+        { t: { command: 'x', env: { 'A=B': '1' } } },
+        `${T}.t.env["A=B"]: the name must have letters, digits and underscores`,
+      ],
+      [{ t: { command: 'x', env: { A: 1 } } }, `${T}.t.env.A: must be a string`],
+      [
+        Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`t${i}`, { command: 'x' }])),
+        `${T}: must have at most 32 tasks`,
+      ],
+    ]
+    for (const [tasks, error] of cases) {
+      const config = ok(withTasks(tasks))
+      const entry = config.servers.get(key('workspace'))
+      assert.equal(entry?.kind, 'invalid', error)
+      const reasons = entry?.kind === 'invalid' ? entry.errors : []
+      assert.ok(
+        reasons.some(r => r.startsWith(error)),
+        `${error} in ${JSON.stringify(reasons)}`,
+      )
+      assert.equal(config.servers.get(key('a'))?.kind, 'stdio', 'the other servers still start')
+      assert.equal(config.guards.workspace, false)
+    }
+    const secret = ok(withTasks({ t: { command: 'hunter2/run', args: [1], cwd: 'hunter2/../x' } }))
+    assert.ok(!JSON.stringify([...secret.servers]).includes('hunter2'), 'an error shows no value')
+  })
+
+  test('a Windows drive path is an absolute command on Windows only, and a drive-relative one is refused', () => {
+    const at = (tasks: unknown) => ({ mcpServers: {}, workspace: { roots: [{ path: 'C:/work', tasks }] } })
+    const win = ok(at({ t: { command: 'C:/Program Files/nodejs/node.exe' } }), {}, 'win32')
+    assert.equal(win.workspace?.roots[0]?.tasks?.[0]?.command, 'C:/Program Files/nodejs/node.exe')
+    assert.equal(ok(at({ t: { command: 'C:node.exe' } }), {}, 'win32').servers.get(key('workspace'))?.kind, 'invalid')
+    assert.equal(ok(withTasks({ t: { command: 'C:/x/node.exe' } })).servers.get(key('workspace'))?.kind, 'invalid')
+    const colon = ok(at({ t: { command: 'x', cwd: 'a:b' } }), {}, 'win32')
+    assert.equal(
+      colon.servers.get(key('workspace'))?.kind,
+      'invalid',
+      'a colon in a folder name is a stream on Windows',
+    )
   })
 })

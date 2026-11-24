@@ -8,7 +8,7 @@ enforces; the others rely on discipline.
   pinned version. Turn on the pre-commit hook one time per clone: `git config core.hooksPath .githooks`.
   `[test: code.check.mjs]`
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
-  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts`, `lock.ts` and `workspace.ts`. They import no Node module and no host package, so tests call them directly.
+  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts`, `lock.ts`, `workspace.ts` and `task.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
 - `src/host/` holds the code that runs in Node. `tsconfig.host.json` checks it with the Node types.
 - The package runs `dist/host/main.js`, and starts `dist/host/broker.js` on demand when sharing is on (issue #63).
@@ -129,6 +129,16 @@ quotes and the `^` of cmd dropped, hold the
   results are untrusted (`"untrusted": true` on its entry), and its read tools run with no rule only while the section
   is present (`Guards.workspace`). A tool is one entry of `WORKSPACE_TOOLS` and one handler in `provider.ts`.
   `[test: workspace.test.ts, workspace-fs.test.ts (swap hook patterns for every lookup), run.test.ts describe workspace, workspace.e2e.mjs]`
+- A named task of the Workspace (`run_task`, `src/host/workspace/task.ts`) is a fixed program, argument list, folder and
+  environment from the config: the model sends only the name. The spawn is `node:child_process` with no `shell` and never
+  `cross-spawn`, which starts `cmd.exe` for a `.cmd` file, so on Windows a command that is not an `.exe` or `.com` file
+  makes the task invalid. The child gets the variables of `TASK_ENV_NAMES` and the `env` of the task, never any other
+  variable of the server. A task ends with its process tree (`endTree`) at the time limit, at a cancel and at a
+  shutdown: the process group on Linux and macOS, the `taskkill /T` tree on Windows, which misses a process whose parent
+  already exited. One task runs at a time. A task is not contained, and no text may claim it is. `run_task` is the exec
+  class: only an allow rule with its exact name allows it (`counts` and `onlyTightens` in `src/core/policy.ts`), and the
+  prompt names the tasks and says that a task runs project code with the rights of the user.
+  `[test: workspace-task.test.ts (argv, environment, pids gone after a timeout, a cancel and a shutdown), workspace.test.ts, run.test.ts describe run_task, workspace.e2e.mjs]`
 - Every run removes its exchange dir, also after a timeout, a kill or a shutdown.
   `[test: run.test.ts and server.e2e.mjs check the temp dir after the runs]`
 - Never weaken a sandbox layer, the policy check, the guard of hint and function files or the approval of proposals

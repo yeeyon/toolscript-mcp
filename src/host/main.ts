@@ -96,12 +96,15 @@ const workspace =
         configFile: file,
         log,
       })
-if (workspace !== undefined)
+if (workspace !== undefined) {
   log(
     workspace.ok
-      ? `Workspace: root ${workspace.bound.root}, read-only, confined by ${workspace.bound.method}`
+      ? `Workspace: root ${workspace.bound.root}, read-only, confined by ${workspace.bound.method}${workspace.bound.tasks.names.length > 0 ? `, tasks: ${workspace.bound.tasks.names.join(', ')}` : ''}`
       : `Workspace: unavailable: ${workspace.reason}`,
   )
+  if (workspace.ok)
+    for (const { name, reason } of workspace.bound.tasks.invalid) log(`Workspace: task ${name} is invalid: ${reason}`)
+}
 
 const downstream = connectAll(config.servers, version, log, {
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
@@ -130,12 +133,19 @@ const { server, stopRuns } = createServer(
   version,
   log,
   workspace?.ok ? workspace.bound.root : undefined,
+  workspace?.ok ? workspace.bound.tasks.names : undefined,
 )
 
 // A run in flight gets its sandbox killed and its exchange dir removed before the exit.
 let closing: Promise<void> | undefined
 const shutdown = () =>
-  (closing ??= Promise.allSettled([stopRuns(), server.close(), downstream.close()])
+  (closing ??= Promise.allSettled([
+    stopRuns(),
+    server.close(),
+    downstream.close(),
+    // A task ends with its tree before the exit, whatever the other closes wait for.
+    workspace?.ok ? workspace.bound.provider.stopTasks() : undefined,
+  ])
     .then(() => (workspace?.ok ? workspace.bound.provider.close() : undefined))
     .then(() => process.exit(0)))
 

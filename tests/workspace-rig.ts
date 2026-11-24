@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { TaskConfig } from '../src/core/task.ts'
 import { DEFAULT_SKIP } from '../src/core/workspace.ts'
 import { bindWorkspace, type Bound, type BindInput } from '../src/host/workspace/bind.ts'
 
@@ -39,7 +40,9 @@ export type Rig = {
   readonly close: () => Promise<void>
 }
 
-export type RigOptions = Partial<Pick<BindInput, 'hook' | 'limits' | 'platform'>> & {
+export type RigOptions = Partial<Pick<BindInput, 'hook' | 'limits' | 'platform' | 'env'>> & {
+  /** The tasks of each entry, by the path of the entry. */
+  readonly tasks?: Readonly<Record<string, readonly TaskConfig[]>>
   readonly exclude?: readonly string[]
   readonly skip?: readonly string[]
   /** The folder of the session: the root unless set. */
@@ -62,7 +65,11 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
   fs.writeFileSync(config, '{}')
   const binding = await bindWorkspace({
     workspace: {
-      roots: (options.roots ?? [root]).map(p => ({ path: p, write: false })),
+      roots: (options.roots ?? [root]).map(p => ({
+        path: p,
+        write: false,
+        ...(options.tasks?.[p] !== undefined && { tasks: options.tasks[p] }),
+      })),
       exclude: options.exclude ?? [],
       skip: options.skip ?? DEFAULT_SKIP,
     },
@@ -73,6 +80,7 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
     ...(options.hook !== undefined && { hook: options.hook }),
     ...(options.limits !== undefined && { limits: options.limits }),
     ...(options.platform !== undefined && { platform: options.platform }),
+    ...(options.env !== undefined && { env: options.env }),
   })
   if (!binding.ok) {
     rm(home)

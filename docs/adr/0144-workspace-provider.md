@@ -57,8 +57,9 @@ The policy reload of each run never reads it, so no reload can widen a root, a w
 ```
 
 - `roots`: 1 to 16 entries. `path` is absolute and must be a folder at the start. `write` is `false` by default.
-- `tasks`: names of 1 to 32 characters from `a-z`, `0-9`, `-` and `_`. Only `command` is required. Pull request A
-  reads `path` and `write` only, so `tasks` is an unknown key there, and `write: true` has no tool to enable yet.
+- `tasks`: names of 1 to 32 characters from `a-z`, `0-9`, `-` and `_`, at most 32 for an entry. Only `command` is
+  required. Pull request A reads `path` and `write` only, so `tasks` is an unknown key there, and `write: true` has no
+  tool to enable yet. Pull request C reads `tasks`. See [Tasks](#tasks).
 - `exclude`: globs of paths that no tool reads, lists or writes, added to the built-in list. No key removes a built-in
   exclusion. A glob with no `/` matches the name of any part, at any depth. A glob with `/` matches the path from the
   root, and a folder that it names takes each path below it. Up to 64 globs of 200 characters, with at most 6 wildcards.
@@ -272,11 +273,42 @@ A write in place is not atomic. If it fails part way, the error names the file a
 - `cwd` is relative to the `path` of the root entry and must be a proven folder inside it.
 - The child gets a short list of variables, such as `PATH`, the home and temp folders and `SystemRoot`, plus `env` of the task.
   No other variable of the server reaches it.
-- `timeoutSeconds` is 60 by default. A value over `sandbox.callTimeoutSeconds` is a config error.
-  At the time limit, a cancel or a shutdown, the provider ends the whole process tree.
-- One task runs at a time in a session. Each stream keeps the first 64 KiB and the last 192 KiB.
+- `timeoutSeconds` is 60 by default, or `sandbox.callTimeoutSeconds` when that is lower.
+  A value over `sandbox.callTimeoutSeconds` is a config error.
+  The limit that applies is at most one second under `sandbox.callTimeoutSeconds`, so the task timer fires first.
+  At the time limit, a cancel or a shutdown, the provider ends the process tree: on Linux and macOS the process group,
+  on Windows the tree that `taskkill /T` walks. On Windows a process whose parent already exited can outlive it. A Job
+  Object would close the gap but needs a native helper, so the claim is narrower instead.
+- One task runs at a time in a session. A second call waits for its turn, and a call that ends while it waits starts
+  nothing. Each stream keeps the first 64 KiB and the last 192 KiB, with a note of the cut bytes between them.
   A non-zero exit code is data, not an error. An unknown task fails and lists the task names.
 - A task runs project code with the rights of the user. The prompt and the README say so. No text claims containment.
+
+Decisions that the code made while it built pull request C (this section holds them, so the ADR matches the code):
+
+- Two kinds of problem. A task whose text is wrong (a name, an unknown key, a type, a `timeoutSeconds` over the limit, a
+  `command` that is neither absolute nor a bare name, a `cwd` that is not a relative path) is a config error, and it makes
+  the entry `workspace` invalid. A task that parses but cannot start (a command that `PATH` does not hold, a Windows
+  command that is not an `.exe` or `.com` file, a command that is not executable, a `cwd` that is missing, excluded or
+  behind a link) is invalid alone. It has a reason in our own text. `doctor` and the server log show it, `run_task` names
+  it when it is called, and the other tasks run. With no valid task, `run_task` is not listed.
+- The tasks of a session are those of the entry that the root is in. `cwd` is relative to that entry, also when the session
+  root is a folder inside it. The server proves `cwd` at the start and again before each run.
+- `PATH` is the one of the server. A relative entry in it is dropped. On Windows the extensions of `PATHEXT` are tried in
+  order for each folder, so a `.cmd` file that comes first in `PATH` order makes the task invalid and no later `.exe`
+  takes its place.
+- The list of variables: on Windows `PATH`, `PATHEXT`, `SystemRoot`, `SystemDrive`, `windir`, `ComSpec`, the account and
+  home variables, the program folders and the temp folders. Elsewhere `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`,
+  `LC_CTYPE`, `TMPDIR` and `TZ`. The system adds a few variables to each process by itself (on Windows `LOGONSERVER`
+  and `USERDOMAIN`), and no code of ours can remove them. `${NAME}` in `command`, `args` and `env` takes a variable of the
+  server by the choice of the person who wrote the config.
+- At a timeout the result has `timedOut: true`, `exitCode: null` and `signal` of the kill. At a cancel the call fails with
+  `cancelled`. At a shutdown the provider ends the task first and refuses each later call.
+- The tree ends with the process group outside Windows, and with `taskkill /T /F` on Windows, which needs the top process
+  to be alive. After the top process exits, the streams get 1 second to close. Then the group ends on Linux and macOS.
+  On Windows a process that the task left behind after its top process exited stays, and the README says so.
+- The exec class: the prompt has one line that a task runs project code with the rights of the user and that nothing
+  contains it, one line with the task names, and one line with the session root.
 
 ## Policy defaults
 

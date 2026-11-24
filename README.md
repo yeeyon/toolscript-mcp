@@ -1102,11 +1102,11 @@ code. Read [SECURITY.md](SECURITY.md).
   your client. Then send a program that reads the result.
 - The Claude Code bridge starts another process. It adds memory use, and `cwd` does not restrict file or shell access.
 - The Codex bench is a [test plan](bench/CODEX.md). No Codex performance results are published in this repo.
-- Workspace reads files only. It has no edit tool and no way to run a test yet. See [Workspace](#workspace).
+- Workspace reads files and runs the named tasks that you put in the config. A task is not contained. See [Named tasks](#named-tasks).
 
 ## Workspace
 
-Workspace is a built-in server that reads the files of one project folder. It runs inside toolscript-mcp, so it needs
+Workspace is a built-in server that reads the files of one project folder and runs its named tasks. It runs inside toolscript-mcp, so it needs
 no Claude Code and no other process. Its tools are named `mcp__workspace__<tool>`, and a program calls them as it calls
 any tool. It is off by default.
 
@@ -1125,7 +1125,7 @@ that name.
 }
 ```
 
-- `roots` holds 1 to 16 entries. Each `path` is absolute and must be a folder that exists. `write` is read, and it has no effect yet.
+- `roots` holds 1 to 16 entries. Each `path` is absolute and must be a folder that exists. `write` is read, and it has no effect yet. `tasks` holds the [named tasks](#named-tasks) of the entry.
 - `exclude` holds globs of paths that no tool reads or shows. They add to the built-in list below.
 - `skip` holds the folder names that `list` and `search` do not enter. It replaces the default list: `node_modules`, `dist`, `build`, `target`, `vendor`, `coverage`, `.venv`, `venv` and `__pycache__`. A call can still name such a folder in `path`.
 
@@ -1157,6 +1157,7 @@ access alone. Workspace refuses a root in these cases, and the reason names the 
 | `search` | Finds literal text in the text files under a folder. It returns the path, line and column of each match. |
 | `read` | Reads one text file with its line ends as they are. It returns the text, its encoding and the `sha256` of its bytes. |
 | `stat` | Tells if a path is a file, a folder, something else or missing. |
+| `run_task` | Runs one [named task](#named-tasks) from the config. It exists only when the entry of the root has a valid task. It asks first. |
 
 Paths in arguments and results are relative to the root and use `/`. Each failed call throws in the program. The message
 starts with a code, such as `excluded`, `link`, `hard-link`, `bad-path`, `too-large`, `binary` or `not-found`.
@@ -1172,6 +1173,60 @@ starts with a code, such as `excluded`, `link`, `hard-link`, `bad-path`, `too-la
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8. `search` skips these files and files over 1 MiB, and counts them in `skipped`.
 - `search` and `list` stop after they visit 20,000 names, of any kind, or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. A cancel ends a `search` within one second.
 - `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
+
+### Named tasks
+
+A task is a fixed command that you write in the config, for example your test command. The model sends only the name of
+the task. It can never choose the program, the arguments, the folder or the variables. A task is how a program checks
+its own change, for example after it edits a file.
+
+```json
+{
+  "workspace": {
+    "roots": [
+      {
+        "path": "/home/me/app",
+        "tasks": {
+          "test": { "command": "node", "args": ["--test"], "timeoutSeconds": 60, "env": { "CI": "1" } },
+          "lint": { "command": "node", "args": ["scripts/lint.mjs"], "cwd": "packages/app" }
+        }
+      }
+    ]
+  }
+}
+```
+
+- A task name has 1 to 32 characters from `a-z`, `0-9`, `-` and `_`. An entry has at most 32 tasks.
+- `command` is needed. It is an absolute path, or a bare name that toolscript-mcp looks up on its `PATH` one time, at the start.
+- `args` is a list of strings. `cwd` is a folder relative to the `path` of the entry, `.` by default. It must exist, and it can have no link on the way.
+- `timeoutSeconds` is 60 by default. A value over `sandbox.callTimeoutSeconds` is a config error. The limit that applies
+  is at most one second under `sandbox.callTimeoutSeconds`, which is 59 seconds with the default call limit. So the
+  program usually sees `timedOut` and not a cancel. A process that keeps the output open after the task ends can hold
+  the call. The program then sees a cancel at the call limit.
+- `env` holds the variables of the task. The child gets only these, and a short list of variables of the server: `PATH`, the home and temp folders, and `SystemRoot` on Windows. No other variable of the server reaches it.
+- `${NAME}` in `command`, `args` and `env` takes the value of a variable of the server, as it does in a server entry.
+
+The task list of one session is the list of the entry that the root is in. A session whose entry has no task has no
+`run_task` tool and cannot run a task of another entry. A task that cannot run, for example a command that `PATH` does
+not hold, is listed by `toolscript-mcp doctor` with the reason. The other tasks still run.
+
+How a task runs:
+
+- There is no shell. The program starts with the arguments as you wrote them, and standard input is closed. `a && echo x` is one argument.
+- Each stream keeps the first 64 KiB and the last 192 KiB, and the result sets `stdoutTruncated` or `stderrTruncated`.
+- A non-zero exit code is a result, not an error. At the time limit, `timedOut` is `true`.
+- One task runs at a time in a session. A second call waits for the first.
+- At the time limit, at a cancel and at a shutdown, toolscript-mcp ends the process tree of the task. On Linux and
+  macOS it ends the process group. On Windows it ends the tree that `taskkill /T` walks. A process whose parent
+  already exited can outlive the time limit, a cancel or a shutdown.
+
+#### Set a task up safely
+
+- A task runs project code with your rights. Nothing contains it. The prompt says so each time, and this page does not claim more.
+- By default each program that calls `run_task` asks you first. Only an `allow` rule with the exact name `mcp__workspace__run_task` skips the prompt. The rules `*`, `mcp__*` and `mcp__workspace__*` do not allow it. A client that cannot ask gets no task without that rule.
+- Write only commands that you trust. A test command runs the code of the project, and that code can read, change and send what your account can reach.
+- On Windows, a `.cmd`, `.bat` or `.ps1` file cannot be a command: a shell must parse it. Set `command` to `node` and give the script as the first argument.
+- A background process that a task leaves behind is ended with the task on Linux and macOS. On Windows it can stay when the task has already exited.
 
 ### How a file is opened
 
@@ -1195,12 +1250,13 @@ says why. On macOS, the CI run of the repo decides if the method works. A macOS 
 - Both cases need a process of another account, or a process with fewer rights. Code that runs as you can read the files itself.
 - Give Workspace a root that only your account can write. On Windows, `toolscript-mcp doctor` reads the access rules of the root and warns when another account can write.
 - A program that Workspace feeds with file text can send that text to any other tool that the policy allows. Keep the policy narrow for a root with private files.
-- A tool of another server can write the config. A new root or grant applies at the next start, as a new policy does.
+- A tool of another server can write the config. A new root, grant or task applies at the next start, as a new policy does.
+- A task is not confined to the root. It has the rights of your account, so it can read or write any file that you can.
 
 ### Check it
 
-Run `toolscript-mcp tools workspace` to list the four tools with their policy decision. Run `toolscript-mcp doctor` for one
-line on Workspace: off, the root and its grants, or the reason that it is unavailable. `toolscript-mcp runs` shows the
+Run `toolscript-mcp tools workspace` to list the tools with their policy decision. Run `toolscript-mcp doctor` for one
+line on Workspace: off, the root with its grants and task names, or the reason that it is unavailable. A task that cannot run has its own line. `toolscript-mcp runs` shows the
 Workspace calls of a run. A program or a client config that names the Claude Code bridge still works as before.
 
 ## Claude Code as a downstream server

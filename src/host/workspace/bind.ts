@@ -19,6 +19,7 @@ import {
 } from '../../core/workspace.ts'
 import { openConfined, type Hook, type Method } from './confined.ts'
 import { createProvider, type Provider, type ProviderOptions } from './provider.ts'
+import { createTaskRunner, resolveTasks, type InvalidTask, type TaskRunner, type TaskSet } from './task.ts'
 
 const realpathNative = promisify(fs.realpath.native)
 
@@ -34,6 +35,8 @@ export type Bound = {
   readonly write: boolean
   readonly method: Method
   readonly provider: Provider
+  /** The tasks of the entry that the root is in: the names that can run, and the ones that cannot, with the reason. */
+  readonly tasks: { readonly names: readonly string[]; readonly invalid: readonly InvalidTask[] }
 }
 
 export type Binding = { readonly ok: true; readonly bound: Bound } | { readonly ok: false; readonly reason: string }
@@ -48,6 +51,8 @@ export type BindInput = {
   readonly platform?: string
   readonly hook?: Hook
   readonly limits?: ProviderOptions['limits']
+  /** The environment of the server: its `PATH` finds the command of a task, and a short list of it reaches the task. */
+  readonly env?: Readonly<Record<string, string | undefined>>
 }
 
 const real = (file: string): Promise<string> => realpathNative(file)
@@ -61,6 +66,7 @@ export const bindWorkspace = async ({
   platform = process.platform,
   hook,
   limits,
+  env = process.env,
 }: BindInput): Promise<Binding> => {
   const refuse = (reason: string): Binding => ({ ok: false, reason })
   const homeReal = await real(home).catch(() => home)
@@ -84,17 +90,57 @@ export const bindWorkspace = async ({
   try {
     const confined = await openConfined(bound.root, { platform, ...(hook !== undefined && { hook }) })
     const forbidden = [await real(configFile).catch(() => path.resolve(configFile)), appPath(homeReal)]
-    const provider = createProvider({
+    const excluded = makeExcluder(bound.root, workspace.exclude, forbidden)
+    // The tasks of the entry that the root is in. A session whose entry has none runs none, and the tasks of another
+    // entry are never looked at.
+    const entry = roots[bound.index]!
+    const configured = workspace.roots[bound.index]!.tasks ?? []
+    let own: Awaited<ReturnType<typeof openConfined>> | undefined
+    let set: TaskSet = { valid: [], invalid: [] }
+    let tasks: TaskRunner | undefined
+    if (configured.length > 0) {
+      // The folder of a task is relative to the entry. The root of the session can be a folder inside the entry.
+      own = entry.path === bound.root ? undefined : await openConfined(entry.path, { platform })
+      const proofFs = own ?? confined
+      const entryExcluded = own === undefined ? excluded : makeExcluder(entry.path, workspace.exclude, forbidden)
+      set = await resolveTasks({
+        tasks: configured,
+        entry: entry.path,
+        source: env,
+        platform,
+        proof: async parts => {
+          const dir = await proofFs.dir(parts)
+          try {
+            if (entryExcluded(dir.parts)) throw new WorkspaceError('excluded', 'the path is excluded from Workspace')
+            return dir.parts
+          } finally {
+            await dir.close()
+          }
+        },
+      })
+      tasks = createTaskRunner(set)
+    }
+    const made = createProvider({
       confined,
-      excluded: makeExcluder(bound.root, workspace.exclude, forbidden),
+      excluded,
       skip: workspace.skip,
       windows: platform === 'win32',
       log,
       ...(limits !== undefined && { limits }),
+      ...(tasks !== undefined && { tasks }),
     })
+    // The handle of an entry other than the root closes with the provider.
+    const provider: Provider =
+      own === undefined ? made : { ...made, close: async () => (await made.close(), await own.close()) }
     return {
       ok: true,
-      bound: { root: bound.root, write: roots[bound.index]!.write, method: confined.method, provider },
+      bound: {
+        root: bound.root,
+        write: entry.write,
+        method: confined.method,
+        provider,
+        tasks: { names: set.valid.map(t => t.name), invalid: set.invalid },
+      },
     }
   } catch (err) {
     if (err instanceof WorkspaceError) return refuse(err.message)

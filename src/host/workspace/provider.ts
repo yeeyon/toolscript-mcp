@@ -20,6 +20,7 @@ import {
   parseListInput,
   parsePathInput,
   parseSearchInput,
+  parseTaskInput,
   pathParts,
   showPath,
   type Excluder,
@@ -29,9 +30,12 @@ import {
   type WorkspaceToolName,
 } from '../../core/workspace.ts'
 import { readCapped, type Confined, type Dir, type Kind } from './confined.ts'
+import type { TaskRunner } from './task.ts'
 
 export type ProviderOptions = {
   readonly confined: Confined
+  /** The tasks of the root entry of the session. `run_task` is listed only when one of them is valid. */
+  readonly tasks?: TaskRunner
   readonly excluded: Excluder
   /** The folder names that `list` and `search` do not enter. */
   readonly skip: readonly string[]
@@ -47,6 +51,8 @@ export type Provider = {
   readonly serve: () => Promise<Transport>
   /** The calls that run now. A test waits for 0 after a cancel. */
   readonly inFlight: () => number
+  /** Ends the task that runs, with its tree, and refuses each later task. The shutdown of the host calls it first. */
+  readonly stopTasks: () => Promise<void>
   readonly close: () => Promise<void>
 }
 
@@ -300,11 +306,38 @@ export const createProvider = (options: ProviderOptions): Provider => {
     }
   }
 
-  const run: Record<WorkspaceToolName, (args: unknown, signal: AbortSignal) => Promise<unknown>> = {
+  const runner = options.tasks !== undefined && options.tasks.names.length > 0 ? options.tasks : undefined
+
+  const run: Partial<Record<WorkspaceToolName, (args: unknown, signal: AbortSignal) => Promise<unknown>>> = {
     list: (args, signal) => list(parseListInput(args), signal),
     search: (args, signal) => search(parseSearchInput(args), signal),
     read: args => read(parsePathInput(args)),
     stat: args => stat(parsePathInput(args)),
+    // Only a root entry with a valid task has the tool: a session whose entry has none runs no task.
+    ...(runner !== undefined && { run_task: (args, signal) => runner.run(parseTaskInput(args).task, signal) }),
+  }
+
+  /** The tool as `tools/list` shows it. `run_task` names the tasks, and says what a task is. */
+  const described = (name: WorkspaceToolName) => {
+    const { description, inputSchema, outputSchema, class: toolClass } = WORKSPACE_TOOLS[name]
+    if (toolClass === 'exec')
+      return {
+        name,
+        description: `${description} Tasks: ${runner?.names.join(', ') ?? ''}.`,
+        inputSchema: {
+          ...inputSchema,
+          properties: { task: { type: 'string', enum: runner?.names ?? [], description: 'The name of the task.' } },
+        },
+        outputSchema,
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      }
+    return {
+      name,
+      description,
+      inputSchema,
+      outputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    }
   }
 
   const makeServer = (): Server => {
@@ -313,23 +346,15 @@ export const createProvider = (options: ProviderOptions): Provider => {
       { capabilities: { tools: {} } },
     )
     server.setRequestHandler(ListToolsRequestSchema, () => ({
-      tools: WORKSPACE_TOOL_NAMES.map(name => {
-        const { description, inputSchema, outputSchema } = WORKSPACE_TOOLS[name]
-        return {
-          name,
-          description,
-          inputSchema,
-          outputSchema,
-          annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        }
-      }) as never,
+      tools: WORKSPACE_TOOL_NAMES.filter(name => run[name] !== undefined).map(described) as never,
     }))
     server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => {
       const fail = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true })
-      if (!Object.hasOwn(run, params.name)) return fail('bad-input: unknown tool')
+      const handler = Object.hasOwn(run, params.name) ? run[params.name as WorkspaceToolName] : undefined
+      if (handler === undefined) return fail('bad-input: unknown tool')
       running++
       try {
-        const result = await run[params.name as WorkspaceToolName](params.arguments ?? {}, extra.signal)
+        const result = await handler(params.arguments ?? {}, extra.signal)
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           structuredContent: result as Record<string, unknown>,
@@ -358,7 +383,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
       return client
     },
     inFlight: () => running,
+    stopTasks: async () => void (await options.tasks?.stop()),
     close: async () => {
+      await options.tasks?.stop()
       await Promise.allSettled([...servers].map(s => s.close()))
       await confined.close()
     },
