@@ -68,47 +68,15 @@ The model reads 56 characters, not the 5,000 characters of the two pages. The or
 
 You need Node 22.13 or later and npm. Run `node --version` to check.
 
-To write a config from the servers that your clients have now, run `npx -y toolscript-mcp init`. Then add toolscript-mcp
-to your client. Use the server name `toolscript` and an absolute path for `--config`.
+To write a config from the servers that your clients have now, run `npx -y toolscript-mcp init`. It prints the path that it
+wrote (`Wrote <file>.`) and the command that adds toolscript-mcp to your client, with that path. Run the printed
+command, or use that path in the steps below. If you write the config yourself, give the absolute path.
 
-Claude Code on Linux and macOS:
+Then add toolscript-mcp to your client with the server name `toolscript`. The [Client setup](README.md#client-setup)
+section of the README has the `claude mcp add` command for Linux, macOS and Windows PowerShell. It also has the JSON
+for Claude Desktop and Cursor, and the TOML for Codex. On Windows, use `cmd /c npx`. In PowerShell, keep the quotes around `--`.
 
-```sh
-claude mcp add --scope user toolscript '--' npx -y toolscript-mcp --config "/absolute/path/to/config.json"
-```
-
-Claude Code on Windows, in PowerShell:
-
-```powershell
-claude mcp add --scope user toolscript '--' cmd /c npx -y toolscript-mcp --config "C:/tools/toolscript-config.json"
-```
-
-Keep the quotes around `'--'`. The PowerShell `claude.ps1` shim drops a bare `--`.
-
-Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "toolscript": {
-      "command": "npx",
-      "args": ["-y", "toolscript-mcp", "--config", "/absolute/path/to/config.json"]
-    }
-  }
-}
-```
-
-Codex (`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.toolscript]
-command = "npx"
-args = ["-y", "toolscript-mcp", "--config", "/absolute/path/to/config.json"]
-default_tools_approval_mode = "approve"
-```
-
-- On Windows, in the JSON and the TOML, set the command to `cmd` and start the arguments with `"/c", "npx"`.
-- Keep `default_tools_approval_mode = "approve"` in Codex. Without it, `codex exec` refuses every MCP call.
+- Keep `default_tools_approval_mode = "approve"` in the Codex entry. Without it, `codex exec` refuses every MCP call.
   toolscript-mcp still checks its own policy on each call.
 - If you keep the config at the default path, you can leave out `--config`. See [The config file](README.md#the-config-file).
 
@@ -146,12 +114,14 @@ The new entry reads the same config and the same tokens, so you change only the 
 3. Replace the entry with the npm command and the same config path:
 
    ```sh
-   claude mcp remove --scope user toolscript
-   claude mcp add --scope user toolscript '--' npx -y toolscript-mcp --config "/path/to/config.json"
+   claude mcp remove --scope <scope> toolscript
+   claude mcp add --scope <scope> -e NAME=value toolscript '--' npx -y toolscript-mcp --config "/path/to/config.json"
    ```
 
-   On Windows, use the PowerShell form of the [first section](#how-do-i-install-and-update-it-from-npm).
-   Keep the environment variables of the old entry, such as `TOOLSCRIPT_CONFIG`. Use the same scope.
+   Use the scope that `claude mcp get toolscript` shows for the old entry. Add one `-e NAME=value` for each environment
+   variable of the old entry, such as `TOOLSCRIPT_CONFIG`. Leave out `-e` if the entry has none.
+   `claude mcp get toolscript` shows the variables.
+   On Windows, use the PowerShell form in [Client setup](README.md#client-setup).
 4. Restart the client. Check the setup with `npx -y toolscript-mcp doctor --config "/path/to/config.json"`.
    The `servers` lines must show the same servers as before.
 5. Give the model a task that uses one of your servers. Then run
@@ -161,7 +131,8 @@ The new entry reads the same config and the same tokens, so you change only the 
    `npx -y toolscript-mcp init --list --config "/path/to/config.json"`. It prints the steps that remove each direct copy.
 
 If the old entry uses a file inside the clone, such as a hint file, keep that file or change its path first.
-A server with an OAuth login keeps its tokens only when its `url` stays the same. The token file name holds a hash of the URL.
+A server with an OAuth login keeps its tokens only when its server key and its `url` stay the same.
+The token file name holds the server key and a hash of the URL.
 
 ## How do I add servers?
 
@@ -170,36 +141,25 @@ toolscript-mcp starts a local server as a child process (stdio). It connects to 
 | | Local stdio | Remote HTTP |
 | --- | --- | --- |
 | Entry | `command`, `args`, `env`, `cwd` | `"type": "http"`, `url`, `headers`, `oauth` |
-| Credentials | `env` values in the entry | A `headers` value, or an OAuth login |
-| Starts | With the session, or on first use with `"lazy": true` | Connects at the start |
-| Fails when | The command is not on `PATH`, or `cwd` is missing | The URL is wrong, or the login is missing |
+| Credentials | `env` values in the entry | A `headers` value, an OAuth login, or `sigv4` for an AWS server |
+| Starts | With the session, or on first use with `"lazy": true`. The Claude Code bridge starts on first use. See [Lazy start](README.md#lazy-start). | Connects at the start |
+| Fails when | The command is not on `PATH`, or `cwd` is missing | The URL is wrong, the login is missing, or the AWS credentials cannot be read |
 
 A stdio server gets only the `env` of its entry and a short list of system variables, such as `PATH` and `HOME`.
-Your other variables stay out.
+Your other variables stay out. With sharing on, a server in a broker has no `"lazy"` key.
 
 **Placeholders.** Write `${VAR}` in `args`, `env`, `cwd`, `url` and `headers`. toolscript-mcp reads the value from the
 environment of the process that starts it. That process is your client. Set the variable where the client starts, and
 restart the client. If a variable is not set, only that server fails, and the error names the variable, not a value.
 
-```json
-{
-  "mcpServers": {
-    "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "${NOTES_DIR}"] },
-    "tracker": {
-      "type": "http",
-      "url": "https://mcp.example.com/mcp",
-      "headers": { "Authorization": "Bearer ${TRACKER_TOKEN}" }
-    }
-  },
-  "policy": [
-    { "match": "mcp__tracker__delete_*", "action": "deny" },
-    { "match": "mcp__tracker__*", "action": "allow" },
-    { "match": "mcp__files__read_*", "action": "allow" }
-  ]
-}
-```
+The README has an [example config](README.md#configure-downstream-servers) with one stdio server, one HTTP server and a
+`policy`.
 
-**OAuth login.** For an HTTP server with no `headers`, run `npx -y toolscript-mcp login <server>` in a terminal. Add
+**AWS servers.** For an AWS HTTP server, such as the AWS MCP Server, add `"sigv4": { "profile": "<profile>" }` to the
+entry. toolscript-mcp signs each request with the credentials of that profile of the AWS CLI. It needs no `headers` and no
+login. See [AWS SigV4](README.md#aws-sigv4).
+
+**OAuth login.** For an HTTP server with no `headers` and no `sigv4`, run `npx -y toolscript-mcp login <server>` in a terminal. Add
 `--config <path>` for another config. The browser opens, and you approve the access. toolscript-mcp refreshes the token
 by itself. It never opens a browser while it runs as a server. See [OAuth login](README.md#oauth-login).
 
@@ -231,25 +191,11 @@ the servers that are not connected, with the reason.
 
 The package has a read-only demo server with 40 sample pull requests. It needs no account.
 
-1. Install the package in a folder of your choice. The demo file then has a stable path.
-
-   ```sh
-   npm install --prefix "/absolute/path/to/demo-package" toolscript-mcp@latest
-   ```
-
-2. Write a config file with the demo and one `allow` rule. On Windows, use forward slashes in the path.
-
-   ```json
-   {
-     "mcpServers": {
-       "demo": { "command": "node", "args": ["/absolute/path/to/demo-package/node_modules/toolscript-mcp/demo/server.mjs"] }
-     },
-     "policy": [{ "match": "mcp__demo__list_pull_requests", "action": "allow" }]
-   }
-   ```
-
-3. Add toolscript-mcp to your client with this config. See the [install answer](#how-do-i-install-and-update-it-from-npm).
-4. Start a new session and give the model the task `Count the open pull requests per author`.
+1. Install the package in a folder of your choice, and write a config with the demo server and one `allow` rule.
+   The [Demo server](README.md#demo-server) section of the README has the command and the config.
+   On Windows, use forward slashes in the path.
+2. Add toolscript-mcp to your client with this config. See the [install answer](#how-do-i-install-and-update-it-from-npm).
+3. Start a new session and give the model the task `Count the open pull requests per author`.
 
 The correct answer is ada 7, bruno 6, chen 5, dara 4, emil 3 and farah 1. The task needs two pages of
 `list_pull_requests`. `demo/data.mjs` exports the answer as `OPEN_BY_AUTHOR`.
@@ -282,12 +228,12 @@ It prints `demo: connected, 2 tools`, then each tool with its hint and its decis
 sees those tools and picks them, and each full result goes into the context. In one real session with both paths, the
 model never called `run_code`. toolscript-mcp cannot see the other registrations of your client.
 
-- Run `npx -y toolscript-mcp init --list`. A server with the status `in config` that your client also lists is a duplicate.
+- Run `npx -y toolscript-mcp init --list --config "<path>"`. A server with the status `in config` that your client also lists is a duplicate.
 - In Claude Code, run `claude mcp list` to find a copy in the project or local scope.
 - Remove the direct copy after a run through toolscript-mcp works. `init --list` prints the removal steps.
 
 **The model found no tools.** Ask for `search_tools` with an empty query and `limit` 1. A server that is down is under
-"Not connected", with the reason. Then run `npx -y toolscript-mcp tools <server>` in a terminal. See
+"Not connected", with the reason. Then run `npx -y toolscript-mcp tools <server> --config "<path>"` in a terminal. See
 [the failure table](#what-do-i-try-when-setup-fails) for each reason.
 
 **The model stopped for approval.** Each tool call of a program goes through the `policy` rules in order:
@@ -328,7 +274,7 @@ Run three commands in this order. Each one prints to stderr, and none of them pr
 same `--config <path>` as your client entry, if the entry has one.
 
 1. `npx -y toolscript-mcp doctor` checks the Node version, the config, each server, the policy, the sandbox and the run log.
-2. `npx -y toolscript-mcp tools <server>` connects to one server and lists its tools with their policy decision.
+2. `npx -y toolscript-mcp tools <server> --config "<path>"` connects to one server and lists its tools with their policy decision.
 3. `npx -y toolscript-mcp runs --server <server> --since 1h` shows the newest runs and the next step for each problem.
 
 | What you see | Cause | What to do |
@@ -336,6 +282,7 @@ same `--config <path>` as your client entry, if the entry has one.
 | The client shows toolscript as failed, or `doctor` prints `fail config  no config at ...` | The launch command or the config path is wrong | Run the client command in a terminal. Fix the path. On Windows, use `cmd /c npx`. |
 | `tools` prints `cannot connect: ... the environment variable TRACKER_TOKEN is not set` | A credential is missing | Set the variable where the client starts. Restart the client. |
 | `tools` or `search_tools` prints a `login` command | The server needs an OAuth login | Run `npx -y toolscript-mcp login <server>`. No restart is needed. |
+| The call fails and the error names `aws sso login` | The AWS CLI cannot read the credentials of a `sigv4` entry | Run `aws sso login --profile <profile>`. The next call works with no restart. See [AWS SigV4](README.md#aws-sigv4). |
 | `runs` prints `unapproved` or `denied`, and the run ends `refused` | The policy refused a tool | Run `allow` for the tool, or change the `deny` rule. See the [policy answer](#why-did-the-model-use-the-server-tool-directly-find-no-tools-or-stop-for-approval). |
 | `runs` prints `no run yet` or `no run since <time>`, with exit code 1 | The model never called `run_code` | Look for a duplicate registration. Start a new session. Give a task that needs the server. |
 | `doctor` prints `ok` for every check, but the task fails | The error is in the program or the server | Read the `run_code` result. `runs` names the next step for the error code. |
@@ -368,6 +315,7 @@ Do not include these:
 The checks used the npm package `toolscript-mcp` 1.0.0 on Windows 11 with Node 22. A clean install in a new folder ran
 the demo and reached the answer that this FAQ shows. `doctor`, `tools demo` and `runs` printed the lines above.
 An MCP SDK test client drove the server. No real client registration was changed.
+`@latest` now installs a later version. The checks were not run again on it.
 
 | Path | Status |
 | --- | --- |
