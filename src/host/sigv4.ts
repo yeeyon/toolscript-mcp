@@ -25,9 +25,26 @@ const encode = (text: string): string =>
 /** The canonical path: each segment as sent, encoded once more, as AWS computes it for a service other than S3. */
 const canonicalPath = (pathname: string): string => pathname.split('/').map(encode).join('/') || '/'
 
-const canonicalQuery = (params: URLSearchParams): string =>
-  [...params]
-    .map(([k, v]) => [encode(k), encode(v)] as const)
+/** A percent-decode that never reads `+` as a space. A bad escape stays as it is. */
+const decode = (text: string): string => {
+  try {
+    return decodeURIComponent(text)
+  } catch {
+    return text
+  }
+}
+
+/** The canonical query: the raw parts, split at the first `=`, decoded and encoded again. A `+` stays a plus sign. */
+const canonicalQuery = (search: string): string =>
+  search
+    .replace(/^\?/, '')
+    .split('&')
+    .filter(part => part !== '')
+    .map(part => {
+      const at = part.indexOf('=')
+      return (at < 0 ? [part, ''] : [part.slice(0, at), part.slice(at + 1)]) as [string, string]
+    })
+    .map(([k, v]) => [encode(decode(k)), encode(decode(v))] as const)
     .sort(([a, av], [b, bv]) => (a < b ? -1 : a > b ? 1 : av < bv ? -1 : av > bv ? 1 : 0))
     .map(([k, v]) => `${k}=${v}`)
     .join('&')
@@ -59,7 +76,7 @@ export const signRequest = (
   const canonical = [
     request.method.toUpperCase(),
     canonicalPath(url.pathname),
-    canonicalQuery(url.searchParams),
+    canonicalQuery(url.search),
     names.map(n => `${n}:${signed[n]!.trim().replace(/\s+/g, ' ')}\n`).join(''),
     names.join(';'),
     sha256(request.body),
@@ -151,8 +168,9 @@ export const exportCredentials = (profile: string, command = 'aws'): Promise<Aws
 
 /**
  * A fetch that signs each request to the origin of the server with the credentials of the profile. The credentials
- * stay in memory until 5 minutes before they expire. A failed read is not kept: the next request tries again, so a
- * new `aws sso login` works without a restart.
+ * stay in memory until 5 minutes before they expire, then the next request reads them again. A failed read is not
+ * kept: the next request tries again, so a new `aws sso login` works without a restart. When the read fails before
+ * the expiry, the request is signed with the credentials in use.
  */
 export const sigv4Fetch = (
   server: { readonly url: string; readonly sigv4: SigV4; readonly headers?: Readonly<Record<string, string>> },
@@ -166,8 +184,14 @@ export const sigv4Fetch = (
   const credentials = async (): Promise<AwsCredentials> => {
     if (current && (current.expiresAt === undefined || current.expiresAt - EARLY_MS > clock())) return current
     pending ??= load(server.sigv4.profile).finally(() => (pending = undefined))
-    current = await pending
-    return current
+    try {
+      current = await pending
+      return current
+    } catch (error) {
+      // Inside the last 5 minutes the credentials in use still work. A failed read keeps them until they expire.
+      if (current?.expiresAt !== undefined && current.expiresAt > clock()) return current
+      throw error
+    }
   }
   const signed: FetchLike = async (url, init) => {
     const target = new URL(url)
