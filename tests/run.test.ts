@@ -3034,6 +3034,12 @@ describe('workspace', () => {
   test('a run that mixes fake-server calls and Workspace searches gets the note for the fake tool only', async t => {
     const ws = await rig(t)
     if (ws === undefined) return
+    // A tree that makes each search take a while (about 0.6 s on Windows): then the Workspace streak saves more than the 3 fake calls (0.6 s), so the old code named it and not the fake tool.
+    for (let i = 0; i < 80; i++) {
+      const file = path.join(ws.root, 'bulk', `d${i % 20}`, `f${i}.txt`)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, `file number ${i}\n`)
+    }
     // The fake server `f` and the real Workspace answer in one run.
     const fake = fakeDownstream(undefined, entry).downstream
     const both = {
@@ -3056,7 +3062,7 @@ describe('workspace', () => {
       serialLimits: { gapMs: 400, minSavedMs: 0 },
     })
     const out = await r.run(
-      'for (let i = 0; i < 3; i++) await call("mcp__f__slow", { n: `a${i}` })\nfor (const query of ["maxAttempts", "file 1", "file 2"]) await call("mcp__workspace__search", { query })\nfor (let i = 0; i < 3; i++) await call("mcp__f__slow", { n: `b${i}` })\nreturn "ok"',
+      'for (let i = 0; i < 3; i++) await call("mcp__f__slow", { n: `a${i}` })\nfor (let i = 0; i < 4; i++) await call("mcp__workspace__search", { query: `nomatch-${i}-zzz` })\nfor (let i = 0; i < 3; i++) await call("mcp__f__slow", { n: `b${i}` })\nreturn "ok"',
     )
     assert.equal(out.isError, false, out.text)
     assert.match(out.text, /3 calls of mcp__f__slow ran one after another/, out.text)
