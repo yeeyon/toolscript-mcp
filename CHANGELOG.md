@@ -9,6 +9,7 @@
 - The policy functions take one `Guards` value, the bridges and whether Workspace is on, in place of the set of bridges.
 - `toolscript-mcp tools workspace` lists the tools of Workspace. `toolscript-mcp doctor` has a `workspace` line, and on Windows it warns when another account can write in the root.
 - Workspace `list` and `search` stop the read of a very large folder at the limit of names, and excluded names no longer count toward it (issue #148).
+- A loop of Workspace calls no longer gets the footer note that advises `Promise.all`. Parallel walks share the host's file threads, so they do not finish faster together: 8 searches started at once each ran to the 10 s limit and came back empty.
 - On Windows, Workspace refuses a file or folder on another volume than the root, so a junction to another drive can no longer be read or written through a swap. A folder inside the root that mounts another volume is refused (issue #147).
 - On Linux, on a volume with short names such as `GIT~1` (vfat, NTFS, SMB, a share of a Windows folder), Workspace now counts a path under the name that its folder lists, so `GIT~1/config` and `ENV~1` are excluded like `.git/config` and `.env` (issue #147).
 - On macOS, Workspace `stat` reads the kind and size of an entry through a handle that refuses a link in any part, so a folder swapped for a link cannot show a size or kind from outside the root (issue #147).
