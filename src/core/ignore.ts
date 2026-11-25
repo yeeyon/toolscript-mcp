@@ -148,6 +148,9 @@ const parseLine = (raw: string, folded: boolean): IgnoreRule | undefined => {
 
 /** The compare of a list of parts with segments: `**` takes zero or more parts. */
 const pathMatches = (segments: readonly Segment[], names: readonly (readonly string[])[]): boolean => {
+  // A length check first: the DP below is never run for a rule that cannot fit the number of names.
+  const fixed = segments.filter(seg => seg !== undefined).length
+  if (fixed > names.length || (fixed === segments.length && fixed !== names.length)) return false
   let below: boolean[] = Array.from({ length: names.length + 1 }, (_, j) => j === names.length)
   for (let i = segments.length - 1; i >= 0; i--) {
     const seg = segments[i]

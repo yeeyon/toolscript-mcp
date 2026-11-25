@@ -10,6 +10,9 @@ import { LIMITS } from '../../core/workspace.ts'
 /** The longest wait for the answer to `roots/list`, counted from `notifications/initialized`. */
 export const ROOTS_WAIT_MS = 2_000
 
+/** The longest wait for `notifications/initialized` itself, so a client that never sends it holds no run. */
+export const INITIALIZED_WAIT_MS = 10_000
+
 export type Roots = {
   /** The `uri` of at most `LIMITS.roots` client roots, as the client sent them. Empty for no capability, an error or a timeout. */
   readonly read: () => Promise<readonly string[]>
@@ -22,9 +25,11 @@ export type Roots = {
 export const createRoots = ({
   log,
   waitMs = ROOTS_WAIT_MS,
+  initializedWaitMs = INITIALIZED_WAIT_MS,
 }: {
   readonly log: (line: string) => void
   readonly waitMs?: number
+  readonly initializedWaitMs?: number
 }): Roots => {
   let settle!: (uris: readonly string[]) => void
   const settled = new Promise<readonly string[]>(resolve => (settle = resolve))
@@ -38,7 +43,17 @@ export const createRoots = ({
         settle([])
         closed?.()
       }
+      // A client that never sends `initialized` settles the list too: the wait is bounded whatever the client does.
+      const never = setTimeout(() => {
+        log('Workspace: the client did not initialize in time, so its roots narrow nothing')
+        settle([])
+      }, initializedWaitMs)
+      never.unref()
+      let asked = false
       server.oninitialized = () => {
+        clearTimeout(never)
+        if (asked) return
+        asked = true
         if (server.getClientCapabilities()?.roots === undefined) return settle([])
         const ask = new AbortController()
         const timer = setTimeout(() => {

@@ -27,7 +27,7 @@ import { createServer } from './server.ts'
 import { detectLaunch, loadConfig, loginFor } from './start.ts'
 import type { WorkspaceConfig } from '../core/workspace.ts'
 import { bindWorkspace, linkOf, type Binding } from './workspace/bind.ts'
-import { createRoots } from './workspace/roots.ts'
+import { createRoots, type Roots } from './workspace/roots.ts'
 
 const log = (line: string) => console.error(`toolscript-mcp: ${line}`)
 
@@ -90,15 +90,16 @@ log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 // The built-in Workspace binds its root one time, after the client roots settle (issue #150): at the answer to
 // roots/list, or ROOTS_WAIT_MS after the client initialized. The section is never read again. The server starts at once,
 // and a call to the Workspace waits for the bind.
-const roots = createRoots({ log })
-const bindOf = async (section: WorkspaceConfig): Promise<Binding> => {
+// A config with no workspace section never asks the client for its roots.
+const roots = config.workspace === undefined ? undefined : createRoots({ log })
+const bindOf = async (section: WorkspaceConfig, clientRoots: Roots): Promise<Binding> => {
   const workspace = await bindWorkspace({
     workspace: section,
     start: process.cwd(),
     home: os.homedir(),
     configFile: file,
     log,
-    clientRoots: roots.read,
+    clientRoots: clientRoots.read,
   })
   log(
     workspace.ok
@@ -109,7 +110,7 @@ const bindOf = async (section: WorkspaceConfig): Promise<Binding> => {
     for (const { name, reason } of workspace.bound.tasks.invalid) log(`Workspace: task ${name} is invalid: ${reason}`)
   return workspace
 }
-const workspace = config.workspace === undefined ? undefined : bindOf(config.workspace)
+const workspace = config.workspace === undefined || roots === undefined ? undefined : bindOf(config.workspace, roots)
 
 const downstream = connectAll(config.servers, version, log, {
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
@@ -139,13 +140,13 @@ const { server, stopRuns } = createServer(
   log,
   workspace?.then(w => (w.ok ? { root: w.bound.root, tasks: w.bound.tasks.names } : undefined)),
 )
-roots.attach(server.server)
+roots?.attach(server.server)
 
 // A run in flight gets its sandbox killed and its exchange dir removed before the exit.
 let closing: Promise<void> | undefined
 const shutdown = () => {
   // A shutdown before the client answered settles the roots, so the bind ends and its provider can close.
-  roots.close()
+  roots?.close()
   return (closing ??= Promise.allSettled([
     stopRuns(),
     server.close(),
