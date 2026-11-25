@@ -250,6 +250,21 @@ describe('the exclude globs are relative to the entry path', () => {
     if (rig === undefined) return
     assert.match(await rig.fail('read', { path: 'fixtures/secrets/k.txt' }), /^excluded/)
   })
+
+  test('a named glob on a folder above hides a client root and a start folder inside it', async t => {
+    const { projects, elsewhere } = secrets(t)
+    write(projects, { 'private/sub/x.txt': 'x' })
+    const rig = await rigOf(t, projects, {
+      start: elsewhere,
+      exclude: ['private'],
+      clientRoots: async () => [uri(projects, 'private', 'sub')],
+    })
+    if (rig === undefined) return
+    assert.equal(rig.bound.root, projects)
+    const opened = await open(projects, { start: path.join(projects, 'private', 'sub'), exclude: ['private'] })
+    assert.ok('unavailable' in opened)
+    if ('rig' in opened) await opened.rig.close()
+  })
 })
 
 describe('createRoots over a real client and server', () => {

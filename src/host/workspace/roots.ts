@@ -32,24 +32,30 @@ export const createRoots = ({
   readonly initializedWaitMs?: number
 }): Roots => {
   let settle!: (uris: readonly string[]) => void
+  let never: ReturnType<typeof setTimeout> | undefined
   const settled = new Promise<readonly string[]>(resolve => (settle = resolve))
   return {
     read: () => settled,
-    close: () => settle([]),
+    close: () => {
+      clearTimeout(never)
+      settle([])
+    },
     attach: server => {
       const closed = server.onclose
       // A client that closes before it answers settles the list, so nothing waits for it.
       server.onclose = () => {
+        clearTimeout(never)
         settle([])
         closed?.()
       }
       // A client that never sends `initialized` settles the list too: the wait is bounded whatever the client does.
-      const never = setTimeout(() => {
+      let asked = false
+      never = setTimeout(() => {
+        asked = true
         log('Workspace: the client did not initialize in time, so its roots narrow nothing')
         settle([])
       }, initializedWaitMs)
       never.unref()
-      let asked = false
       server.oninitialized = () => {
         clearTimeout(never)
         if (asked) return
