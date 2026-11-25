@@ -2,8 +2,24 @@
 // It is a copy of `fold`, `partMatch`, `foldsCase`, `realParts`, `isInside`, `BUILT_IN_NAMES`, `LIMITS.roots` and
 // `rootProblem` in src/core/workspace.ts. The plugin cache holds only plugin/, so it cannot import that file.
 // tests/plugin-config.test.ts compares the two copies row by row. The server stays the authority.
+// It also holds the text rules of a named task: `TASK_NAME`, `TASK_LIMITS.tasks` and `commandProblem` of
+// src/core/task.ts, and the task keys of parseTasks in src/core/config.ts. A task that breaks one of them turns the
+// whole `workspace` section off, so config.mjs refuses it before it writes.
 
 export const ROOTS_MAX = 16
+
+export const TASK_NAME = /^[a-z0-9_-]{1,32}$/
+export const TASK_KEYS = ['command', 'args', 'cwd', 'timeoutSeconds', 'env']
+export const TASKS_MAX = 32
+
+export const commandProblem = (command, windows) => {
+  if (/[\u0000-\u001f]/.test(command)) return 'must hold no control character'
+  const absolute = windows ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(command) : command.startsWith('/')
+  if (absolute) return undefined
+  if (/[\\/]/.test(command) || (windows && /^[A-Za-z]:/.test(command)))
+    return 'must be an absolute path, or a bare command name that PATH holds, such as "node"'
+  return undefined
+}
 
 export const BUILT_IN_NAMES = [
   '.git',

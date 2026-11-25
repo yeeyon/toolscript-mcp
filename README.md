@@ -161,7 +161,11 @@ something:
 `/toolscript:doctor` checks the whole setup and changes no setting. It runs [doctor](#doctor), then checks the Claude
 Code registration and the direct copies of your servers. For each problem, it names the step that fixes it.
 
-`/toolscript:workspace` turns on the built-in [Workspace](#workspace) for a project folder. It first runs `toolscript-mcp --version` and stops when the package is older than 1.0.4, because an older package refuses a config with a `workspace` section. It proposes the folder where Claude Code started, adds it as a root, and asks before each extra grant: write access and one named task. It checks the root with `doctor`. After you restart Claude Code in that folder, `/toolscript:workspace verify` lists the folder through a program and reports a count of entries.
+`/toolscript:workspace` turns on the built-in [Workspace](#workspace) for a project folder. It first runs
+`toolscript-mcp --version` and stops when the package is older than 1.0.4, because an older package refuses a config
+with a `workspace` section. It proposes the folder where Claude Code started, adds it as a root, and asks before each
+extra grant: write access and one named task. It checks the root with `doctor`. After you restart Claude Code in that
+folder, `/toolscript:workspace verify` lists the folder through a program and reports a count of entries.
 
 The skills do not edit the config files of your clients. They show the lines to change. To update or uninstall
 toolscript-mcp, ask Claude again.
@@ -1115,7 +1119,9 @@ named `mcp__workspace__<tool>`, and a program calls them as it calls any tool. I
 
 ### Turn it on
 
-In Claude Code, run `/toolscript:workspace` to add a root with no hand edit (see [With the Claude Code plugin](#with-the-claude-code-plugin)). Otherwise add a `workspace` section to the config. The key `workspace` is then reserved: `mcpServers` cannot hold a server of
+In Claude Code, run `/toolscript:workspace` to add a root with no hand edit (see
+[With the Claude Code plugin](#with-the-claude-code-plugin)). Otherwise add a `workspace` section to the config. The key
+`workspace` is then reserved: `mcpServers` cannot hold a server of
 that name.
 
 ```json

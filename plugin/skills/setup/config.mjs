@@ -32,7 +32,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { ROOTS_MAX, foldsCase, isInside, rootProblem } from './roots.mjs'
+import { ROOTS_MAX, TASKS_MAX, TASK_KEYS, TASK_NAME, commandProblem, isInside, rootProblem } from './roots.mjs'
 
 const ACTIONS = ['allow', 'deny', 'ask']
 const NAME = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/
@@ -200,10 +200,6 @@ function parseRules(args) {
 // ---------------------------------------------------------------------------------------------------------------
 // The workspace commands
 
-// TASK_NAME and TASK_KEYS in src/core/task.ts and config.ts. `doctor` names a task that cannot run.
-const TASK_NAME = /^[a-z0-9_-]{1,32}$/
-const TASK_KEYS = ['command', 'args', 'cwd', 'timeoutSeconds', 'env']
-const TASKS_MAX = 32
 const NOTHING = 'config.mjs wrote nothing.'
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
@@ -255,12 +251,13 @@ function workspaceRoots(config) {
   return section.roots
 }
 
-const folded = text => (foldsCase(process.platform) ? text.normalize('NFC').toLowerCase() : text)
+// On Windows a path is written with /, and \ separates parts. Elsewhere \ is a letter of a name.
+const slashes = text => (process.platform === 'win32' ? text.replaceAll('\\', '/') : text)
 
 // The real path of a folder that exists, written with /. Else undefined.
 function realFolder(text) {
   try {
-    return fs.realpathSync.native(text).replaceAll('\\', '/')
+    return slashes(fs.realpathSync.native(text))
   } catch {
     return undefined
   }
@@ -268,7 +265,7 @@ function realFolder(text) {
 
 // The path of a root entry or of a folder argument, as roots compare: its real path, or its text when it does not
 // resolve (a missing folder, or a ${NAME} variable), with \ as /.
-const rootKey = text => (text.includes('${') ? undefined : realFolder(text)) ?? text.replaceAll('\\', '/')
+const rootKey = text => (text.includes('${') ? undefined : realFolder(text)) ?? slashes(text)
 
 const sameRoot = (a, b) => isInside(a, b, process.platform) && isInside(b, a, process.platform)
 
@@ -297,7 +294,7 @@ function addRoot(config, folder) {
     real = undefined
   }
   if (real === undefined) throw new Fail(`The folder does not exist, or it is not a folder. ${NOTHING}`)
-  real = real.replaceAll('\\', '/')
+  real = slashes(real)
   const problem = rootProblem(real, homeReal(), platform)
   if (problem !== undefined) throw new Fail(`The folder is refused: ${problem}. ${NOTHING}`)
   if (Object.hasOwn(config.mcpServers ?? {}, 'workspace')) {
@@ -319,10 +316,26 @@ function addRoot(config, folder) {
   return { notes, changed: true }
 }
 
-function taskEntry(file) {
+// sandbox.callTimeoutSeconds, or its default: the lesser of 60 and sandbox.timeoutSeconds (default 120).
+function callTimeout(config) {
+  const sandbox = isObject(config.sandbox) ? config.sandbox : {}
+  if (Number.isInteger(sandbox.callTimeoutSeconds)) return sandbox.callTimeoutSeconds
+  return Math.min(60, Number.isInteger(sandbox.timeoutSeconds) ? sandbox.timeoutSeconds : 120)
+}
+
+function taskEntry(file, config) {
   const task = readJson(file, 'the task')
   if (!isObject(task) || typeof task.command !== 'string' || task.command === '') {
     throw new Fail('The task file must be an object with a non-empty string "command".')
+  }
+  const problem = commandProblem(task.command, process.platform === 'win32')
+  if (problem !== undefined) throw new Fail(`The key command of the task file ${problem}. ${NOTHING}`)
+  const limit = callTimeout(config)
+  const t = task.timeoutSeconds
+  if (t !== undefined && !(Number.isInteger(t) && t >= 1 && t <= limit)) {
+    throw new Fail(
+      `The key timeoutSeconds must be a whole number from 1 to ${limit}, the value of sandbox.callTimeoutSeconds. ${NOTHING}`,
+    )
   }
   const unknown = Object.keys(task).find(key => !TASK_KEYS.includes(key))
   if (unknown !== undefined) {
@@ -337,7 +350,6 @@ function taskEntry(file) {
 function workspaceCommand(file, args) {
   const [sub, ...rest] = args
   if (sub === undefined) {
-    if (rest.length > 0) usage()
     return showWorkspace(readConfig(file))
   }
   const counts = { add: [1], remove: [1], write: [1, 2], task: [3] }
@@ -367,7 +379,7 @@ function workspaceCommand(file, args) {
       if (entry.tasks !== undefined && !isObject(entry.tasks)) {
         throw new Fail(`The key tasks of the root must be an object. ${NOTHING}`)
       }
-      const task = taskEntry(taskFile)
+      const task = taskEntry(taskFile, config)
       const tasks = entry.tasks ?? {}
       const replaced = Object.hasOwn(tasks, extra)
       if (!replaced && Object.keys(tasks).length >= TASKS_MAX) {

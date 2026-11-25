@@ -53,7 +53,7 @@ const USAGE = [
 // The package proof for the plugin skills: one line, no config read, no server started. It answers on stdout (owner
 // decision, issue #156) and exits before any MCP transport exists, so no JSON-RPC stream can meet this line.
 if (process.argv.length === 3 && (process.argv[2] === '--version' || process.argv[2] === '-v')) {
-  fs.writeSync(1, `${version}\n`)
+  fs.writeSync(1, `${version}\n`) // stdout-ok: --version
   process.exit(0)
 }
 

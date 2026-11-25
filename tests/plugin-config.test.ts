@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { after, before, describe, it } from 'node:test'
 import { parseConfig } from '../src/core/config.ts'
 import { BUILT_IN_NAMES, LIMITS, rootProblem as coreRootProblem } from '../src/core/workspace.ts'
+import { TASK_LIMITS, TASK_NAME, commandProblem as coreCommandProblem } from '../src/core/task.ts'
 import * as roots from '../plugin/skills/setup/roots.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../plugin/skills/setup/config.mjs', import.meta.url))
@@ -425,7 +426,7 @@ describe('the plugin copy of the root rules', () => {
     ['/Users/ME', '/Users/me'],
     ['/home/Zo\u00e9', '/home/Zoe\u0301'],
     ['/home/Zoe\u0301', '/home/Zo\u00e9'],
-    ['/home/me/.e\u006e\u0076', '/home/me'],
+    ['/home/me/.E\u006e\u0076', '/home/me'],
     ...names.flatMap((name): [string, string][] => [
       [`/home/me/${name}/x`, '/home/me'],
       [`C:\\work\\${name}`, 'C:\\Users\\me'],
@@ -436,6 +437,49 @@ describe('the plugin copy of the root rules', () => {
   it('has the same names and the same limit as the core', () => {
     assert.deepEqual(roots.BUILT_IN_NAMES, [...BUILT_IN_NAMES])
     assert.equal(roots.ROOTS_MAX, LIMITS.roots)
+    assert.equal(roots.TASK_NAME.source, TASK_NAME.source)
+    assert.equal(roots.TASKS_MAX, TASK_LIMITS.tasks)
+  })
+
+  it('gives the same answer as the core on each command text', () => {
+    const commands = [
+      'node',
+      './gradlew',
+      'sub/x',
+      'a\\b',
+      '/usr/bin/node',
+      'C:\\x\\node.exe',
+      'C:/x/node',
+      'C:node',
+      '\\\\s\\x',
+      '//s/x',
+      'a\u0007b',
+    ]
+    for (const windows of [true, false])
+      for (const command of commands)
+        assert.equal(
+          roots.commandProblem(command, windows),
+          coreCommandProblem(command, windows),
+          `${windows} ${command}`,
+        )
+  })
+
+  it('has the task keys of parseTasks: each key is taken, any other is refused', () => {
+    const parse = (task: unknown) =>
+      parseConfig(
+        JSON.stringify({ mcpServers: {}, workspace: { roots: [{ path: '/work/app', tasks: { t: task } }] } }),
+        {},
+        process.execPath,
+        'linux',
+      )
+    const all = { command: 'node', args: ['a'], cwd: '.', timeoutSeconds: 5, env: { K: 'v' } }
+    assert.deepEqual(Object.keys(all), roots.TASK_KEYS)
+    for (const key of roots.TASK_KEYS) {
+      const one = parse({ command: 'node', [key]: (all as Record<string, unknown>)[key] })
+      assert.equal(one.ok && one.config.workspace !== undefined, true, key)
+    }
+    const extra = parse({ ...all, shell: true })
+    assert.equal(extra.ok && extra.config.workspace === undefined, true)
   })
 
   it('gives the same answer as the core on every row, reason text included', () => {
@@ -724,6 +768,36 @@ describe('plugin config helper: workspace', () => {
       assert.equal(read(file), before)
     }
     assert.equal(ws(file, 'workspace', 'task', app, 't0', taskFile({ command: 'node', args: ['a'] })).code, 0)
+  })
+
+  // The review of #156: a task that parseConfig refuses turns the whole section off, the new root included.
+  it('refuses a task that turns the section off, and accepts a full path that parseConfig takes', () => {
+    const app = real(folder('app'))
+    const file = makeConfig(
+      JSON.stringify({ mcpServers: {}, sandbox: { callTimeoutSeconds: 10 }, workspace: { roots: [{ path: app }] } }),
+    )
+    const before = read(file)
+    const bad: unknown[] = [
+      { command: './gradlew' },
+      { command: 'tools\\gradle' },
+      { command: 'sub/gradle' },
+      { command: 'no\u0007bell' },
+      { command: 'node', timeoutSeconds: 11 },
+      { command: 'node', timeoutSeconds: 0 },
+      { command: 'node', timeoutSeconds: 1.5 },
+      { command: 'node', timeoutSeconds: '5' },
+    ]
+    for (const task of bad) {
+      const { code, err } = ws(file, 'workspace', 'task', app, 'test', taskFile(task))
+      assert.equal(code, 1, JSON.stringify(task))
+      assert.match(err, /config\.mjs wrote nothing\.$/m)
+      assert.equal(read(file), before)
+    }
+    const good = { command: slash(process.execPath), args: ['--test'], timeoutSeconds: 10 }
+    assert.equal(ws(file, 'workspace', 'task', app, 'test', taskFile(good)).code, 0)
+    valid(file)
+    const parsed = parseConfig(read(file), {}, process.execPath, process.platform)
+    assert.ok(parsed.ok && parsed.config.workspace?.roots[0]?.tasks?.length === 1)
   })
 
   it('fails on a missing config for every command but add, and makes no file', () => {

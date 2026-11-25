@@ -9,7 +9,7 @@ argument-hint: "[add|remove|show|verify] [folder]"
 Workspace is a built-in server that reads the files of one project folder. It is off by default. Write access and
 named tasks are separate grants, and this skill asks before each one. Each command here prints no secret value.
 With no argument, say this in 3 to 5 sentences, then do `add` with the default folder.
-`add [folder]`, `remove [folder]` and `show` change or print the `workspace` section. `verify` does step 7 only.
+`add [folder]`, `remove [folder]` and `show` change or print the `workspace` section. `verify` does step 1, then the verify part of step 7.
 
 ## Rules
 
@@ -50,12 +50,13 @@ For `show`, run `node "<helper>" "<config>" workspace` and print it. For `remove
 An older package refuses a config with a `workspace` section, and then every server stops. So this step comes first.
 
 Run `npx -y toolscript-mcp --version`. If it fails or prints a version below 1.0.4, tell the person to run
-`/toolscript:setup update`, and stop. Nothing was written. Do not run `login`.
+`/toolscript:setup update`, and stop. Nothing was written. Do not run `login`. If update still gives a version below
+1.0.4, the new package is not on npm yet. Stop.
 
 ## 3. Pick the folder
 
 With a folder argument, use it. Otherwise run `node -p "process.cwd()"` and propose that folder. The person confirms
-it or gives another full path. Never list or scan folders to find a project. Write each `\` as `/`.
+it or gives another full path. Never list or scan folders to find a project. On Windows, write each `\` as `/`.
 
 Run `node "<helper>" "<config>" workspace` to see the roots that exist. Tell the person how a session finds its root:
 
@@ -79,6 +80,10 @@ Offer one task named `test`, with the default no. Say first: a task runs project
 Nothing contains it, and each program that calls it asks first.
 
 - The person gives the command. Split it into `command` and `args` yourself. There is no shell: no `&&`, pipe or redirect.
+- `command` is a bare name such as `node`, or the full path of the file. For `./gradlew`, use its full path. A relative
+  path with `/` or `\` makes the whole Workspace section invalid, so `config.mjs` refuses it.
+- Each `${NAME}` in the task must be set in the environment of the `toolscript` entry. If it is not set, Workspace is off.
+- `timeoutSeconds` is a whole number from 1 to `sandbox.callTimeoutSeconds`, which is 60 by default.
 - On Windows, refuse `npm`, `npx`, `pnpm`, `yarn` and any `.cmd`, `.bat` or `.ps1` file as `command`. Use `node` with the
   script. README "Set a task up safely" says why. Read `package.json` of the folder only when the person asks for a proposal.
 - Never ask for a secret value. Write `${NAME}` in `env`, as `/toolscript:setup` step 9 does.
@@ -89,10 +94,14 @@ Nothing contains it, and each program that calls it asks first.
 
 ## 6. Check before the restart
 
-Run `npx -y toolscript-mcp doctor --config "<config>"` from the folder of step 3. Show the lines of the check `workspace`.
-A line `ok root` is the pass. For `unavailable: <reason>`, show it and name the cause from README "The root of a
-session". Offer `workspace remove`. For a `warn` on the access rules of the root or on a task that cannot run, show it
-with the README fix and go on.
+Run `npx -y toolscript-mcp doctor --config "<config>"` from the folder of step 3. Show the lines of the check
+`workspace`. A line `ok root` is the pass.
+
+- For `unavailable: <reason>`, show it and name the cause from README "The root of a session". Offer `workspace remove`.
+- For a `warn` on the access rules of the root, or on a task that cannot run, show it with the README fix. Go on.
+- With no `workspace` line, the section is invalid, and Workspace is off. Show the line for the server `workspace` in
+  the check `servers`. Run `workspace task` again with a fixed task file, because it replaces the task. Or offer
+  `workspace remove`.
 
 ## 7. Restart and verify
 
@@ -113,6 +122,6 @@ return { entries: r.entries.length, truncated: r.truncated === true }
 
 ## 8. Remove a root
 
-Run `node "<helper>" "<config>" workspace`. With no folder argument, ask which root. Tell the person what goes with the root: its write grant and task names. For
-the last root, the `exclude` and `skip` lists go too. With approval, run
+Run `node "<helper>" "<config>" workspace`. With no folder argument, ask which root. Tell the person what goes with
+the root: its write grant and task names. For the last root, the `exclude` and `skip` lists go too. With approval, run
 `node "<helper>" "<config>" workspace remove "<folder>"`. Then tell the person to restart the session.
