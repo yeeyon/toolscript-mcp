@@ -920,7 +920,8 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
         [0, cut],
         [cut, lookups.length],
       ],
-      known: (mask, lookups) => (win || mac) && alternating(mask, lookups),
+      // macOS reads kind and size through a handle that the kernel opened with no link in any part: no leak.
+      known: (mask, lookups) => win && alternating(mask, lookups),
     },
     // One range over the proof and the lookups after it, so that a pattern of the proof followed by any other is tried.
     listNested: {
@@ -939,7 +940,7 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
       safe: r => r.type === 'missing' || JSON.stringify(r) === JSON.stringify(insideNested),
       windows: lookups => [[0, lookups.length]],
       free: nestedFree,
-      known: nestedKnown,
+      known: (mask, lookups) => win && nestedKnown(mask, lookups),
     },
   }
 

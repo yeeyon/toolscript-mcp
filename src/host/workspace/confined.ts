@@ -638,6 +638,28 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
     }
   }
 
+  /** Kind and size of the entry at `file` through a handle: undefined when nothing is there, null when `lstat` must answer. */
+  const statByHandle = async (file: string): Promise<{ kind: Kind; size: number } | undefined | null> => {
+    await hook('open')
+    let handle: FileHandle
+    try {
+      handle = await fs.promises.open(file, O_RDONLY | O_NOFOLLOW_ANY | O_NONBLOCK)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
+      if (code === 'ELOOP') return { kind: 'link', size: 0 }
+      return null
+    }
+    try {
+      const st = await handle.stat()
+      return { kind: kindOf(st), size: st.size }
+    } catch {
+      return null
+    } finally {
+      await handle.close().catch(() => {})
+    }
+  }
+
   // A folder is proven once, at its open. Its names and the metadata of its entries are then read by path, and Node has
   // no lookup relative to a handle on these systems. So each such read is bracketed: the folder must show as the
   // proven one (no link, same identity) right before the read and right after it, and a call that fails either proof
@@ -661,11 +683,19 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
       },
       lstat: async (name, spell = false) => {
         await proven()
-        await hook('lstat')
-        const st = await lstatOrNothing(full([...parts, name]))
+        // macOS `stat` (`spell`): the kind and the size come from a handle that the kernel opened with no link in any
+        // part, so a swap of the folder cannot show them from outside. `null`: the open gave no answer, so `lstat` does.
+        const held = spell && platform === 'darwin' ? await statByHandle(full([...parts, name])) : null
+        let st: { kind: Kind; size: number } | undefined
+        if (held !== null) st = held
+        else {
+          await hook('lstat')
+          const ls = await lstatOrNothing(full([...parts, name]))
+          st = ls === undefined ? undefined : { kind: kindOf(ls), size: ls.size }
+        }
         let seen: Entry | undefined
         if (st !== undefined) {
-          const kind = kindOf(st)
+          const kind = st.kind
           let real = name
           if (spell && kind !== 'link') {
             await hook('realpath')

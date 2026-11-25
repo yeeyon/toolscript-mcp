@@ -257,14 +257,18 @@ name, and through the `lstat` of an entry a size, from outside is listed. No byt
 pattern that is in neither family. Before the proofs, a swap out at the `readdir` and at the
 `lstat` of an entry, and in at the one proof between them, listed `b/<outside name>` with its size. The test names the
 family (`alternating` in `tests/workspace-fs.test.ts`) and fails on any other pattern. macOS has the same family for
-`list` and `stat`: its `read` is exact, because each open refuses a link in any part. An exact `list` on macOS needs an
+`list`: its `read` is exact, because each open refuses a link in any part, and so is its `stat`. `stat` opens the entry by
+its full path with `O_RDONLY | O_NOFOLLOW_ANY | O_NONBLOCK` and reads the kind and the size with `fstat` of that handle
+(`ENOENT` and `ENOTDIR` give `missing`, `ELOOP` gives a link, and another error such as `EACCES` falls back to the
+bracketed `lstat`). The spelling still comes from `realpath`. macOS is proven on CI only: if that leg fails because of this
+change, the change is reverted and `stat` joins the alternating family again. An exact `list` on macOS needs an
 open of each entry with a flag that opens a link itself (`O_SYMLINK` with `O_NOFOLLOW_ANY`), which was not measured: it
 is a follow-up.
 
 | Case | Result | Who can do it |
 | --- | --- | --- |
 | Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root, on the volume of the root only. A write into one whose bytes match `expectedHash`, on that volume only. An empty new file or folder outside, on any volume. | A process that writes in the root and runs at that moment. |
-| Windows and macOS: a swap of a folder in turn with the proofs of one listing or `stat` | A name, a size or a kind from outside the root, in `list` or `stat`. No byte of a file. | The same. |
+| Windows: a swap of a folder in turn with the proofs of one listing or `stat`. macOS: the same for a listing only | A name, a size or a kind from outside the root, in `list` or `stat` (macOS: `list`). No byte of a file. | The same. |
 | macOS: a swap during the make of a new folder | An empty folder outside the root. | The same. |
 | Each OS: a file or folder moved into the root | It is in the root. | The same. |
 | Each OS: a task | Any act of the user. A task is not confined. | The project code that the task runs. |
