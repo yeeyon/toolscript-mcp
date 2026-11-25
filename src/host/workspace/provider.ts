@@ -157,7 +157,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
    * or to the budget before any folder below it is entered. A name from the listing is a candidate: `lstat` and each
    * open prove it. An excluded name is never read into the walk, a link is visited and never entered, and a folder
    * that vanished or became a link while the walk ran is left out. Returns false when a visit or the time stopped the
-   * walk. A read that the budget cut sets `within.cut`, and the walk goes on with the names it holds.
+   * walk. A read that the budget or the time cut sets `within.cut`, and the walk goes on with the names it holds.
    */
   const walk = async (
     dir: Dir,
