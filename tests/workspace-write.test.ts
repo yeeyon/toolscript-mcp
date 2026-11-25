@@ -659,13 +659,13 @@ describe('a swap of a folder while a file is changed', () => {
 
   const INSIDE = 'inside text\n'
 
-  const setup = (t: TestContext) => {
+  const setup = (t: TestContext, outsideText = INSIDE) => {
     const dirs = folders(t)
     const root = dirs()
     const outside = dirs()
     write(root, { 'b/id.txt': INSIDE })
-    // The same bytes inside and outside: the hash that the model got for the inside file would also pass for the outside one.
-    write(outside, { 'id.txt': INSIDE })
+    // By default the same bytes inside and outside: the hash that the model got for the inside file would also pass for the outside one.
+    write(outside, { 'id.txt': outsideText })
     return { root, outside, swap: swapper(root, outside) }
   }
 
@@ -843,7 +843,11 @@ describe('a swap of a folder while a file is changed', () => {
   })
 
   test('a loop that swaps the folder for at most 1 s while at most 300 edits run changes no outside byte', async t => {
-    const { root, outside, swap } = setup(t)
+    // The outside file holds bytes that no write of the loop expects. On Windows a swap can make a write change an outside
+    // file whose bytes match expectedHash (README, "What stays possible"; ADR 0144, decision 034), so the bound is: no
+    // outside byte changes unless its hash matched.
+    const OUTSIDE = 'outside text\n'
+    const { root, outside, swap } = setup(t, OUTSIDE)
     const rig = await rigOf(t, root)
     if (rig === undefined) return
     const end = Date.now() + 1000
@@ -879,7 +883,7 @@ describe('a swap of a folder while a file is changed', () => {
     await flipper
     swap.reset()
     t.diagnostic(`${edits} writes: ${JSON.stringify(Object.fromEntries(outcomes))}`)
-    assert.equal(fs.readFileSync(path.join(outside, 'id.txt'), 'utf8'), INSIDE, 'the outside file is unchanged')
+    assert.equal(fs.readFileSync(path.join(outside, 'id.txt'), 'utf8'), OUTSIDE, 'the outside file is unchanged')
     assert.deepEqual(fs.readdirSync(outside), ['id.txt'], 'and nothing was made outside')
   })
 })
