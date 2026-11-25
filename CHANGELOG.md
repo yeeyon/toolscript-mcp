@@ -8,6 +8,7 @@
 - Workspace can change files (issue #144, pull request B). `diff` previews a change and writes nothing. With `"write": true` on the root entry, `edit` replaces exact text and `write` makes or replaces a file. Both need the `sha256` hash that `read` returned, and a changed file fails with `stale`. They ask the person for each program, and the rules `*` and `mcp__*` do not allow them: only a rule that starts with `mcp__workspace__` does. A file lock in `~/.toolscript-mcp/locks` stops a lost update between sessions. Linux replaces a file with a temp file and a rename. Windows and macOS write in place. A run result lists each applied change, and the run log keeps its path and line counts. The guard also refuses the folder `~/.toolscript-mcp/locks`.
 - The policy functions take one `Guards` value, the bridges and whether Workspace is on, in place of the set of bridges.
 - `toolscript-mcp tools workspace` lists the tools of Workspace. `toolscript-mcp doctor` has a `workspace` line, and on Windows it warns when another account can write in the root.
+- Workspace `list` and `search` stop the read of a very large folder at the limit of names, and excluded names no longer count toward it (issue #148).
 - Workspace was tested in Codex CLI 0.172.0 and Claude Code 2.1.331 with the same program and no Claude Code bridge. Cursor is not tested.
 
 ## 1.0.3

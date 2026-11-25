@@ -122,9 +122,12 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
   `hash` is `sha256:` and the hex digest of the bytes of the whole file.
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8.
   `search` skips such files and files over 1 MiB, and counts them in `skipped`. It cuts each `text` at 400 characters.
-- `search` and `list` stop after they visit 20,000 names or run 10 seconds, whatever the names are: a file, a folder, a
-  link, a name that an `include` or an exclusion drops. `list` also stops at 5,000 entries. Each then sets `truncated`.
-  So a tree with no match for the `include`, or one of folders only, ends too.
+- `search` and `list` stop after they read 20,000 names or run 10 seconds. A name counts when the read of its folder
+  returns it, whatever it is: a file, a folder, a link, a name that an `include` drops. An excluded name does not count:
+  it costs one stream entry and one glob test, and only the 10 seconds bound it. A folder is read as a stream to its end
+  or to the budget, before any folder below it is entered, so one walk holds at most 20,000 names and one read buffer.
+  A cut folder gives some of its names, in the order of the volume. `list` also stops at 5,000 entries. Each cut sets
+  `truncated`. So a tree with no match for the `include`, or one of folders only, ends too.
 - `read` and `search` read through the handle at most one byte more than their limit (4 MiB and 1 MiB), whatever the
   size said when the file was opened. A file that holds more is refused by `read` and skipped by `search`.
 - `include` holds up to 16 globs with `*`, `?` and `**`, over paths from the session root, matched in bounded time: a
@@ -207,7 +210,8 @@ needs one cannot happen. The Linux run, in Docker, shows no pattern that reads o
 
 `list` and `stat` have a family of their own on Windows and macOS, found by the same test over every pattern. The proof of
 the folder (open, then `realpath` and `lstat` two times) shows no pattern that lists outside, because `lstat` of the
-folder itself sees the junction. The reads of the enumeration are by path: `readdir`, the `lstat` of an entry and, for
+folder itself sees the junction. The reads of the enumeration are by path: the `readdir` (one stream, opened one time
+between the two proofs and closed before the second), the `lstat` of an entry and, for
 the real spelling of `stat`, `realpath`. Each is between two proofs of the folder. The only leak is a read that is
 outside while the proof lookups right before and right after it are inside, so the folder alternates at each lookup
 (for `list b`: out at the `readdir`, or at the `lstat` of an entry, and in at every other lookup). For a folder that is
