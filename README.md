@@ -1175,7 +1175,7 @@ tools add `stale`, `busy`, `exists`, `no-match`, `many-matches` and `read-only`.
 - The toolscript-mcp config file is excluded too, by its real path.
 - No tool follows a symlink or a junction, and `read` refuses a file with more than one hard link. `search` skips such a file.
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8. `search` skips these files and files over 1 MiB, and counts them in `skipped`.
-- `search` and `list` stop after they visit 20,000 names, of any kind, or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. A cancel ends a `search` within one second.
+- `search` and `list` stop after they read 20,000 names or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. Excluded names do not count toward the 20,000, and only the 10 seconds bound them. A folder with more names than the rest of the budget gives a part of its names, in the order of the volume. A cancel ends a `search` within one second.
 - `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
 
 ### Named tasks
