@@ -41,6 +41,7 @@ import {
   type WorkspaceToolName,
   type WriteInput,
 } from '../../core/workspace.ts'
+import { ignored, parseIgnore, startsClear } from '../../core/ignore.ts'
 import { readCapped, type Confined, type Dir, type Kind } from './confined.ts'
 import type { TaskRunner } from './task.ts'
 import { createLocker, lockKey, type Hold, type LockerOptions } from './write.ts'
@@ -58,6 +59,8 @@ export type ProviderOptions = {
   readonly excluded: Excluder
   /** The folder names that `list` and `search` do not enter. */
   readonly skip: readonly string[]
+  /** `false`: `list` and `search` never read the `.gitignore` of the root. Absent: they do. */
+  readonly gitignore?: boolean
   readonly windows: boolean
   /** The stderr log. Never holds a path, a name or file content. */
   readonly log: (line: string) => void
@@ -78,6 +81,9 @@ export type Provider = {
 }
 
 type Entry = { readonly parts: readonly string[]; readonly kind: Kind; readonly size: number }
+
+/** True for a path that the `.gitignore` of the root hides from the walk. */
+type Hides = (parts: readonly string[], isFolder: boolean) => boolean
 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 
@@ -165,6 +171,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     visit: (entry: Entry, dir: Dir, name: string) => Promise<boolean>,
     signal: AbortSignal,
     within: ReturnType<typeof budget>,
+    hides?: Hides,
   ): Promise<boolean> => {
     const read = await dir.names({
       keep: name => !excluded([...dir.parts, name]),
@@ -180,6 +187,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
       const parts = [...dir.parts, name]
       const entry = await dir.lstat(name)
       if (entry === undefined) continue
+      // An ignored name still counted as a visited one above. An ignored folder is never entered.
+      if (hides?.(parts, entry.kind === 'folder') === true) continue
       if (!(await visit({ parts, kind: entry.kind, size: entry.size }, dir, name))) return false
       if (entry.kind !== 'folder' || levels <= 1 || read.more || skip.has(fold(name))) continue
       const child = await dir.openDir(name).catch((err: unknown) => {
@@ -192,12 +201,43 @@ export const createProvider = (options: ProviderOptions): Provider => {
       })
       if (child === undefined) continue
       try {
-        if (!(await walk(child, levels - 1, visit, signal, within))) return false
+        if (!(await walk(child, levels - 1, visit, signal, within, hides))) return false
       } finally {
         await child.close()
       }
     }
     return true
+  }
+
+  // Names compare with no regard to case on Windows and macOS, as the exclusions do.
+  const folds = windows || confined.method === 'nofollow-any'
+
+  /** The rules of the `.gitignore` of the root, read again at each call. A file that cannot be used gives no rules. */
+  const ignoreRules = async () => {
+    if (options.gitignore === false || excluded(['.gitignore'])) return []
+    const opened = await confined.file(['.gitignore']).catch((err: unknown) => {
+      if (err instanceof WorkspaceError && err.code !== 'cancelled' && err.code !== 'root-changed') return undefined
+      throw err
+    })
+    if (opened === undefined) return []
+    try {
+      if (excluded(opened.parts) || opened.size > LIMITS.ignoreBytes) return []
+      const bytes = await readCapped(opened.handle, LIMITS.ignoreBytes)
+      const text = bytes === undefined ? 'binary' : decoded(bytes)
+      return typeof text === 'string' ? [] : parseIgnore(text.text, folds)
+    } finally {
+      await opened.handle.close().catch(() => {})
+    }
+  }
+
+  /**
+   * What the `.gitignore` hides from one `list` or `search` that starts at `start`: discovery only. A start that is
+   * ignored, or inside an ignored folder, hides nothing, as `path` can name a folder of `skip`.
+   */
+  const hidesFor = async (start: readonly string[]): Promise<Hides | undefined> => {
+    const rules = await ignoreRules()
+    if (rules.length === 0 || !startsClear(rules, start, folds)) return undefined
+    return (parts, isFolder) => ignored(rules, parts, isFolder, folds)
   }
 
   const list = async (input: ListInput, signal: AbortSignal) => {
@@ -208,6 +248,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     let truncated = false
     const dir = await folder(start)
     try {
+      const hides = await hidesFor(dir.parts)
       const complete = await walk(
         dir,
         input.depth,
@@ -222,6 +263,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
         },
         signal,
         within,
+        hides,
       )
       if (!complete || within.cut) truncated = true
     } finally {
@@ -241,6 +283,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     let skipped = 0
     const dir = await folder(start)
     try {
+      const hides = await hidesFor(dir.parts)
       const complete = await walk(
         dir,
         Infinity,
@@ -285,6 +328,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
         },
         signal,
         within,
+        hides,
       )
       if (!complete || within.cut) truncated = true
     } finally {

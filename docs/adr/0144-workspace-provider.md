@@ -31,8 +31,10 @@ The public server still lists only `search_tools` and `run_code`. The sandbox ge
 | A `dryRun` flag on `edit` | The policy matches names. A flag cannot give preview and change separate permissions. |
 | Several files in one `edit` call | It adds partial states and no guarantee. A program previews each file, then edits each file. |
 | Regular expressions in `search` | A pattern from the model can stall the host. The program filters the lines in the sandbox. |
-| `.gitignore` rules, or `git ls-files` | A matcher of our own or a child process. A fixed skip list comes first. It is a follow-up. |
-| MCP client roots | They are advisory. This version does not read them. A later version can use them only to narrow. |
+| `git ls-files` or `git check-ignore` | A child process, and a git binary on `PATH`. The ignore rules are discovery only, so a matcher of our own is enough. |
+| `.gitignore` as access control | A rule is a convenience of the project, not a grant. Exclusions and the grant stay in the config. See [The `.gitignore` of the root](#the-gitignore-of-the-root). |
+| MCP client roots that widen the root | They are advisory. Client roots only narrow the bound root. See [The root of a session](#the-root-of-a-session), step 4. |
+| A strict key that turns Workspace off when every client root is outside the grant | A follow-up. Today such a root grants nothing and the bound root stays. |
 | A shell, or `cross-spawn`, for tasks | A shell parses the command line. `cross-spawn` starts `cmd.exe` for a `.cmd` file. |
 
 ## Config
@@ -51,7 +53,7 @@ The policy reload of each run never reads it, so no reload can widen a root, a w
       },
       { "path": "C:/Users/me/Projects" }
     ],
-    "exclude": ["fixtures/secrets/**", "*.sqlite"], "skip": ["node_modules", "dist"]
+    "exclude": ["fixtures/secrets/**", "*.sqlite"], "skip": ["node_modules", "dist"], "gitignore": true
   }
 }
 ```
@@ -62,8 +64,10 @@ The policy reload of each run never reads it, so no reload can widen a root, a w
   tool to enable yet. Pull request C reads `tasks`. See [Tasks](#tasks).
 - `exclude`: globs of paths that no tool reads, lists or writes, added to the built-in list. No key removes a built-in
   exclusion. A glob with no `/` matches the name of any part, at any depth. A glob with `/` matches the path from the
-  root, and a folder that it names takes each path below it. Up to 64 globs of 200 characters, with at most 6 wildcards.
+  entry path, and a folder that it names takes each path below it. Up to 64 globs of 200 characters, with at most 6 wildcards. A glob is relative to the entry path, not to the session root, so it holds when a client root or a start folder narrows the root. A start folder that an exclude glob hides makes Workspace unavailable. A client root that a glob hides is dropped.
 - `skip`: folder names that `list` and `search` do not enter. It replaces the default list.
+- `gitignore`: `true` by default. `false` turns off the read of the `.gitignore` of the root. Any other value is a config
+  error that names the key. See [The `.gitignore` of the root](#the-gitignore-of-the-root).
 - An error in the section, or a clash with an `mcpServers` entry of the key `workspace`, makes only the entry
   `workspace` invalid. The other servers start. Every error names its key and holds no value of the file.
 
@@ -82,6 +86,20 @@ The server binds the root one time, at the start, from the real path of each ent
 1. If the start folder is inside one or more entries, the deepest entry gives the grants. The session root is the start folder.
 2. Else, if the config has exactly one entry, the session root is the path of that entry.
 3. Else Workspace is unavailable. The reason says to start the client in one of the entries.
+4. Client roots (issue #150) can make the root smaller, never larger. The result of steps 1 to 3 is the *bound root*. If
+   the client declares the `roots` capability, the server sends `roots/list` one time, after
+   `notifications/initialized`. Its first 16 entries each go through `fileUriPath`, `realpath` and the checks of a root:
+   an entry that fails a step grants nothing. A usable client root is inside the bound root, equal to it, or holds it
+   (and then counts as the bound root). The *effective root* is the deepest folder that holds every usable client root,
+   and the bound root when none is usable. The entry, `write` and the tasks do not change.
+
+The server settles the effective root one time: at the answer, at an error, or 2 seconds (`ROOTS_WAIT_MS`) after
+`notifications/initialized`. A late answer changes nothing, and `notifications/roots/list_changed` has no handler, so a
+change of the roots needs a restart. The provider is bound after the settle. Until then `search_tools` and each run
+wait, and no call sees a root wider than the effective one. The `tools/list` reply, the other servers and the start time
+do not wait. The model is told nothing new: paths stay relative. The person sees the line
+`Workspace: a client root narrowed the root to <path>` on stderr and the root in the approval prompt. A task still runs in
+its `cwd` under the entry, which can be outside a narrowed root.
 
 The session root must pass the same refusals as an entry. The compare of paths ignores case on Windows and macOS.
 A backslash separates the parts of a real path on Windows only. On Linux and macOS it is a letter of a name, so the start
@@ -175,6 +193,33 @@ An exclusion holds for every tool, also for `list`, `stat`, `diff` and a new fil
 The generic guard of `src/core/guard.ts` still runs on each call. It is not the boundary of Workspace.
 The default `skip` list is not access control: `node_modules`, `dist`, `build`, `target`, `vendor`, `coverage`, `.venv`,
 `venv` and `__pycache__`.
+
+## The `.gitignore` of the root
+
+`list` and `search` leave out the names that the `.gitignore` in the root ignores (issue #150). It is discovery only and
+never access control: `read`, `stat`, `diff`, `edit`, `write` and `run_task` never read the rules.
+
+- One file counts: `.gitignore` in the effective root. Each call reads it again through the confined open, with the
+  proofs that `search` asks of a file. A file that is missing, excluded, a link, has more than one hard link, is not
+  UTF-8 or is over 64 KiB (`LIMITS.ignoreBytes`) gives no rules and no error.
+- Syntax: blank lines and `#` comments, `\#` and `\!` at the start, trailing spaces cut, `!` negation (the last rule that
+  matches wins), a trailing `/` for folders only, a `/` at the start or in the middle that anchors the pattern to the
+  root, `*` and `?` inside a part, `**` as a whole part, and classes such as `[abc]`, `[a-z]` and `[!a]`.
+- A line is skipped whole, with no error, when it has another `\`, a `**` beside other characters, a class that does
+  not close or holds `[:`, more than 200 characters or more than 6 wildcards. At most 500 rules count
+  (`LIMITS.ignoreRules`). Names compare after NFC, with no regard to case where `foldsCase` says so. The match of one
+  part runs in bounded time and builds no regular expression from the file. It is `src/core/ignore.ts`, not the matcher
+  of the exclusions, so access control does not move.
+- The walk leaves out a name that the rules ignore and does not enter an ignored folder, so a `!` rule below an ignored
+  folder shows nothing, as in git. An ignored name still counts as a visited name of the 20,000.
+- The exclusions and `skip` decide first: no rule shows an excluded name or enters a folder of `skip`.
+  The file `.gitignore` shows in `list` like any file.
+- When the `path` of a call is ignored, or inside an ignored folder, the call applies no rule. `include` never shows an
+  ignored name.
+- The two descriptions of `list` and `search` add one sentence. No text of the file reaches an error, a log line or a
+  description.
+- Deferred: `.gitignore` files below or above the root, `.git/info/exclude`, the global ignore file, a count of ignored
+  names in a result, and a new field of a result.
 
 ## Confinement
 
