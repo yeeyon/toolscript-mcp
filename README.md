@@ -1128,6 +1128,7 @@ that name.
 - `roots` holds 1 to 16 entries. Each `path` is absolute and must be a folder that exists. `write` is `false` by default. See [Change files](#change-files). `tasks` holds the [named tasks](#named-tasks) of the entry.
 - `exclude` holds globs of paths that no tool reads or shows. They add to the built-in list below.
 - `skip` holds the folder names that `list` and `search` do not enter. It replaces the default list: `node_modules`, `dist`, `build`, `target`, `vendor`, `coverage`, `.venv`, `venv` and `__pycache__`. A call can still name such a folder in `path`.
+- `gitignore` is `true` by default. Set it to `false` and `list` and `search` never read the `.gitignore` of the root. See [What the read tools cover](#what-the-read-tools-cover).
 
 The server reads the section one time, at the start. A policy reload never reads it. To change a root, edit the config and
 restart toolscript-mcp. An error in the section makes only the `workspace` entry invalid, and the other servers start.
@@ -1148,6 +1149,13 @@ access alone. Workspace refuses a root in these cases, and the reason names the 
 - The root is your home folder, or a folder that holds it.
 - The root is a Windows network path.
 - A part of the root path has a name such as `.git` or `.ssh`.
+
+Roots of the client can make the root smaller, and never larger. If your client declares the `roots` capability, the
+server asks for its roots one time, after the client starts. The root becomes the deepest folder that holds every client
+root inside the bound root. A client root outside the bound root, a link to a folder outside it, a file, or a refused
+folder grants nothing. The server waits at most 2 seconds for the answer. Until then no Workspace call runs. After that
+time, or after an error, the bound root stays. A change of the roots needs a restart of toolscript-mcp. A task still runs
+in its `cwd` under the entry, which can be outside a smaller root. The prompt and the stderr log show the root.
 
 ### The tools
 
@@ -1177,6 +1185,12 @@ tools add `stale`, `busy`, `exists`, `no-match`, `many-matches` and `read-only`.
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8. `search` skips these files and files over 1 MiB, and counts them in `skipped`.
 - `search` and `list` stop after they read 20,000 names or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. Excluded names do not count toward the 20,000, and only the 10 seconds bound them. A folder with more names than the rest of the budget gives a part of its names, in the order of the volume. A cancel ends a `search` within one second.
 - `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
+- `list` and `search` leave out the names that the `.gitignore` in the root ignores. Each call reads that file again. The files below the root, `.git/info/exclude` and the global ignore file count for nothing.
+- The rules are discovery only. `read`, `stat`, `diff`, `edit`, `write` and `run_task` never use them, so an ignored file reads and changes as before. A `path` that is ignored, or inside an ignored folder, applies no rule.
+- The syntax has `#` comments, `*`, `?`, `**` as a whole part, and classes such as `[Bb]in/`. A trailing `/` takes folders only. A `/` at the start or in the middle anchors the pattern to the root.
+- A `!` rule un-ignores a name, and the last rule that matches wins. A `!` rule below an ignored folder shows nothing, as in git.
+- A line with another `\`, a `**` beside other characters, an unclosed class, over 200 characters or over 6 wildcards is skipped. At most 500 rules count. A file that is missing, excluded, a link, with more than one hard link, not UTF-8 or over 64 KiB gives no rules.
+- An exclusion and `skip` decide first: no rule shows an excluded name. An ignored name still counts as one of the 20,000 names. Set `"gitignore": false` to turn the rules off.
 
 ### Named tasks
 
