@@ -7,6 +7,8 @@
 //   leaver <dir>    starts a grandchild that keeps stdout open and sleeps, writes its pid to dir/grand.pid, and exits 0
 //   flood <bytes>   writes `HEAD`, then filler, then `TAIL`, `bytes` in all, to stdout and the same to stderr
 //   stamp <file> <ms>  appends `start <time>` to file, sleeps ms, appends `end <time>`
+//   orphan <dir> <stay|exit>  starts a middle process that starts a detached grandchild, writes its pid to dir/grand.pid and
+//                   exits. Then it writes `ready` in dir and sleeps (stay), or exits 0 (exit). The grandchild's parent is gone.
 //   sleep           sleeps for ever
 
 import { spawn } from 'node:child_process'
@@ -53,6 +55,21 @@ else if (mode === 'exit') {
 } else if (mode === 'stamp') {
   fs.appendFileSync(rest[0], `start ${Date.now()}\n`)
   setTimeout(() => fs.appendFileSync(rest[0], `end ${Date.now()}\n`), Number(rest[1]))
+} else if (mode === 'orphan') {
+  const [dir, then] = rest
+  const mid = spawn(process.execPath, [process.argv[1], 'orphan-mid', dir], { stdio: 'ignore', windowsHide: true })
+  mid.once('exit', () => {
+    fs.writeFileSync(path.join(dir, 'ready'), '1')
+    if (then === 'exit') process.exit(0)
+  })
+  if (then !== 'exit') forever()
+} else if (mode === 'orphan-mid') {
+  const win = process.platform === 'win32'
+  const [program, args] = win ? ['ping', ['-n', '120', '127.0.0.1']] : ['sleep', ['120']]
+  const grand = spawn(program, args, { stdio: 'ignore', windowsHide: true, detached: true })
+  grand.unref()
+  fs.writeFileSync(path.join(rest[0], 'grand.pid'), String(grand.pid))
+  process.exit(0)
 } else if (mode === 'sleep') forever()
 else {
   process.stderr.write('unknown mode')

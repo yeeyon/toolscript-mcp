@@ -95,6 +95,7 @@ const workspace =
         home: os.homedir(),
         configFile: file,
         log,
+        callSeconds: config.sandbox.callTimeoutSeconds,
       })
 if (workspace !== undefined) {
   log(

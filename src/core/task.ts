@@ -114,6 +114,31 @@ export const taskEnv = (
   return { ...out, ...extra }
 }
 
+/** One argument as the command line of a Windows process holds it: the rule of libuv (`quote_cmd_arg`), which the C runtime reads back. */
+const quoteArg = (arg: string): string => {
+  if (arg === '') return '""'
+  if (!/[ \t"]/.test(arg)) return arg
+  if (!/["\\]/.test(arg)) return `"${arg}"`
+  // A run of backslashes is doubled when a quote or the end follows it, and a quote gets one more.
+  let out = '"'
+  let slashes = 0
+  for (const ch of arg) {
+    if (ch === '\\') {
+      slashes++
+      continue
+    }
+    out += ch === '"' ? `${'\\'.repeat(slashes * 2 + 1)}"` : `${'\\'.repeat(slashes)}${ch}`
+    slashes = 0
+  }
+  return `${out}${'\\'.repeat(slashes * 2)}"`
+}
+
+/** The arguments of a task as the one command-line text that Windows hands to a process, joined by a space. */
+export const argumentLine = (args: readonly string[]): string => args.map(quoteArg).join(' ')
+
+/** The longest command line of a Windows process, in characters. */
+export const COMMAND_LINE_MAX = 32767
+
 /** The names of the tasks as a list for a message. */
 export const taskList = (names: readonly string[]): string => names.join(', ')
 

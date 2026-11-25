@@ -54,6 +54,8 @@ export type BindInput = {
   /** The environment of the server: its `PATH` finds the command of a task, and a short list of it reaches the task. */
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly locks?: ProviderOptions['locks']
+  /** `sandbox.callTimeoutSeconds`: a task is stopped one second before the call that runs it. Default 60. */
+  readonly callSeconds?: number
 }
 
 const real = (file: string): Promise<string> => realpathNative(file)
@@ -69,6 +71,7 @@ export const bindWorkspace = async ({
   limits,
   env = process.env,
   locks,
+  callSeconds,
 }: BindInput): Promise<Binding> => {
   const refuse = (reason: string): Binding => ({ ok: false, reason })
   const homeReal = await real(home).catch(() => home)
@@ -120,7 +123,10 @@ export const bindWorkspace = async ({
           }
         },
       })
-      tasks = createTaskRunner(set)
+      tasks = createTaskRunner(set, {
+        ...(callSeconds !== undefined && { callMs: callSeconds * 1000 }),
+        note: log,
+      })
     }
     const made = createProvider({
       confined,

@@ -22,6 +22,7 @@ const REQUIRED = [
   'dist/host/main.js',
   'dist/third-party-licenses.txt',
   'runtime/runner.mjs',
+  'runtime/task-job.ps1',
   'demo/server.mjs',
   'demo/data.mjs',
 ]
