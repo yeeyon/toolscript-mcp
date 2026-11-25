@@ -794,12 +794,7 @@ describe('output projection', () => {
     const calls: CallRecord[] = [
       ...Array.from(
         { length: 8 },
-        (_, i): CallRecord => ({
-          ref: i + 1,
-          tool: 'mcp__x__get',
-          status: 'ok',
-          chars: 10,
-        }),
+        (_, i): CallRecord => ({ ref: i + 1, tool: 'mcp__x__get', status: 'ok', chars: 10 }),
       ),
       { tool: 'mcp__x__get', status: 'failed', chars: 0 },
       { tool: 'mcp__x__get', status: 'unfinished', chars: 0 },

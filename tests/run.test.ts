@@ -3049,13 +3049,13 @@ describe('workspace', () => {
     assert.ok(!fine.text.includes('stopped early'), fine.text)
   })
 
-  test('a tool named search on a server that is not the Workspace gives no cut line', async () => {
+  test('a tool mcp__workspace__search of a server that is not the built-in Workspace gives no cut line', async () => {
     const tools = [{ name: 'search', inputSchema: { type: 'object' } }]
     const { run } = setup({
-      others: [{ key: 'g' as ServerKey, status: 'connected', tools }],
-      servers: new Map([['g' as ServerKey, { kind: 'stdio', command: 'fake', args: [], env: {} } as const]]),
+      others: [{ key: 'workspace' as ServerKey, status: 'connected', tools }],
+      servers: new Map([['workspace' as ServerKey, { kind: 'stdio', command: 'fake', args: [], env: {} } as const]]),
     })
-    const out = await run('return await call("mcp__g__search", {})')
+    const out = await run('return await call("mcp__workspace__search", {})')
     assert.equal(out.isError, false, out.text)
     assert.ok(out.text.includes('"truncated": true'), out.text)
     assert.ok(!out.text.includes('stopped early'), out.text)
