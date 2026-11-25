@@ -99,7 +99,6 @@ const step: Promise<Step> | undefined =
   config.workspace === undefined
     ? undefined
     : bindStep({ workspace: config.workspace, start: process.cwd(), home: os.homedir(), configFile: file })
-const workspaceDown = step !== undefined && (await within<Step | undefined>(step, 2000, undefined))?.ok === false
 const bindOf = async (section: WorkspaceConfig, clientRoots: Roots, stepped: Promise<Step>): Promise<Binding> => {
   const workspace = await bindWorkspace({
     workspace: section,
@@ -144,6 +143,8 @@ const downstream = connectAll(config.servers, version, log, {
     },
   }),
 })
+// The downstream servers have started: only now does the server wait for the step, at most 2 s.
+const workspaceDown = step !== undefined && (await within<Step | undefined>(step, 2000, undefined))?.ok === false
 const { server, stopRuns } = createServer(
   downstream,
   config,

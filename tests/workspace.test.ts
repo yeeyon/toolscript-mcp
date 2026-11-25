@@ -269,7 +269,7 @@ describe('the root of a session', () => {
     assert.match(r.ok ? '' : r.reason, /Start the client in one of them/)
     assert.equal(
       r.ok ? '' : r.reason,
-      'the client started toolscript-mcp in a folder that is in none of the 3 entries of workspace.roots. Start the client in one of them, or keep one entry. Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.',
+      'the client started toolscript-mcp in a folder that is in none of the 3 entries of workspace.roots. Start the client in one of them. Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.',
     )
     assert.doesNotMatch(r.ok ? '' : r.reason, /\/work|elsewhere/)
   })

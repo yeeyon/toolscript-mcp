@@ -122,22 +122,32 @@ export type Step =
  * the refusal of the start folder and its `workspace.exclude` check. Client roots only narrow what it gives (decision
  * 035), so a step that failed stays failed. Each reason ends with the restart sentence: the section is read one time.
  */
-export const bindStep = async ({
+export const bindStep = async (input: StepInput): Promise<Step> => {
+  try {
+    return await stepOf(input)
+  } catch {
+    // The step never rejects: the server awaits it at its start.
+    return { ok: false, reason: `Workspace could not read its roots. ${RESTART_SENTENCE}` }
+  }
+}
+
+type StepInput = Pick<BindInput, 'workspace' | 'start' | 'home' | 'configFile' | 'platform'>
+
+const stepOf = async ({
   workspace,
   start,
   home,
   configFile,
   platform = process.platform,
-}: Pick<BindInput, 'workspace' | 'start' | 'home' | 'configFile' | 'platform'>): Promise<Step> => {
+}: StepInput): Promise<Step> => {
   const refuse = (reason: string): Step => ({ ok: false, reason: `${reason}. ${RESTART_SENTENCE}` })
   const homeReal = await real(home).catch(() => home)
   const roots: RealRoot[] = []
   for (const [i, root] of workspace.roots.entries()) {
     const place = `workspace.roots[${i}].path`
-    const found = await real(root.path).then(
-      async p => ((await fs.promises.stat(p)).isDirectory() ? p : undefined),
-      () => undefined,
-    )
+    const found = await real(root.path)
+      .then(async p => ((await fs.promises.stat(p)).isDirectory() ? p : undefined))
+      .catch(() => undefined)
     if (found === undefined) return refuse(`${place} is not a folder that exists`)
     const problem = rootProblem(found, homeReal, platform)
     if (problem !== undefined) return refuse(`${place} is refused: ${problem}`)

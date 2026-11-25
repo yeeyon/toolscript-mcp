@@ -398,6 +398,7 @@ describe('the config step of the bind (issue #163)', () => {
     const { base, projects, elsewhere, other } = tree(t)
     const gone = path.join(base, 'gone')
     const home = folders(t)()
+    fs.mkdirSync(path.join(projects, '.git'))
     const cases: [string, Awaited<ReturnType<typeof step>>, RegExp][] = [
       [
         'a path that does not exist',
@@ -407,7 +408,7 @@ describe('the config step of the bind (issue #163)', () => {
       [
         'a start folder in none of two entries',
         await step(base, [projects, other], elsewhere),
-        /^the client started toolscript-mcp in a folder that is in none of the 2 entries of workspace\.roots\. Start the client in one of them, or keep one entry\. /,
+        /^the client started toolscript-mcp in a folder that is in none of the 2 entries of workspace\.roots\. Start the client in one of them. /,
       ],
       [
         'a start folder that is excluded',
@@ -415,6 +416,11 @@ describe('the config step of the bind (issue #163)', () => {
         /^the folder where the client started toolscript-mcp is excluded by workspace\.exclude\./,
       ],
       ['the home folder as a root', await step(base, [home], home, [], home), /refused/],
+      [
+        'a start folder that is refused as a root',
+        await step(base, [projects], path.join(projects, '.git')),
+        /^the folder where the client started toolscript-mcp is refused as a root: /,
+      ],
     ]
     for (const [name, s, shape] of cases) {
       const reason = reasonOf(s)
@@ -428,6 +434,19 @@ describe('the config step of the bind (issue #163)', () => {
       'Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.',
     )
     assert.ok(!/add |edit |widen/i.test(RESTART_SENTENCE))
+  })
+
+  test('a step that throws gives a failed step with a fixed reason, never a rejection', async t => {
+    const { base, projects } = tree(t)
+    const broken = {
+      get roots(): never {
+        throw new Error(`boom ${base}`)
+      },
+      exclude: [],
+      skip: [],
+    }
+    const s = await bindStep({ workspace: broken, start: projects, home: base, configFile: path.join(base, 'c.json') })
+    assert.deepEqual(s, { ok: false, reason: `Workspace could not read its roots. ${RESTART_SENTENCE}` })
   })
 
   test('a step that passed is a bound root, and client roots never turn a failed step into a bind', async t => {

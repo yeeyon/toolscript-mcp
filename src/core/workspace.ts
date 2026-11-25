@@ -356,7 +356,7 @@ export const bindRoot = (roots: readonly RealRoot[], start: string, platform: st
   if (roots.length === 1) return { ok: true, index: 0, root: roots[0]!.path }
   return {
     ok: false,
-    reason: `the client started toolscript-mcp in a folder that is in none of the ${roots.length} entries of workspace.roots. Start the client in one of them, or keep one entry. ${RESTART_SENTENCE}`,
+    reason: `the client started toolscript-mcp in a folder that is in none of the ${roots.length} entries of workspace.roots. Start the client in one of them. ${RESTART_SENTENCE}`,
   }
 }
 
