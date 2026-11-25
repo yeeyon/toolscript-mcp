@@ -146,6 +146,8 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
   or to the budget, before any folder below it is entered, so one walk holds at most 20,000 names and one read buffer.
   A cut folder gives some of its names, in the order of the volume. `list` also stops at 5,000 entries. Each cut sets
   `truncated`. So a tree with no match for the `include`, or one of folders only, ends too.
+  The footer of a run says when a `list` or `search` call was cut: one fixed line for each tool, with the number of cut
+  calls of the calls that worked, and only for the Workspace of the config.
 - `read` and `search` read through the handle at most one byte more than their limit (4 MiB and 1 MiB), whatever the
   size said when the file was opened. A file that holds more is refused by `read` and skipped by `search`.
 - `include` holds up to 16 globs with `*`, `?` and `**`, over paths from the session root, matched in bounded time: a

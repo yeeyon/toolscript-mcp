@@ -448,7 +448,7 @@ export const WORKSPACE_TOOLS = {
   list: {
     class: 'read',
     description:
-      'List files and folders under a folder of the workspace, sorted by path. A link is listed and never entered. Excluded paths such as .git and .env never show. The .gitignore of the root hides names too: name an ignored folder in path to list it.',
+      'List files and folders under a folder of the workspace, sorted by path. A link is listed and never entered. Excluded paths such as .git and .env never show. The .gitignore of the root hides names too: name an ignored folder in path to list it. truncated is true when it stopped early (10 s, 20,000 names or 5,000 entries).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -487,7 +487,7 @@ export const WORKSPACE_TOOLS = {
   search: {
     class: 'read',
     description:
-      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program. The .gitignore of the root hides files: name an ignored folder in path to search it.',
+      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program. The .gitignore of the root hides files: name an ignored folder in path to search it. truncated is true when it stopped early (10 s, 20,000 names or maxMatches): the matches are then partial.',
     inputSchema: {
       type: 'object',
       properties: {

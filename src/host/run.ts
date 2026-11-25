@@ -653,6 +653,19 @@ const execute = async (
     }
   }
 
+  // Calls of the built-in Workspace `list` and `search` that stopped early, for the footer. Only the provider of the
+  // config counts, and only the boolean `true`: the footer is outside the wrapper of untrusted content.
+  const cutCounts = { list: { cut: 0, total: 0 }, search: { cut: 0, total: 0 } }
+  const noteCut = (tool: string, r: Reply): void => {
+    const target = splitToolName(tool)
+    if (target === undefined || config.servers.get(target.server as ServerKey)?.kind !== 'workspace') return
+    if (!r.ok || (target.name !== 'list' && target.name !== 'search')) return
+    const count = cutCounts[target.name]
+    count.total++
+    if (typeof r.value === 'object' && r.value !== null && (r.value as { truncated?: unknown }).truncated === true)
+      count.cut++
+  }
+
   const answerCall = async (
     id: number,
     tool: string,
@@ -675,6 +688,7 @@ const execute = async (
       ...(r.ok || cls === undefined ? {} : { class: cls }),
     })
     noteChange(tool, args, r, failure)
+    noteCut(tool, r)
     // The call counts as finished before its reply is written: the runner can read the reply and send its next call
     // at once, and that call must find this one done. A throw here ends only this run, through `answer`.
     const key = sentKey ?? callKey(tool, args)
@@ -883,7 +897,16 @@ const execute = async (
     calls.length,
     stderr,
     MAX_RESULT_CHARS,
-    { calls, recalls, recalled, wholeRef, serial },
+    {
+      calls,
+      recalls,
+      recalled,
+      wholeRef,
+      serial,
+      ...(cutCounts.list.cut + cutCounts.search.cut > 0 && {
+        cut: { list: cutCounts.list, search: cutCounts.search },
+      }),
+    },
     untrusted ? randomBytes(16).toString('hex') : undefined,
     shown.note,
     notes,
