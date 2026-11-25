@@ -143,38 +143,45 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   /**
-   * The bound of one walk: false once it has seen `searchFiles` names (every name counts, whatever it is) or has run
-   * `searchMs`. So a tree with no match for the `include`, or one of folders only, ends too.
+   * The bound of one walk: `left` names (`searchFiles`, less each name read so far) and `searchMs`. A name counts when
+   * it is read, whatever it is (a file, a folder, a link, a name that `include` drops), except an excluded name, which
+   * only the time bounds. So a tree with no match for the `include`, or one of folders only, ends too.
    */
-  const budget = (): (() => boolean) => {
+  const budget = () => {
     const began = performance.now()
-    let seen = 0
-    return () => seen++ < limits.searchFiles && performance.now() - began <= limits.searchMs
+    return { left: limits.searchFiles, cut: false, timely: () => performance.now() - began <= limits.searchMs }
   }
 
   /**
-   * Visits each entry below `dir` in sorted order, down to `levels` levels. A name from the listing is a candidate:
-   * `lstat` and each open prove it. An excluded name is never visited, a link is visited and never entered, and a
-   * folder that vanished or became a link while the walk ran is left out. Returns false when a visit or the `within`
-   * budget stopped the walk before its end.
+   * Visits each entry below `dir` in sorted order, down to `levels` levels. The names of a folder are read to its end
+   * or to the budget before any folder below it is entered. A name from the listing is a candidate: `lstat` and each
+   * open prove it. An excluded name is never read into the walk, a link is visited and never entered, and a folder
+   * that vanished or became a link while the walk ran is left out. Returns false when a visit or the time stopped the
+   * walk. A read that the budget cut sets `within.cut`, and the walk goes on with the names it holds.
    */
   const walk = async (
     dir: Dir,
     levels: number,
     visit: (entry: Entry, dir: Dir, name: string) => Promise<boolean>,
     signal: AbortSignal,
-    within: () => boolean,
+    within: ReturnType<typeof budget>,
   ): Promise<boolean> => {
-    const names = (await dir.names()).sort(byText)
+    const read = await dir.names({
+      keep: name => !excluded([...dir.parts, name]),
+      room: within.left,
+      alive: () => (cancelled(signal), within.timely()),
+    })
+    within.left -= read.names.length
+    if (read.more) within.cut = true
+    const names = read.names.sort(byText)
     for (const name of names) {
       cancelled(signal)
-      if (!within()) return false
+      if (!within.timely()) return false
       const parts = [...dir.parts, name]
-      if (excluded(parts)) continue
       const entry = await dir.lstat(name)
       if (entry === undefined) continue
       if (!(await visit({ parts, kind: entry.kind, size: entry.size }, dir, name))) return false
-      if (entry.kind !== 'folder' || levels <= 1 || skip.has(fold(name))) continue
+      if (entry.kind !== 'folder' || levels <= 1 || read.more || skip.has(fold(name))) continue
       const child = await dir.openDir(name).catch((err: unknown) => {
         if (
           err instanceof WorkspaceError &&
@@ -197,6 +204,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     const start = target(input.path)
     const inList = includeTest(input.include)
     const entries: { path: string; type: Kind; size?: number }[] = []
+    const within = budget()
     let truncated = false
     const dir = await folder(start)
     try {
@@ -213,9 +221,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
           return true
         },
         signal,
-        budget(),
+        within,
       )
-      if (!complete) truncated = true
+      if (!complete || within.cut) truncated = true
     } finally {
       await dir.close()
     }
@@ -227,6 +235,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     const inList = includeTest(input.include)
     const query = input.ignoreCase ? lowered(input.query) : input.query
     const matches: { path: string; line: number; column: number; text: string }[] = []
+    const within = budget()
     let truncated = false
     let scanned = 0
     let skipped = 0
@@ -275,9 +284,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
           }
         },
         signal,
-        budget(),
+        within,
       )
-      if (!complete) truncated = true
+      if (!complete || within.cut) truncated = true
     } finally {
       await dir.close()
     }

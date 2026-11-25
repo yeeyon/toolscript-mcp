@@ -241,10 +241,11 @@ describe('list, stat, read and search', () => {
     const files = await rig.call('search', { query: 'hit' })
     assert.equal(files.filesScanned, 5)
     assert.equal(files.truncated, true)
-    assert.deepEqual(
-      [...new Set(files.matches.map((m: { path: string }) => m.path))],
-      ['f00.txt', 'f01.txt', 'f02.txt', 'f03.txt', 'f04.txt'],
-    )
+    // The volume orders a cut folder, so the 5 files are some 5 of the 12.
+    const hit = [...new Set(files.matches.map((m: { path: string }) => m.path))]
+    assert.equal(hit.length, 5)
+    assert.deepEqual(hit, [...hit].sort())
+    for (const p of hit) assert.match(p, /^f\d\d\.txt$/)
     // `list` visits at most as many names as `search` (here 5), so a larger visit limit shows the limit of the entries.
     const wide = await rigOf(t, root, { limits: { searchFiles: 50, listEntries: 7 } })
     if (wide === undefined) return
