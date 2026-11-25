@@ -862,7 +862,7 @@ const execute = async (
   const calls = [...records]
     .sort((a, b) => a[0] - b[0])
     .map(([, r]) => (listed === undefined || listed.has(r.tool) ? r : { ...r, tool: '(a name that no server lists)' }))
-  // The walks of Workspace share the host's event loop and its 4 file threads, so parallel calls do not take as long as
+  // The walks of Workspace share the host's file threads (4 by default), so parallel calls do not take as long as
   // the slowest one: the note would send a program to Promise.all, and 8 searches each ran to the 10 s time limit.
   const streak = serialStreak(
     [...timed.values()].filter(c => !inWorkspace(c.tool)),

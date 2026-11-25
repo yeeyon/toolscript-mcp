@@ -3031,6 +3031,38 @@ describe('workspace', () => {
     assert.ok(!out.text.includes('one after another'), out.text)
   })
 
+  test('a run that mixes fake-server calls and Workspace searches gets the note for the fake tool only', async t => {
+    const ws = await rig(t)
+    if (ws === undefined) return
+    // The fake server `f` and the real Workspace answer in one run.
+    const fake = fakeDownstream(undefined, entry).downstream
+    const both = {
+      settled: Promise.resolve(),
+      settledFor: async () => {},
+      states: () => [...fake.states(), ...ws.downstream.states()],
+      retry: async () => {},
+      relist: async () => {},
+      client: (key: ServerKey) => (key === WS ? ws.downstream.client(key) : fake.client(key)),
+      untrusted: (key: ServerKey) => ws.downstream.untrusted(key),
+      distrust: () => {},
+      close: async () => {},
+    } as unknown as Downstream
+    const r = setup({
+      downstream: both,
+      servers: entry,
+      workspace: true,
+      workspaceRoot: ws.root,
+      policy: rules(['mcp__f__slow', 'allow']),
+      serialLimits: { gapMs: 400, minSavedMs: 0 },
+    })
+    const out = await r.run(
+      'for (let i = 0; i < 3; i++) await call("mcp__f__slow", { n: `a${i}` })\nfor (const query of ["maxAttempts", "file 1", "file 2"]) await call("mcp__workspace__search", { query })\nfor (let i = 0; i < 3; i++) await call("mcp__f__slow", { n: `b${i}` })\nreturn "ok"',
+    )
+    assert.equal(out.isError, false, out.text)
+    assert.match(out.text, /3 calls of mcp__f__slow ran one after another/, out.text)
+    assert.ok(!/calls of mcp__workspace__/.test(out.text), out.text)
+  })
+
   test('a name built at run time and tools.workspace.read() run the same way, through the same check', async t => {
     const r = await rig(t, { policy: [] })
     if (r === undefined) return
