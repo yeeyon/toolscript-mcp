@@ -442,8 +442,10 @@ const cwdProblem = async (server: Live): Promise<string | undefined> => {
 
 /** The in-memory link to the built-in Workspace, or the reason that it is not there. Each attempt makes a new link. */
 const workspaceTransport = async (
-  link: WorkspaceLink | undefined,
+  pending: WorkspaceLink | Promise<WorkspaceLink> | undefined,
 ): Promise<{ transport: Transport; lastError: () => string; child?: ChildTransport }> => {
+  // The link can wait for the roots of the client (issue #150): no call runs before the root is settled.
+  const link = await pending
   if (link === undefined) throw new OwnError('the built-in Workspace is not available in this process')
   if (!link.ok) throw new OwnError(link.reason)
   return { transport: await link.serve(), lastError: () => '' }
@@ -493,7 +495,7 @@ export type ConnectOptions = {
   /** Lazy start is on (decision 028, `TOOLSCRIPT_LAZY` not 0). Absent: every child starts at the session start, as before. */
   readonly lazy?: LazyOptions
   /** The built-in Workspace (issue #144): the link of the entry of kind `workspace`. Absent: that entry fails to connect. */
-  readonly workspace?: WorkspaceLink
+  readonly workspace?: WorkspaceLink | Promise<WorkspaceLink>
 }
 
 /** The tool lists of lazy servers on disk. The host reads and writes the file; a test gives a fake. */

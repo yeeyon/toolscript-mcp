@@ -9,7 +9,9 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type { Config } from '../../core/config.ts'
 import { appPath } from '../../core/paths.ts'
+import { fileUriPath, narrowRoot } from '../../core/roots.ts'
 import {
+  LIMITS,
   WorkspaceError,
   bindRoot,
   makeExcluder,
@@ -54,9 +56,46 @@ export type BindInput = {
   /** The environment of the server: its `PATH` finds the command of a task, and a short list of it reaches the task. */
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly locks?: ProviderOptions['locks']
+  /**
+   * The `uri` of the client roots (issue #150), settled one time. They only narrow the root of the session: each one
+   * is proven here, and one that fails a step grants nothing. Absent: the root is the bound root.
+   */
+  readonly clientRoots?: () => Promise<readonly unknown[]>
 }
 
 const real = (file: string): Promise<string> => realpathNative(file)
+
+/**
+ * The root after the client roots: the bound root, or a folder inside it. Each entry goes through `fileUriPath`, then
+ * `realpath`, then it must be a folder that `rootProblem` accepts. An entry that fails a step grants nothing and is
+ * dropped. The log says how many were dropped and never shows a URI.
+ */
+const narrowed = async (
+  bound: string,
+  uris: readonly unknown[],
+  homeReal: string,
+  platform: string,
+  log: (line: string) => void,
+): Promise<string> => {
+  const read = uris.slice(0, LIMITS.roots)
+  const kept: string[] = []
+  for (const uri of read) {
+    const text = fileUriPath(uri, platform)
+    const found =
+      text === undefined
+        ? undefined
+        : await real(text).then(
+            async p => ((await fs.promises.stat(p)).isDirectory() ? p : undefined),
+            () => undefined,
+          )
+    if (found !== undefined && rootProblem(found, homeReal, platform) === undefined) kept.push(found)
+  }
+  if (kept.length < read.length)
+    log(`Workspace: ${read.length - kept.length} of ${read.length} client roots were dropped`)
+  const root = narrowRoot(bound, kept, platform)
+  if (root !== bound) log(`Workspace: a client root narrowed the root to ${root}`)
+  return root
+}
 
 export const bindWorkspace = async ({
   workspace,
@@ -69,6 +108,7 @@ export const bindWorkspace = async ({
   limits,
   env = process.env,
   locks,
+  clientRoots,
 }: BindInput): Promise<Binding> => {
   const refuse = (reason: string): Binding => ({ ok: false, reason })
   const homeReal = await real(home).catch(() => home)
@@ -89,10 +129,15 @@ export const bindWorkspace = async ({
   const problem = rootProblem(bound.root, homeReal, platform)
   if (problem !== undefined)
     return refuse(`the folder where the client started toolscript-mcp is refused as a root: ${problem}`)
+  // The roots of the client only narrow the bound root. This is settled one time, before the provider exists.
+  const root =
+    clientRoots === undefined
+      ? bound.root
+      : await narrowed(bound.root, await clientRoots().catch(() => []), homeReal, platform, log)
   try {
-    const confined = await openConfined(bound.root, { platform, ...(hook !== undefined && { hook }) })
+    const confined = await openConfined(root, { platform, ...(hook !== undefined && { hook }) })
     const forbidden = [await real(configFile).catch(() => path.resolve(configFile)), appPath(homeReal)]
-    const excluded = makeExcluder(bound.root, workspace.exclude, forbidden)
+    const excluded = makeExcluder(root, workspace.exclude, forbidden)
     // The tasks of the entry that the root is in. A session whose entry has none runs none, and the tasks of another
     // entry are never looked at.
     const entry = roots[bound.index]!
@@ -102,7 +147,7 @@ export const bindWorkspace = async ({
     let tasks: TaskRunner | undefined
     if (configured.length > 0) {
       // The folder of a task is relative to the entry. The root of the session can be a folder inside the entry.
-      own = entry.path === bound.root ? undefined : await openConfined(entry.path, { platform })
+      own = entry.path === root ? undefined : await openConfined(entry.path, { platform })
       const proofFs = own ?? confined
       const entryExcluded = own === undefined ? excluded : makeExcluder(entry.path, workspace.exclude, forbidden)
       set = await resolveTasks({
@@ -124,11 +169,12 @@ export const bindWorkspace = async ({
     }
     const made = createProvider({
       confined,
-      root: bound.root,
+      root,
       home: homeReal,
       write: entry.write,
       excluded,
       skip: workspace.skip,
+      ...(workspace.gitignore === false && { gitignore: false }),
       windows: platform === 'win32',
       log,
       ...(limits !== undefined && { limits }),
@@ -141,7 +187,7 @@ export const bindWorkspace = async ({
     return {
       ok: true,
       bound: {
-        root: bound.root,
+        root,
         write: entry.write,
         method: confined.method,
         provider,
