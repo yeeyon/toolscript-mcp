@@ -1294,14 +1294,16 @@ trusts a check that it made before. The proof differs by system:
 | --- | --- |
 | Linux | Each part of the path is opened with `O_NOFOLLOW`, relative to the folder that is held open. A later swap of a name changes nothing that is held. |
 | macOS | The full path is opened with `O_NOFOLLOW_ANY`, which refuses a symlink in any part. |
-| Windows | The full path is opened. Then `realpath` and `lstat` must agree with the identity of the handle, two times. |
+| Windows | The full path is opened. A handle on another volume than the root is refused. Then `realpath` and `lstat` must agree with the identity of the handle, two times. |
 
 At its first use, Workspace tests its method in a temp folder. If the test fails, Workspace is unavailable and the reason
 says why. On macOS, the CI run of the repo decides if the method works. A macOS system where it does not work has Workspace unavailable.
 
+On Windows, Workspace does not cross to another volume: a folder inside the root that mounts another volume is refused.
+
 ### What stays possible
 
-- On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root. `edit` and `write` can write a file outside the root whose bytes match `expectedHash`, and make an empty file or folder there.
+- On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root, if that file is on the same volume as the root. `edit` and `write` can write such a file whose bytes match `expectedHash`. A new empty file or folder can be made outside the root, on any volume.
 - On Windows and macOS, a swap can alternate with each lookup of a `list` or a `stat`. Then it can show a name, a size or a kind from outside the root. It never shows the bytes of a file.
 - On Windows, the same can happen for a folder in the middle of a path, such as `b` in `list b/c`: the swap must be out at the open of `b/c` and then alternate. Later lookups can be outside in a row.
 - On macOS, a swap while a new folder is made can make an empty folder outside the root.

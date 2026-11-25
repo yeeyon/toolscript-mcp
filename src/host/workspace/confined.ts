@@ -162,9 +162,20 @@ const linkError = (): WorkspaceError =>
 const kindOf = (st: fs.Stats | fs.BigIntStats): Kind =>
   st.isSymbolicLink() ? 'link' : st.isFile() ? 'file' : st.isDirectory() ? 'folder' : 'other'
 
-type FileId = { readonly dev: bigint; readonly ino: bigint }
+export type FileId = { readonly dev: bigint; readonly ino: bigint }
 
 const idOf = (st: fs.BigIntStats): FileId => ({ dev: st.dev, ino: st.ino })
+
+/**
+ * True when the stat of an open handle and the stat of its path name one file. On Windows the handle must be on the
+ * volume of the root (`rootDev`, from a handle of the root), and the path stat may give `dev` 0 (Node 22.13): the file
+ * id alone is then compared, which is sound on one volume. On the other systems `dev` and `ino` must both match.
+ */
+export const sameFile = (handle: FileId, atPath: FileId, rootDev: bigint, platform: string): boolean =>
+  handle.ino === atPath.ino &&
+  (platform === 'win32'
+    ? handle.dev === rootDev && (atPath.dev === 0n || atPath.dev === handle.dev)
+    : handle.dev === atPath.dev)
 
 /**
  * True when two stats name one file. Node 22.13 on Windows gives `dev` 0 for `lstat` and `stat` of a path, and the volume
@@ -454,6 +465,8 @@ const sameParts = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((part, i) => fold(part) === fold(b[i]!))
 
 const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook): Confined => {
+  // On Windows `rootId` comes from a handle of the root, so its `dev` is the volume serial on every Node.
+  const rootDev = rootId.dev
   const windows = platform === 'win32'
   const full = (parts: readonly string[]) => path.join(root, ...parts)
 
@@ -470,6 +483,12 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
     const st = await handle.stat({ bigint: true })
     if (st.ino === 0n) throw unavailable('the volume gives no file identity')
     const id = idOf(st)
+    // A file id names one file on one volume only: a handle on another volume than the root is refused, before the rounds.
+    if (id.dev !== rootDev)
+      throw new WorkspaceError(
+        'link',
+        'the path is on another volume than the root: Workspace does not cross to another volume',
+      )
     let real: string | undefined
     for (let round = 0; round < 2; round++) {
       await hook('realpath')
@@ -478,7 +497,7 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
       else if (now !== real) throw linkError()
       await hook('lstat')
       const ls = await fs.promises.lstat(now, { bigint: true })
-      if (ls.isSymbolicLink() || !sameId(idOf(ls), id)) throw linkError()
+      if (ls.isSymbolicLink() || !sameFile(id, idOf(ls), rootDev, platform)) throw linkError()
     }
     const seen = insideParts(real!)
     if (!sameParts(seen, parts)) {
@@ -709,7 +728,14 @@ export const openConfined = async (
 ): Promise<Confined> => {
   await ensureMethod(platform)
   if (platform !== 'linux') {
-    const rootStat = await fs.promises.stat(root, { bigint: true }).catch(err => Promise.reject(mapError(err)))
+    // Windows takes the identity of the root from a handle, so its `dev` is the volume serial on every Node.
+    const rootStat =
+      platform === 'win32'
+        ? await fs.promises.open(root, 'r').then(
+            h => h.stat({ bigint: true }).finally(() => h.close().catch(() => {})),
+            err => Promise.reject(mapError(err)),
+          )
+        : await fs.promises.stat(root, { bigint: true })
     if (!rootStat.isDirectory()) throw new WorkspaceError('not-folder', 'the workspace root is not a folder')
     if (rootStat.ino === 0n) throw unavailable('the volume gives no file identity')
     return pathConfined(root, idOf(rootStat), platform, hook)

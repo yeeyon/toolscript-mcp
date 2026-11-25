@@ -175,7 +175,7 @@ A listing by name gives candidates only. Each entry is opened and proven before 
 | --- | --- | --- |
 | Linux | The provider holds the root folder open. It opens one path part at a time, with `O_NOFOLLOW`, as `/proc/self/fd/<fd>/<part>` of the held parent. | A temp file made with `O_EXCL` in the held folder, then a rename with both names relative to that folder. |
 | macOS | It opens the full path with `O_NOFOLLOW_ANY` (`0x20000000`). The kernel refuses a symlink in any part. | In place, through the proven handle. |
-| Windows | It opens the full path. Then, two times, `realpath.native` must give the same real path, and `lstat` of that path must give the identity of the handle. The real path must be inside the root. It can differ from the name in case or by a short name. Then `lstat` of each part must show no link. | In place, through the proven handle. |
+| Windows | It opens the full path. Then, two times, `realpath.native` must give the same real path, and `lstat` of that path must give the identity of the handle. The real path must be inside the root. It can differ from the name in case or by a short name. Then `lstat` of each part must show no link. A handle on another volume than the root is refused with `link` before these rounds (see below). | In place, through the proven handle. |
 
 The provider tests its method one time for each process, at the first use, in a temp folder. If the test fails, Workspace
 is unavailable and the reason says why. Such cases are Linux with no `/proc`, a macOS kernel that ignores the flag, and a
@@ -186,6 +186,15 @@ the folder must show as the proven one (no link, same identity) right before the
 that fails a proof drops what it read. On Linux a folder is held open, so its names and entries are exact.
 The root of a Linux session is opened first and then compared with its path (`lstat` of the path, no link, same identity
 as the held folder), so a swap of the root around its open fails the start with `root-changed`.
+
+On Windows the volume of the root is its `dev` from `fstat` of a handle of the root, taken at the start. In `proveWindows`,
+a handle whose `dev` differs gets `link`, "Workspace does not cross to another volume", before the two rounds (`sameFile`
+in `confined.ts` is the compare). Node 22.13 gives `dev` 0 for `lstat` and `stat` of a path, so the compare keeps that case:
+a path `dev` of 0 matches when the handle is on the root volume, where a file id names one file. A junction to another
+volume with a matching file id no longer passes. Every file on another volume leaves the read and write family, and every
+folder on another volume leaves the nested folder family. A folder inside the root that mounts another volume is refused.
+`list` and `stat` read by path, so they can still show a name or a size from any volume, and an empty new file or folder can
+still be made there.
 
 ### What was measured
 
@@ -200,6 +209,11 @@ Windows 11 build 26300, Node 22.23.3, temp folders. Linux: Docker with one CPU, 
 - On Linux, a read and a rename through the held folder stayed in the real folder while its name was a symlink to outside.
   A path of two parts through `/proc/self/fd` followed the symlink. So each open takes one part.
 - macOS was not measured. The test of pull request A must prove it on macOS CI, or Workspace stays unavailable there.
+- On Windows, Node has no path of an open fd. `fs` takes an fd only in `fstat`, `fchmod`, `fchown`, `fsync`, `fdatasync`,
+  `ftruncate` and `futimes`: `realpath.native(fd)`, `readlink(fd)`, `readdir(fd)` and `opendir(fd)` throw
+  `ERR_INVALID_ARG_TYPE` (Node 22.13.0 and 22.23.3). So no pure-Node proof ties a handle to the root there.
+- On Windows, `dev` is 0 from `lstat` and `stat` of a path on Node 22.13.0, and the volume serial from `fstat`. Node 22.23.3
+  gives the volume serial from all three. `ino` is equal in all three.
 
 ### What stays possible
 
@@ -232,7 +246,7 @@ is a follow-up.
 
 | Case | Result | Who can do it |
 | --- | --- | --- |
-| Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root. A write into one whose bytes match `expectedHash`. An empty new file or folder outside. | A process that writes in the root and runs at that moment. |
+| Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root, on the volume of the root only. A write into one whose bytes match `expectedHash`, on that volume only. An empty new file or folder outside, on any volume. | A process that writes in the root and runs at that moment. |
 | Windows and macOS: a swap of a folder in turn with the proofs of one listing or `stat` | A name, a size or a kind from outside the root, in `list` or `stat`. No byte of a file. | The same. |
 | macOS: a swap during the make of a new folder | An empty folder outside the root. | The same. |
 | Each OS: a file or folder moved into the root | It is in the root. | The same. |

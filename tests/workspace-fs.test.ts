@@ -15,6 +15,7 @@ import { DEFAULT_SKIP, LIMITS, makeExcluder } from '../src/core/workspace.ts'
 import {
   openConfined,
   readCapped,
+  sameFile,
   type Confined,
   type Dir,
   type Hook,
@@ -92,6 +93,39 @@ describe('the method of this system', () => {
     await ok.handle.close()
     await confined.close()
   })
+})
+
+describe('the compare of a handle and its path', () => {
+  const id = (dev: bigint, ino: bigint) => ({ dev, ino })
+  // [name, handle, path, root dev, platform, same]
+  const table: [string, ReturnType<typeof id>, ReturnType<typeof id>, bigint, string, boolean][] = [
+    ['windows: same file on the root volume', id(7n, 5n), id(7n, 5n), 7n, 'win32', true],
+    [
+      'windows: Node 22.13 gives dev 0 for the path, and the handle is on the root volume',
+      id(7n, 5n),
+      id(0n, 5n),
+      7n,
+      'win32',
+      true,
+    ],
+    ['windows: dev 0 with a handle on another volume never passes', id(9n, 5n), id(0n, 5n), 7n, 'win32', false],
+    [
+      'windows: equal ino and dev on another volume than the root never passes',
+      id(9n, 5n),
+      id(9n, 5n),
+      7n,
+      'win32',
+      false,
+    ],
+    ['windows: a real path dev that differs never passes', id(7n, 5n), id(9n, 5n), 7n, 'win32', false],
+    ['windows: a different ino never passes', id(7n, 5n), id(7n, 6n), 7n, 'win32', false],
+    ['linux: plain compare', id(7n, 5n), id(7n, 5n), 1n, 'linux', true],
+    ['linux: dev 0 is no wildcard', id(7n, 5n), id(0n, 5n), 7n, 'linux', false],
+    ['darwin: a different dev never passes', id(7n, 5n), id(8n, 5n), 7n, 'darwin', false],
+    ['darwin: a different ino never passes', id(7n, 5n), id(7n, 6n), 7n, 'darwin', false],
+  ]
+  for (const [name, handle, atPath, rootDev, platform, same] of table)
+    test(name, () => assert.equal(sameFile(handle, atPath, rootDev, platform), same))
 })
 
 describe('list, stat, read and search', () => {
