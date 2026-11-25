@@ -445,9 +445,21 @@ export const createProvider = (options: ProviderOptions): Provider => {
     return locked(parts, signal, async () => {
       const { change, bytes } = changeOf(parts, undefined, whole('', input.content), true)
       cancelled(signal)
-      const made = await confined.create(parts, bytes, real => {
-        if (excluded(real)) throw excludedError()
-      })
+      const made = await confined
+        .create(parts, bytes, real => {
+          if (excluded(real)) throw excludedError()
+        })
+        .catch(async (err: unknown) => {
+          // A file is there: when its real spelling (a short name) is excluded, that is the answer, as in `vacant`.
+          if (err instanceof WorkspaceError && err.code === 'exists') {
+            const there = await confined.file(parts).catch(() => undefined)
+            if (there !== undefined) {
+              await there.handle.close().catch(() => {})
+              if (excluded(there.parts)) throw excludedError()
+            }
+          }
+          throw err
+        })
       return { ...change, path: showPath(made) }
     })
   }

@@ -346,21 +346,23 @@ const ensureMethod = (platform: string): Promise<void> => {
 // Linux: one part at a time, relative to a held folder
 
 /**
- * The `statfs` types of the file systems that open a file under a name that `readdir` does not list: short names of
- * vfat, exFAT, NTFS and SMB, and the Windows folders that 9p, FUSE and VirtualBox share give. Only a folder on one of
- * them pays for the look-up of the real name. A `statfs` that fails counts as one of them.
+ * The `statfs` types of the file systems known NOT to open a file under a name that `readdir` does not list. A folder
+ * on one of them pays nothing. Every other type (vfat, NTFS, SMB1, SMB2/3, NFS, 9p, FUSE, VirtualBox shares, and a type
+ * that nobody listed) and a `statfs` that fails pay the one read of the names, because a missed alias leaks an excluded file.
  */
-const ALIASING = new Set([
-  0x4d44, // msdos, vfat
-  0x01021997, // 9p
-  0x517b, // smb
-  0xff534d42, // cifs
-  0x2011bab0, // exfat
-  0x7366746e, // ntfs3
-  0x5346544e, // ntfs
-  0x65735546, // fuse, fuseblk
-  0x786f4256, // vboxsf
+const PLAIN = new Set([
+  0xef53, // ext2, ext3, ext4
+  0x58465342, // xfs
+  0x9123683e, // btrfs
+  0x01021994, // tmpfs
+  0x794c7630, // overlayfs
+  0x858458f6, // ramfs
+  0x2fc12fc1, // zfs
+  0xf2f52010, // f2fs
 ])
+
+/** True when a folder on the file system of this `statfs` type can open a name that it does not list. */
+export const canHoldAliases = (type: number | bigint): boolean => !PLAIN.has(Number(type) >>> 0)
 
 /** At most this many `lstat` calls to find the real name of a part. */
 const ALIAS_LOOKS = 20_000
@@ -380,7 +382,7 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
   let aliasing: Promise<boolean> | undefined
   const canAlias = () =>
     (aliasing ??= fs.promises.statfs(`/proc/self/fd/${handle.fd}`).then(
-      s => ALIASING.has(Number(s.type) >>> 0),
+      s => canHoldAliases(s.type),
       () => true,
     ))
   /**
@@ -851,7 +853,7 @@ export const openConfined = async (
             h => h.stat({ bigint: true }).finally(() => h.close().catch(() => {})),
             err => Promise.reject(mapError(err)),
           )
-        : await fs.promises.stat(root, { bigint: true })
+        : await fs.promises.stat(root, { bigint: true }).catch(err => Promise.reject(mapError(err)))
     if (!rootStat.isDirectory()) throw new WorkspaceError('not-folder', 'the workspace root is not a folder')
     if (rootStat.ino === 0n) throw unavailable('the volume gives no file identity')
     return pathConfined(root, idOf(rootStat), platform, hook)

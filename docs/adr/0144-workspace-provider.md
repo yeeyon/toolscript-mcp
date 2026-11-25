@@ -152,14 +152,16 @@ A path that passes is then opened and proven, as [Confinement](#confinement) des
 of the path. Exclusions match that spelling, never the text of the argument. They match with no regard to case, after
 Unicode NFC, on each OS. So `.ENV` and a short name do not pass.
 
-On Linux the proof opens the name of the text, and a volume with short names (vfat, exFAT, NTFS, SMB, a 9p share of a
+On Linux the proof opens the name of the text, and a volume with short names (vfat, NTFS, SMB, a 9p share of a
 Windows folder) can open `GIT~1` for `.git` while `readdir` lists only `.git`. So for each part that comes from the text
 of a path, after its open (or its `lstat` in `stat`), the held parent folder is read once: a listed name that equals the
 text byte for byte stands. Else the real name is the listed name whose `lstat` through the held folder has the `dev` and
 `ino` of what was opened, the names that fold to the text first, with at most 20,000 `lstat` calls. With no match the call
 fails with `not-found`. `parts` hold the real names, so the exclusions see them, and a change takes its lock under the
-real name too. This read is no lookup of a name and calls no hook. It runs only in a folder whose file system (`statfs`)
-can hold such names, or when `statfs` fails, so a folder on ext4 or tmpfs pays nothing. A name that comes from a listing
+real name too. This read is no lookup of a name and calls no hook. It is skipped only in a folder whose file system
+(`statfs`) is on a short list of types known not to hold such names (ext2/3/4, xfs, btrfs, tmpfs, overlayfs, ramfs, zfs,
+f2fs), so a folder on ext4 or tmpfs pays nothing. Any other type, and a `statfs` that fails, pay the one read: SMB2 and
+SMB3 (`0xfe534d42`) and NFS are not on the list of the first design, and a missed alias leaks an excluded file. A name that comes from a listing
 (the walk of `list` and `search`) needs no check.
 
 An exclusion holds for every tool, also for `list`, `stat`, `diff` and a new file. The built-in list:
@@ -260,7 +262,8 @@ family (`alternating` in `tests/workspace-fs.test.ts`) and fails on any other pa
 `list`: its `read` is exact, because each open refuses a link in any part, and so is its `stat`. `stat` opens the entry by
 its full path with `O_RDONLY | O_NOFOLLOW_ANY | O_NONBLOCK` and reads the kind and the size with `fstat` of that handle
 (`ENOENT` and `ENOTDIR` give `missing`, `ELOOP` gives a link, and another error such as `EACCES` falls back to the
-bracketed `lstat`). The spelling still comes from `realpath`. macOS is proven on CI only: if that leg fails because of this
+bracketed `lstat`, which keeps the alternating family for such an entry). The open has side effects: it releases a
+writer that waits on a FIFO, and it may fetch a dataless iCloud file. The spelling still comes from `realpath`. macOS is proven on CI only: if that leg fails because of this
 change, the change is reverted and `stat` joins the alternating family again. An exact `list` on macOS needs an
 open of each entry with a flag that opens a link itself (`O_SYMLINK` with `O_NOFOLLOW_ANY`), which was not measured: it
 is a follow-up.
@@ -268,7 +271,7 @@ is a follow-up.
 | Case | Result | Who can do it |
 | --- | --- | --- |
 | Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root, on the volume of the root only. A write into one whose bytes match `expectedHash`, on that volume only. An empty new file or folder outside, on any volume. | A process that writes in the root and runs at that moment. |
-| Windows: a swap of a folder in turn with the proofs of one listing or `stat`. macOS: the same for a listing only | A name, a size or a kind from outside the root, in `list` or `stat` (macOS: `list`). No byte of a file. | The same. |
+| Windows: a swap of a folder in turn with the proofs of one listing or `stat`. macOS: the same for a listing, and for a `stat` of an entry that the process cannot open | A name, a size or a kind from outside the root, in `list` or `stat` (macOS: `list`, and `stat` of an unopenable entry). No byte of a file. | The same. |
 | macOS: a swap during the make of a new folder | An empty folder outside the root. | The same. |
 | Each OS: a file or folder moved into the root | It is in the root. | The same. |
 | Each OS: a task | Any act of the user. A task is not confined. | The project code that the task runs. |

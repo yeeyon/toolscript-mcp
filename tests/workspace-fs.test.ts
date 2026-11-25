@@ -15,6 +15,7 @@ import { DEFAULT_SKIP, LIMITS, makeExcluder } from '../src/core/workspace.ts'
 import {
   openConfined,
   readCapped,
+  canHoldAliases,
   sameFile,
   type Confined,
   type Dir,
@@ -92,6 +93,29 @@ describe('the method of this system', () => {
     const ok = await confined.file(['real', 'f.txt'])
     await ok.handle.close()
     await confined.close()
+  })
+})
+
+describe('which file systems can hold names that their folder does not list', () => {
+  const plain = [0xef53, 0x58465342, 0x9123683e, 0x01021994, 0x794c7630, 0x858458f6, 0x2fc12fc1, 0xf2f52010]
+  const aliasing = [
+    0x4d44, // vfat
+    0x01021997, // 9p
+    0x517b, // smb
+    0xff534d42, // smb1 cifs
+    0xfe534d42, // smb2 and smb3
+    0x6969, // nfs
+    0x2011bab0, // exfat
+    0x7366746e, // ntfs3
+    0x5346544e, // ntfs
+    0x65735546, // fuse
+    0x12345678, // a type that nobody listed
+  ]
+  test('a plain type pays nothing', () => plain.forEach(type => assert.equal(canHoldAliases(type), false, `${type}`)))
+  test('any other type is checked', () => aliasing.forEach(type => assert.equal(canHoldAliases(type), true, `${type}`)))
+  test('a type as a bigint or above 2^31 gives the same answer', () => {
+    assert.equal(canHoldAliases(BigInt(0xef53)), false)
+    assert.equal(canHoldAliases(0xfe534d42), true)
   })
 })
 
@@ -1219,6 +1243,8 @@ describe('names that the volume opens but does not list (Linux)', () => {
     }
     const missing = ['GIT~1/config', 'ENV~1', 'SSH~1/known_hosts', 'ALONGF~1.TXT'].filter(n => !opens(n))
     if (missing.length > 0) {
+      // CI mounts the vfat image and sets CI: a volume that gives no alias there is a failed step, not a skip.
+      assert.ok(!process.env.CI, `the alias volume gives no short name for ${missing.join(', ')}`)
       t.skip(`this volume gives no short name for ${missing.join(', ')}`)
       return undefined
     }
@@ -1241,6 +1267,7 @@ describe('names that the volume opens but does not list (Linux)', () => {
       ['diff', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), content: 'x' }],
       ['read', { path: 'SSH~1/known_hosts' }],
       ['write', { path: 'GIT~1/new.txt', content: 'x' }],
+      ['write', { path: 'ENV~1', content: 'x' }],
       ['edit', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), edits: [{ old: 'SECRET', new: 'x' }] }],
     ]
     for (const [tool, args] of calls) {
