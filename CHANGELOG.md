@@ -9,6 +9,7 @@
 - The policy functions take one `Guards` value, the bridges and whether Workspace is on, in place of the set of bridges.
 - `toolscript-mcp tools workspace` lists the tools of Workspace. `toolscript-mcp doctor` has a `workspace` line, and on Windows it warns when another account can write in the root.
 - Workspace `list` and `search` stop the read of a very large folder at the limit of names, and excluded names no longer count toward it (issue #148).
+- `toolscript-mcp --version` (and `-v`) prints the package version on one line, reads no config and starts no server.
 - Workspace was tested in Codex CLI 0.172.0 and Claude Code 2.1.331 with the same program and no Claude Code bridge. Cursor is not tested.
 
 ## 1.0.3

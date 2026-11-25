@@ -171,3 +171,6 @@ from that file in an editor.
 To restore the direct entry later, the person copies it from `<config>` in an editor. Then the person runs
 `claude mcp add-json <name> '<entry>' --scope <scope>`. This works in bash and in PowerShell 7. Windows PowerShell 5.1
 removes each `"` in the entry, so there the person writes each `"` as `\"`. Do not read the entry for the person.
+
+After a run works, whether step 7 removed a copy or not, offer `/toolscript:workspace`. It lets programs read the files
+of a project folder. It is off until the person turns it on, and the person can say no.
