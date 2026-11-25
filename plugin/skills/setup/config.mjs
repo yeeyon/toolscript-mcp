@@ -32,7 +32,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { ROOTS_MAX, TASKS_MAX, TASK_KEYS, TASK_NAME, commandProblem, isInside, rootProblem } from './roots.mjs'
+import { ROOTS_MAX, TASKS_MAX, TASK_NAME, isInside, rootProblem, taskProblem } from './roots.mjs'
 
 const ACTIONS = ['allow', 'deny', 'ask']
 const NAME = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/
@@ -325,25 +325,9 @@ function callTimeout(config) {
 
 function taskEntry(file, config) {
   const task = readJson(file, 'the task')
-  if (!isObject(task) || typeof task.command !== 'string' || task.command === '') {
-    throw new Fail('The task file must be an object with a non-empty string "command".')
-  }
-  const problem = commandProblem(task.command, process.platform === 'win32')
-  if (problem !== undefined) throw new Fail(`The key command of the task file ${problem}. ${NOTHING}`)
-  const limit = callTimeout(config)
-  const t = task.timeoutSeconds
-  if (t !== undefined && !(Number.isInteger(t) && t >= 1 && t <= limit)) {
-    throw new Fail(
-      `The key timeoutSeconds must be a whole number from 1 to ${limit}, the value of sandbox.callTimeoutSeconds. ${NOTHING}`,
-    )
-  }
-  const unknown = Object.keys(task).find(key => !TASK_KEYS.includes(key))
-  if (unknown !== undefined) {
-    throw new Fail(`The task file has a key that is not one of ${TASK_KEYS.join(', ')}.`)
-  }
-  if (task.args !== undefined && (!Array.isArray(task.args) || task.args.some(a => typeof a !== 'string'))) {
-    throw new Fail('The key args of the task file must be a list of strings.')
-  }
+  if (!isObject(task)) throw new Fail(`The task file must be an object with a non-empty string "command". ${NOTHING}`)
+  const problem = taskProblem(task, process.platform === 'win32', callTimeout(config))
+  if (problem !== undefined) throw new Fail(`The task file is refused: ${problem}. ${NOTHING}`)
   return task
 }
 

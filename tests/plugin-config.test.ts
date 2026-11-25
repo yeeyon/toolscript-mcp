@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { after, before, describe, it } from 'node:test'
 import { parseConfig } from '../src/core/config.ts'
 import { BUILT_IN_NAMES, LIMITS, rootProblem as coreRootProblem } from '../src/core/workspace.ts'
-import { TASK_LIMITS, TASK_NAME, commandProblem as coreCommandProblem } from '../src/core/task.ts'
+import { TASK_LIMITS, TASK_NAME, commandProblem as coreCommandProblem, cwdParts } from '../src/core/task.ts'
 import * as roots from '../plugin/skills/setup/roots.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../plugin/skills/setup/config.mjs', import.meta.url))
@@ -464,6 +464,100 @@ describe('the plugin copy of the root rules', () => {
         )
   })
 
+  it('has the task limits of the core', () => {
+    const { args, argChars, envVars, envChars } = TASK_LIMITS
+    assert.deepEqual(roots.TASK_LIMITS, { args, argChars, envVars, envChars })
+  })
+
+  it('gives the same answer as cwdParts on each folder text, for both windows flags', () => {
+    const texts = [
+      '.',
+      '',
+      'packages/app',
+      './packages/app',
+      'packages/app/',
+      'packages\\app',
+      '../other',
+      'a/../b',
+      '/abs',
+      'C:rel',
+      'C:/abs',
+      'a//b',
+      'a\u0007b',
+      'a/CON',
+      'a/nul.txt',
+      'a/b.',
+      'a/b ',
+      'a/b:c',
+      'a/b*',
+      'x'.repeat(1025),
+      Array.from({ length: 65 }, () => 'p').join('/'),
+      Array.from({ length: 64 }, () => 'p').join('/'),
+    ]
+    for (const windows of [true, false])
+      for (const text of texts) {
+        const core = cwdParts(text, windows)
+        assert.equal(roots.cwdProblem(text, windows), typeof core === 'string' ? core : undefined, `${windows} ${text}`)
+      }
+  })
+
+  it('refuses the same task texts as parseConfig, which turns the section off for each', () => {
+    const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`K${i}`, 'v']))
+    const rows: unknown[] = [
+      { command: 'node' },
+      { command: 'node', args: ['${FAKE}', 'a'], cwd: 'packages/app', env: { K: '${FAKE}' }, timeoutSeconds: 10 },
+      { command: '' },
+      { command: '   ' },
+      { command: 5 },
+      { command: '${a-b}' },
+      { command: './gradlew' },
+      { command: 'node', shell: true },
+      { command: 'node', args: 'x' },
+      { command: 'node', args: [1] },
+      { command: 'node', args: Array.from({ length: 64 }, () => 'a') },
+      { command: 'node', args: Array.from({ length: 65 }, () => 'a') },
+      { command: 'node', args: ['a'.repeat(4096)] },
+      { command: 'node', args: ['a'.repeat(4097)] },
+      { command: 'node', args: ['a\u0000b'] },
+      { command: 'node', args: ['${a b}'] },
+      { command: 'node', cwd: 5 },
+      { command: 'node', cwd: '../other' },
+      { command: 'node', cwd: './packages/app' },
+      { command: 'node', cwd: 'packages/app/' },
+      { command: 'node', cwd: 'packages\\app' },
+      { command: 'node', cwd: 'a/CON' },
+      { command: 'node', timeoutSeconds: 10 },
+      { command: 'node', timeoutSeconds: 11 },
+      { command: 'node', env: 'x' },
+      { command: 'node', env: ['K'] },
+      { command: 'node', env: { K: 5 } },
+      { command: 'node', env: { 'bad-name': 'v' } },
+      { command: 'node', env: { '1K': 'v' } },
+      { command: 'node', env: many(64) },
+      { command: 'node', env: many(65) },
+      { command: 'node', env: { K: 'v'.repeat(4096) } },
+      { command: 'node', env: { K: 'v'.repeat(4097) } },
+      { command: 'node', env: { K: 'a\u0000b' } },
+      { command: 'node', env: { K: '${a-b}' } },
+    ]
+    for (const windows of [true, false])
+      for (const task of rows) {
+        const platform = windows ? 'win32' : 'linux'
+        const text = JSON.stringify({
+          mcpServers: {},
+          sandbox: { callTimeoutSeconds: 10 },
+          workspace: { roots: [{ path: windows ? 'C:/work/app' : '/work/app', tasks: { t: task } }] },
+        })
+        const parsed = parseConfig(text, { FAKE: 'v' }, process.execPath, platform)
+        assert.ok(parsed.ok, JSON.stringify(task))
+        assert.equal(
+          roots.taskProblem(task as Record<string, unknown>, windows, 10) !== undefined,
+          parsed.config.workspace === undefined,
+          `${platform} ${JSON.stringify(task)}`,
+        )
+      }
+  })
+
   it('has the task keys of parseTasks: each key is taken, any other is refused', () => {
     const parse = (task: unknown) =>
       parseConfig(
@@ -784,6 +878,32 @@ describe('plugin config helper: workspace', () => {
   })
 
   // The review of #156: a task that parseConfig refuses turns the whole section off, the new root included.
+  it('refuses a bad cwd, env or args of a task with the file as it was, and accepts a good one', () => {
+    const app = real(folder('app'))
+    const file = makeConfig(JSON.stringify({ mcpServers: {}, workspace: { roots: [{ path: app }] } }))
+    const before = read(file)
+    const bad: unknown[] = [
+      { command: 'node', cwd: '../other' },
+      { command: 'node', cwd: './packages/app' },
+      { command: 'node', cwd: 'packages/app/' },
+      { command: 'node', cwd: 'packages\\app' },
+      { command: 'node', env: { CI: 1 } },
+      { command: 'node', env: { 'BAD-NAME': 'v' } },
+      { command: 'node', args: Array.from({ length: 65 }, () => 'a') },
+      { command: 'node', args: ['a'.repeat(4097)] },
+      { command: 'node', args: ['${not a name}'] },
+    ]
+    for (const task of bad) {
+      const { code, err } = ws(file, 'workspace', 'task', app, 'test', taskFile(task))
+      assert.equal(code, 1, JSON.stringify(task))
+      assert.match(err, /config\.mjs wrote nothing\.$/m)
+      assert.equal(read(file), before)
+    }
+    const good = { command: 'node', args: ['--test'], cwd: 'packages/app', env: { CI: '1' } }
+    assert.equal(ws(file, 'workspace', 'task', app, 'test', taskFile(good)).code, 0)
+    valid(file)
+  })
+
   it('refuses a task that turns the section off, and accepts a full path that parseConfig takes', () => {
     const app = real(folder('app'))
     const file = makeConfig(
