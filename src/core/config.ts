@@ -543,7 +543,7 @@ const parseWorkspace = (
     errors.push(`${here}: must be an object with "roots"`)
     return undefined
   }
-  unknownKeys(raw, ['roots', 'exclude', 'skip'], here, errors)
+  unknownKeys(raw, ['roots', 'exclude', 'skip', 'gitignore'], here, errors)
   const roots: { path: string; write: boolean; tasks?: readonly TaskConfig[] }[] = []
   if (!Array.isArray(raw.roots) || raw.roots.length < 1 || raw.roots.length > LIMITS.roots)
     errors.push(`${here}.roots: must be an array of 1 to ${LIMITS.roots} entries, such as [{ "path": "/home/me/app" }]`)
@@ -565,7 +565,11 @@ const parseWorkspace = (
     })
   const exclude = raw.exclude === undefined ? [] : parseList(raw.exclude, `${here}.exclude`, globProblem, errors)
   const skip = raw.skip === undefined ? [...DEFAULT_SKIP] : parseList(raw.skip, `${here}.skip`, skipProblem, errors)
-  return errors.length > found ? undefined : { roots, exclude: exclude ?? [], skip: skip ?? [] }
+  if (raw.gitignore !== undefined && typeof raw.gitignore !== 'boolean')
+    errors.push(`${here}.gitignore: must be true or false`)
+  return errors.length > found
+    ? undefined
+    : { roots, exclude: exclude ?? [], skip: skip ?? [], ...(raw.gitignore === false && { gitignore: false }) }
 }
 
 const parseTrust = (raw: unknown, path: string, errors: string[]): Trust => {

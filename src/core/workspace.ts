@@ -44,6 +44,13 @@ export const LIMITS = {
   lockWaitMs: 2_000,
   /** A lock file older than this, or of a dead process, is taken over. */
   lockStaleMs: 30_000,
+  /** The `.gitignore` of the root: a larger file gives no rules. */
+  ignoreBytes: 64 * 1024,
+  /** Rules that count. The rest of the file is skipped. */
+  ignoreRules: 500,
+  /** A line of the `.gitignore` with more characters, or more wildcards, is skipped. */
+  ignoreLineChars: 200,
+  ignoreWildcards: 6,
 } as const
 
 /** The folders that `list` and `search` do not enter. It is not access control: `path` can name one. */
@@ -368,6 +375,8 @@ export type WorkspaceConfig = {
   readonly exclude: readonly string[]
   /** The folder names that `list` and `search` do not enter. */
   readonly skip: readonly string[]
+  /** `false`: `list` and `search` never read the `.gitignore` of the root. Absent: they do. */
+  readonly gitignore?: boolean
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -439,7 +448,7 @@ export const WORKSPACE_TOOLS = {
   list: {
     class: 'read',
     description:
-      'List files and folders under a folder of the workspace, sorted by path. A link is listed and never entered. Excluded paths such as .git and .env never show.',
+      'List files and folders under a folder of the workspace, sorted by path. A link is listed and never entered. Excluded paths such as .git and .env never show. The .gitignore of the root hides names too: name an ignored folder in path to list it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -478,7 +487,7 @@ export const WORKSPACE_TOOLS = {
   search: {
     class: 'read',
     description:
-      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program.',
+      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program. The .gitignore of the root hides files: name an ignored folder in path to search it.',
     inputSchema: {
       type: 'object',
       properties: {

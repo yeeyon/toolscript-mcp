@@ -918,7 +918,8 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     const probe = probes[name]
     const { root, secret, swap } = setup(t, probe.nested)
     let hook: Hook = () => {}
-    const rig = await rigOf(t, root, { hook: name => hook(name) })
+    // The sweep counts the lookups of one proof. The read of the .gitignore adds lookups of its own, so it is off here.
+    const rig = await rigOf(t, root, { hook: name => hook(name), gitignore: false })
     if (rig === undefined) return []
     const record = async (tool: string, args: Record<string, unknown>): Promise<string[]> => {
       const seen: string[] = []
