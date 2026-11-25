@@ -202,6 +202,56 @@ describe('client roots narrow the bound root', () => {
   })
 })
 
+describe('the exclude globs are relative to the entry path', () => {
+  const secrets = (t: TestContext) => {
+    const made = tree(t)
+    write(made.projects, {
+      'app/fixtures/secrets/k.txt': 'k',
+      'app/fixtures/ok.txt': 'ok',
+      'private/p.txt': 'p',
+      'app/.env': 'e',
+    })
+    return made
+  }
+
+  test('a pathed and a named glob still match through a narrowed root', async t => {
+    const { projects, elsewhere } = secrets(t)
+    const rig = await rigOf(t, projects, {
+      start: elsewhere,
+      exclude: ['app/fixtures/secrets/**', '.env'],
+      clientRoots: async () => [uri(projects, 'app')],
+    })
+    if (rig === undefined) return
+    assert.equal(rig.bound.root, path.join(projects, 'app'))
+    assert.match(await rig.fail('read', { path: 'fixtures/secrets/k.txt' }), /^excluded/)
+    assert.match(await rig.fail('read', { path: '.env' }), /^excluded/)
+    assert.equal((await rig.call('read', { path: 'fixtures/ok.txt' })).content, 'ok')
+    assert.ok(!(await listed(rig)).some(n => n.includes('secrets')))
+  })
+
+  test('a client root that is an excluded folder is dropped, and the bound root stays', async t => {
+    const { projects, elsewhere } = secrets(t)
+    const rig = await rigOf(t, projects, {
+      start: elsewhere,
+      exclude: ['private/**'],
+      clientRoots: async () => [uri(projects, 'private')],
+    })
+    if (rig === undefined) return
+    assert.equal(rig.bound.root, projects)
+    assert.match(await rig.fail('read', { path: 'private/p.txt' }), /^excluded/)
+  })
+
+  test('a start folder that is excluded makes Workspace unavailable, a start folder beside it keeps the globs', async t => {
+    const { projects } = secrets(t)
+    const opened = await open(projects, { start: path.join(projects, 'private'), exclude: ['private/**'] })
+    assert.ok('unavailable' in opened)
+    if ('rig' in opened) await opened.rig.close()
+    const rig = await rigOf(t, projects, { start: path.join(projects, 'app'), exclude: ['app/fixtures/secrets/**'] })
+    if (rig === undefined) return
+    assert.match(await rig.fail('read', { path: 'fixtures/secrets/k.txt' }), /^excluded/)
+  })
+})
+
 describe('createRoots over a real client and server', () => {
   type Answer = (call: number) => unknown | Promise<unknown>
 
@@ -259,7 +309,9 @@ describe('createRoots over a real client and server', () => {
     assert.deepEqual(await roots.read(), [])
     assert.ok(performance.now() - began < 1000)
     await sleep(400)
-    assert.deepEqual(await roots.read(), [])
+    // The timer of the server is unref'd, so the test holds the loop open.
+    const [settled] = await Promise.all([roots.read(), sleep(400)])
+    assert.deepEqual(settled, [])
     assert.equal(lines.length, 1)
     assert.ok(!lines[0]!.includes('late'))
   })
@@ -298,5 +350,17 @@ describe('createRoots over a real client and server', () => {
     const other = createRoots({ log: () => {} })
     other.close()
     assert.deepEqual(await other.read(), [])
+  })
+
+  test('a client that never sends initialized still settles the list', async t => {
+    const lines: string[] = []
+    const roots = createRoots({ log: line => lines.push(line), waitMs: 100, initializedWaitMs: 150 })
+    const server = new Server({ name: 'server', version: '0' }, { capabilities: {} })
+    roots.attach(server)
+    t.after(() => roots.close())
+    // The timer of the server is unref'd, so the test holds the loop open.
+    const [settled] = await Promise.all([roots.read(), sleep(400)])
+    assert.deepEqual(settled, [])
+    assert.equal(lines.length, 1)
   })
 })

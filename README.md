@@ -1126,7 +1126,7 @@ that name.
 ```
 
 - `roots` holds 1 to 16 entries. Each `path` is absolute and must be a folder that exists. `write` is `false` by default. See [Change files](#change-files). `tasks` holds the [named tasks](#named-tasks) of the entry.
-- `exclude` holds globs of paths that no tool reads or shows. They add to the built-in list below.
+- `exclude` holds globs of paths that no tool reads or shows. They add to the built-in list below. A glob is relative to the `path` of the entry, not to the root of the session: `app/fixtures/**` still holds when the session root is `app` under an entry `Projects`. A start folder or a client root that an `exclude` glob hides is never the root.
 - `skip` holds the folder names that `list` and `search` do not enter. It replaces the default list: `node_modules`, `dist`, `build`, `target`, `vendor`, `coverage`, `.venv`, `venv` and `__pycache__`. A call can still name such a folder in `path`.
 - `gitignore` is `true` by default. Set it to `false` and `list` and `search` never read the `.gitignore` of the root. See [What the read tools cover](#what-the-read-tools-cover).
 

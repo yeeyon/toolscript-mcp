@@ -15,6 +15,8 @@ import {
   WorkspaceError,
   bindRoot,
   makeExcluder,
+  realParts,
+  type Excluder,
   rootProblem,
   type RealRoot,
   type WorkspaceConfig,
@@ -76,6 +78,7 @@ const narrowed = async (
   homeReal: string,
   platform: string,
   log: (line: string) => void,
+  hidden: (folder: string) => boolean,
 ): Promise<string> => {
   const read = uris.slice(0, LIMITS.roots)
   const kept: string[] = []
@@ -84,15 +87,15 @@ const narrowed = async (
     const found =
       text === undefined
         ? undefined
-        : await real(text).then(
-            async p => ((await fs.promises.stat(p)).isDirectory() ? p : undefined),
-            () => undefined,
-          )
-    if (found !== undefined && rootProblem(found, homeReal, platform) === undefined) kept.push(found)
+        : await real(text)
+            .then(async p => ((await fs.promises.stat(p)).isDirectory() ? p : undefined))
+            .catch(() => undefined)
+    if (found !== undefined && rootProblem(found, homeReal, platform) === undefined && !hidden(found)) kept.push(found)
   }
   if (kept.length < read.length)
     log(`Workspace: ${read.length - kept.length} of ${read.length} client roots were dropped`)
   const root = narrowRoot(bound, kept, platform)
+  if (root !== bound && hidden(root)) return bound
   if (root !== bound) log(`Workspace: a client root narrowed the root to ${root}`)
   return root
 }
@@ -129,18 +132,33 @@ export const bindWorkspace = async ({
   const problem = rootProblem(bound.root, homeReal, platform)
   if (problem !== undefined)
     return refuse(`the folder where the client started toolscript-mcp is refused as a root: ${problem}`)
+  // The exclude globs are relative to the entry path, so a root below the entry keeps every glob that goes through it.
+  const entry = roots[bound.index]!
+  const forbidden = [await real(configFile).catch(() => path.resolve(configFile)), appPath(homeReal)]
+  const entryExcluded = makeExcluder(entry.path, workspace.exclude, forbidden)
+  const entryParts = realParts(entry.path, platform).length
+  const offsetOf = (folder: string): string[] => realParts(folder, platform).slice(entryParts)
+  const hidden = (folder: string): boolean => {
+    const offset = offsetOf(folder)
+    return offset.length > 0 && entryExcluded(offset)
+  }
+  if (hidden(bound.root))
+    return refuse('the folder where the client started toolscript-mcp is excluded by workspace.exclude')
   // The roots of the client only narrow the bound root. This is settled one time, before the provider exists.
-  const root =
-    clientRoots === undefined
-      ? bound.root
-      : await narrowed(bound.root, await clientRoots().catch(() => []), homeReal, platform, log)
+  let root = bound.root
+  if (clientRoots !== undefined) {
+    try {
+      root = await narrowed(bound.root, await clientRoots().catch(() => []), homeReal, platform, log, hidden)
+    } catch {
+      root = bound.root
+    }
+  }
   try {
     const confined = await openConfined(root, { platform, ...(hook !== undefined && { hook }) })
-    const forbidden = [await real(configFile).catch(() => path.resolve(configFile)), appPath(homeReal)]
-    const excluded = makeExcluder(root, workspace.exclude, forbidden)
+    const offset = offsetOf(root)
+    const excluded: Excluder = parts => entryExcluded([...offset, ...parts])
     // The tasks of the entry that the root is in. A session whose entry has none runs none, and the tasks of another
     // entry are never looked at.
-    const entry = roots[bound.index]!
     const configured = workspace.roots[bound.index]!.tasks ?? []
     let own: Awaited<ReturnType<typeof openConfined>> | undefined
     let set: TaskSet = { valid: [], invalid: [] }
@@ -149,7 +167,6 @@ export const bindWorkspace = async ({
       // The folder of a task is relative to the entry. The root of the session can be a folder inside the entry.
       own = entry.path === root ? undefined : await openConfined(entry.path, { platform })
       const proofFs = own ?? confined
-      const entryExcluded = own === undefined ? excluded : makeExcluder(entry.path, workspace.exclude, forbidden)
       set = await resolveTasks({
         tasks: configured,
         entry: entry.path,

@@ -64,7 +64,7 @@ The policy reload of each run never reads it, so no reload can widen a root, a w
   tool to enable yet. Pull request C reads `tasks`. See [Tasks](#tasks).
 - `exclude`: globs of paths that no tool reads, lists or writes, added to the built-in list. No key removes a built-in
   exclusion. A glob with no `/` matches the name of any part, at any depth. A glob with `/` matches the path from the
-  root, and a folder that it names takes each path below it. Up to 64 globs of 200 characters, with at most 6 wildcards.
+  root, and a folder that it names takes each path below it. Up to 64 globs of 200 characters, with at most 6 wildcards. A glob is relative to the entry path, not to the session root, so it holds when a client root or a start folder narrows the root. A start folder or client root that a glob hides is never the root.
 - `skip`: folder names that `list` and `search` do not enter. It replaces the default list.
 - `gitignore`: `true` by default. `false` turns off the read of the `.gitignore` of the root. Any other value is a config
   error that names the key. See [The `.gitignore` of the root](#the-gitignore-of-the-root).
