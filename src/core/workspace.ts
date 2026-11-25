@@ -179,6 +179,36 @@ export const includeTest = (globs: readonly string[]): ((parts: readonly string[
   return parts => compiled.length === 0 || compiled.some(g => globMatches(g, parts))
 }
 
+/**
+ * A test of a folder (its parts from the root): true when a glob can match a path strictly below it, and for each
+ * folder when the list is empty. The same part match as `includeTest`.
+ */
+export const includeReach = (globs: readonly string[]): ((folder: readonly string[]) => boolean) => {
+  const compiled = globs.map(g => compileGlob(g))
+  // The glob positions that hold after `parts`: `**` stays, or is skipped.
+  const after = (glob: Glob, parts: readonly string[]): boolean => {
+    let at = new Set<number>([0])
+    const close = (set: Set<number>): Set<number> => {
+      for (const i of set) if (glob[i] === undefined && i < glob.length) set.add(i + 1)
+      return set
+    }
+    close(at)
+    for (const part of parts) {
+      const next = new Set<number>()
+      for (const i of at) {
+        const seg = glob[i]
+        if (i >= glob.length) continue
+        if (seg === undefined) next.add(i)
+        else if (partMatch(seg, part)) next.add(i + 1)
+      }
+      if (next.size === 0) return false
+      at = close(next)
+    }
+    return [...at].some(i => i < glob.length)
+  }
+  return folder => compiled.length === 0 || compiled.some(g => after(g, folder))
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Path text
 
@@ -452,7 +482,9 @@ export const WORKSPACE_TOOLS = {
     inputSchema: {
       type: 'object',
       properties: {
-        path: pathArg('The folder, relative to the workspace root, with /. Default ".".'),
+        path: pathArg(
+          'The folder, relative to the workspace root, with /. Default ".". Name the smallest folder that holds what you look for.',
+        ),
         depth: {
           type: 'integer',
           minimum: 1,
@@ -463,7 +495,7 @@ export const WORKSPACE_TOOLS = {
           type: 'array',
           items: { type: 'string' },
           description:
-            'Globs over paths from the root, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts.',
+            'Globs over paths from the workspace root, also when path is set, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts. A folder that no glob can reach is not read.',
         },
       },
       additionalProperties: false,
@@ -492,11 +524,14 @@ export const WORKSPACE_TOOLS = {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'The text to find, on one line.' },
-        path: pathArg('The folder, relative to the workspace root. Default ".".'),
+        path: pathArg(
+          'The folder to search, relative to the workspace root. Default ".". Name the smallest folder that holds what you look for.',
+        ),
         include: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Globs over paths from the root, such as "src/**/*.ts".',
+          description:
+            'Globs over paths from the workspace root, also when path is set, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts. A folder that no glob can reach is not read.',
         },
         ignoreCase: { type: 'boolean', description: 'Default false.' },
         maxMatches: { type: 'integer', minimum: 1, maximum: LIMITS.maxMatches, description: 'Default 200.' },

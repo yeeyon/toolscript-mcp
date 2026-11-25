@@ -55,6 +55,8 @@ export type BindInput = {
   readonly platform?: string
   readonly hook?: Hook
   readonly limits?: ProviderOptions['limits']
+  /** Tests only: `false` turns the prune of `list` and `search` off. */
+  readonly prune?: boolean
   /** The environment of the server: its `PATH` finds the command of a task, and a short list of it reaches the task. */
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly locks?: ProviderOptions['locks']
@@ -109,6 +111,7 @@ export const bindWorkspace = async ({
   platform = process.platform,
   hook,
   limits,
+  prune,
   env = process.env,
   locks,
   clientRoots,
@@ -195,6 +198,7 @@ export const bindWorkspace = async ({
       windows: platform === 'win32',
       log,
       ...(limits !== undefined && { limits }),
+      ...(prune === false && { prune: false }),
       ...(tasks !== undefined && { tasks }),
       ...(locks !== undefined && { locks }),
     })

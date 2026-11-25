@@ -145,7 +145,9 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
   it costs one stream entry and one glob test, and only the 10 seconds bound it. A folder is read as a stream to its end
   or to the budget, before any folder below it is entered, so one walk holds at most 20,000 names and one read buffer.
   A cut folder gives some of its names, in the order of the volume. `list` also stops at 5,000 entries. Each cut sets
-  `truncated`. So a tree with no match for the `include`, or one of folders only, ends too.
+  `truncated`. So a tree with no match for the `include`, or one of folders only, ends too. A folder that no `include`
+  glob can reach below it is not opened (`includeReach`): its own entry is still listed, and its names are not read, so
+  they neither count nor take time. `include` is still matched from the root when `path` is set.
 - `read` and `search` read through the handle at most one byte more than their limit (4 MiB and 1 MiB), whatever the
   size said when the file was opened. A file that holds more is refused by `read` and skipped by `search`.
 - `include` holds up to 16 globs with `*`, `?` and `**`, over paths from the session root, matched in bounded time: a
