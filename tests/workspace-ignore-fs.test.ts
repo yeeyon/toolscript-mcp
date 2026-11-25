@@ -214,14 +214,17 @@ describe('list and search with the .gitignore of the root', () => {
   })
 
   test('an ignored name still counts as a visited name', async t => {
+    // 4 names against a budget of 3, and only `.gitignore` is not ignored. The walk is cut only when the ignored names
+    // count, whatever order the file system lists the names in.
     const root = folders(t)()
-    write(root, { '.gitignore': '*.log', 'a1.log': 'x', 'a2.log': 'x', 'b.txt': 'x' })
+    write(root, { '.gitignore': '*.log', 'a1.log': 'x', 'a2.log': 'x', 'a3.log': 'x' })
     const rig = await rigOf(t, root, { limits: { searchFiles: 3 } })
     if (rig === undefined) return
     const result = await rig.call('list', {})
-    assert.deepEqual(
-      result.entries.map((e: { path: string }) => e.path),
-      ['.gitignore'],
+    const shown = result.entries.map((e: { path: string }) => e.path)
+    assert.ok(
+      shown.every((p: string) => p === '.gitignore'),
+      `no ignored name is shown: ${JSON.stringify(shown)}`,
     )
     assert.equal(result.truncated, true)
   })
