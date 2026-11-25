@@ -103,10 +103,11 @@ export type Dir = {
   names(read: NameRead): Promise<{ names: string[]; more: boolean }>
   /** What `name` is, or undefined when it is gone. `spell`: also the name as the volume spells it. */
   lstat(name: string, spell?: boolean): Promise<Entry | undefined>
-  openFile(name: string): Promise<Opened>
-  openDir(name: string): Promise<Dir>
+  /** `spell` on the three opens: `name` comes from the text of a path, so on Linux the real name is looked up (`spellOf`). */
+  openFile(name: string, spell?: boolean): Promise<Opened>
+  openDir(name: string, spell?: boolean): Promise<Dir>
   /** The file `name` for a change. */
-  openUpdate(name: string): Promise<Updatable>
+  openUpdate(name: string, spell?: boolean): Promise<Updatable>
   /** Makes the file `name` with `bytes`, or fails with `exists`. A write that fails removes the new file. */
   create(name: string, bytes: Uint8Array): Promise<void>
   /** The proven folder `name`, made when it is missing. */
@@ -344,8 +345,83 @@ const ensureMethod = (platform: string): Promise<void> => {
 // ---------------------------------------------------------------------------------------------------------------
 // Linux: one part at a time, relative to a held folder
 
+/**
+ * The `statfs` types of the file systems that open a file under a name that `readdir` does not list: short names of
+ * vfat, exFAT, NTFS and SMB, and the Windows folders that 9p, FUSE and VirtualBox share give. Only a folder on one of
+ * them pays for the look-up of the real name. A `statfs` that fails counts as one of them.
+ */
+const ALIASING = new Set([
+  0x4d44, // msdos, vfat
+  0x01021997, // 9p
+  0x517b, // smb
+  0xff534d42, // cifs
+  0x2011bab0, // exfat
+  0x7366746e, // ntfs3
+  0x5346544e, // ntfs
+  0x65735546, // fuse, fuseblk
+  0x786f4256, // vboxsf
+])
+
+/** At most this many `lstat` calls to find the real name of a part. */
+const ALIAS_LOOKS = 20_000
+
+const lstatBig = async (file: string): Promise<fs.BigIntStats | undefined> => {
+  try {
+    return await fs.promises.lstat(file, { bigint: true })
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
+    throw mapError(err)
+  }
+}
+
 const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, hook: Hook): Dir => {
   const at = (name: string) => `/proc/self/fd/${handle.fd}/${name}`
+  let aliasing: Promise<boolean> | undefined
+  const canAlias = () =>
+    (aliasing ??= fs.promises.statfs(`/proc/self/fd/${handle.fd}`).then(
+      s => ALIASING.has(Number(s.type) >>> 0),
+      () => true,
+    ))
+  /**
+   * The name that this folder lists for what `name` opened (`id`). A volume can open a file under a name that it does not
+   * list (a short name, another case): the exclusion checks need the listed one. A listed `name` stands. Else the
+   * listed name with the identity `id` is it, the names that fold to `name` first. No match fails with `not-found`.
+   * Reading the names is no lookup of a name, so it calls no hook. A folder on another file system keeps `name`.
+   */
+  const spellOf = async (name: string, id: FileId): Promise<string> => {
+    if (!(await canAlias())) return name
+    const stream = await fs.promises
+      .opendir(`/proc/self/fd/${handle.fd}`, { bufferSize: 512 })
+      .catch(err => Promise.reject(mapError(err)))
+    const near: string[] = []
+    const rest: string[] = []
+    const folded = fold(name)
+    try {
+      for await (const { name: listed } of stream) {
+        if (listed === name) return name
+        if (near.length + rest.length < ALIAS_LOOKS) (fold(listed) === folded ? near : rest).push(listed)
+      }
+    } catch (err) {
+      throw mapError(err)
+    } finally {
+      await stream.close().catch(() => {})
+    }
+    for (const listed of [...near, ...rest]) {
+      const st = await lstatBig(at(listed)).catch(() => undefined)
+      if (st !== undefined && st.ino === id.ino && st.dev === id.dev) return listed
+    }
+    throw new WorkspaceError('not-found', 'there is nothing at this path')
+  }
+  /** `spellOf` for an open handle. A failure closes the handle. */
+  const spelled = async (opened: FileHandle, name: string): Promise<string> => {
+    try {
+      return await spellOf(name, idOf(await opened.stat({ bigint: true })))
+    } catch (err) {
+      await opened.close().catch(() => {})
+      throw mapError(err)
+    }
+  }
   /** An open that failed on `name`: a link when `name` is one, else the error. */
   const refused = async (err: unknown, name: string): Promise<WorkspaceError> => {
     const code = (err as NodeJS.ErrnoException).code
@@ -362,27 +438,37 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
       await hook('readdir')
       return readNames(`/proc/self/fd/${handle.fd}`, read)
     },
-    lstat: async name => {
+    lstat: async (name, spell = false) => {
       await hook('lstat')
-      const st = await lstatOrNothing(at(name))
-      return st === undefined ? undefined : { kind: kindOf(st), size: st.size, real: name }
+      const st = await lstatBig(at(name))
+      if (st === undefined) return undefined
+      let real = name
+      if (spell) {
+        const listed = await spellOf(name, idOf(st)).catch(err => {
+          if (err instanceof WorkspaceError && err.code === 'not-found') return undefined
+          throw err
+        })
+        if (listed === undefined) return undefined
+        real = listed
+      }
+      return { kind: kindOf(st), size: Number(st.size), real }
     },
-    openFile: async name => {
+    openFile: async (name, spell = false) => {
       await hook('open')
       const opened = await fs.promises.open(at(name), O_RDONLY | O_NOFOLLOW | O_NONBLOCK).catch(async err => {
         throw await refused(err, name)
       })
-      return checkedFile(opened, [...parts, name])
+      return checkedFile(opened, [...parts, spell ? await spelled(opened, name) : name])
     },
-    openDir: async name => {
+    openDir: async (name, spell = false) => {
       await hook('open')
       const opened = await fs.promises.open(at(name), O_RDONLY | O_DIRECTORY | O_NOFOLLOW).catch(async err => {
         throw await refused(err, name)
       })
-      return procDir(opened, [...parts, name], true, hook)
+      return procDir(opened, [...parts, spell ? await spelled(opened, name) : name], true, hook)
     },
-    openUpdate: async name => {
-      const opened = await dir.openFile(name)
+    openUpdate: async (name, spell = false) => {
+      const opened = await dir.openFile(name, spell)
       // Windows and macOS open the file for writing, and the system refuses a read-only file or a read-only volume. A
       // temp file and a rename ignore the mode of the old file, so Linux asks the system on the proven handle (the magic
       // link of the open file, which is the file itself) and refuses in the same way, with the same code of error.
@@ -411,7 +497,7 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
               await h.close()
             }
             await hook('open')
-            await fs.promises.rename(at(temp), at(name))
+            await fs.promises.rename(at(temp), at(opened.parts.at(-1) ?? name))
             made = false
           } catch (err) {
             throw unchanged(err)
@@ -443,7 +529,7 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
         if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw mapError(err)
       })
       // The name can be a link by now (made by another process): the open proves it.
-      return dir.openDir(name)
+      return dir.openDir(name, true)
     },
     close: async () => {
       if (owned) await handle.close().catch(() => {})
@@ -779,7 +865,7 @@ export const openConfined = async (
       )
     let current = procDir(held, [], false, hook)
     for (const name of parts) {
-      const next = await current.openDir(name).catch(async err => {
+      const next = await current.openDir(name, true).catch(async err => {
         await current.close()
         throw err
       })
@@ -801,7 +887,7 @@ export const openConfined = async (
       const last = split(parts)
       const parent = await dir(parts.slice(0, -1))
       try {
-        return await parent.openFile(last)
+        return await parent.openFile(last, true)
       } finally {
         await parent.close()
       }
@@ -810,7 +896,7 @@ export const openConfined = async (
       const last = split(parts)
       const parent = await dir(parts.slice(0, -1))
       try {
-        const opened = await parent.openUpdate(last)
+        const opened = await parent.openUpdate(last, true)
         // The folder stays open until the change is done: the temp file and the rename use its handle.
         return {
           ...opened,
@@ -830,7 +916,7 @@ export const openConfined = async (
       try {
         guard(parent.parts)
         for (const name of parts.slice(0, -1)) {
-          const next = await parent.openDir(name).catch(err => {
+          const next = await parent.openDir(name, true).catch(err => {
             if (!(err instanceof WorkspaceError && err.code === 'not-found')) throw err
             return parent.mkdir(name)
           })

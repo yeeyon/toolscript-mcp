@@ -1184,3 +1184,85 @@ describe('cancel', () => {
     assert.ok(performance.now() - aborted < 1000)
   })
 })
+
+// A volume that opens a file under a name that its folder does not list (a short name such as GIT~1, another case) needs
+// a folder on vfat, exFAT, SMB or a 9p share of a Windows folder. CI mounts a vfat image and names it in the variable.
+const aliasBase = process.env.TOOLSCRIPT_TEST_ALIAS_DIR
+describe('names that the volume opens but does not list (Linux)', () => {
+  const skipWhy =
+    process.platform !== 'linux'
+      ? 'Linux only'
+      : aliasBase === undefined
+        ? 'TOOLSCRIPT_TEST_ALIAS_DIR does not name a folder on a volume with short names'
+        : false
+
+  const fixture = (t: TestContext) => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(aliasBase!, 'ws-alias-')))
+    t.after(() => rm(root))
+    const secret = marker()
+    // The order of the writes decides the short names: each is the first of its kind.
+    write(root, {
+      '.git/config': secret,
+      '.env': secret,
+      '.ssh/known_hosts': secret,
+      'a long file name.txt': 'long file bytes\n',
+      'README.md': 'readme bytes\n',
+    })
+    const opens = (name: string) => {
+      try {
+        fs.closeSync(fs.openSync(path.join(root, name), 'r'))
+        return true
+      } catch {
+        return false
+      }
+    }
+    const missing = ['GIT~1/config', 'ENV~1', 'SSH~1/known_hosts', 'ALONGF~1.TXT'].filter(n => !opens(n))
+    if (missing.length > 0) {
+      t.skip(`this volume gives no short name for ${missing.join(', ')}`)
+      return undefined
+    }
+    return { root, secret }
+  }
+
+  test('an alias of an excluded name is excluded, and no result holds its bytes', { skip: skipWhy }, async t => {
+    const fx = fixture(t)
+    if (fx === undefined) return
+    const rig = await rigOf(t, fx.root, { write: true })
+    if (rig === undefined) return
+    const calls: [string, Record<string, unknown>][] = [
+      ['read', { path: 'GIT~1/config' }],
+      ['list', { path: 'GIT~1' }],
+      ['stat', { path: 'GIT~1' }],
+      ['search', { query: 'SECRET', path: 'GIT~1' }],
+      ['read', { path: 'ENV~1' }],
+      ['stat', { path: 'ENV~1' }],
+      ['diff', { path: 'ENV~1', content: 'x' }],
+      ['diff', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), content: 'x' }],
+      ['read', { path: 'SSH~1/known_hosts' }],
+      ['write', { path: 'GIT~1/new.txt', content: 'x' }],
+      ['edit', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), edits: [{ old: 'SECRET', new: 'x' }] }],
+    ]
+    for (const [tool, args] of calls) {
+      const message = await rig.fail(tool, args)
+      assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
+      assert.ok(!message.includes(fx.secret), `${tool} shows the bytes`)
+    }
+    assert.equal(fs.readFileSync(path.join(fx.root, '.env'), 'utf8'), fx.secret)
+    assert.deepEqual(fs.readdirSync(path.join(fx.root, '.git')), ['config'])
+  })
+
+  test(
+    'an alias of a file that is not excluded works, and the result has the listed name',
+    { skip: skipWhy },
+    async t => {
+      const fx = fixture(t)
+      if (fx === undefined) return
+      const rig = await rigOf(t, fx.root)
+      if (rig === undefined) return
+      const read = await rig.call('read', { path: 'ALONGF~1.TXT' })
+      assert.equal(read.path, 'a long file name.txt')
+      assert.match(read.content, /long file bytes/)
+      assert.deepEqual(await rig.call('stat', { path: 'readme.md' }), { path: 'README.md', type: 'file', size: 13 })
+    },
+  )
+})

@@ -151,6 +151,17 @@ The provider checks the text of a path before any file system call. It refuses t
 A path that passes is then opened and proven, as [Confinement](#confinement) describes. The proof gives the real spelling
 of the path. Exclusions match that spelling, never the text of the argument. They match with no regard to case, after
 Unicode NFC, on each OS. So `.ENV` and a short name do not pass.
+
+On Linux the proof opens the name of the text, and a volume with short names (vfat, exFAT, NTFS, SMB, a 9p share of a
+Windows folder) can open `GIT~1` for `.git` while `readdir` lists only `.git`. So for each part that comes from the text
+of a path, after its open (or its `lstat` in `stat`), the held parent folder is read once: a listed name that equals the
+text byte for byte stands. Else the real name is the listed name whose `lstat` through the held folder has the `dev` and
+`ino` of what was opened, the names that fold to the text first, with at most 20,000 `lstat` calls. With no match the call
+fails with `not-found`. `parts` hold the real names, so the exclusions see them, and a change takes its lock under the
+real name too. This read is no lookup of a name and calls no hook. It runs only in a folder whose file system (`statfs`)
+can hold such names, or when `statfs` fails, so a folder on ext4 or tmpfs pays nothing. A name that comes from a listing
+(the walk of `list` and `search`) needs no check.
+
 An exclusion holds for every tool, also for `list`, `stat`, `diff` and a new file. The built-in list:
 
 - Version control data: `.git`, `.hg`, `.svn`.
@@ -214,6 +225,12 @@ Windows 11 build 26300, Node 22.23.3, temp folders. Linux: Docker with one CPU, 
   `ERR_INVALID_ARG_TYPE` (Node 22.13.0 and 22.23.3). So no pure-Node proof ties a handle to the root there.
 - On Windows, `dev` is 0 from `lstat` and `stat` of a path on Node 22.13.0, and the volume serial from `fstat`. Node 22.23.3
   gives the volume serial from all three. `ino` is equal in all three.
+- On Linux (Docker with one CPU, Node 22.23.5), on a bind mount of a Windows folder (9p) and on a vfat loop mount,
+  `GIT~1`, `ENV~1`, `SSH~1`, `ALONGF~1.TXT`, `.GIT` and `readme.md` each open through `/proc/self/fd/<fd>/<name>`. None is in
+  `readdir` of the held folder. Each has the `dev` and `ino` of exactly one listed name. `readlink` of the opened fd often
+  shows the alias text, so it does not give the real name.
+- A PowerShell 5.1 helper with one `Add-Type` class took 3.1 s for one cold start and held 62 MB private, and it compiles
+  through `%TEMP%`. Not measured: anything on macOS, and a second volume on Windows.
 
 ### What stays possible
 
@@ -256,7 +273,12 @@ is a follow-up.
 A process that swaps or moves a folder gains from Workspace only when it is not code of the user: another account, or a
 process with fewer rights, that can write in the root. So give Workspace a root that only your account can write.
 On Windows, `doctor` reads the access rules of the root and warns. A static link is refused on each OS, with no race.
-A native binding with folder-relative opens can close the Windows case. It is a follow-up and an optional install.
+A native binding with folder-relative opens (`NtCreateFile` with the handle of the root, as an optional prebuilt N-API
+package) can close the Windows case. It is a follow-up: its build, signing and release path do not exist yet. Two options
+are rejected. A PowerShell helper for the opens costs 62 MB and 1 to 3 s for each session, compiles through `%TEMP%`
+(which a locked down machine blocks) and puts every file call through a second process. A signed `.exe` helper needs a
+certificate that does not exist. More `lstat` or `realpath` calls on the folders above a nested folder cost 2 calls for
+each level and entry, and only turn the nested family into the alternating one: they close nothing.
 
 ## Edits
 

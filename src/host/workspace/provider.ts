@@ -466,6 +466,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
     const present = await confined.file(parts).then(
       async opened => {
         await opened.handle.close().catch(() => {})
+        // The real spelling can name an excluded file that the text did not, as a short name does.
+        if (excluded(opened.parts)) throw excludedError()
         return true
       },
       (err: unknown) => {
@@ -513,8 +515,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
     })
     if (parent === undefined) return missing
     try {
-      // Where the volume can spell a name in another case, ask it for the real spelling, so an alias cannot pass.
-      const entry = await parent.lstat(last, confined.method !== 'proc')
+      // Where the volume can spell a name in another case or by a short name, ask for the real spelling, so an alias cannot pass.
+      const entry = await parent.lstat(last, true)
       if (entry === undefined) return missing
       const real = [...parent.parts, entry.real]
       if (excluded(real)) throw new WorkspaceError('excluded', 'the path is excluded from Workspace')

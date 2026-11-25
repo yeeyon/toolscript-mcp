@@ -164,7 +164,8 @@ quotes and the `^` of cmd dropped, hold the
   - `sh scripts/format.sh --check .`: the format of code, JSON and YAML.
 - CI (`.github/workflows/test.yml`) runs the sandbox test and the server test on Linux, macOS and Windows. Linux and macOS each have
   a network block (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail
-  where neither works. On Windows the test checks that the network block is absent.
+  where neither works. On Windows the test checks that the network block is absent. The Linux legs of the job `test` mount a
+  vfat image and set `TOOLSCRIPT_TEST_ALIAS_DIR`, so the alias test of `tests/workspace-fs.test.ts` runs there.
 - Never put real MCP data, company names, ticket keys, user ids or tokens in tests, hints or docs: this repo is
   public. Use `fake`, `example.atlassian.net` and similar.
 

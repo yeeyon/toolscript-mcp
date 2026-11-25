@@ -1292,7 +1292,7 @@ trusts a check that it made before. The proof differs by system:
 
 | System | Proof |
 | --- | --- |
-| Linux | Each part of the path is opened with `O_NOFOLLOW`, relative to the folder that is held open. A later swap of a name changes nothing that is held. |
+| Linux | Each part of the path is opened with `O_NOFOLLOW`, relative to the folder that is held open. A later swap of a name changes nothing that is held. On a volume with short names (vfat, exFAT, SMB, a share of a Windows folder), a name such as `GIT~1` is found under the name that the folder lists, so an exclusion holds for it. |
 | macOS | The full path is opened with `O_NOFOLLOW_ANY`, which refuses a symlink in any part. |
 | Windows | The full path is opened. A handle on another volume than the root is refused. Then `realpath` and `lstat` must agree with the identity of the handle, two times. |
 
