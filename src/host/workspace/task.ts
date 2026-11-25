@@ -5,19 +5,24 @@
 // A task is NOT contained: it runs project code with the rights of the user. What this file guarantees is narrower:
 // no shell (`shell` is never set, and `cross-spawn` is not used, because it starts `cmd.exe` for a `.cmd` file), the
 // arguments reach the child as given, the child gets a short list of variables, the output is capped, the time is
-// limited, and the process tree ends however the task ends: at its exit, at the time limit, at a cancel and at a
-// shutdown. Outside Windows that is the process group: a process that left the group stays. On Windows the task runs
-// in a Job Object that a PowerShell helper makes (src/host/taskjob.ts), so each process that the task started ends with
-// it, also one whose parent already exited. A process that a service, the Task Scheduler or WMI starts is not in the
-// job. When the helper cannot run, the task runs by the direct spawn, and the tree is the one that `taskkill /T` walks:
-// a process whose parent already exited can outlive it.
+// limited, and the process tree ends however the task ends: at its exit, at the time limit, at a cancel, at a shutdown
+// and at a hard kill of the server. A helper of each OS does that (src/host/taskjob.ts). Windows: one warm PowerShell
+// process makes a Job Object for each task, so every process that the task started ends with it, also one whose parent
+// already exited. Linux: a perl helper is the child subreaper and ends every descendant, also after `setsid`. macOS: the
+// same helper ends the process group, each process with a live parent chain and each process that still shows the
+// marker variable TOOLSCRIPT_TASK, a search and no boundary. What stays: a process that a service, the Task Scheduler,
+// WMI, a daemon outside the tree or `launchd` starts, and on macOS a process that left the group, lost its parent and
+// hides the marker. When no helper can run, the task runs by the direct spawn (the `taskkill /T` tree on Windows, the
+// process group elsewhere) with one note on stderr, and a process whose parent already exited can outlive it.
+// A result comes only from the reports of a helper, read after its channel ended, and a task never runs two times.
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { resolvePath } from '../../core/broker.ts'
 import {
-  COMMAND_LINE_MAX,
   TASK_LIMITS,
   argumentLine,
   cutNote,
@@ -26,9 +31,21 @@ import {
   unknownTask,
   type TaskConfig,
 } from '../../core/task.ts'
+import { decide, prctlNumber, startCode, taskRefusal, type Outcome, type Report } from '../../core/taskjob.ts'
 import { WorkspaceError } from '../../core/workspace.ts'
 import { endTree } from '../broker.ts'
-import { HELPER_START_MS, TASK_JOB, powershellPath, startHelper, type Helper, type JobReport } from '../taskjob.ts'
+import {
+  PERL,
+  TASK_JOB,
+  TASK_REAP,
+  createJobHost,
+  perlPath,
+  powershellPath,
+  startReap,
+  type JobHost,
+  type Launch,
+  type LaunchHooks,
+} from '../taskjob.ts'
 
 /** After the top process exited, the streams get this long to end before the tree is ended. */
 const DRAIN_MS = 1000
@@ -280,37 +297,27 @@ export type TaskRunner = {
   readonly run: (name: string, signal: AbortSignal) => Promise<TaskResult>
   /** Ends the task that runs, with its tree, and refuses each later call. It settles when the tree is gone. */
   readonly stop: () => Promise<void>
+  /** The pid of the warm Windows helper that lives, for the tests and for no other use. */
+  readonly helperPid: () => number | undefined
 }
 
 type Live = { kill: () => void; readonly done: Promise<void> }
 
-/** One process of a task: the program itself, or the Windows job helper that runs it. */
-type Run = {
-  readonly proc: ChildProcess
-  readonly helper: Helper | undefined
-  /** The helper made the job and started the task, or this is the program itself: its output belongs to the task. */
-  began: boolean
-  /** The helper failed before it began: it is ended, and its output is dropped. */
-  dead: boolean
-  spawned: boolean
-  readonly held: { readonly out: Buffer[]; readonly err: Buffer[] }
-}
-
-/** Ends the process of a run with its tree. Ending a helper closes its job, and Windows ends every process in it. */
-const endRun = (r: Run): Promise<void> => {
-  if (r.helper === undefined) return endTree(r.proc)
-  if (r.proc.exitCode === null && r.proc.signalCode === null) r.proc.kill('SIGKILL')
-  return Promise.resolve()
-}
-
 export type RunnerOptions = {
-  /** `sandbox.callTimeoutSeconds` in ms: a task that has the helper is stopped one second before it. Default 60 s. */
+  /** `sandbox.callTimeoutSeconds` in ms: a task that has a helper is stopped one second before it. Default 60 s. */
   readonly callMs?: number
-  /** Windows: `false` never uses the helper, and `script` replaces it (a test of a helper that fails). */
-  readonly job?: false | { readonly script?: string }
+  /**
+   * `false` never uses a helper. `script` replaces the helper script of this OS (a test of a helper that fails), and
+   * `idleMs` shortens the idle stop of the Windows helper.
+   */
+  readonly helper?: false | { readonly script?: string; readonly idleMs?: number }
   /** The one line that says the helper failed. Default: stderr of the server. */
   readonly note?: (line: string) => void
 }
+
+/** The name of a signal number, as `os.constants.signals` spells it. */
+const signalName = (n: number): string | null =>
+  Object.entries(os.constants.signals).find(([, v]) => v === n)?.[0] ?? null
 
 export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): TaskRunner => {
   const byName = new Map(set.valid.map(t => [t.name, t]))
@@ -319,157 +326,175 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
   let tail: Promise<void> = Promise.resolve()
   const win = process.platform === 'win32'
   const callMs = options.callMs ?? 60_000
-  const jobScript = win && options.job !== false ? (options.job?.script ?? TASK_JOB) : undefined
   // After one failure of the helper, each later task of the process takes the direct spawn.
-  let helperBroken = false
+  let broken = options.helper === false
   let noted = false
+  let host: JobHost | undefined
   const breakHelper = (step: string): void => {
-    helperBroken = true
+    broken = true
     if (noted) return
     noted = true
-    const line = `Workspace: the Windows job helper for tasks failed at the step ${step}. Tasks now end with the taskkill tree, and a process whose parent already exited can stay.`
+    const rest = win
+      ? 'a task now ends with the taskkill tree, and a process whose parent already exited can stay'
+      : 'a task now ends with its process group, a process that left the group can stay, and nothing ends at a hard kill of the server'
+    const line = `Workspace: the task helper failed at the step ${step}, so tasks now run by the direct spawn: ${rest}.`
     if (options.note !== undefined) options.note(line)
     else process.stderr.write(`${line}\n`)
   }
+  /** Which helper this OS gives, or undefined when the direct spawn takes the call (with the note, one time). */
+  const helperKind = (): 'job' | 'reap' | undefined => {
+    if (broken) return undefined
+    if (win) {
+      const powershell = powershellPath()
+      if (powershell === undefined) return void breakHelper('powershell')
+      const own = options.helper || undefined
+      host ??= createJobHost({
+        powershell,
+        script: own?.script ?? TASK_JOB,
+        ...(own?.idleMs !== undefined && { idleMs: own.idleMs }),
+      })
+      return 'job'
+    }
+    if (perlPath() === undefined) return void breakHelper('perl')
+    if (prctlNumber(process.platform, process.arch) === undefined) return void breakHelper('arch')
+    return 'reap'
+  }
 
-  /** Starts a task and ends it with its tree. On Windows the job helper makes the tree a job; see src/host/taskjob.ts. */
+  /**
+   * Starts a task and ends it with its tree. A helper of this OS runs it (see src/host/taskjob.ts), or the direct spawn
+   * does, when no helper can. A result comes only from the reports of a helper, read after its channel ended.
+   */
   const execute = (task: ResolvedTask, signal: AbortSignal): Promise<TaskResult> => {
     let settleDone = () => {}
     const entry: Live = { kill: () => {}, done: new Promise<void>(resolve => (settleDone = resolve)) }
     const result = new Promise<TaskResult>((resolve, reject) => {
       const began = performance.now()
-      const line = argumentLine(task.args)
-      if (win && task.file.length + line.length + 3 > COMMAND_LINE_MAX)
-        return reject(startError({ code: 'ENAMETOOLONG' }))
+      const line = win ? argumentLine(task.args) : ''
+      const refusal = taskRefusal({ file: task.file, line, args: task.args, env: task.env }, win)
+      if (refusal !== undefined) return reject(startError({ code: refusal }))
       const out = capture()
       const err = capture()
-      let run: Run | undefined
+      let launch: Launch | undefined
+      let launching = false
       let why: 'timeout' | 'cancel' | undefined
-      let exit: { code: number | null; signal: NodeJS.Signals | null } | undefined
+      let seen: Report[] = []
+      let channel = false
+      let streams = false
       let ended = false
       let timer: NodeJS.Timeout | undefined
       let cap: NodeJS.Timeout | undefined
-      let limit: NodeJS.Timeout | undefined
-      let drain: NodeJS.Timeout | undefined
+      let waiting: NodeJS.Timeout | undefined
       let backstop: NodeJS.Timeout | undefined
 
-      /** The end of the call, with or without a result: the timers, the listener and the helper's files go. */
+      /** The end of the call, with or without a result: the timers, the listener and the pipes go. */
       const finish = (): void => {
         ended = true
-        for (const t of [timer, cap, limit, drain, backstop]) clearTimeout(t)
+        for (const t of [timer, cap, waiting, backstop]) clearTimeout(t)
         signal.removeEventListener('abort', onAbort)
         live.delete(entry)
-        run?.helper?.cleanup()
+        launch?.release()
         settleDone()
       }
-      const settle = (): void => {
+      const answer = (o: Outcome): void => {
         if (ended) return
         finish()
         if (why === 'cancel')
           return reject(new WorkspaceError('cancelled', 'the call was cancelled, and the task was ended'))
-        const o = out.done()
-        const e = err.done()
+        if (why === undefined && (o.kind === 'lost' || o.kind === 'stopped'))
+          return reject(new WorkspaceError('io', 'the task ended with no result: its helper stopped'))
+        const code = o.kind === 'exit' ? o.code : null
+        const sig = o.kind === 'signal' ? signalName(o.signal) : null
+        const so = out.done()
+        const se = err.done()
         resolve({
           task: task.name,
-          exitCode: why === 'timeout' ? null : (exit?.code ?? null),
-          signal: exit?.signal ?? (why === 'timeout' ? 'SIGKILL' : null),
+          exitCode: why === 'timeout' ? null : code,
+          signal: sig ?? (why === 'timeout' ? 'SIGKILL' : null),
           timedOut: why === 'timeout',
           ms: Math.round(performance.now() - began),
-          stdout: o.text,
-          stderr: e.text,
-          stdoutTruncated: o.truncated,
-          stderrTruncated: e.truncated,
+          stdout: so.text,
+          stderr: se.text,
+          stdoutTruncated: so.truncated,
+          stderrTruncated: se.truncated,
         })
       }
       const startFailed = (error: unknown): void => {
         if (ended) return
-        if (run !== undefined) void endRun(run)
+        launch?.kill()
         finish()
         reject(startError(error))
+      }
+      /** The helper never started the task: the direct spawn takes this call, and each later one. */
+      const fallBack = (step: string): void => {
+        if (ended) return
+        const failed = launch
+        launch = undefined
+        failed?.kill()
+        failed?.release()
+        // A cancel or a time limit that ended the helper is no failure of it.
+        if (why !== undefined) return answer({ kind: 'stopped' })
+        breakHelper(step)
+        seen = []
+        channel = false
+        streams = false
+        launchDirect()
+      }
+      /** Reads the reports once the channel ended, and the streams too, unless a stream outlives the helper. */
+      const evaluate = (): void => {
+        if (ended || !channel) return
+        const o = decide(seen)
+        if (o.kind === 'fallback') return fallBack(o.step)
+        if (o.kind === 'start-error') return startFailed({ code: startCode(win, o.code) })
+        if (streams) return answer(o)
+        waiting ??= setTimeout(() => answer(o), KILL_WAIT_MS)
+      }
+      /** A helper that did not answer a stop: it ends, with the group of the task where known, and the call answers. */
+      const force = (): void => {
+        if (ended) return
+        launch?.kill()
+        channel = true
+        streams = true
+        evaluate()
       }
       const stop = (reason: 'timeout' | 'cancel'): void => {
         if (ended) return
         why ??= reason
-        void (run === undefined ? Promise.resolve() : endRun(run)).then(() => {
-          if (!ended) backstop ??= setTimeout(settle, KILL_WAIT_MS)
+        if (launch === undefined) {
+          if (!launching) answer({ kind: 'stopped' })
+          return
+        }
+        void Promise.resolve(launch.stop()).then(() => {
+          if (!ended) backstop ??= setTimeout(force, KILL_WAIT_MS)
         })
       }
       const onAbort = (): void => stop('cancel')
-      const arm = (): void => void (timer = setTimeout(() => stop('timeout'), task.timeoutMs))
+      const arm = (): void => {
+        clearTimeout(timer)
+        timer = setTimeout(() => stop('timeout'), task.timeoutMs)
+      }
       entry.kill = () => stop('cancel')
 
-      /** Output of a helper before its `began` is held: it is the helper's own noise, or the task's first bytes ahead of the report. */
-      const feed = (r: Run, which: 'out' | 'err', chunk: Buffer): void => {
-        if (r.helper !== undefined && !r.began) r.held[which].push(chunk)
-        else (which === 'out' ? out : err).add(chunk)
-      }
-      /** The process ended and its streams are closed. A task that left a process behind does not leave it behind. */
-      const closed = (r: Run, code: number | null, sig: NodeJS.Signals | null): void => {
-        exit ??= { code, signal: sig }
-        void endRun(r)
-        settle()
-      }
-      /** The helper never started the task: the process takes the direct spawn from now on, and this task runs there. */
-      const helperFailed = (r: Run, step: string): void => {
-        if (r.dead || ended) return
-        r.dead = true
-        void endRun(r)
-        r.helper?.cleanup()
-        // A cancel or a time limit that ended the helper is no failure of it.
-        if (why !== undefined) return settle()
-        breakHelper(step)
-        launchDirect()
-      }
-      const onReport = (r: Run, report: JobReport): void => {
-        if (r !== run || r.dead || ended) return
-        if (report.kind === 'failed') return helperFailed(r, report.step)
-        if (report.kind === 'began') {
-          r.began = true
-          for (const chunk of r.held.out.splice(0)) out.add(chunk)
-          for (const chunk of r.held.err.splice(0)) err.add(chunk)
-        } else if (report.kind === 'started') {
-          clearTimeout(limit)
-          arm()
-        } else startFailed({ code: report.code })
+      const hooks: LaunchHooks = {
+        data: (which, chunk) => void (ended || (which === 'out' ? out : err).add(chunk)),
+        report: report => {
+          seen.push(report)
+          if (report.kind === 'started') arm()
+        },
+        channelClosed: () => {
+          channel = true
+          evaluate()
+        },
+        streamsEnded: () => {
+          streams = true
+          evaluate()
+        },
+        spawnFailed: () => fallBack('spawn'),
       }
 
-      const attach = (r: Run): void => {
-        const { proc } = r
-        proc.stdout?.on('data', (chunk: Buffer) => feed(r, 'out', chunk))
-        proc.stderr?.on('data', (chunk: Buffer) => feed(r, 'err', chunk))
-        proc.stdout?.on('error', () => {})
-        proc.stderr?.on('error', () => {})
-        proc.once('spawn', () => (r.spawned = true))
-        proc.once('error', error => {
-          if (r.spawned || ended || r.dead) return
-          if (r.helper !== undefined) return helperFailed(r, 'spawn')
-          startFailed(error)
-        })
-        proc.once('exit', (code, sig) => {
-          if (r.helper !== undefined && !r.began) return
-          exit = { code, signal: sig }
-          // A grandchild can keep the streams open. It gets DRAIN_MS, then the tree ends.
-          drain = setTimeout(() => {
-            void endRun(r)
-            backstop ??= setTimeout(settle, KILL_WAIT_MS / 2)
-          }, DRAIN_MS)
-        })
-        proc.once('close', (code, sig) => {
-          if (r.dead) return
-          if (r.helper === undefined || r.began) return closed(r, code, sig)
-          // A report can still be on its way behind the exit. With none, the helper ended before it began the task.
-          void r.helper.afterExit().then(() => {
-            if (r !== run || r.dead || ended) return
-            if (r.began) closed(r, code, sig)
-            else helperFailed(r, 'exit')
-          })
-        })
-      }
-
+      /** The direct spawn. No `shell`, and no `cross-spawn`. Standard input is closed. The group ends the tree outside Windows. */
       const launchDirect = (): void => {
         let proc: ChildProcess
         try {
-          // No `shell`, and no `cross-spawn`. Standard input is closed. The group is how the tree ends outside Windows.
           proc = spawn(task.file, [...task.args], {
             cwd: task.cwd,
             env: { ...task.env },
@@ -480,47 +505,102 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
         } catch (error) {
           return startFailed(error)
         }
-        run = { proc, helper: undefined, began: true, dead: false, spawned: false, held: { out: [], err: [] } }
+        let spawned = false
+        let info: { code: number | null; signal: NodeJS.Signals | null } | undefined
+        let drain: NodeJS.Timeout | undefined
+        let drained: NodeJS.Timeout | undefined
+        /** The streams are closed or gave up: the direct spawn has no helper, so its reports are made here. */
+        const over = (): void => {
+          clearTimeout(drain)
+          clearTimeout(drained)
+          if (info?.signal != null) seen.push({ kind: 'signal', signal: os.constants.signals[info.signal] ?? 9 })
+          else seen.push({ kind: 'exit', code: info?.code ?? 0 })
+          streams = true
+          hooks.channelClosed()
+        }
+        seen.push({ kind: 'begin' }, { kind: 'started', pid: proc.pid })
+        launch = {
+          stop: () => endTree(proc),
+          kill: () => void endTree(proc),
+          release: () => {},
+        }
         arm()
-        attach(run)
-      }
-      const launchHelper = (powershell: string, script: string): void => {
-        let mine: Run | undefined
-        let helper: Helper
-        try {
-          helper = startHelper(
-            { powershell, script, file: task.file, line, cwd: task.cwd, env: task.env },
-            report => mine !== undefined && onReport(mine, report),
-          )
-        } catch {
-          breakHelper('prepare')
-          return launchDirect()
-        }
-        mine = run = {
-          proc: helper.proc,
-          helper,
-          began: false,
-          dead: false,
-          spawned: false,
-          held: { out: [], err: [] },
-        }
-        // The time of the task runs from its reported start. This cap keeps `timedOut` ahead of the cancel of the call.
-        cap = setTimeout(() => stop('timeout'), Math.max(0, callMs - 1000))
-        limit = setTimeout(() => {
-          if (mine === undefined || mine.dead || ended) return
-          if (!mine.began) helperFailed(mine, 'start')
-          else startFailed({})
-        }, HELPER_START_MS)
-        attach(mine)
+        proc.stdout?.on('data', (chunk: Buffer) => hooks.data('out', chunk))
+        proc.stderr?.on('data', (chunk: Buffer) => hooks.data('err', chunk))
+        proc.stdout?.on('error', () => {})
+        proc.stderr?.on('error', () => {})
+        proc.once('spawn', () => (spawned = true))
+        proc.once('error', error => {
+          if (!spawned) startFailed(error)
+        })
+        proc.once('exit', (code, sig) => {
+          info = { code, signal: sig }
+          // A grandchild can keep the streams open. It gets DRAIN_MS, then the tree ends.
+          drain = setTimeout(() => {
+            void endTree(proc)
+            drained = setTimeout(over, KILL_WAIT_MS / 2)
+          }, DRAIN_MS)
+        })
+        proc.once('close', (code, sig) => {
+          info ??= { code, signal: sig }
+          // A task that left a background process in its group does not leave it behind.
+          void endTree(proc)
+          over()
+        })
       }
 
-      const powershell = jobScript === undefined || helperBroken ? undefined : powershellPath()
-      if (jobScript !== undefined && !helperBroken && powershell === undefined) breakHelper('powershell')
-      if (jobScript !== undefined && powershell !== undefined && !helperBroken) launchHelper(powershell, jobScript)
-      else launchDirect()
+      /** Windows: one warm helper makes a job for the task. The call waits for `ready` before the frame is written. */
+      const launchJob = (job: JobHost): void => {
+        launching = true
+        const input = { file: task.file, args: task.args, line, cwd: task.cwd, env: task.env }
+        void job
+          .launch(input, hooks, () => ended || why !== undefined)
+          .then(
+            got => {
+              launching = false
+              if (ended) return
+              if ('fallback' in got) return fallBack(got.fallback)
+              launch = got
+              // A stop that came while the frame was written ends the task now.
+              if (why !== undefined) stop(why)
+            },
+            () => {
+              launching = false
+              fallBack('spawn')
+            },
+          )
+      }
+
+      /** Linux and macOS: the perl helper for this task. macOS marks the environment, as no kernel object holds the tree. */
+      const launchReap = (): void => {
+        const mark: Record<string, string> =
+          process.platform === 'darwin' ? { TOOLSCRIPT_TASK: randomBytes(16).toString('hex') } : {}
+        const input = { file: task.file, args: task.args, line, cwd: task.cwd, env: { ...task.env, ...mark } }
+        try {
+          launch = startReap(
+            PERL,
+            options.helper ? (options.helper.script ?? TASK_REAP) : TASK_REAP,
+            prctlNumber(process.platform, process.arch) ?? 0,
+            input,
+            hooks,
+          )
+        } catch {
+          return fallBack('spawn')
+        }
+      }
+
       signal.addEventListener('abort', onAbort, { once: true })
       live.add(entry)
-      if (signal.aborted) onAbort()
+      if (signal.aborted) return stop('cancel')
+      const kind = helperKind()
+      if (kind === 'job' && host !== undefined) {
+        // The time of the task runs from its reported start. This cap keeps `timedOut` ahead of the cancel of the call.
+        cap = setTimeout(() => stop('timeout'), Math.max(0, callMs - 1000))
+        launchJob(host)
+      } else if (kind === 'reap') {
+        cap = setTimeout(() => stop('timeout'), Math.max(0, callMs - 1000))
+        launchReap()
+      } else launchDirect()
     })
     return result
   }
@@ -540,6 +620,7 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
   return {
     names: set.valid.map(t => t.name),
     invalid: set.invalid,
+    helperPid: () => host?.pid(),
     run: (name, signal) => {
       const task = byName.get(name)
       if (task === undefined) {
@@ -567,6 +648,7 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
       halted = true
       const running = [...live]
       for (const one of running) one.kill()
+      host?.close()
       await Promise.race([
         Promise.allSettled(running.map(one => one.done)),
         new Promise(resolve => setTimeout(resolve, KILL_WAIT_MS * 2).unref()),

@@ -136,9 +136,6 @@ const quoteArg = (arg: string): string => {
 /** The arguments of a task as the one command-line text that Windows hands to a process, joined by a space. */
 export const argumentLine = (args: readonly string[]): string => args.map(quoteArg).join(' ')
 
-/** The longest command line of a Windows process, in characters. */
-export const COMMAND_LINE_MAX = 32767
-
 /** The names of the tasks as a list for a message. */
 export const taskList = (names: readonly string[]): string => names.join(', ')
 

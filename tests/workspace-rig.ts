@@ -20,7 +20,9 @@ export const marker = (): string => `SECRET-${randomBytes(8).toString('hex')}`
 export const tempDir = (): string =>
   fs.realpathSync.native(fs.mkdtempSync(path.join(process.env.WS_TEST_TREES ?? os.tmpdir(), 'ws-test-')))
 
-export const rm = (dir: string): void => fs.rmSync(dir, { recursive: true, force: true })
+/** Removes a folder. A process that Windows still ends can hold it for a moment, so a busy folder is tried again. */
+export const rm = (dir: string): void =>
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 })
 
 /** Writes `files` (a path with `/` to its text or bytes) under `root`, and makes the folders. */
 export const write = (root: string, files: Record<string, string | Uint8Array>): void => {

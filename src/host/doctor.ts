@@ -26,6 +26,7 @@ import {
   serverFinding,
   shareFindings,
   staleStoreKeys,
+  taskEndFinding,
   warn,
   workspaceAclFinding,
   type CheckName,
@@ -41,6 +42,7 @@ import { brokerFileBeside, idOf, openLink } from './brokerlink.ts'
 import { connectStates, readRunLog, type CheckIo } from './diagnose.ts'
 import { LAYERS, RUNNER, launch, makeExchangeDir, removeExchangeDir } from './launch.ts'
 import { storeFile } from './oauth.ts'
+import { probeHelper } from './taskjob.ts'
 import { loadToolsCache, toolsKey } from './toolscache.ts'
 import { loadConfig, loginFor, otherConfig, type Loaded } from './start.ts'
 import { bindFromConfig, linkOf, type Binding } from './workspace/bind.ts'
@@ -271,6 +273,8 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
         `root ${root}, ${write ? 'read and write (edit and write ask the person)' : 'read-only'}, confined by ${method}${tasks.names.length > 0 ? `, tasks: ${tasks.names.join(', ')}` : ''}`,
       ),
       ...tasks.invalid.map(t => warn(`task ${t.name} is invalid: ${t.reason}`)),
+      // One real start of the helper that ends a task with its tree. It runs no task of the config.
+      ...(tasks.names.length > 0 ? [taskEndFinding(process.platform, await probeHelper())] : []),
       ...(io.platform === 'win32' ? [workspaceAclFinding(await readAcl(root))] : []),
     ]
   },

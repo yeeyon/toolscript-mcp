@@ -9,6 +9,9 @@
 //   stamp <file> <ms>  appends `start <time>` to file, sleeps ms, appends `end <time>`
 //   orphan <dir> <stay|exit>  starts a middle process that starts a detached grandchild, writes its pid to dir/grand.pid and
 //                   exits. Then it writes `ready` in dir and sleeps (stay), or exits 0 (exit). The grandchild's parent is gone.
+//                   A third argument `apple` makes the grandchild /bin/sleep: the default is a `node` process that sleeps.
+//   live <dir>      starts a detached `node` child, writes top.pid, grand.pid and ready, and stays: its parent is alive
+//   nap             sleeps 120 s, then ends by itself
 //   sleep           sleeps for ever
 
 import { spawn } from 'node:child_process'
@@ -56,21 +59,44 @@ else if (mode === 'exit') {
   fs.appendFileSync(rest[0], `start ${Date.now()}\n`)
   setTimeout(() => fs.appendFileSync(rest[0], `end ${Date.now()}\n`), Number(rest[1]))
 } else if (mode === 'orphan') {
-  const [dir, then] = rest
-  const mid = spawn(process.execPath, [process.argv[1], 'orphan-mid', dir], { stdio: 'ignore', windowsHide: true })
+  const [dir, then, kind = 'node'] = rest
+  fs.writeFileSync(path.join(dir, 'top.pid'), String(process.pid))
+  const mid = spawn(process.execPath, [process.argv[1], 'orphan-mid', dir, kind], {
+    stdio: 'ignore',
+    windowsHide: true,
+  })
   mid.once('exit', () => {
     fs.writeFileSync(path.join(dir, 'ready'), '1')
     if (then === 'exit') process.exit(0)
   })
-  if (then !== 'exit') forever()
+  // A top process that stays ends by itself in 120 s, so no test leaves it behind.
+  if (then !== 'exit') setTimeout(() => process.exit(0), 120_000)
 } else if (mode === 'orphan-mid') {
+  // The daemon is `ping` on Windows. Elsewhere it is a `node` process by default, as a build daemon or a browser is, or
+  // an Apple or system program (`apple`: /bin/sleep), which macOS may not show a marker for.
   const win = process.platform === 'win32'
-  const [program, args] = win ? ['ping', ['-n', '120', '127.0.0.1']] : ['sleep', ['120']]
+  const [program, args] = win
+    ? ['ping', ['-n', '120', '127.0.0.1']]
+    : rest[1] === 'apple'
+      ? ['sleep', ['120']]
+      : [process.execPath, [process.argv[1], 'nap']]
   const grand = spawn(program, args, { stdio: 'ignore', windowsHide: true, detached: true })
   grand.unref()
   fs.writeFileSync(path.join(rest[0], 'grand.pid'), String(grand.pid))
   process.exit(0)
-} else if (mode === 'sleep') forever()
+} else if (mode === 'live') {
+  // A child that a living parent started with `detached: true`, as Playwright starts a browser. The parent stays.
+  const grand = spawn(process.execPath, [process.argv[1], 'nap'], {
+    stdio: 'ignore',
+    windowsHide: true,
+    detached: true,
+  })
+  fs.writeFileSync(path.join(rest[0], 'top.pid'), String(process.pid))
+  fs.writeFileSync(path.join(rest[0], 'grand.pid'), String(grand.pid))
+  fs.writeFileSync(path.join(rest[0], 'ready'), '1')
+  setTimeout(() => process.exit(0), 120_000)
+} else if (mode === 'nap') setTimeout(() => process.exit(0), 120_000)
+else if (mode === 'sleep') forever()
 else {
   process.stderr.write('unknown mode')
   process.exitCode = 9

@@ -1,48 +1,38 @@
-// The Windows job helper of a Workspace task (issue #149). A Windows PowerShell 5.1 script (runtime/task-job.ps1)
-// puts itself in a Job Object that ends with its last handle, then starts the task inside it. When the helper ends, so
-// does every process in the job, also one whose parent already exited, which `taskkill /T` cannot find.
+// The helpers that end a Workspace task with every descendant (issue #149). They run the processes; the grammar of the
+// reports, the decision, the frames and the environment block are pure and live in `src/core/taskjob.ts`.
 //
-// No value of a task is in the command line of PowerShell or in its source: they travel as data, in a file in a private
-// folder that the helper reads and removes. The helper reports its steps over a named pipe that this file listens on,
-// apart from its exit code and from the streams of the task, so a failed helper never reads as an exit code of the task.
+// Windows: one warm Windows PowerShell 5.1 process (`runtime/task-job.ps1`) for each task runner. It makes a Job Object
+// for each task and starts the task in it. Linux and macOS: `/usr/bin/perl runtime/task-reap.pl` for each task, which
+// ends every process under it. Nothing here decides a result: the runner reads the reports after a task's channel ended.
+//
+// A value of a task never is in PowerShell source, in a command line of PowerShell or in the environment of a helper:
+// it is a frame on the standard input of the Windows helper, or on the socket of the perl helper.
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { decide, parseReport, posixFrame, prctlNumber, windowsEnv, windowsFrame, type Report } from '../core/taskjob.ts'
 
-/** The helper script. `import.meta.url` gives the same folder in `src/host/` and in `dist/host/main.js`, as `RUNNER` does. */
+/** The helper scripts. `import.meta.url` gives the same folder in `src/host/` and in `dist/host/main.js`, as `RUNNER` does. */
 export const TASK_JOB = fileURLToPath(new URL('../../runtime/task-job.ps1', import.meta.url))
+export const TASK_REAP = fileURLToPath(new URL('../../runtime/task-reap.pl', import.meta.url))
 
-/** The helper has this long to report that the job is made, then it counts as failed. */
+/** The Windows helper has this long to report `ready`, then it counts as failed. */
 export const HELPER_START_MS = 10_000
+/** The Windows helper stops after this long with no task, and the next task starts a new one. */
+export const IDLE_MS = 10 * 60_000
+/** The perl of the system: an absolute path, never a `PATH` lookup. */
+export const PERL = '/usr/bin/perl'
 
-/** After the helper ended with no connection yet, the pipe gets this long for a message that is still on its way. */
-const LATE_MS = 300
-
-/**
- * What the helper reports. `began`: the job is made and the task starts now, so the helper counts as having started it
- * from here on. `started`: the task runs. `start-error`: the program did not start, with a Node code. `failed`: the
- * helper could not make the job, with the step.
- */
-export type JobReport =
-  | { readonly kind: 'began' }
-  | { readonly kind: 'started' }
-  | { readonly kind: 'start-error'; readonly code: string }
-  | { readonly kind: 'failed'; readonly step: string }
-
-/** One line of the helper as a report. A text that is not in the list is no report, and its parts are checked. */
-export const parseReport = (line: string): JobReport | undefined => {
-  if (line === 'begin') return { kind: 'began' }
-  if (line === 'started') return { kind: 'started' }
-  const code = /^error:([A-Z]{3,12}|error)$/.exec(line)
-  if (code !== null) return { kind: 'start-error', code: code[1]! }
-  const step = /^failed:([a-z]{1,12})$/.exec(line)
-  if (step !== null) return { kind: 'failed', step: step[1]! }
-  return undefined
+const isFile = (file: string): boolean => {
+  try {
+    return fs.statSync(file).isFile()
+  } catch {
+    return false
+  }
 }
 
 /** The Windows PowerShell 5.1 of this system, from the `SystemRoot` of the server, or undefined when it is not a file. */
@@ -50,83 +40,427 @@ export const powershellPath = (env: Readonly<Record<string, string | undefined>>
   const root = env.SystemRoot ?? env.SYSTEMROOT
   if (root === undefined || !path.win32.isAbsolute(root)) return undefined
   const file = path.win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  return isFile(file) ? file : undefined
+}
+
+/** `/usr/bin/perl`, or undefined when it is not an executable file. */
+export const perlPath = (): string | undefined => {
   try {
-    return fs.statSync(file).isFile() ? file : undefined
+    fs.accessSync(PERL, fs.constants.X_OK)
   } catch {
     return undefined
   }
+  return isFile(PERL) ? PERL : undefined
 }
 
-export type HelperInput = {
-  readonly powershell: string
-  readonly script: string
-  /** The program of the task, the arguments as one command-line text, its folder and its whole environment. */
+/** What a helper needs to run one task. `env` is the whole environment of the task. */
+export type LaunchInput = {
   readonly file: string
+  readonly args: readonly string[]
+  /** The arguments as the one command-line text of Windows. */
   readonly line: string
   readonly cwd: string
   readonly env: Readonly<Record<string, string>>
 }
 
-export type Helper = {
-  readonly proc: ChildProcess
-  /** Settles when the helper ended and the pipe has no report left, so a report is never missed behind the exit. */
-  readonly afterExit: () => Promise<void>
-  /** Closes the pipe and removes the folder of the data. */
-  readonly cleanup: () => void
+export type LaunchHooks = {
+  readonly data: (which: 'out' | 'err', chunk: Buffer) => void
+  readonly report: (report: Report) => void
+  /** The report channel of this task ended: its last report came, or the helper ended. */
+  readonly channelClosed: () => void
+  /** Both streams of the task ended. */
+  readonly streamsEnded: () => void
+  /** The helper process could not be spawned. */
+  readonly spawnFailed: () => void
 }
 
-/**
- * Starts the helper for one task. `onReport` is called for each report. It throws when the data cannot be written or
- * the process cannot start: the caller takes that as a failed helper that never started the task.
- */
-export const startHelper = (input: HelperInput, onReport: (report: JobReport) => void): Helper => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-task-'))
-  const cleanup = (): void => {
-    server.close()
-    socket?.destroy()
-    fs.rmSync(dir, { recursive: true, force: true })
-  }
-  const pipe = `ts-task-${randomBytes(16).toString('hex')}`
-  const data = path.join(dir, 'task.json')
-  let socket: net.Socket | undefined
-  let closed: Promise<void> | undefined
-  const server = net.createServer(connection => {
-    socket = connection
-    server.close()
-    let rest = ''
-    closed = new Promise<void>(resolve => connection.once('close', () => resolve()))
-    connection.setEncoding('utf8')
-    connection.on('data', (text: string) => {
-      rest += text
-      for (let end = rest.indexOf('\n'); end >= 0; end = rest.indexOf('\n')) {
-        const report = parseReport(rest.slice(0, end))
-        rest = rest.slice(end + 1)
-        if (report !== undefined) onReport(report)
-      }
-    })
-    connection.on('error', () => {})
-  })
-  // A pipe that cannot be made is a failed helper: no helper would find it.
-  server.on('error', () => onReport({ kind: 'failed', step: 'channel' }))
-  try {
-    fs.writeFileSync(data, JSON.stringify({ file: input.file, args: input.line, cwd: input.cwd, env: input.env }))
-    server.listen(`\\\\.\\pipe\\${pipe}`)
-    const proc = spawn(
-      input.powershell,
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', input.script, pipe, data],
-      { env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
-    )
-    return {
-      proc,
-      afterExit: async () => {
-        if (closed === undefined) await new Promise(resolve => setTimeout(resolve, LATE_MS))
-        if (closed !== undefined)
-          await Promise.race([closed, new Promise(resolve => setTimeout(resolve, LATE_MS * 5).unref())])
-      },
-      cleanup,
+export type Launch = {
+  /** Asks for the end of the task with its tree. The reports follow. */
+  readonly stop: () => void | Promise<void>
+  /** Ends the helper at once and, where it knows it, the group of the task. */
+  readonly kill: () => void
+  /** Closes what this task holds: its stream pipes. */
+  readonly release: () => void
+}
+
+/** Splits text into lines and calls `line` for each one. */
+const lines = (line: (text: string) => void): ((chunk: string) => void) => {
+  let rest = ''
+  return chunk => {
+    rest += chunk
+    for (let at = rest.indexOf('\n'); at >= 0; at = rest.indexOf('\n')) {
+      const text = rest.slice(0, at)
+      rest = rest.slice(at + 1)
+      line(text)
     }
-  } catch (err) {
-    cleanup()
-    throw err
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Windows
+
+const PIPES = String.raw`\\.\pipe` + '\\'
+const SWITCHES = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File']
+
+type Helper = {
+  readonly proc: ChildProcess
+  readonly server: net.Server
+  readonly ready: Promise<boolean>
+  readonly settleReady: (ok: boolean) => void
+  state: 'starting' | 'idle' | 'busy' | 'dead'
+  socket: net.Socket | undefined
+  current: { readonly hooks: LaunchHooks } | undefined
+  startTimer: NodeJS.Timeout | undefined
+  idleTimer: NodeJS.Timeout | undefined
+  hung: boolean
+  stopped: boolean
+}
+
+export type JobHost = {
+  /** Writes the frame of a task to a ready helper, or says at which step the helper failed before the frame. */
+  readonly launch: (
+    input: LaunchInput,
+    hooks: LaunchHooks,
+    /** True when the call ended while the helper started: the frame is not written then. */
+    skip: () => boolean,
+  ) => Promise<Launch | { readonly fallback: string }>
+  /** The pid of the helper that lives, for the tests. */
+  readonly pid: () => number | undefined
+  /** Starts the helper if it is not there and waits for `ready`: the failed step, or undefined. Runs no task. */
+  readonly probe: () => Promise<string | undefined>
+  /** Ends the helper and starts no other. */
+  readonly close: () => void
+}
+
+type Handle = { ref: () => unknown; unref: () => unknown }
+
+export const createJobHost = (options: {
+  readonly powershell: string
+  readonly script: string
+  readonly idleMs?: number
+  readonly env?: Readonly<Record<string, string | undefined>>
+}): JobHost => {
+  const idleMs = options.idleMs ?? IDLE_MS
+  const server = options.env ?? process.env
+  let helper: Helper | undefined
+  let closing = false
+
+  const setRef = (h: Helper, on: boolean): void => {
+    for (const handle of [h.proc, h.proc.stdin, h.socket, h.server] as (Handle | null | undefined)[]) {
+      if (handle === null || handle === undefined) continue
+      if (on) handle.ref()
+      else handle.unref()
+    }
+  }
+
+  const died = (h: Helper): void => {
+    if (h.state === 'dead') return
+    h.state = 'dead'
+    clearTimeout(h.startTimer)
+    clearTimeout(h.idleTimer)
+    h.settleReady(false)
+    h.server.close()
+    h.socket?.destroy()
+    if (h.proc.exitCode === null && h.proc.signalCode === null) h.proc.kill()
+    const current = h.current
+    h.current = undefined
+    if (helper === h) helper = undefined
+    current?.hooks.channelClosed()
+    // A stop that ended the helper starts the next one at once, off the path of a call.
+    if (h.stopped && !closing && helper === undefined) {
+      helper = spawnHelper()
+      setRef(helper, false)
+    }
+  }
+
+  const onLine = (h: Helper, text: string): void => {
+    const report = parseReport(text)
+    if (report === undefined) return
+    if (report.kind === 'ready') {
+      if (h.state !== 'starting') return
+      h.state = 'idle'
+      clearTimeout(h.startTimer)
+      h.settleReady(true)
+      return
+    }
+    const current = h.current
+    current?.hooks.report(report)
+    // The last report of a task ends its channel. The helper stays for the next one, or ends after `failed`.
+    if (report.kind === 'exit' || report.kind === 'error' || report.kind === 'failed') {
+      h.current = undefined
+      if (h.state === 'busy') {
+        h.state = 'idle'
+        h.idleTimer = setTimeout(() => died(h), idleMs)
+        h.idleTimer.unref()
+        setRef(h, false)
+      }
+      current?.hooks.channelClosed()
+    }
+  }
+
+  const spawnHelper = (): Helper => {
+    const pipe = `ts-job-${randomBytes(16).toString('hex')}`
+    let settleReady: (ok: boolean) => void = () => {}
+    const ready = new Promise<boolean>(resolve => (settleReady = resolve))
+    const listener = net.createServer()
+    listener.listen(PIPES + pipe)
+    const proc = spawn(options.powershell, [...SWITCHES, options.script, pipe], {
+      env: { SystemRoot: server.SystemRoot ?? server.SYSTEMROOT ?? '' },
+      stdio: ['pipe', 'ignore', 'ignore'],
+      windowsHide: true,
+    })
+    const h: Helper = {
+      proc,
+      server: listener,
+      ready,
+      settleReady,
+      state: 'starting',
+      socket: undefined,
+      current: undefined,
+      startTimer: undefined,
+      idleTimer: undefined,
+      hung: false,
+      stopped: false,
+    }
+    h.startTimer = setTimeout(() => {
+      if (h.state !== 'starting') return
+      h.hung = true
+      died(h)
+    }, HELPER_START_MS)
+    h.startTimer.unref()
+    listener.on('error', () => died(h))
+    listener.on('connection', socket => {
+      listener.close()
+      h.socket = socket
+      socket.setEncoding('utf8')
+      socket.on('error', () => {})
+      socket.on(
+        'data',
+        lines(text => onLine(h, text)),
+      )
+      socket.on('close', () => died(h))
+    })
+    proc.stdin.on('error', () => {})
+    proc.once('error', () => died(h))
+    proc.once('exit', () => {
+      if (h.socket === undefined) died(h)
+    })
+    return h
+  }
+
+  /** A ready helper, or the step at which it failed. A helper that ends before `ready` is replaced one time. */
+  const acquire = async (): Promise<Helper | string> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const h = helper ?? (helper = spawnHelper())
+      setRef(h, true)
+      const ok = await h.ready
+      if (ok && h.state === 'idle') return h
+      if (h.hung) return 'start'
+    }
+    return 'ended'
+  }
+
+  const sink = (which: 'out' | 'err', hooks: LaunchHooks, done: () => void) => {
+    const name = `ts-${which}-${randomBytes(16).toString('hex')}`
+    let socket: net.Socket | undefined
+    const pipe = net.createServer(connection => {
+      socket = connection
+      pipe.close()
+      connection.on('data', (chunk: Buffer) => hooks.data(which, chunk))
+      connection.on('error', () => {})
+      connection.on('close', done)
+    })
+    const listening = new Promise<boolean>(resolve => {
+      pipe.once('listening', () => resolve(true))
+      pipe.once('error', () => resolve(false))
+    })
+    pipe.listen(PIPES + name)
+    return {
+      name,
+      listening,
+      close: () => {
+        pipe.close()
+        socket?.destroy()
+      },
+    }
+  }
+
+  return {
+    pid: () => (helper === undefined || helper.state === 'dead' ? undefined : helper.proc.pid),
+    probe: async () => {
+      const got = await acquire()
+      return typeof got === 'string' ? got : undefined
+    },
+    launch: async (input, hooks, skip) => {
+      if (closing) return { fallback: 'closing' }
+      const got = await acquire()
+      if (typeof got === 'string') return { fallback: got }
+      const h = got
+      let open = 2
+      const finish = (): void => void (--open === 0 && hooks.streamsEnded())
+      const out = sink('out', hooks, finish)
+      const err = sink('err', hooks, finish)
+      const release = (): void => {
+        out.close()
+        err.close()
+      }
+      if (!(await out.listening) || !(await err.listening) || h.state !== 'idle') {
+        release()
+        return { fallback: 'streams' }
+      }
+      if (skip()) {
+        release()
+        return { fallback: 'cancelled' }
+      }
+      clearTimeout(h.idleTimer)
+      h.state = 'busy'
+      h.current = { hooks }
+      const frame = windowsFrame(
+        { file: input.file, line: input.line, cwd: input.cwd, out: out.name, err: err.name },
+        windowsEnv(input.env, server),
+      )
+      h.proc.stdin?.write(frame)
+      const end = (): void => {
+        h.stopped = true
+        died(h)
+      }
+      return {
+        stop: end,
+        kill: () => {
+          end()
+          release()
+        },
+        release,
+      }
+    },
+    close: () => {
+      closing = true
+      if (helper !== undefined) died(helper)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Linux and macOS
+
+/** Starts the perl helper for one task. It throws when the process cannot be spawned. */
+export const startReap = (
+  perl: string,
+  script: string,
+  prctl: number,
+  input: LaunchInput,
+  hooks: LaunchHooks,
+): Launch => {
+  const proc = spawn(perl, [script, String(prctl), input.file, ...input.args], {
+    cwd: input.cwd,
+    env: {},
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+  const socket = proc.stdio[3] as net.Socket
+  let task: number | undefined
+  let open = 2
+  const streamDone = (): void => void (--open === 0 && hooks.streamsEnded())
+  proc.stdout?.on('data', (chunk: Buffer) => hooks.data('out', chunk))
+  proc.stderr?.on('data', (chunk: Buffer) => hooks.data('err', chunk))
+  proc.stdout?.on('error', () => {})
+  proc.stderr?.on('error', () => {})
+  proc.stdout?.once('close', streamDone)
+  proc.stderr?.once('close', streamDone)
+  proc.once('error', () => hooks.spawnFailed())
+  socket.setEncoding('utf8')
+  socket.on('error', () => {})
+  socket.on(
+    'data',
+    lines(text => {
+      const report = parseReport(text)
+      if (report === undefined) return
+      if (report.kind === 'started' && report.pid !== undefined) task = report.pid
+      hooks.report(report)
+    }),
+  )
+  socket.once('close', () => hooks.channelClosed())
+  socket.write(posixFrame(input.env))
+  const end = (pid: number | undefined): void => {
+    if (pid === undefined) return
+    try {
+      process.kill(-pid, 'SIGKILL')
+    } catch {}
+  }
+  return {
+    stop: () => void socket.end(),
+    kill: () => {
+      end(task)
+      end(proc.pid)
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL')
+    },
+    release: () => {},
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The probe of `toolscript-mcp doctor`
+
+/** The longest wait for the probe. */
+const PROBE_MS = 10_000
+
+/**
+ * One real start of the helper of this OS that runs no task of the config. It gives the failed step, or undefined when the
+ * helper started. Linux and macOS start the perl helper with `/usr/bin/true` and stop it at its first report.
+ */
+export const probeHelper = async (): Promise<string | undefined> => {
+  if (process.platform === 'win32') {
+    const powershell = powershellPath()
+    if (powershell === undefined) return 'powershell'
+    const host = createJobHost({ powershell, script: TASK_JOB })
+    const timer = setTimeout(() => host.close(), PROBE_MS)
+    try {
+      return await host.probe()
+    } finally {
+      clearTimeout(timer)
+      host.close()
+    }
+  }
+  const perl = perlPath()
+  if (perl === undefined) return 'perl'
+  const nr = prctlNumber(process.platform, process.arch)
+  if (nr === undefined) return 'arch'
+  return new Promise<string | undefined>(resolve => {
+    const seen: Report[] = []
+    let launch: Launch | undefined
+    let done = false
+    const finish = (step?: string): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      launch?.kill()
+      resolve(step)
+    }
+    const timer = setTimeout(() => finish('start'), PROBE_MS)
+    const hooks: LaunchHooks = {
+      data: () => {},
+      report: report => {
+        seen.push(report)
+        if (report.kind === 'begin') void launch?.stop()
+      },
+      channelClosed: () => {
+        const outcome = decide(seen)
+        finish(outcome.kind === 'fallback' ? outcome.step : undefined)
+      },
+      streamsEnded: () => {},
+      spawnFailed: () => finish('spawn'),
+    }
+    try {
+      launch = startReap(
+        perl,
+        TASK_REAP,
+        nr,
+        { file: '/usr/bin/true', args: [], line: '', cwd: '/', env: { TOOLSCRIPT_TASK: 'probe' } },
+        hooks,
+      )
+    } catch {
+      finish('spawn')
+    }
+  })
 }

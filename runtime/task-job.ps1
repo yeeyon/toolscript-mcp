@@ -1,95 +1,124 @@
-# The job helper of a Workspace task on Windows (issue #149). toolscript-mcp starts it with Windows PowerShell 5.1:
-#   powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File task-job.ps1 <pipe> <data file>
-# It puts itself in a Job Object that ends with its last handle, then starts the task inside the job and waits for it.
-# When the helper ends, for any reason, Windows ends every process in the job, also one whose parent already exited.
+# The warm job helper of the Workspace tasks on Windows (issue #149). toolscript-mcp starts it with Windows PowerShell 5.1:
+#   powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File task-job.ps1 <report pipe name>
+# One helper serves many tasks. It compiles its C# class one time, then only hosts it. For each task the class makes a new
+# Job Object (KILL_ON_JOB_CLOSE, no breakaway flag), starts the task suspended, puts it in the job, then resumes it. The
+# helper is not in the job and holds the only handle of it, so the job ends when the helper closes the handle or dies,
+# and Windows ends every process in it, also one whose parent already exited.
 #
-# The task comes as data in <data file> (JSON: file, args, cwd, env), which the helper removes after it read it. No
-# value of the task is part of this script or of its command line. The helper reports on the named pipe, one line each:
-#   failed:<step>   it could not make the job (data, compile or job). The task did not start.
-#   begin           the job is made and the task starts now
-#   error:<code>    the program did not start
-#   started         the program runs
-# The exit code of the helper is the exit code of the task. The helper writes nothing to its output streams, which the
-# task inherits.
+# The values of a task never are in this file or in a command line. They come as frames on the standard input of the
+# helper (4-byte length, UTF-8, fields with a NUL between them): file, command line, folder, the named pipe of stdout, the
+# named pipe of stderr, then the environment as name and value pairs, used as they are. The helper reports on the named
+# pipe of its argument, one line each: ready, begin, started:<pid>, error:<win32 code>, exit:<code>, failed:<step>.
+# `failed` comes before `begin` only. It writes nothing to its own streams, which are closed, and nothing to the task.
 
-param([string]$Pipe, [string]$Data)
+param([string]$Pipe)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-
+if ([IntPtr]::Size -ne 8) { exit 4 }
 try {
-  $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Pipe, [System.IO.Pipes.PipeDirection]::Out)
-  $client.Connect(5000)
-  $writer = New-Object System.IO.StreamWriter($client, (New-Object System.Text.UTF8Encoding($false)))
-} catch {
-  exit 3
-}
-function Say([string]$line) {
-  $writer.Write($line + "`n")
-  $writer.Flush()
-}
-
-$step = 'data'
-try {
-  $task = [System.IO.File]::ReadAllText($Data, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-  Remove-Item -LiteralPath $Data -Force
-  $step = 'compile'
   Add-Type -TypeDefinition @'
 using System;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
-public static class TsJob {
-  [StructLayout(LayoutKind.Sequential)] struct BASIC { public long a; public long b; public uint LimitFlags; public UIntPtr c; public UIntPtr d; public uint e; public UIntPtr f; public uint g; public uint h; }
+using System.Text;
+
+public static class TsHost {
+  [StructLayout(LayoutKind.Sequential)]
+  struct STARTUPINFO {
+    public int cb; public IntPtr r1, desktop, title; public int x, y, xs, ys, xc, yc, fill, flags;
+    public short show, r2; public IntPtr r3, hIn, hOut, hErr;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int pid, tid; }
+  [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int length; public IntPtr descriptor; public int inherit; }
+  [StructLayout(LayoutKind.Sequential)] struct BASIC { public long a, b; public uint LimitFlags; public UIntPtr c, d; public uint e; public UIntPtr f; public uint g, h; }
   [StructLayout(LayoutKind.Sequential)] struct IOC { public ulong a, b, c, d, e, f; }
   [StructLayout(LayoutKind.Sequential)] struct EXT { public BASIC Basic; public IOC Io; public UIntPtr p1, p2, p3, p4; }
-  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr CreateJobObject(IntPtr a, string n);
-  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr j, int c, ref EXT i, uint l);
-  [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr j, IntPtr p);
-  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
-  // The handle is kept for the life of the process and is never inherited: no security attributes are given.
-  public static IntPtr Job;
-  public static void Enter() {
-    Job = CreateJobObject(IntPtr.Zero, null);
-    if (Job == IntPtr.Zero) throw new Exception("create " + Marshal.GetLastWin32Error());
-    var e = new EXT();
-    e.Basic.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, and no breakaway flag
-    if (!SetInformationJobObject(Job, 9, ref e, (uint)Marshal.SizeOf(typeof(EXT)))) throw new Exception("set " + Marshal.GetLastWin32Error());
-    if (!AssignProcessToJobObject(Job, GetCurrentProcess())) throw new Exception("assign " + Marshal.GetLastWin32Error());
+
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateJobObjectW(IntPtr a, IntPtr n);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr j, int c, ref EXT i, uint l);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr j, IntPtr p);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern IntPtr CreateFileW(string name, uint access, uint share, ref SECURITY_ATTRIBUTES sa, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool CreateProcessW(string app, StringBuilder line, IntPtr pa, IntPtr ta, bool inherit, uint flags,
+    byte[] env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr t);
+  [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+  [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr h, uint code);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int which);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
+
+  static NamedPipeClientStream pipe;
+  static System.IO.Stream input;
+  static void Say(string line) { byte[] b = Encoding.UTF8.GetBytes(line + "\n"); pipe.Write(b, 0, b.Length); pipe.Flush(); }
+  static byte[] Take(int count) {
+    byte[] buffer = new byte[count];
+    for (int have = 0; have < count;) {
+      int n = input.Read(buffer, have, count - have);
+      if (n <= 0) Environment.Exit(6); // the host is gone
+      have += n;
+    }
+    return buffer;
+  }
+  static IntPtr Open(string name, uint access) {
+    SECURITY_ATTRIBUTES sa = new SECURITY_ATTRIBUTES();
+    sa.length = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+    sa.inherit = 1;
+    return CreateFileW(name, access, 3, ref sa, 3, 0, IntPtr.Zero);
+  }
+
+  public static void Serve(string name) {
+    // No handle of the helper is inherited by a task: not the frame pipe on standard input, and not the other two.
+    foreach (int which in new int[] { -10, -11, -12 }) {
+      IntPtr h = GetStdHandle(which);
+      if (h != IntPtr.Zero && h != new IntPtr(-1)) SetHandleInformation(h, 1, 0);
+    }
+    input = Console.OpenStandardInput();
+    pipe = new NamedPipeClientStream(".", name, PipeDirection.Out);
+    try { pipe.Connect(5000); } catch { Environment.Exit(3); }
+    IntPtr bad = new IntPtr(-1);
+    Say("ready");
+    for (;;) {
+      int size = BitConverter.ToInt32(Take(4), 0);
+      if (size <= 0 || size > 4194304) Environment.Exit(6);
+      string[] parts = Encoding.UTF8.GetString(Take(size)).Split('\0');
+      if (parts.Length < 5) { Say("failed:frame"); Environment.Exit(4); }
+      IntPtr job = CreateJobObjectW(IntPtr.Zero, IntPtr.Zero);
+      EXT limits = new EXT();
+      limits.Basic.LimitFlags = 0x2000; // KILL_ON_JOB_CLOSE, and no breakaway flag
+      if (job == IntPtr.Zero || !SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(EXT)))) { Say("failed:job"); Environment.Exit(4); }
+      IntPtr nul = Open("NUL", 0x80000000), output = Open("\\\\.\\pipe\\" + parts[3], 0x40000000), error = Open("\\\\.\\pipe\\" + parts[4], 0x40000000);
+      if (nul == bad || output == bad || error == bad) { Say("failed:streams"); Environment.Exit(4); }
+      StringBuilder block = new StringBuilder();
+      for (int i = 5; i + 1 < parts.Length; i += 2) block.Append(parts[i]).Append('=').Append(parts[i + 1]).Append('\0');
+      block.Append('\0');
+      STARTUPINFO si = new STARTUPINFO();
+      si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+      si.flags = 0x100; // STARTF_USESTDHANDLES
+      si.hIn = nul; si.hOut = output; si.hErr = error;
+      PROCESS_INFORMATION pi;
+      // CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW: the task runs no code before it is in the job.
+      bool made = CreateProcessW(parts[0], new StringBuilder("\"" + parts[0] + "\" " + parts[1]), IntPtr.Zero, IntPtr.Zero, true, 0x08000404,
+        Encoding.Unicode.GetBytes(block.ToString()), parts[2], ref si, out pi);
+      int problem = Marshal.GetLastWin32Error();
+      CloseHandle(nul); CloseHandle(output); CloseHandle(error);
+      if (!made) { CloseHandle(job); Say("error:" + problem); continue; }
+      if (!AssignProcessToJobObject(job, pi.hProcess)) { TerminateProcess(pi.hProcess, 1); Say("failed:assign"); Environment.Exit(4); }
+      Say("begin");
+      ResumeThread(pi.hThread);
+      CloseHandle(pi.hThread);
+      Say("started:" + pi.pid);
+      WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
+      uint code;
+      GetExitCodeProcess(pi.hProcess, out code);
+      CloseHandle(pi.hProcess);
+      CloseHandle(job); // ends what the task left behind, so no process holds the streams of the task
+      Say("exit:" + code);
+    }
   }
 }
 '@
-  $step = 'job'
-  [TsJob]::Enter()
-} catch {
-  Say ('failed:' + $step)
-  exit 4
-}
-
-Say 'begin'
-try {
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $task.file
-  $psi.Arguments = $task.args
-  $psi.WorkingDirectory = $task.cwd
-  $psi.UseShellExecute = $false
-  # The child gets the listed environment and nothing else: not the pipe, and not what PowerShell added.
-  $psi.EnvironmentVariables.Clear()
-  foreach ($property in $task.env.PSObject.Properties) { $psi.EnvironmentVariables[$property.Name] = [string]$property.Value }
-  $process = [System.Diagnostics.Process]::Start($psi)
-} catch {
-  $problem = $_.Exception
-  if ($problem.InnerException -ne $null) { $problem = $problem.InnerException }
-  $code = 'error'
-  if ($problem -is [System.ComponentModel.Win32Exception]) {
-    switch ($problem.NativeErrorCode) {
-      2 { $code = 'ENOENT' }
-      3 { $code = 'ENOENT' }
-      5 { $code = 'EPERM' }
-      87 { $code = 'EINVAL' }
-      206 { $code = 'ENAMETOOLONG' }
-    }
-  }
-  Say ('error:' + $code)
-  exit 5
-}
-Say 'started'
-$process.WaitForExit()
-exit $process.ExitCode
+} catch { exit 4 }
+try { [TsHost]::Serve($Pipe) } catch { exit 5 }
