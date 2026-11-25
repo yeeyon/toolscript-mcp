@@ -331,7 +331,8 @@ describe('the tool table', () => {
       assert.equal(WORKSPACE_TOOLS[name].inputSchema.type, 'object')
       assert.equal((WORKSPACE_TOOLS[name].inputSchema as { additionalProperties: boolean }).additionalProperties, false)
       assert.equal(WORKSPACE_TOOLS[name].outputSchema.type, 'object')
-      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 280)
+      // search is the longest: the .gitignore sentence and the truncated sentence.
+      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 360)
     }
     assert.equal(workspaceClass('mcp__workspace__read'), 'read')
     assert.equal(workspaceClass('mcp__workspace__diff'), 'read')
