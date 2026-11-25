@@ -46,7 +46,9 @@ export type Rig = {
   readonly close: () => Promise<void>
 }
 
-export type RigOptions = Partial<Pick<BindInput, 'hook' | 'limits' | 'platform' | 'env' | 'locks'>> & {
+export type RigOptions = Partial<Pick<BindInput, 'hook' | 'limits' | 'platform' | 'env' | 'locks' | 'clientRoots'>> & {
+  /** `false` is the config key `"gitignore": false`. */
+  readonly gitignore?: boolean
   /** The tasks of each entry, by the path of the entry. */
   readonly tasks?: Readonly<Record<string, readonly TaskConfig[]>>
   /** The `write` grant of every entry. Default false. */
@@ -80,6 +82,7 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
       })),
       exclude: options.exclude ?? [],
       skip: options.skip ?? DEFAULT_SKIP,
+      ...(options.gitignore === false && { gitignore: false }),
     },
     start: options.start ?? root,
     home,
@@ -90,6 +93,7 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
     ...(options.locks !== undefined && { locks: options.locks }),
     ...(options.platform !== undefined && { platform: options.platform }),
     ...(options.env !== undefined && { env: options.env }),
+    ...(options.clientRoots !== undefined && { clientRoots: options.clientRoots }),
   })
   if (!binding.ok) {
     rm(home)

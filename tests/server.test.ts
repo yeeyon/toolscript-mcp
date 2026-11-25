@@ -1490,6 +1490,12 @@ describe('the workspace section', () => {
     assert.equal(bad.servers.get(key('workspace'))?.kind, 'invalid')
   })
 
+  test('gitignore is true by default and false only when the section says false', () => {
+    assert.equal(ok({ mcpServers: {}, workspace: section }).workspace?.gitignore, undefined)
+    assert.equal(ok({ mcpServers: {}, workspace: { ...section, gitignore: true } }).workspace?.gitignore, undefined)
+    assert.equal(ok({ mcpServers: {}, workspace: { ...section, gitignore: false } }).workspace?.gitignore, false)
+  })
+
   test('an error in the section makes only workspace invalid, and each error names its key and no value', () => {
     const cases: [unknown, string][] = [
       [{}, 'workspace.roots: must be an array of 1 to 16 entries'],
@@ -1499,7 +1505,9 @@ describe('the workspace section', () => {
       [{ roots: [{ path: '/a', write: 'yes' }] }, 'workspace.roots[0].write: must be true or false'],
       [{ roots: [{ path: '/a', shell: {} }] }, 'workspace.roots[0].shell: unknown key (known: path, write, tasks)'],
       [{ roots: [5] }, 'workspace.roots[0]: must be an object with "path"'],
-      [{ roots: [{ path: '/a' }], extra: 1 }, 'workspace.extra: unknown key (known: roots, exclude, skip)'],
+      [{ roots: [{ path: '/a' }], extra: 1 }, 'workspace.extra: unknown key (known: roots, exclude, skip, gitignore)'],
+      [{ roots: [{ path: '/a' }], gitignore: 'no' }, 'workspace.gitignore: must be true or false'],
+      [{ roots: [{ path: '/a' }], gitignore: null }, 'workspace.gitignore: must be true or false'],
       [{ roots: [{ path: '/a' }], exclude: ['/abs'] }, 'workspace.exclude[0]: must use / between parts'],
       [{ roots: [{ path: '/a' }], exclude: 'x' }, 'workspace.exclude: must be an array of at most 64 strings'],
       [{ roots: [{ path: '/a' }], skip: ['a/b'] }, 'workspace.skip[0]: must be a folder name'],

@@ -8,7 +8,7 @@ enforces; the others rely on discipline.
   pinned version. Turn on the pre-commit hook one time per clone: `git config core.hooksPath .githooks`.
   `[test: code.check.mjs]`
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
-  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts`, `lock.ts`, `workspace.ts` and `task.ts`. They import no Node module and no host package, so tests call them directly.
+  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts`, `lock.ts`, `workspace.ts`, `task.ts`, `roots.ts` and `ignore.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
 - `src/host/` holds the code that runs in Node. `tsconfig.host.json` checks it with the Node types.
 - The package runs `dist/host/main.js`, and starts `dist/host/broker.js` on demand when sharing is on (issue #63).
@@ -128,7 +128,13 @@ quotes and the `^` of cmd dropped, hold the
   a reason in our own text that holds no path. The tools read the section of the config one time, at the start. Its
   results are untrusted (`"untrusted": true` on its entry), and its read tools run with no rule only while the section
   is present (`Guards.workspace`). A tool is one entry of `WORKSPACE_TOOLS` and one handler in `provider.ts`.
-  `[test: workspace.test.ts, workspace-fs.test.ts (swap hook patterns for every lookup), run.test.ts describe workspace, workspace.e2e.mjs]`
+  Client roots (issue #150) only narrow the bound root and never widen it. The server reads them one time, after the
+  client initialized, and the provider is bound after that: no call runs on a wider root. `roots.ts` and `bind.ts` prove
+  each entry, and a late answer or `list_changed` changes nothing. The `.gitignore` of the root is discovery only: `list`
+  and `search` leave out its names, an exclusion and `skip` decide first, and no other tool reads it. Never use it as
+  access control. The matcher in `src/core/ignore.ts` builds no regular expression from the file and is not the matcher
+  of the exclusions.
+  `[test: workspace.test.ts, workspace-fs.test.ts (swap hook patterns for every lookup), workspace-roots.test.ts, workspace-roots-fs.test.ts, workspace-ignore.test.ts, workspace-ignore-fs.test.ts, run.test.ts describe workspace, workspace.e2e.mjs]`
 - A named task of the Workspace (`run_task`, `src/host/workspace/task.ts`) is a fixed program, argument list, folder and
   environment from the config: the model sends only the name. The spawn is `node:child_process` with no `shell` and never
   `cross-spawn`, which starts `cmd.exe` for a `.cmd` file, so on Windows a command that is not an `.exe` or `.com` file
@@ -172,7 +178,8 @@ quotes and the `^` of cmd dropped, hold the
   - `sh scripts/format.sh --check .`: the format of code, JSON and YAML.
 - CI (`.github/workflows/test.yml`) runs the sandbox test and the server test on Linux, macOS and Windows. Linux and macOS each have
   a network block (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail
-  where neither works. On Windows the test checks that the network block is absent.
+  where neither works. On Windows the test checks that the network block is absent. The Linux legs of the job `test` mount a
+  vfat image and set `TOOLSCRIPT_TEST_ALIAS_DIR`, so the alias test of `tests/workspace-fs.test.ts` runs there.
 - Never put real MCP data, company names, ticket keys, user ids or tokens in tests, hints or docs: this repo is
   public. Use `fake`, `example.atlassian.net` and similar.
 
