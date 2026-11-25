@@ -169,6 +169,19 @@ The provider checks the text of a path before any file system call. It refuses t
 A path that passes is then opened and proven, as [Confinement](#confinement) describes. The proof gives the real spelling
 of the path. Exclusions match that spelling, never the text of the argument. They match with no regard to case, after
 Unicode NFC, on each OS. So `.ENV` and a short name do not pass.
+
+On Linux the proof opens the name of the text, and a volume with short names (vfat, NTFS, SMB, a 9p share of a
+Windows folder) can open `GIT~1` for `.git` while `readdir` lists only `.git`. So for each part that comes from the text
+of a path, after its open (or its `lstat` in `stat`), the held parent folder is read once: a listed name that equals the
+text byte for byte stands. Else the real name is the listed name whose `lstat` through the held folder has the `dev` and
+`ino` of what was opened, the names that fold to the text first, with at most 20,000 `lstat` calls. With no match the call
+fails with `not-found`. `parts` hold the real names, so the exclusions see them, and a change takes its lock under the
+real name too. This read is no lookup of a name and calls no hook. It is skipped only in a folder whose file system
+(`statfs`) is on a short list of types known not to hold such names (ext2/3/4, xfs, btrfs, tmpfs, overlayfs, ramfs, zfs,
+f2fs), so a folder on ext4 or tmpfs pays nothing. Any other type, and a `statfs` that fails, pay the one read: SMB2 and
+SMB3 (`0xfe534d42`) and NFS are not on the list of the first design, and a missed alias leaks an excluded file. A name that comes from a listing
+(the walk of `list` and `search`) needs no check.
+
 An exclusion holds for every tool, also for `list`, `stat`, `diff` and a new file. The built-in list:
 
 - Version control data: `.git`, `.hg`, `.svn`.
@@ -220,7 +233,7 @@ A listing by name gives candidates only. Each entry is opened and proven before 
 | --- | --- | --- |
 | Linux | The provider holds the root folder open. It opens one path part at a time, with `O_NOFOLLOW`, as `/proc/self/fd/<fd>/<part>` of the held parent. | A temp file made with `O_EXCL` in the held folder, then a rename with both names relative to that folder. |
 | macOS | It opens the full path with `O_NOFOLLOW_ANY` (`0x20000000`). The kernel refuses a symlink in any part. | In place, through the proven handle. |
-| Windows | It opens the full path. Then, two times, `realpath.native` must give the same real path, and `lstat` of that path must give the identity of the handle. The real path must be inside the root. It can differ from the name in case or by a short name. Then `lstat` of each part must show no link. | In place, through the proven handle. |
+| Windows | It opens the full path. Then, two times, `realpath.native` must give the same real path, and `lstat` of that path must give the identity of the handle. The real path must be inside the root. It can differ from the name in case or by a short name. Then `lstat` of each part must show no link. A handle on another volume than the root is refused with `link` before these rounds (see below). | In place, through the proven handle. |
 
 The provider tests its method one time for each process, at the first use, in a temp folder. If the test fails, Workspace
 is unavailable and the reason says why. Such cases are Linux with no `/proc`, a macOS kernel that ignores the flag, and a
@@ -231,6 +244,15 @@ the folder must show as the proven one (no link, same identity) right before the
 that fails a proof drops what it read. On Linux a folder is held open, so its names and entries are exact.
 The root of a Linux session is opened first and then compared with its path (`lstat` of the path, no link, same identity
 as the held folder), so a swap of the root around its open fails the start with `root-changed`.
+
+On Windows the volume of the root is its `dev` from `fstat` of a handle of the root, taken at the start. In `proveWindows`,
+a handle whose `dev` differs gets `link`, "Workspace does not cross to another volume", before the two rounds (`sameFile`
+in `confined.ts` is the compare). Node 22.13 gives `dev` 0 for `lstat` and `stat` of a path, so the compare keeps that case:
+a path `dev` of 0 matches when the handle is on the root volume, where a file id names one file. A junction to another
+volume with a matching file id no longer passes. Every file on another volume leaves the read and write family, and every
+folder on another volume leaves the nested folder family. A folder inside the root that mounts another volume is refused.
+`list` and `stat` read by path, so they can still show a name or a size from any volume, and an empty new file or folder can
+still be made there.
 
 ### What was measured
 
@@ -245,6 +267,17 @@ Windows 11 build 26300, Node 22.23.3, temp folders. Linux: Docker with one CPU, 
 - On Linux, a read and a rename through the held folder stayed in the real folder while its name was a symlink to outside.
   A path of two parts through `/proc/self/fd` followed the symlink. So each open takes one part.
 - macOS was not measured. The test of pull request A must prove it on macOS CI, or Workspace stays unavailable there.
+- On Windows, Node has no path of an open fd. `fs` takes an fd only in `fstat`, `fchmod`, `fchown`, `fsync`, `fdatasync`,
+  `ftruncate` and `futimes`: `realpath.native(fd)`, `readlink(fd)`, `readdir(fd)` and `opendir(fd)` throw
+  `ERR_INVALID_ARG_TYPE` (Node 22.13.0 and 22.23.3). So no pure-Node proof ties a handle to the root there.
+- On Windows, `dev` is 0 from `lstat` and `stat` of a path on Node 22.13.0, and the volume serial from `fstat`. Node 22.23.3
+  gives the volume serial from all three. `ino` is equal in all three.
+- On Linux (Docker with one CPU, Node 22.23.5), on a bind mount of a Windows folder (9p) and on a vfat loop mount,
+  `GIT~1`, `ENV~1`, `SSH~1`, `ALONGF~1.TXT`, `.GIT` and `readme.md` each open through `/proc/self/fd/<fd>/<name>`. None is in
+  `readdir` of the held folder. Each has the `dev` and `ino` of exactly one listed name. `readlink` of the opened fd often
+  shows the alias text, so it does not give the real name.
+- A PowerShell 5.1 helper with one `Add-Type` class took 3.1 s for one cold start and held 62 MB private, and it compiles
+  through `%TEMP%`. Not measured: anything on macOS, and a second volume on Windows.
 
 ### What stays possible
 
@@ -271,14 +304,19 @@ name, and through the `lstat` of an entry a size, from outside is listed. No byt
 pattern that is in neither family. Before the proofs, a swap out at the `readdir` and at the
 `lstat` of an entry, and in at the one proof between them, listed `b/<outside name>` with its size. The test names the
 family (`alternating` in `tests/workspace-fs.test.ts`) and fails on any other pattern. macOS has the same family for
-`list` and `stat`: its `read` is exact, because each open refuses a link in any part. An exact `list` on macOS needs an
+`list`: its `read` is exact, because each open refuses a link in any part, and so is its `stat`. `stat` opens the entry by
+its full path with `O_RDONLY | O_NOFOLLOW_ANY | O_NONBLOCK` and reads the kind and the size with `fstat` of that handle
+(`ENOENT` and `ENOTDIR` give `missing`, `ELOOP` gives a link, and another error such as `EACCES` falls back to the
+bracketed `lstat`, which keeps the alternating family for such an entry). The open has side effects: it releases a
+writer that waits on a FIFO, and it may fetch a dataless iCloud file. The spelling still comes from `realpath`. macOS is proven on CI only: if that leg fails because of this
+change, the change is reverted and `stat` joins the alternating family again. An exact `list` on macOS needs an
 open of each entry with a flag that opens a link itself (`O_SYMLINK` with `O_NOFOLLOW_ANY`), which was not measured: it
 is a follow-up.
 
 | Case | Result | Who can do it |
 | --- | --- | --- |
-| Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root. A write into one whose bytes match `expectedHash`. An empty new file or folder outside. | A process that writes in the root and runs at that moment. |
-| Windows and macOS: a swap of a folder in turn with the proofs of one listing or `stat` | A name, a size or a kind from outside the root, in `list` or `stat`. No byte of a file. | The same. |
+| Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root, on the volume of the root only. A write into one whose bytes match `expectedHash`, on that volume only. An empty new file or folder outside, on any volume. | A process that writes in the root and runs at that moment. |
+| Windows: a swap of a folder in turn with the proofs of one listing or `stat`. macOS: the same for a listing, and for a `stat` of an entry that the process cannot open | A name, a size or a kind from outside the root, in `list` or `stat` (macOS: `list`, and `stat` of an unopenable entry). No byte of a file. | The same. |
 | macOS: a swap during the make of a new folder | An empty folder outside the root. | The same. |
 | Each OS: a file or folder moved into the root | It is in the root. | The same. |
 | Each OS: a task | Any act of the user. A task is not confined. | The project code that the task runs. |
@@ -287,7 +325,12 @@ is a follow-up.
 A process that swaps or moves a folder gains from Workspace only when it is not code of the user: another account, or a
 process with fewer rights, that can write in the root. So give Workspace a root that only your account can write.
 On Windows, `doctor` reads the access rules of the root and warns. A static link is refused on each OS, with no race.
-A native binding with folder-relative opens can close the Windows case. It is a follow-up and an optional install.
+A native binding with folder-relative opens (`NtCreateFile` with the handle of the root, as an optional prebuilt N-API
+package) can close the Windows case. It is a follow-up: its build, signing and release path do not exist yet. Two options
+are rejected. A PowerShell helper for the opens costs 62 MB and 1 to 3 s for each session, compiles through `%TEMP%`
+(which a locked down machine blocks) and puts every file call through a second process. A signed `.exe` helper needs a
+certificate that does not exist. More `lstat` or `realpath` calls on the folders above a nested folder cost 2 calls for
+each level and entry, and only turn the nested family into the alternating one: they close nothing.
 
 ## Edits
 
