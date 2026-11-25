@@ -305,18 +305,33 @@ of the error, as the open for writing does on Windows and macOS.
 - `timeoutSeconds` is 60 by default, or `sandbox.callTimeoutSeconds` when that is lower.
   A value over `sandbox.callTimeoutSeconds` is a config error.
   The limit that applies is at most one second under `sandbox.callTimeoutSeconds`, so the task timer fires first.
-  A task ends with its process tree however it ends: at its exit, at the time limit, at a cancel and at a shutdown
-  (issue #149). On Linux and macOS that is the process group, and a process that left the group stays. On Windows the
-  task runs in a Job Object with `KILL_ON_JOB_CLOSE` and no breakaway, which a Windows PowerShell 5.1 helper
-  (`runtime/task-job.ps1`, `src/host/taskjob.ts`) makes before it starts the task, so a process whose parent already
-  exited ends with it too. No native binary ships. A process that a service, the Task Scheduler or WMI starts is not in
-  the job. When the helper cannot run (PowerShell missing or blocked, `Add-Type` refused, the job step failed, no
-  report in 10 s), the task runs by the direct spawn and ends with the `taskkill /T` tree: a refusal would take the
-  feature from each locked-down laptop, and a task is not contained in any case. One stderr line says so, one time
-  for each process. The value of a task never enters PowerShell source or its command line: it goes in a file that the
-  helper reads and removes, the arguments as one command-line text by the rule of libuv (`argumentLine`), and the helper
-  reports its steps on a named pipe, apart from its exit code and from the streams of the task. The helper adds about
-  two seconds to a task, and the time limit runs from the reported start.
+  A task ends with its process tree however it ends: at its exit, at the time limit, at a cancel, at a shutdown and at a
+  hard kill of the server (issue #149). A helper of each OS does it, and no native binary ships.
+  - Windows: one warm Windows PowerShell 5.1 process (`runtime/task-job.ps1`, `src/host/taskjob.ts`) for each task
+    runner. It starts at the first task, stops after 10 minutes with no task, and compiles a small C# class once with
+    `Add-Type`. For each task it makes a new Job Object (`KILL_ON_JOB_CLOSE`, no breakaway), starts the task suspended,
+    puts it in the job, then resumes it. A stop ends the helper, so Windows closes the job. Not in the job: a process that
+    a service, the Task Scheduler or WMI starts. The values of a task are frames on the standard input of the helper,
+    never source or a command line. The environment is the block that a direct spawn gives (`windowsEnv`).
+  - Linux: `/usr/bin/perl runtime/task-reap.pl` for each task. It is the child subreaper (`prctl`), so each orphan
+    becomes its child, and it ends every process under it, also after `setsid`. A stop, and a hard kill of the server,
+    close its socket, which is the order to end. Not ended: a process that a daemon outside the tree starts, and all of
+    it when another program kills the helper.
+  - macOS: the same script. There is no subreaper, PID namespace, cgroup, job or parent-death signal there, so a full
+    guarantee is impossible. The helper ends the process group, each process with a live parent chain and each process
+    whose environment shows the marker `TOOLSCRIPT_TASK=<random>`, found with one `ps`. The marker is a search, not a
+    boundary: a process that left the group, lost its parent and hides it stays.
+  - The helper reports one line each (`ready`, `begin`, `started`, `error`, `exit`, `signal`, `stopped`, `left`,
+    `failed`). The host decides after the report channel ended, and a task never runs two times: the direct spawn takes a
+    call only before `begin`.
+  - Rejected for Linux: a PID namespace (`unshare`) fails in a default Docker container and on Ubuntu 24.04, and the task
+    is PID 1; a cgroup (`systemd-run`) needs a user manager and D-Bus; `PR_SET_PDEATHSIG` alone reaches the child only.
+  - Fallback, not refusal: when the helper cannot run (no PowerShell, `Add-Type` refused, no `/usr/bin/perl`, no `ready`
+    in 10 s), the task runs by the direct spawn, with the `taskkill /T` tree on Windows and the process group elsewhere. A
+    refusal would take the feature from each locked-down laptop, and a task is not contained in any case. One stderr
+    line says so, one time for each process, and `doctor` names the way that applies.
+  - Cost: on Windows the first task after a helper start waits for `ready` (0.55 to 0.7 s calm, up to 3 s loaded) and a
+    later task adds under 20 ms. On Linux a task adds about 7 ms. The time limit runs from the reported start.
 - One task runs at a time in a session. A second call waits for its turn, and a call that ends while it waits starts
   nothing. Each stream keeps the first 64 KiB and the last 192 KiB, with a note of the cut bytes between them.
   A non-zero exit code is data, not an error. An unknown task fails and lists the task names.
@@ -342,10 +357,10 @@ Decisions that the code made while it built pull request C (this section holds t
   server by the choice of the person who wrote the config.
 - At a timeout the result has `timedOut: true`, `exitCode: null` and `signal` of the kill. At a cancel the call fails with
   `cancelled`. At a shutdown the provider ends the task first and refuses each later call.
-- The tree ends with the process group outside Windows, and with the end of the job helper on Windows (`taskkill /T /F`
-  only when the helper cannot run, which needs the top process to be alive). After the top process exits, the streams
-  get 1 second to close. Then the group ends on Linux and macOS. On Windows the job ends with the helper at the exit of
-  the top process.
+- The tree ends through the helper of the OS (see "Tasks"). With the direct spawn, after the top process exits, the
+  streams get 1 second to close, then the tree ends (`taskkill /T /F` on Windows, which needs the top process to be alive,
+  and the process group elsewhere). With a helper, the helper ends what is left at once, and the call resolves when its
+  report is there and both streams ended.
 - The exec class: the prompt has one line that a task runs project code with the rights of the user and that nothing
   contains it, one line with the task names, and one line with the session root.
 
