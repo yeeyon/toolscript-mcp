@@ -1220,9 +1220,17 @@ How a task runs:
 - Each stream keeps the first 64 KiB and the last 192 KiB, and the result sets `stdoutTruncated` or `stderrTruncated`.
 - A non-zero exit code is a result, not an error. At the time limit, `timedOut` is `true`.
 - One task runs at a time in a session. A second call waits for the first.
-- At the time limit, at a cancel and at a shutdown, toolscript-mcp ends the process tree of the task. On Linux and
-  macOS it ends the process group. On Windows it ends the tree that `taskkill /T` walks. A process whose parent
-  already exited can outlive the time limit, a cancel or a shutdown.
+- A task ends with its process tree, however it ends: at its own exit, at the time limit, at a cancel and at a shutdown.
+  Whatever the task started in the background ends with it, and there is no switch to keep it. On Linux and macOS
+  toolscript-mcp ends the process group, so a process that left the group stays. On Windows the task runs in a Job
+  Object that a small Windows PowerShell 5.1 helper makes. So a process whose parent already exited ends with it too.
+  A process that a service, the Task Scheduler or WMI starts for the task is not in the job and stays.
+- On Windows the helper adds about two seconds to each task, and the time limit starts when the task starts, not
+  before. A build server that the task starts ends with the task, so the next build starts cold. Examples are the
+  MSBuild node reuse, the dotnet build server and the Gradle daemon.
+- PowerShell can be missing or blocked (AppLocker, a policy, Constrained Language Mode), or the job cannot be made.
+  Then the task runs without the job and ends with the `taskkill /T` tree. toolscript-mcp writes one line about it to
+  its stderr, one time for each process, and a process whose parent already exited can then stay.
 
 #### Set a task up safely
 

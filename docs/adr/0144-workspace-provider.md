@@ -305,9 +305,18 @@ of the error, as the open for writing does on Windows and macOS.
 - `timeoutSeconds` is 60 by default, or `sandbox.callTimeoutSeconds` when that is lower.
   A value over `sandbox.callTimeoutSeconds` is a config error.
   The limit that applies is at most one second under `sandbox.callTimeoutSeconds`, so the task timer fires first.
-  At the time limit, a cancel or a shutdown, the provider ends the process tree: on Linux and macOS the process group,
-  on Windows the tree that `taskkill /T` walks. On Windows a process whose parent already exited can outlive it. A Job
-  Object would close the gap but needs a native helper, so the claim is narrower instead.
+  A task ends with its process tree however it ends: at its exit, at the time limit, at a cancel and at a shutdown
+  (issue #149). On Linux and macOS that is the process group, and a process that left the group stays. On Windows the
+  task runs in a Job Object with `KILL_ON_JOB_CLOSE` and no breakaway, which a Windows PowerShell 5.1 helper
+  (`runtime/task-job.ps1`, `src/host/taskjob.ts`) makes before it starts the task, so a process whose parent already
+  exited ends with it too. No native binary ships. A process that a service, the Task Scheduler or WMI starts is not in
+  the job. When the helper cannot run (PowerShell missing or blocked, `Add-Type` refused, the job step failed, no
+  report in 10 s), the task runs by the direct spawn and ends with the `taskkill /T` tree: a refusal would take the
+  feature from each locked-down laptop, and a task is not contained in any case. One stderr line says so, one time
+  for each process. The value of a task never enters PowerShell source or its command line: it goes in a file that the
+  helper reads and removes, the arguments as one command-line text by the rule of libuv (`argumentLine`), and the helper
+  reports its steps on a named pipe, apart from its exit code and from the streams of the task. The helper adds about
+  two seconds to a task, and the time limit runs from the reported start.
 - One task runs at a time in a session. A second call waits for its turn, and a call that ends while it waits starts
   nothing. Each stream keeps the first 64 KiB and the last 192 KiB, with a note of the cut bytes between them.
   A non-zero exit code is data, not an error. An unknown task fails and lists the task names.
@@ -333,9 +342,10 @@ Decisions that the code made while it built pull request C (this section holds t
   server by the choice of the person who wrote the config.
 - At a timeout the result has `timedOut: true`, `exitCode: null` and `signal` of the kill. At a cancel the call fails with
   `cancelled`. At a shutdown the provider ends the task first and refuses each later call.
-- The tree ends with the process group outside Windows, and with `taskkill /T /F` on Windows, which needs the top process
-  to be alive. After the top process exits, the streams get 1 second to close. Then the group ends on Linux and macOS.
-  On Windows a process that the task left behind after its top process exited stays, and the README says so.
+- The tree ends with the process group outside Windows, and with the end of the job helper on Windows (`taskkill /T /F`
+  only when the helper cannot run, which needs the top process to be alive). After the top process exits, the streams
+  get 1 second to close. Then the group ends on Linux and macOS. On Windows the job ends with the helper at the exit of
+  the top process.
 - The exec class: the prompt has one line that a task runs project code with the rights of the user and that nothing
   contains it, one line with the task names, and one line with the session root.
 
