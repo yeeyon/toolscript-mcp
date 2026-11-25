@@ -507,7 +507,7 @@ const parseTasks = (
       if (typeof t === 'number' && Number.isInteger(t) && t >= 1 && t <= callTimeout) timeoutSeconds = t
       else
         errors.push(
-          `${here}.timeoutSeconds: must be a whole number of seconds from 1 to ${callTimeout}, the value of sandbox.callTimeoutSeconds`,
+          `${here}.timeoutSeconds: must be a whole number of seconds from 1 to ${Math.max(1, callTimeout - 1)}, one second under sandbox.callTimeoutSeconds`,
         )
     }
     const variables = stringMap(task.env, `${here}.env`, env, errors)

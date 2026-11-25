@@ -1611,11 +1611,11 @@ describe('the tasks of the workspace section', () => {
       [{ t: { command: 'x', cwd: 7 } }, `${T}.t.cwd: must be a string`],
       [
         { t: { command: 'x', timeoutSeconds: 61 } },
-        `${T}.t.timeoutSeconds: must be a whole number of seconds from 1 to 60`,
+        `${T}.t.timeoutSeconds: must be a whole number of seconds from 1 to 59, one second under sandbox.callTimeoutSeconds`,
       ],
       [
         { t: { command: 'x', timeoutSeconds: 0 } },
-        `${T}.t.timeoutSeconds: must be a whole number of seconds from 1 to 60`,
+        `${T}.t.timeoutSeconds: must be a whole number of seconds from 1 to 59, one second under sandbox.callTimeoutSeconds`,
       ],
       [{ t: { command: 'x', timeoutSeconds: 1.5 } }, `${T}.t.timeoutSeconds: must be a whole number of seconds`],
       [
