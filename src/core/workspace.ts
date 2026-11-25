@@ -531,7 +531,7 @@ export const WORKSPACE_TOOLS = {
           type: 'array',
           items: { type: 'string' },
           description:
-            'Globs over paths from the workspace root, also when path is set, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts. A folder that no glob can reach is not read.',
+            'Globs over paths from the workspace root, also when path is set, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts.',
         },
         ignoreCase: { type: 'boolean', description: 'Default false.' },
         maxMatches: { type: 'integer', minimum: 1, maximum: LIMITS.maxMatches, description: 'Default 200.' },
