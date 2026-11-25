@@ -8,6 +8,11 @@
 //   node config.mjs <config> add <name> <entry.json>
 //   node config.mjs <config> untrusted <name> [true|false]
 //   node config.mjs <config> share <name> [true|false]
+//   node config.mjs <config> workspace
+//   node config.mjs <config> workspace add <folder>
+//   node config.mjs <config> workspace remove <folder>
+//   node config.mjs <config> workspace write <folder> [true|false]
+//   node config.mjs <config> workspace task <folder> <name> <task.json>
 // path prints the default config path, as toolscript-mcp finds it without --config.
 // policy writes the rules in order. prepend puts its rules first and drops the old rules with the same match, so a
 // second run changes nothing.
@@ -16,12 +21,18 @@
 // removes the key.
 // share sets "share": true on a server, so every session uses one copy of it through the broker (when the share switch
 // is on). false removes the key, which leaves the server to the rules of its class.
+// workspace prints the built-in Workspace section: its roots, grants and task names, and counts of its lists, never a
+// task command, argument or variable. add puts a folder in workspace.roots under its real path, and makes the section
+// and the config when they are missing. remove takes a root out with its grant and tasks, and the whole section when it
+// was the last root. write sets "write": true on a root, and false removes the key. task sets a named task of a root
+// from a JSON file. The server reads the section one time, at its start: restart the client after a change.
 // To allow the exact tools of a task, run the lines that `toolscript-mcp tools` prints.
 // Exit 1 is a failure of the config or the entry. Exit 2 is a usage error.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { ROOTS_MAX, foldsCase, isInside, rootProblem } from './roots.mjs'
 
 const ACTIONS = ['allow', 'deny', 'ask']
 const NAME = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/
@@ -137,6 +148,11 @@ function usage() {
       '  node config.mjs <config> add <name> <entry.json>',
       '  node config.mjs <config> untrusted <name> [true|false]',
       '  node config.mjs <config> share <name> [true|false]',
+      '  node config.mjs <config> workspace',
+      '  node config.mjs <config> workspace add <folder>',
+      '  node config.mjs <config> workspace remove <folder>',
+      '  node config.mjs <config> workspace write <folder> [true|false]',
+      '  node config.mjs <config> workspace task <folder> <name> <task.json>',
     ].join('\n'),
     2,
   )
@@ -181,7 +197,194 @@ function parseRules(args) {
   return rules
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The workspace commands
+
+// TASK_NAME and TASK_KEYS in src/core/task.ts and config.ts. `doctor` names a task that cannot run.
+const TASK_NAME = /^[a-z0-9_-]{1,32}$/
+const TASK_KEYS = ['command', 'args', 'cwd', 'timeoutSeconds', 'env']
+const TASKS_MAX = 32
+const NOTHING = 'config.mjs wrote nothing.'
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+
+function showWorkspace(config) {
+  const section = config.workspace
+  if (section === undefined) return 'workspace: off'
+  if (!isObject(section)) return 'workspace: invalid'
+  const lines = []
+  if (!Array.isArray(section.roots)) lines.push('roots: invalid')
+  else {
+    for (const entry of section.roots) {
+      if (!isObject(entry) || typeof entry.path !== 'string') {
+        lines.push('invalid root')
+        continue
+      }
+      const parts = [JSON.stringify(entry.path), entry.write === true ? 'write' : 'read-only']
+      if (entry.tasks !== undefined) {
+        if (!isObject(entry.tasks)) parts.push('tasks: invalid')
+        else {
+          const names = Object.keys(entry.tasks)
+          const good = names.filter(name => TASK_NAME.test(name))
+          const bad = names.length - good.length
+          const listed = [...good, ...(bad > 0 ? [plural(bad, 'invalid name', 'invalid names')] : [])]
+          if (listed.length > 0) parts.push(`tasks: ${listed.join(', ')}`)
+        }
+      }
+      lines.push(parts.join('  '))
+    }
+  }
+  if (section.exclude !== undefined)
+    lines.push(
+      Array.isArray(section.exclude)
+        ? `exclude: ${plural(section.exclude.length, 'glob', 'globs')}`
+        : 'exclude: invalid',
+    )
+  if (section.skip !== undefined)
+    lines.push(Array.isArray(section.skip) ? `skip: ${plural(section.skip.length, 'name', 'names')}` : 'skip: invalid')
+  return lines.join('\n')
+}
+
+// The roots array when the section is one that this helper can change, else a failure that names the key.
+function workspaceRoots(config) {
+  const section = config.workspace
+  if (!isObject(section)) throw new Fail(`The key workspace must be an object. ${NOTHING}`)
+  if (!Array.isArray(section.roots)) throw new Fail(`The key workspace.roots must be an array. ${NOTHING}`)
+  const bad = section.roots.findIndex(entry => !isObject(entry) || typeof entry.path !== 'string')
+  if (bad >= 0) throw new Fail(`workspace.roots[${bad}] must be an object with a string "path". ${NOTHING}`)
+  return section.roots
+}
+
+const folded = text => (foldsCase(process.platform) ? text.normalize('NFC').toLowerCase() : text)
+
+// The real path of a folder that exists, written with /. Else undefined.
+function realFolder(text) {
+  try {
+    return fs.realpathSync.native(text).replaceAll('\\', '/')
+  } catch {
+    return undefined
+  }
+}
+
+// The path of a root entry or of a folder argument, as roots compare: its real path, or its text when it does not
+// resolve (a missing folder, or a ${NAME} variable), with \ as /.
+const rootKey = text => (text.includes('${') ? undefined : realFolder(text)) ?? text.replaceAll('\\', '/')
+
+const sameRoot = (a, b) => isInside(a, b, process.platform) && isInside(b, a, process.platform)
+
+function findRoot(roots, folder) {
+  const key = rootKey(folder)
+  const index = roots.findIndex(entry => sameRoot(rootKey(entry.path), key))
+  if (index < 0) throw new Fail(`The config has no such workspace root. ${NOTHING}`)
+  return index
+}
+
+function homeReal() {
+  return realFolder(os.homedir()) ?? os.homedir()
+}
+
+function addRoot(config, folder) {
+  const { platform } = process
+  const absolute = platform === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(folder) : folder.startsWith('/')
+  if (!absolute || folder.includes('${')) {
+    throw new Fail(`The folder must be an absolute path with no \${ in it. ${NOTHING}`)
+  }
+  let real
+  try {
+    real = fs.realpathSync.native(folder)
+    if (!fs.statSync(real).isDirectory()) real = undefined
+  } catch {
+    real = undefined
+  }
+  if (real === undefined) throw new Fail(`The folder does not exist, or it is not a folder. ${NOTHING}`)
+  real = real.replaceAll('\\', '/')
+  const problem = rootProblem(real, homeReal(), platform)
+  if (problem !== undefined) throw new Fail(`The folder is refused: ${problem}. ${NOTHING}`)
+  if (Object.hasOwn(config.mcpServers ?? {}, 'workspace')) {
+    throw new Fail(
+      `The config has an mcpServers entry with the key workspace, which the built-in Workspace uses. Rename the server first. ${NOTHING}`,
+    )
+  }
+  const roots = config.workspace === undefined ? [] : workspaceRoots(config)
+  const known = roots.map(entry => rootKey(entry.path))
+  if (known.some(key => sameRoot(key, real))) return { notes: ['already a root'], changed: false }
+  if (roots.length >= ROOTS_MAX) throw new Fail(`The section already has ${ROOTS_MAX} roots, the limit. ${NOTHING}`)
+  const notes = []
+  if (known.some(key => isInside(real, key, platform)))
+    notes.push('Note: the new root is inside a root that exists. The deepest root gives the grants.')
+  if (known.some(key => isInside(key, real, platform)))
+    notes.push('Note: the new root holds a root that exists. The deepest root gives the grants.')
+  if (config.workspace === undefined) config.workspace = { roots }
+  roots.push({ path: real })
+  return { notes, changed: true }
+}
+
+function taskEntry(file) {
+  const task = readJson(file, 'the task')
+  if (!isObject(task) || typeof task.command !== 'string' || task.command === '') {
+    throw new Fail('The task file must be an object with a non-empty string "command".')
+  }
+  const unknown = Object.keys(task).find(key => !TASK_KEYS.includes(key))
+  if (unknown !== undefined) {
+    throw new Fail(`The task file has a key that is not one of ${TASK_KEYS.join(', ')}.`)
+  }
+  if (task.args !== undefined && (!Array.isArray(task.args) || task.args.some(a => typeof a !== 'string'))) {
+    throw new Fail('The key args of the task file must be a list of strings.')
+  }
+  return task
+}
+
+function workspaceCommand(file, args) {
+  const [sub, ...rest] = args
+  if (sub === undefined) {
+    if (rest.length > 0) usage()
+    return showWorkspace(readConfig(file))
+  }
+  const counts = { add: [1], remove: [1], write: [1, 2], task: [3] }
+  if (!Object.hasOwn(counts, sub) || !counts[sub].includes(rest.length)) usage()
+  const [folder, extra, taskFile] = rest
+  if (sub === 'write' && extra !== undefined && !['true', 'false'].includes(extra)) usage()
+  const config = readConfig(file, sub === 'add' ? newConfig() : undefined)
+  const lines = []
+  if (sub === 'add') {
+    const result = addRoot(config, folder)
+    lines.push(...result.notes)
+    if (!result.changed) return lines.join('\n')
+  } else {
+    const roots = workspaceRoots(config)
+    const index = findRoot(roots, folder)
+    const entry = roots[index]
+    if (sub === 'remove') {
+      roots.splice(index, 1)
+      if (roots.length === 0) delete config.workspace
+    } else if (sub === 'write') {
+      if ((extra ?? 'true') === 'true') entry.write = true
+      else delete entry.write
+    } else {
+      if (!TASK_NAME.test(extra)) {
+        throw new Fail(`The task name must have 1 to 32 characters from a-z, 0-9, - and _. ${NOTHING}`)
+      }
+      if (entry.tasks !== undefined && !isObject(entry.tasks)) {
+        throw new Fail(`The key tasks of the root must be an object. ${NOTHING}`)
+      }
+      const task = taskEntry(taskFile)
+      const tasks = entry.tasks ?? {}
+      const replaced = Object.hasOwn(tasks, extra)
+      if (!replaced && Object.keys(tasks).length >= TASKS_MAX) {
+        throw new Fail(`The root has ${TASKS_MAX} tasks already, the limit. ${NOTHING}`)
+      }
+      // defineProperty: the name __proto__ fits TASK_NAME, and an assignment would not make a key.
+      Object.defineProperty(tasks, extra, { value: task, enumerable: true, writable: true, configurable: true })
+      entry.tasks = tasks
+      lines.push(replaced ? `Replaced the task "${extra}".` : `Set the task "${extra}".`)
+    }
+  }
+  writeConfig(file, config)
+  return [...lines, showWorkspace(config)].join('\n')
+}
+
 const COMMANDS = {
+  workspace: workspaceCommand,
   show(file, args) {
     if (args.length > 0) usage()
     return show(readConfig(file))

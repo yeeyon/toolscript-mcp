@@ -214,7 +214,7 @@ export const showPath = (parts: readonly string[]): string => (parts.length === 
 
 // The names that no tool reads, lists or writes, whatever their folder. Version control data, secrets, and the
 // settings and hooks of clients.
-const BUILT_IN_NAMES: readonly string[] = [
+export const BUILT_IN_NAMES: readonly string[] = [
   '.git',
   '.hg',
   '.svn',
