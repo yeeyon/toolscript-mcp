@@ -378,10 +378,13 @@ describe('run_task: what runs', () => {
     // The system adds a few variables to each process: on Windows the current folders of drives (`=C:`) and the
     // defaults of an account (`LOGONSERVER`, `USERDOMAIN`), and on macOS `__CF_USER_TEXT_ENCODING`.
     const system = /^(=|__CF|LOGONSERVER$|USERDOMAIN)/
+    // macOS adds the marker TOOLSCRIPT_TASK by design, with 32 hex characters, and no other OS adds it.
     assert.deepEqual(
-      extra.filter(k => !system.test(k)),
+      extra.filter(k => !system.test(k) && !(mac && k === 'TOOLSCRIPT_TASK')),
       [],
     )
+    assert.equal('TOOLSCRIPT_TASK' in seen, mac)
+    if (mac) assert.match(seen.TOOLSCRIPT_TASK!, /^[0-9a-f]{32}$/)
   })
 
   test('a non-zero exit code is data, with stdout and stderr apart', async t => {
@@ -1177,6 +1180,25 @@ describe('run_task: a helper that fails falls back to the direct spawn, and no t
     assert.deepEqual(notes, [], 'a task that began is no failure that falls back')
   })
 
+  test(
+    'a helper that takes 11 s to get ready is waited for: no fallback, and the call gets its report',
+    { skip: !win },
+    async t => {
+      const dir = folders(t)()
+      const log = path.join(dir, 'stamp.log')
+      const notes: string[] = []
+      const runner = createTaskRunner(
+        { valid: [resolved(dir, 'stamp', ['stamp', log, '50'])], invalid: [] },
+        { helper: { script: path.join(import.meta.dirname, 'task-job-slow.ps1') }, note: line => notes.push(line) },
+      )
+      t.after(() => runner.stop())
+      const out = await runner.run('stamp', new AbortController().signal)
+      assert.equal(out.exitCode, 7, 'the report of the helper is the result')
+      assert.deepEqual(notes, [], 'a slow start is no failure')
+      assert.ok(!fs.existsSync(log), 'the direct spawn did not run the task as well')
+    },
+  )
+
   test('two helpers that end before ready are the fallback', { skip: !win }, async t => {
     const dir = folders(t)()
     const notes: string[] = []
@@ -1188,7 +1210,7 @@ describe('run_task: a helper that fails falls back to the direct spawn, and no t
     const out = await runner.run('out', new AbortController().signal)
     assert.deepEqual([out.exitCode, out.stdout], [0, 'out'])
     assert.equal(notes.length, 1)
-    assert.match(notes[0]!, /failed at the step ended/)
+    assert.match(notes[0]!, /failed at the step exit4,/)
   })
 
   test('a start that fails at once leaves no listener, no live task and no timer, and the next call runs', async t => {
@@ -1387,12 +1409,25 @@ describe('run_task: the helper of Linux and macOS', { skip: win }, () => {
 describe('run_task: the server is killed hard', () => {
   test('the task and its orphan are gone inside 10 s of a SIGKILL of the host', async t => {
     const dir = folders(t)()
-    const host = spawn(process.execPath, [path.join(import.meta.dirname, 'task-host-child.ts'), dir, 'stay'], {
-      stdio: 'ignore',
-      windowsHide: true,
-    })
+    // Node 22.13 needs the flag to run a .ts file. The stderr of the host shows why it did not get ready.
+    const host = spawn(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--no-warnings',
+        path.join(import.meta.dirname, 'task-host-child.ts'),
+        dir,
+        'stay',
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true },
+    )
+    let stderr = ''
+    host.stderr.on('data', (chunk: Buffer) => (stderr = (stderr + chunk).slice(-2000)))
     t.after(() => host.kill('SIGKILL'))
-    assert.ok(await until(() => fs.existsSync(path.join(dir, 'ready'))), 'the orphan case is ready')
+    assert.ok(
+      await until(() => fs.existsSync(path.join(dir, 'ready'))),
+      `the orphan case is ready; the host said: ${stderr || '(nothing)'}`,
+    )
     const top = Number(fs.readFileSync(path.join(dir, 'top.pid'), 'utf8'))
     const grand = Number(fs.readFileSync(path.join(dir, 'grand.pid'), 'utf8'))
     t.after(() => {

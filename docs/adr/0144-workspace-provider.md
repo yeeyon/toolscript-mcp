@@ -414,8 +414,8 @@ of the error, as the open for writing does on Windows and macOS.
     call only before `begin`.
   - Rejected for Linux: a PID namespace (`unshare`) fails in a default Docker container and on Ubuntu 24.04, and the task
     is PID 1; a cgroup (`systemd-run`) needs a user manager and D-Bus; `PR_SET_PDEATHSIG` alone reaches the child only.
-  - Fallback, not refusal: when the helper cannot run (no PowerShell, `Add-Type` refused, no `/usr/bin/perl`, no `ready`
-    in 10 s), the task runs by the direct spawn, with the `taskkill /T` tree on Windows and the process group elsewhere. A
+  - Fallback, not refusal: when the helper cannot run (no PowerShell, `Add-Type` refused, no `/usr/bin/perl`, no connection
+    in 15 s, no `ready` in 60 s: a cold runner can take many seconds to compile), the task runs by the direct spawn, with the `taskkill /T` tree on Windows and the process group elsewhere. A
     refusal would take the feature from each locked-down laptop, and a task is not contained in any case. One stderr
     line says so, one time for each process, and `doctor` names the way that applies.
   - Cost: on Windows the first task after a helper start waits for `ready` (0.55 to 0.7 s calm, up to 3 s loaded) and a

@@ -14,7 +14,14 @@
 param([string]$Pipe)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-if ([IntPtr]::Size -ne 8) { exit 4 }
+# The pipe is connected first, so the host sees a helper that started, and tells a slow compile from no start at all.
+try {
+  $channel = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Pipe, [System.IO.Pipes.PipeDirection]::Out)
+  $channel.Connect(5000)
+  $writer = New-Object System.IO.StreamWriter($channel, (New-Object System.Text.UTF8Encoding($false)))
+  $writer.AutoFlush = $true
+} catch { exit 3 }
+if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
 try {
   Add-Type -TypeDefinition @'
 using System;
@@ -69,15 +76,14 @@ public static class TsHost {
     return CreateFileW(name, access, 3, ref sa, 3, 0, IntPtr.Zero);
   }
 
-  public static void Serve(string name) {
+  public static void Serve(NamedPipeClientStream connected) {
     // No handle of the helper is inherited by a task: not the frame pipe on standard input, and not the other two.
     foreach (int which in new int[] { -10, -11, -12 }) {
       IntPtr h = GetStdHandle(which);
       if (h != IntPtr.Zero && h != new IntPtr(-1)) SetHandleInformation(h, 1, 0);
     }
     input = Console.OpenStandardInput();
-    pipe = new NamedPipeClientStream(".", name, PipeDirection.Out);
-    try { pipe.Connect(5000); } catch { Environment.Exit(3); }
+    pipe = connected;
     IntPtr bad = new IntPtr(-1);
     Say("ready");
     for (;;) {
@@ -120,5 +126,5 @@ public static class TsHost {
   }
 }
 '@
-} catch { exit 4 }
-try { [TsHost]::Serve($Pipe) } catch { exit 5 }
+} catch { $writer.Write("failed:compile`n"); exit 4 }
+try { [TsHost]::Serve($channel) } catch { exit 5 }

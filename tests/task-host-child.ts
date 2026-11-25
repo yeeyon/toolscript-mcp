@@ -18,5 +18,7 @@ const runner = createTaskRunner({
   ],
   invalid: [],
 })
-runner.run('x', new AbortController().signal).catch(() => {})
+runner
+  .run('x', new AbortController().signal)
+  .catch(error => process.stderr.write(`run failed: ${(error as Error).message}\n`))
 setTimeout(() => process.exit(0), 120_000)

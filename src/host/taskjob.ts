@@ -14,14 +14,24 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { TASK_ENV_NAMES } from '../core/task.ts'
 import { decide, parseReport, posixFrame, prctlNumber, windowsEnv, windowsFrame, type Report } from '../core/taskjob.ts'
 
 /** The helper scripts. `import.meta.url` gives the same folder in `src/host/` and in `dist/host/main.js`, as `RUNNER` does. */
 export const TASK_JOB = fileURLToPath(new URL('../../runtime/task-job.ps1', import.meta.url))
 export const TASK_REAP = fileURLToPath(new URL('../../runtime/task-reap.pl', import.meta.url))
 
-/** The Windows helper has this long to report `ready`, then it counts as failed. */
-export const HELPER_START_MS = 10_000
+/**
+ * The Windows helper has this long to connect, then it counts as failed (step `connect`). Starting PowerShell is cheap
+ * even on a busy machine, so a helper that does not connect has not started.
+ */
+export const HELPER_CONNECT_MS = 15_000
+/**
+ * After the helper connected it compiles its class one time (`Add-Type` runs `csc.exe`), which a cold or busy machine
+ * can slow to many seconds. It has this long, from its spawn, to report `ready`, then it counts as failed (step
+ * `compile`). A task that waits for it has not started, so a slow first start never runs a task two times.
+ */
+export const HELPER_START_MS = 60_000
 /** The Windows helper stops after this long with no task, and the next task starts a new one. */
 export const IDLE_MS = 10 * 60_000
 /** The perl of the system: an absolute path, never a `PATH` lookup. */
@@ -111,7 +121,11 @@ type Helper = {
   socket: net.Socket | undefined
   current: { readonly hooks: LaunchHooks } | undefined
   startTimer: NodeJS.Timeout | undefined
+  connectTimer: NodeJS.Timeout | undefined
   idleTimer: NodeJS.Timeout | undefined
+  /** Why the helper failed before `ready`: a fixed code, with no path. */
+  why: string | undefined
+  /** A helper that did not start in time: the call does not retry it. */
   hung: boolean
   stopped: boolean
 }
@@ -157,7 +171,10 @@ export const createJobHost = (options: {
     if (h.state === 'dead') return
     h.state = 'dead'
     clearTimeout(h.startTimer)
+    clearTimeout(h.connectTimer)
     clearTimeout(h.idleTimer)
+    // A helper that ends before `ready` says how: the code of its process when it has one, else `ended`.
+    h.why ??= h.proc.exitCode !== null ? `exit${h.proc.exitCode}` : 'ended'
     h.settleReady(false)
     h.server.close()
     h.socket?.destroy()
@@ -176,6 +193,8 @@ export const createJobHost = (options: {
   const onLine = (h: Helper, text: string): void => {
     const report = parseReport(text)
     if (report === undefined) return
+    // A helper that failed before `ready` names the step: it never started a task.
+    if (report.kind === 'failed' && h.state === 'starting') h.why = report.step
     if (report.kind === 'ready') {
       if (h.state !== 'starting') return
       h.state = 'idle'
@@ -204,8 +223,15 @@ export const createJobHost = (options: {
     const ready = new Promise<boolean>(resolve => (settleReady = resolve))
     const listener = net.createServer()
     listener.listen(PIPES + pipe)
+    // The helper gets the short list of system variables that a task gets, never a value of a task. `csc.exe` needs the
+    // temp folders and PowerShell the profile folders, and a fresh runner may not give them by itself.
+    const env: Record<string, string> = { SystemRoot: server.SystemRoot ?? server.SYSTEMROOT ?? '' }
+    for (const name of TASK_ENV_NAMES.win32) {
+      const value = server[name]
+      if (value !== undefined) env[name] = value
+    }
     const proc = spawn(options.powershell, [...SWITCHES, options.script, pipe], {
-      env: { SystemRoot: server.SystemRoot ?? server.SYSTEMROOT ?? '' },
+      env,
       stdio: ['pipe', 'ignore', 'ignore'],
       windowsHide: true,
     })
@@ -218,19 +244,31 @@ export const createJobHost = (options: {
       socket: undefined,
       current: undefined,
       startTimer: undefined,
+      connectTimer: undefined,
       idleTimer: undefined,
+      why: undefined,
       hung: false,
       stopped: false,
     }
+    // No connection in time: the helper did not start. Connected but no `ready` in time: the compile is too slow.
+    h.connectTimer = setTimeout(() => {
+      if (h.state !== 'starting' || h.socket !== undefined) return
+      h.hung = true
+      h.why = 'connect'
+      died(h)
+    }, HELPER_CONNECT_MS)
+    h.connectTimer.unref()
     h.startTimer = setTimeout(() => {
       if (h.state !== 'starting') return
       h.hung = true
+      h.why = 'compile'
       died(h)
     }, HELPER_START_MS)
     h.startTimer.unref()
-    listener.on('error', () => died(h))
+    listener.on('error', () => ((h.why ??= 'pipe'), died(h)))
     listener.on('connection', socket => {
       listener.close()
+      clearTimeout(h.connectTimer)
       h.socket = socket
       socket.setEncoding('utf8')
       socket.on('error', () => {})
@@ -241,7 +279,12 @@ export const createJobHost = (options: {
       socket.on('close', () => died(h))
     })
     proc.stdin.on('error', () => {})
-    proc.once('error', () => died(h))
+    proc.once('error', error => {
+      // A spawn error is a fixed code of the OS, such as EPERM when a policy blocks the program.
+      const code = (error as NodeJS.ErrnoException).code
+      h.why ??= `spawn${typeof code === 'string' && /^[A-Z0-9_]{1,24}$/.test(code) ? code : ''}`
+      died(h)
+    })
     proc.once('exit', () => {
       if (h.socket === undefined) died(h)
     })
@@ -250,14 +293,16 @@ export const createJobHost = (options: {
 
   /** A ready helper, or the step at which it failed. A helper that ends before `ready` is replaced one time. */
   const acquire = async (): Promise<Helper | string> => {
+    let last = 'ended'
     for (let attempt = 0; attempt < 2; attempt++) {
       const h = helper ?? (helper = spawnHelper())
       setRef(h, true)
       const ok = await h.ready
       if (ok && h.state === 'idle') return h
-      if (h.hung) return 'start'
+      if (h.hung) return h.why ?? 'start'
+      last = h.why ?? 'ended'
     }
-    return 'ended'
+    return last
   }
 
   const sink = (which: 'out' | 'err', hooks: LaunchHooks, done: () => void) => {
@@ -414,11 +459,10 @@ export const probeHelper = async (): Promise<string | undefined> => {
     const powershell = powershellPath()
     if (powershell === undefined) return 'powershell'
     const host = createJobHost({ powershell, script: TASK_JOB })
-    const timer = setTimeout(() => host.close(), PROBE_MS)
+    // The limits of the helper itself bound the wait: no connection in 15 s, no `ready` in 60 s.
     try {
       return await host.probe()
     } finally {
-      clearTimeout(timer)
       host.close()
     }
   }
