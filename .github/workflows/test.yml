@@ -30,6 +30,16 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
+      # A vfat volume has short names such as GIT~1: the alias test of tests/workspace-fs.test.ts runs on it.
+      - name: Mount a vfat image for the alias test
+        if: runner.os == 'Linux'
+        run: |
+          command -v mkfs.vfat >/dev/null || { sudo apt-get update && sudo apt-get install -y dosfstools; }
+          truncate -s 8M "$RUNNER_TEMP/alias.img"
+          sudo "$(command -v mkfs.vfat || echo /sbin/mkfs.vfat)" "$RUNNER_TEMP/alias.img"
+          mkdir "$RUNNER_TEMP/alias"
+          sudo mount -o loop,uid=$(id -u),gid=$(id -g) "$RUNNER_TEMP/alias.img" "$RUNNER_TEMP/alias"
+          echo "TOOLSCRIPT_TEST_ALIAS_DIR=$RUNNER_TEMP/alias" >> "$GITHUB_ENV"
       - run: npm test
       - run: npm run build
       - run: node tests/server.e2e.mjs
