@@ -3020,6 +3020,17 @@ describe('workspace', () => {
     )
   })
 
+  test('a loop of Workspace calls gets no serial note, because parallel walks are not as fast as the slowest one', async t => {
+    const r = await rig(t, { policy: [], serialLimits: { gapMs: 400, minSavedMs: 0 } })
+    if (r === undefined) return
+    const out = await r.run(
+      'for (const query of ["maxAttempts", "file 1", "file 2"]) await call("mcp__workspace__search", { query })\nreturn "ok"',
+    )
+    assert.equal(out.isError, false, out.text)
+    assert.ok(out.text.includes('--- 3 MCP calls: '), out.text)
+    assert.ok(!out.text.includes('one after another'), out.text)
+  })
+
   test('a name built at run time and tools.workspace.read() run the same way, through the same check', async t => {
     const r = await rig(t, { policy: [] })
     if (r === undefined) return

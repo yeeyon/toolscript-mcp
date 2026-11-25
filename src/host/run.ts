@@ -640,9 +640,14 @@ const execute = async (
 
   // A change of the built-in Workspace shows in the result and in the run log, also when the program returns nothing.
   // `failure`: the code of a call that failed. Only a reply of the provider counts, not a refusal of the policy.
+  const inWorkspace = (tool: string): boolean => {
+    const target = splitToolName(tool)
+    return target !== undefined && config.servers.get(target.server as ServerKey)?.kind === 'workspace'
+  }
+
   const noteChange = (tool: string, args: Record<string, unknown>, r: Reply, failure: CallError | undefined): void => {
     const target = splitToolName(tool)
-    if (target === undefined || config.servers.get(target.server as ServerKey)?.kind !== 'workspace') return
+    if (target === undefined || !inWorkspace(tool)) return
     if (target.name !== 'edit' && target.name !== 'write') return
     if (r.ok) {
       const change = appliedChange(r.value)
@@ -857,7 +862,12 @@ const execute = async (
   const calls = [...records]
     .sort((a, b) => a[0] - b[0])
     .map(([, r]) => (listed === undefined || listed.has(r.tool) ? r : { ...r, tool: '(a name that no server lists)' }))
-  const streak = serialStreak([...timed.values()], ctx.serialLimits)
+  // The walks of Workspace share the host's event loop and its 4 file threads, so parallel calls do not take as long as
+  // the slowest one: the note would send a program to Promise.all, and 8 searches each ran to the 10 s time limit.
+  const streak = serialStreak(
+    [...timed.values()].filter(c => !inWorkspace(c.tool)),
+    ctx.serialLimits,
+  )
   const serial =
     streak === undefined || listed === undefined || listed.has(streak.tool)
       ? streak
