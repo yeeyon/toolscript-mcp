@@ -12,7 +12,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
-import { LIMITS } from '../src/core/workspace.ts'
+import { LIMITS, RESTART_SENTENCE } from '../src/core/workspace.ts'
+import { bindStep } from '../src/host/workspace/bind.ts'
 import { createRoots } from '../src/host/workspace/roots.ts'
 import { marker, open, rm, tempDir, trySymlink, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
@@ -377,5 +378,70 @@ describe('createRoots over a real client and server', () => {
     const [settled] = await Promise.all([roots.read(), sleep(400)])
     assert.deepEqual(settled, [])
     assert.equal(lines.length, 1)
+  })
+})
+
+describe('the config step of the bind (issue #163)', () => {
+  const section = (roots: string[], exclude: string[] = []) => ({
+    roots: roots.map(p => ({ path: p, write: false })),
+    exclude,
+    skip: [],
+  })
+  const step = (base: string, roots: string[], start: string, exclude: string[] = [], home = base) =>
+    bindStep({ workspace: section(roots, exclude), start, home, configFile: path.join(base, 'c.json') })
+  const reasonOf = (s: Awaited<ReturnType<typeof step>>): string => {
+    assert.equal(s.ok, false)
+    return s.ok ? '' : s.reason
+  }
+
+  test('each failure of the step gives its reason with no client, and each reason ends with the restart sentence', async t => {
+    const { base, projects, elsewhere, other } = tree(t)
+    const gone = path.join(base, 'gone')
+    const home = folders(t)()
+    const cases: [string, Awaited<ReturnType<typeof step>>, RegExp][] = [
+      [
+        'a path that does not exist',
+        await step(base, [gone], projects),
+        /^workspace\.roots\[0\]\.path is not a folder that exists\./,
+      ],
+      [
+        'a start folder in none of two entries',
+        await step(base, [projects, other], elsewhere),
+        /^the client started toolscript-mcp in a folder that is in none of the 2 entries of workspace\.roots\. Start the client in one of them, or keep one entry\. /,
+      ],
+      [
+        'a start folder that is excluded',
+        await step(base, [projects], path.join(projects, 'app'), ['app']),
+        /^the folder where the client started toolscript-mcp is excluded by workspace\.exclude\./,
+      ],
+      ['the home folder as a root', await step(base, [home], home, [], home), /refused/],
+    ]
+    for (const [name, s, shape] of cases) {
+      const reason = reasonOf(s)
+      assert.match(reason, shape, name)
+      assert.ok(reason.endsWith(RESTART_SENTENCE), `${name}: ${reason}`)
+      assert.equal(reason.split(RESTART_SENTENCE).length, 2, `${name}: the sentence once`)
+      assert.ok(!reason.includes(base) && !reason.includes(home), `${name}: no path`)
+    }
+    assert.equal(
+      RESTART_SENTENCE,
+      'Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.',
+    )
+    assert.ok(!/add |edit |widen/i.test(RESTART_SENTENCE))
+  })
+
+  test('a step that passed is a bound root, and client roots never turn a failed step into a bind', async t => {
+    const { base, projects, elsewhere, other } = tree(t)
+    const passed = await step(base, [projects], projects)
+    assert.ok(passed.ok)
+    const failed = reasonOf(await step(base, [projects, other], elsewhere))
+    const opened = await open(projects, {
+      roots: [projects, other],
+      start: elsewhere,
+      clientRoots: async () => [uri(projects, 'app'), uri(other)],
+    })
+    assert.ok('unavailable' in opened)
+    if ('rig' in opened) await opened.rig.close()
+    else assert.equal(opened.unavailable, failed)
   })
 })

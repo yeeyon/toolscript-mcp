@@ -299,6 +299,15 @@ describe('the built server with no workspace section', () => {
     try {
       const shown = await s.search('workspace')
       assert.match(shown, /## Not connected\n- workspace: .*Start the client in one of them/)
+      assert.match(shown, /reconnect toolscript-mcp or restart the client/)
+      // The model reads it from the instructions at initialize, with no reason and no path.
+      const instructions = s.client.getInstructions() ?? ''
+      assert.match(
+        instructions,
+        /The built-in workspace server is not available in this session: search_tools says why\./,
+      )
+      assert.doesNotMatch(instructions, /MCP servers:[^.]*\bworkspace\b/)
+      assert.ok(!instructions.includes(base) && !/workspace\.roots/.test(instructions), instructions)
       const r = await s.run('return 1')
       assert.deepEqual(r.isError, false)
     } finally {

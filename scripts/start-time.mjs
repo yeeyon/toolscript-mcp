@@ -30,6 +30,7 @@ const { values } = parseArgs({
     main: { type: 'string' },
     bin: { type: 'string' },
     pack: { type: 'string' },
+    workspace: { type: 'boolean' },
   },
 })
 const runs = Number(values.runs)
@@ -43,7 +44,16 @@ fs.mkdirSync(home)
 const env = { ...process.env, HOME: home, USERPROFILE: home }
 const fake = { command: process.execPath, args: [path.join(ROOT, 'bench', 'fake-server.mjs')] }
 const servers = Array.from({ length: Number(values.servers) }, (_, i) => [`bench${i + 1}`, fake])
-fs.writeFileSync(config, JSON.stringify({ mcpServers: Object.fromEntries(servers) }))
+// --workspace adds the built-in Workspace, with one root entry in a new folder beside the home.
+const wsRoot = path.join(dir, 'ws')
+if (values.workspace) fs.mkdirSync(wsRoot)
+fs.writeFileSync(
+  config,
+  JSON.stringify({
+    mcpServers: Object.fromEntries(servers),
+    ...(values.workspace && { workspace: { roots: [{ path: wsRoot }] } }),
+  }),
+)
 
 // npm and the command npm makes are .cmd files on Windows, which Node starts only through a shell.
 const quote = a => (WIN && /\s/.test(a) ? `"${a}"` : a)

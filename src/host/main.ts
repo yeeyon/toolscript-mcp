@@ -26,7 +26,8 @@ import { LOGIN_USAGE, runLogin } from './login.ts'
 import { createServer } from './server.ts'
 import { detectLaunch, loadConfig, loginFor } from './start.ts'
 import type { WorkspaceConfig } from '../core/workspace.ts'
-import { bindWorkspace, linkOf, type Binding } from './workspace/bind.ts'
+import { within } from './shapes.ts'
+import { bindStep, bindWorkspace, linkOf, type Binding, type Step } from './workspace/bind.ts'
 import { createRoots, type Roots } from './workspace/roots.ts'
 
 const log = (line: string) => console.error(`toolscript-mcp: ${line}`)
@@ -92,7 +93,14 @@ log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 // and a call to the Workspace waits for the bind.
 // A config with no workspace section never asks the client for its roots.
 const roots = config.workspace === undefined ? undefined : createRoots({ log })
-const bindOf = async (section: WorkspaceConfig, clientRoots: Roots): Promise<Binding> => {
+// The part of the bind that reads the config alone runs first: when it failed, the instructions at `initialize` say
+// that Workspace is not available (issue #163). A step that takes over 2 s (a dead network share) is not waited for.
+const step: Promise<Step> | undefined =
+  config.workspace === undefined
+    ? undefined
+    : bindStep({ workspace: config.workspace, start: process.cwd(), home: os.homedir(), configFile: file })
+const workspaceDown = step !== undefined && (await within<Step | undefined>(step, 2000, undefined))?.ok === false
+const bindOf = async (section: WorkspaceConfig, clientRoots: Roots, stepped: Promise<Step>): Promise<Binding> => {
   const workspace = await bindWorkspace({
     workspace: section,
     start: process.cwd(),
@@ -100,6 +108,7 @@ const bindOf = async (section: WorkspaceConfig, clientRoots: Roots): Promise<Bin
     configFile: file,
     log,
     clientRoots: clientRoots.read,
+    step: await stepped,
   })
   log(
     workspace.ok
@@ -110,7 +119,10 @@ const bindOf = async (section: WorkspaceConfig, clientRoots: Roots): Promise<Bin
     for (const { name, reason } of workspace.bound.tasks.invalid) log(`Workspace: task ${name} is invalid: ${reason}`)
   return workspace
 }
-const workspace = config.workspace === undefined || roots === undefined ? undefined : bindOf(config.workspace, roots)
+const workspace =
+  config.workspace === undefined || roots === undefined || step === undefined
+    ? undefined
+    : bindOf(config.workspace, roots, step)
 
 const downstream = connectAll(config.servers, version, log, {
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
@@ -139,6 +151,7 @@ const { server, stopRuns } = createServer(
   version,
   log,
   workspace?.then(w => (w.ok ? { root: w.bound.root, tasks: w.bound.tasks.names } : undefined)),
+  workspaceDown,
 )
 roots?.attach(server.server)
 

@@ -14,6 +14,7 @@ import {
   LIMITS,
   WorkspaceError,
   bindRoot,
+  RESTART_SENTENCE,
   makeExcluder,
   realParts,
   type Excluder,
@@ -63,6 +64,8 @@ export type BindInput = {
    * is proven here, and one that fails a step grants nothing. Absent: the root is the bound root.
    */
   readonly clientRoots?: () => Promise<readonly unknown[]>
+  /** The result of `bindStep` for this config, when the caller ran it already. Absent: `bindWorkspace` runs it. */
+  readonly step?: Step
 }
 
 const real = (file: string): Promise<string> => realpathNative(file)
@@ -100,20 +103,33 @@ const narrowed = async (
   return root
 }
 
-export const bindWorkspace = async ({
+/** What the config alone decides: the entry of the session, its root before the client roots, and the exclusions. */
+export type Step =
+  | { readonly ok: false; readonly reason: string }
+  | {
+      readonly ok: true
+      readonly homeReal: string
+      readonly entry: RealRoot
+      readonly index: number
+      readonly root: string
+      readonly offsetOf: (folder: string) => string[]
+      readonly entryExcluded: Excluder
+      readonly hidden: (folder: string) => boolean
+    }
+
+/**
+ * The part of the bind that reads the config and no client root: the real path and the check of each entry, `bindRoot`,
+ * the refusal of the start folder and its `workspace.exclude` check. Client roots only narrow what it gives (decision
+ * 035), so a step that failed stays failed. Each reason ends with the restart sentence: the section is read one time.
+ */
+export const bindStep = async ({
   workspace,
   start,
   home,
   configFile,
-  log,
   platform = process.platform,
-  hook,
-  limits,
-  env = process.env,
-  locks,
-  clientRoots,
-}: BindInput): Promise<Binding> => {
-  const refuse = (reason: string): Binding => ({ ok: false, reason })
+}: Pick<BindInput, 'workspace' | 'start' | 'home' | 'configFile' | 'platform'>): Promise<Step> => {
+  const refuse = (reason: string): Step => ({ ok: false, reason: `${reason}. ${RESTART_SENTENCE}` })
   const homeReal = await real(home).catch(() => home)
   const roots: RealRoot[] = []
   for (const [i, root] of workspace.roots.entries()) {
@@ -128,7 +144,8 @@ export const bindWorkspace = async ({
     roots.push({ path: found, write: root.write })
   }
   const bound = bindRoot(roots, await real(start).catch(() => path.resolve(start)), platform)
-  if (!bound.ok) return refuse(bound.reason)
+  // The reason of `bindRoot` already ends with the sentence.
+  if (!bound.ok) return { ok: false, reason: bound.reason }
   const problem = rootProblem(bound.root, homeReal, platform)
   if (problem !== undefined)
     return refuse(`the folder where the client started toolscript-mcp is refused as a root: ${problem}`)
@@ -144,6 +161,28 @@ export const bindWorkspace = async ({
   }
   if (hidden(bound.root))
     return refuse('the folder where the client started toolscript-mcp is excluded by workspace.exclude')
+  return { ok: true, homeReal, entry, index: bound.index, root: bound.root, offsetOf, entryExcluded, hidden }
+}
+
+export const bindWorkspace = async ({
+  workspace,
+  start,
+  home,
+  configFile,
+  log,
+  platform = process.platform,
+  hook,
+  limits,
+  env = process.env,
+  locks,
+  clientRoots,
+  step,
+}: BindInput): Promise<Binding> => {
+  const refuse = (reason: string): Binding => ({ ok: false, reason })
+  const stepped = step ?? (await bindStep({ workspace, start, home, configFile, platform }))
+  if (!stepped.ok) return refuse(stepped.reason)
+  const { homeReal, entry, offsetOf, entryExcluded, hidden } = stepped
+  const bound = { index: stepped.index, root: stepped.root }
   // The roots of the client only narrow the bound root. This is settled one time, before the provider exists.
   let root = bound.root
   if (clientRoots !== undefined) {
