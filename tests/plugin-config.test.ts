@@ -704,10 +704,23 @@ describe('plugin config helper: workspace', () => {
     const file = makeConfig(
       JSON.stringify({ workspace: { roots: [{ path: 'C:/gone/App' }, { path: '${FAKE_ROOT}/x' }] } }),
     )
-    assert.equal(ws(file, 'workspace', 'remove', 'C:\\gone\\App').code, 0)
+    // On Windows \ separates parts. Elsewhere it is a letter of a name, so the same text finds no root.
+    const gone = process.platform === 'win32' ? 'C:\\gone\\App' : 'C:/gone/App'
+    assert.equal(ws(file, 'workspace', 'remove', gone).code, 0)
     assert.equal(ws(file, 'workspace', 'remove', '${FAKE_ROOT}/x').code, 0)
     assert.equal(section(file), undefined)
   })
+
+  it(
+    'reads \\ as a letter of a name outside Windows, so a backslash text finds no root',
+    { skip: process.platform === 'win32' },
+    () => {
+      const file = makeConfig(JSON.stringify({ workspace: { roots: [{ path: 'C:/gone/App' }] } }))
+      const before = read(file)
+      assert.equal(ws(file, 'workspace', 'remove', 'C:\\gone\\App').code, 1)
+      assert.equal(read(file), before)
+    },
+  )
 
   it('sets and unsets the write grant and keeps the rest of the entry', () => {
     const app = real(folder('app'))

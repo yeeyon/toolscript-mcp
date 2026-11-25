@@ -9,7 +9,8 @@ argument-hint: "[add|remove|show|verify] [folder]"
 Workspace is a built-in server that reads the files of one project folder. It is off by default. Write access and
 named tasks are separate grants, and this skill asks before each one. Each command here prints no secret value.
 With no argument, say this in 3 to 5 sentences, then do `add` with the default folder.
-`add [folder]`, `remove [folder]` and `show` change or print the `workspace` section. `verify` does step 1, then the verify part of step 7.
+`add [folder]`, `remove [folder]` and `show` change or print the `workspace` section. `verify` does step 1, then the
+verify part of step 7.
 
 ## Rules
 
@@ -83,7 +84,8 @@ Nothing contains it, and each program that calls it asks first.
 - `command` is a bare name such as `node`, or the full path of the file. For `./gradlew`, use its full path. A relative
   path with `/` or `\` makes the whole Workspace section invalid, so `config.mjs` refuses it.
 - Each `${NAME}` in the task must be set in the environment of the `toolscript` entry. If it is not set, Workspace is off.
-- `timeoutSeconds` is a whole number from 1 to `sandbox.callTimeoutSeconds`, which is 60 by default.
+- `timeoutSeconds` is a whole number from 1 to the call limit. The limit is `sandbox.callTimeoutSeconds`. Without it,
+  the limit is the smaller of 60 and `sandbox.timeoutSeconds`.
 - On Windows, refuse `npm`, `npx`, `pnpm`, `yarn` and any `.cmd`, `.bat` or `.ps1` file as `command`. Use `node` with the
   script. README "Set a task up safely" says why. Read `package.json` of the folder only when the person asks for a proposal.
 - Never ask for a secret value. Write `${NAME}` in `env`, as `/toolscript:setup` step 9 does.
