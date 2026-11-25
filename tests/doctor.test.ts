@@ -650,7 +650,7 @@ describe('the workspace check', () => {
     const missing = setup({ mcpServers: {}, workspace: { roots: [{ path: path.join(ROOT, 'nowhere') }] } })
     assert.equal(await missing.doctor(), 1)
     assert.deepEqual(missing.of('workspace'), [
-      'fail  workspace  unavailable: workspace.roots[0].path is not a folder that exists',
+      'fail  workspace  unavailable: workspace.roots[0].path is not a folder that exists. Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.',
     ])
     assert.ok(missing.of('servers').some(l => l.includes('workspace.roots[0].path is not a folder that exists')))
   })
