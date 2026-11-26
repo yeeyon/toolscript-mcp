@@ -33,7 +33,7 @@ export const HELPER_CONNECT_MS = 15_000
  */
 export const HELPER_START_MS = 60_000
 /** The most of the helper's own output that a failure shows. */
-const SAID_MAX = 400
+const SAID_MAX = 1200
 /** The Windows helper stops after this long with no task, and the next task starts a new one. */
 export const IDLE_MS = 10 * 60_000
 /** The perl of the system: an absolute path, never a `PATH` lookup. */
@@ -146,6 +146,8 @@ export type JobHost = {
   readonly pid: () => number | undefined
   /** Starts the helper if it is not there and waits for `ready`: the failed step, or undefined. Runs no task. */
   readonly probe: () => Promise<string | undefined>
+  /** What the latest helper wrote to its error stream (its crumbs, with times), also after it ended, for the tests. */
+  readonly said: () => string
   /** Ends the helper and starts no other. */
   readonly close: () => void
 }
@@ -161,6 +163,8 @@ export const createJobHost = (options: {
   const idleMs = options.idleMs ?? IDLE_MS
   const server = options.env ?? process.env
   let helper: Helper | undefined
+  /** The latest helper, also after it ended: its crumbs are for the tests. */
+  let latest: Helper | undefined
   let closing = false
 
   const setRef = (h: Helper, on: boolean): void => {
@@ -264,6 +268,7 @@ export const createJobHost = (options: {
       hung: false,
       stopped: false,
     }
+    latest = h
     // No connection in time: the helper did not start. Connected but no `ready` in time: the compile is too slow.
     h.connectTimer = setTimeout(() => {
       if (h.state !== 'starting' || h.socket !== undefined) return
@@ -357,6 +362,7 @@ export const createJobHost = (options: {
 
   return {
     pid: () => (helper === undefined || helper.state === 'dead' ? undefined : helper.proc.pid),
+    said: () => latest?.said ?? '',
     probe: async () => {
       const got = await acquire()
       return typeof got === 'string' ? got : undefined

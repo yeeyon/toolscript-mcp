@@ -32,7 +32,7 @@ import {
   windowsFrame,
   type Report,
 } from '../src/core/taskjob.ts'
-import { perlPath, powershellPath } from '../src/host/taskjob.ts'
+import { createJobHost, perlPath, powershellPath, TASK_JOB } from '../src/host/taskjob.ts'
 import { createTaskRunner, findOnPath, launchProblem, type ResolvedTask } from '../src/host/workspace/task.ts'
 import { codeOf, open, rm, tempDir, trySymlink, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
@@ -1323,6 +1323,20 @@ describe('the source of the task module', () => {
 })
 
 describe('run_task: the warm helper of Windows', { skip: !win }, () => {
+  test('a cold start of the real helper reports its crumbs with times, for the cold numbers of a runner', async t => {
+    const powershell = powershellPath()
+    assert.ok(powershell !== undefined)
+    const host = createJobHost({ powershell, script: TASK_JOB })
+    t.after(() => host.close())
+    const began = Date.now()
+    const step = await host.probe()
+    t.diagnostic(`helper ready after ${Date.now() - began} ms, failed step: ${step ?? 'none'}`)
+    t.diagnostic(`helper crumbs: ${host.said()}`)
+    assert.equal(step, undefined)
+    for (const crumb of ['script started', 'connected at', 'Add-Type found at', 'compiling at', 'compiled at'])
+      assert.ok(host.said().includes(`ts-helper: ${crumb}`) || host.said().includes(crumb), `the crumb ${crumb}`)
+  })
+
   test('two tasks run on one helper, and the first one waits for the helper to be ready', async t => {
     const dir = folders(t)()
     const runner = createTaskRunner({ valid: [resolved(dir, 'out', ['exit', '0'])], invalid: [] })

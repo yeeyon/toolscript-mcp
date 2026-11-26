@@ -35,6 +35,8 @@ try {
   Crumb ('connected at ' + $sw.ElapsedMilliseconds + 'ms')
 } catch { Crumb ('connect failed: ' + $_.Exception.Message); exit 3 }
 if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
+[void]$ExecutionContext.SessionState.InvokeCommand.GetCommand('Add-Type', 'Cmdlet')
+Crumb ('Add-Type found at ' + $sw.ElapsedMilliseconds + 'ms')
 Crumb ('compiling at ' + $sw.ElapsedMilliseconds + 'ms')
 try {
   Add-Type -TypeDefinition @'
