@@ -21,6 +21,9 @@ import {
 
 after(cleanup)
 
+/** The time a waiter gives a refresh in a phase that must succeed: far past what a busy runner needs. */
+const SLOW_WAIT_MS = 15_000
+
 describe('a lock that is already there', { timeout: 180_000 }, () => {
   test('a dead pid: 6 waiters take it over at once in each of 5 rounds, with one request and no revocation', async () => {
     const s = await setup()
@@ -55,8 +58,12 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
       assert.match(l.text, /another toolscript-mcp process is refreshing.*No login is needed/, l.text)
     assert.ok(young.ms < 1000 + 2000, `${young.ms} ms`)
     assert.equal(requests(fake), 0)
+    await stop(children)
+    // The old phase: one process takes over and refreshes while the others wait for it, and on a slow machine
+    // that takes more than the 1 s that the young phase gives a waiter. So these waiters wait longer.
+    const takers = await group(s, 6, SLOW_WAIT_MS)
     putLock(s, lockText(process.pid), 600)
-    const old = await round(s, children)
+    const old = await round(s, takers)
     assert.deepEqual(
       old.lines.map(l => l.text),
       Array(6).fill(PONG),
@@ -64,7 +71,7 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
     assert.equal(requests(fake), 1)
     assert.equal(revocations(s), 0)
     assert.deepEqual(s.leftovers(), [])
-    await stop(children)
+    await stop(takers)
   })
 
   for (const [name, text] of [
@@ -79,15 +86,17 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
       const young = await round(s, children)
       for (const l of young.lines) assert.match(l.text, /another toolscript-mcp process is refreshing/, l.text)
       assert.equal(requests(fake), 0)
+      await stop(children)
+      const takers = await group(s, 6, SLOW_WAIT_MS)
       putLock(s, text, 600)
-      const old = await round(s, children)
+      const old = await round(s, takers)
       assert.deepEqual(
         old.lines.map(l => l.text),
         Array(6).fill(PONG),
       )
       assert.equal(requests(fake), 1)
       assert.equal(revocations(s), 0)
-      await stop(children)
+      await stop(takers)
     })
 
   test('a folder where the lock goes: no crash and no hang past the time', async () => {
