@@ -139,12 +139,16 @@ quotes and the `^` of cmd dropped, hold the
   environment from the config: the model sends only the name. The spawn is `node:child_process` with no `shell` and never
   `cross-spawn`, which starts `cmd.exe` for a `.cmd` file, so on Windows a command that is not an `.exe` or `.com` file
   makes the task invalid. The child gets the variables of `TASK_ENV_NAMES` and the `env` of the task, never any other
-  variable of the server. A task ends with its process tree (`endTree`) at the time limit, at a cancel and at a
-  shutdown: the process group on Linux and macOS, the `taskkill /T` tree on Windows, which misses a process whose parent
-  already exited. One task runs at a time. A task is not contained, and no text may claim it is. `run_task` is the exec
+  variable of the server. A task ends with its process tree however it ends (exit, time limit, cancel, shutdown, hard
+  kill of the server), through a helper of the OS (`src/host/taskjob.ts`, ADR 0144): a Job Object on Windows, a perl
+  subreaper on Linux, a search on macOS. No value of a task is ever part of PowerShell source, of a command line of
+  `powershell.exe` or of the environment of a helper: it is a frame on standard input or on the socket. The host decides
+  from the reports after the channel ended, and the direct spawn takes a call only before `begin`, so a task never runs
+  two times. When no helper can run, the direct spawn ends the task with one note on stderr. One task runs at a time. A
+  task is not contained, and no text may claim it is. `run_task` is the exec
   class: only an allow rule with its exact name allows it (`counts` and `onlyTightens` in `src/core/policy.ts`), and the
   prompt names the tasks and says that a task runs project code with the rights of the user.
-  `[test: workspace-task.test.ts (argv, environment, pids gone after a timeout, a cancel and a shutdown), workspace.test.ts, run.test.ts describe run_task, workspace.e2e.mjs]`
+  `[test: workspace-task.test.ts (argv, environment, argumentLine, the report grammar and decision, pids gone after a timeout, a cancel, a shutdown, a normal exit and a hard kill of the server, the orphan case, the fallback of a failed helper), workspace.test.ts, run.test.ts describe run_task, workspace.e2e.mjs]`
 - The change tools of the Workspace (`edit`, `write`, class `write`) are listed only with `"write": true`, and their
   handlers refuse without it. They write only through `confined.ts` (Linux: a temp file and a rename in the held folder,
   Windows and macOS: in place through the proven handle). A change takes the lock of its file first (`write.ts`), checks

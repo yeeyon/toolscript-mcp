@@ -1246,9 +1246,28 @@ How a task runs:
 - Each stream keeps the first 64 KiB and the last 192 KiB, and the result sets `stdoutTruncated` or `stderrTruncated`.
 - A non-zero exit code is a result, not an error. At the time limit, `timedOut` is `true`.
 - One task runs at a time in a session. A second call waits for the first.
-- At the time limit, at a cancel and at a shutdown, toolscript-mcp ends the process tree of the task. On Linux and
-  macOS it ends the process group. On Windows it ends the tree that `taskkill /T` walks. A process whose parent
-  already exited can outlive the time limit, a cancel or a shutdown.
+- A task ends with its process tree, however it ends: at its own exit, at the time limit, at a cancel, at a shutdown and
+  when the server is killed. Whatever the task started in the background ends with it, and there is no switch to keep it.
+  A build server that the task starts ends with it, so the next build starts cold. Examples are the MSBuild node reuse,
+  the dotnet build server and the Gradle daemon.
+- On Windows, one warm Windows PowerShell 5.1 helper makes a Job Object for each task. Every process that the task
+  started ends with it, also one whose parent already exited. A process that a service, the Task Scheduler or WMI
+  starts is not in the job and stays. The helper starts at the first task, and stops after 10 minutes with no task.
+  While it waits it holds about 60 MiB.
+- On Linux, a small perl helper (`/usr/bin/perl`) is the child subreaper of the task. It ends every descendant, also after
+  `setsid`, `nohup` or a double fork. A process that a daemon outside the tree starts, such as `systemd-run`, stays.
+- macOS has no kernel object that holds descendants, so the same helper searches. It ends the process group, each
+  process with a live parent chain, and each process whose environment still shows the variable `TOOLSCRIPT_TASK`.
+  That variable, a new random value for each task, is the only difference from the environment of a direct start. A
+  process that left the group, lost its parent and hides the variable stays. So does a process that `launchd` starts.
+- Costs, measured: on Windows the first task after the helper starts waits for it. That is about 0.6 s on a quiet
+  laptop and up to 3 s on a busy one. Each later task adds under 20 ms. On Linux each task adds about 7 ms. On macOS the
+  helper runs one `ps` at the end of each task.
+- The time limit starts when the task starts, not before.
+- The helper can be missing or blocked: PowerShell by AppLocker, a policy or Constrained Language Mode, or no
+  `/usr/bin/perl`. Then the task runs by the direct start, and nothing ends at a hard kill of the server. On Windows
+  the task ends with the `taskkill /T` tree, elsewhere with its process group, so a process that left either can stay.
+  toolscript-mcp writes one line to its stderr about it, one time for each process.
 
 #### Set a task up safely
 
@@ -1256,7 +1275,6 @@ How a task runs:
 - By default each program that calls `run_task` asks you first. Only an `allow` rule with the exact name `mcp__workspace__run_task` skips the prompt. The rules `*`, `mcp__*` and `mcp__workspace__*` do not allow it. A client that cannot ask gets no task without that rule.
 - Write only commands that you trust. A test command runs the code of the project, and that code can read, change and send what your account can reach.
 - On Windows, a `.cmd`, `.bat` or `.ps1` file cannot be a command: a shell must parse it. Set `command` to `node` and give the script as the first argument.
-- A background process that a task leaves behind is ended with the task on Linux and macOS. On Windows it can stay when the task has already exited.
 
 ### Change files
 

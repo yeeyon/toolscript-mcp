@@ -655,6 +655,27 @@ describe('the workspace check', () => {
     assert.ok(missing.of('servers').some(l => l.includes('workspace.roots[0].path is not a folder that exists')))
   })
 
+  test('a root with a valid task also says how tasks end on this OS, from one real helper start', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(ROOT, 'ws-')))
+    const s = setup({
+      mcpServers: {},
+      workspace: { roots: [{ path: root, tasks: { check: { command: process.execPath, args: ['--version'] } } }] },
+    })
+    await s.doctor()
+    const lines = s.of('workspace')
+    const way = lines.find(l => /tasks end with/.test(l))
+    assert.ok(way !== undefined, lines.join('\n'))
+    assert.match(
+      way,
+      process.platform === 'win32'
+        ? /^ok {4}workspace {2}tasks end with a Job Object that the warm PowerShell helper makes for each task$/
+        : process.platform === 'darwin'
+          ? /^ok {4}workspace {2}tasks end with the perl helper: the process group, live parent chains and the TOOLSCRIPT_TASK marker$/
+          : /^ok {4}workspace {2}tasks end with the perl helper as child subreaper: each descendant, also after setsid$/,
+    )
+    assert.doesNotMatch(way, /[A-Za-z]:\\|\/tmp/)
+  })
+
   test('an invalid section shows in the servers check only', async () => {
     const s = setup({ mcpServers: {}, workspace: { roots: [] } })
     assert.equal(await s.doctor(), 1)

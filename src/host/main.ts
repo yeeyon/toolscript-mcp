@@ -115,6 +115,7 @@ const bindOf = async (section: WorkspaceConfig, clientRoots: Roots, stepped: Pro
     configFile: file,
     log,
     clientRoots: clientRoots.read,
+    callSeconds: config.sandbox.callTimeoutSeconds,
     step: await stepped,
   })
   log(

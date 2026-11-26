@@ -20,7 +20,23 @@ export const marker = (): string => `SECRET-${randomBytes(8).toString('hex')}`
 export const tempDir = (): string =>
   fs.realpathSync.native(fs.mkdtempSync(path.join(process.env.WS_TEST_TREES ?? os.tmpdir(), 'ws-test-')))
 
-export const rm = (dir: string): void => fs.rmSync(dir, { recursive: true, force: true })
+/** Removes a folder. A process that Windows still ends can hold it for a moment, so a busy folder is tried again. */
+export const rm = (dir: string): void => {
+  // The `maxRetries` of Node 22.13 does not cover an EBUSY of the folder itself (the first `rmdir` is not in its retry loop).
+  // Windows keeps the cwd of a process that is gone for a few ms (8 ms measured: the pid was gone, `rmdir` still EBUSY), and
+  // a failed hook skips the hooks after it, which left helper pipes open. The tests check that the tree is gone with `gone`.
+  // One deadline of 2 s for all of it, so a lock that is real fails fast.
+  const deadline = Date.now() + 2000
+  for (;;) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (Date.now() > deadline || (error as NodeJS.ErrnoException).code !== 'EBUSY') throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
+    }
+  }
+}
 
 /** Writes `files` (a path with `/` to its text or bytes) under `root`, and makes the folders. */
 export const write = (root: string, files: Record<string, string | Uint8Array>): void => {

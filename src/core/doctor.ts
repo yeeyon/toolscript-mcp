@@ -252,6 +252,24 @@ const SQUATTER =
 export const brokerFail = (reason: string, platform: string): Finding =>
   fail(SQUATTER.test(reason) ? `${reason}. ${takenNameWayOut(platform)}` : reason)
 
+/**
+ * The finding of how tasks end on this OS, from one real start of the helper that ran no task of the config. `step` is
+ * the failed step of the helper, or undefined when it started. The text holds no path.
+ */
+export const taskEndFinding = (platform: string, step: string | undefined): Finding => {
+  if (step !== undefined)
+    return warn(
+      `tasks end with the direct spawn (the task helper failed at the step ${step}): ` +
+        (platform === 'win32'
+          ? 'the taskkill tree, and a process whose parent already exited can stay'
+          : 'the process group, and a process that left the group can stay, and nothing ends at a hard kill of the server'),
+    )
+  if (platform === 'win32') return ok('tasks end with a Job Object that the warm PowerShell helper makes for each task')
+  if (platform === 'darwin')
+    return ok('tasks end with the perl helper: the process group, live parent chains and the TOOLSCRIPT_TASK marker')
+  return ok('tasks end with the perl helper as child subreaper: each descendant, also after setsid')
+}
+
 /** The principals that may hold the broker folder on Windows: SYSTEM and Administrators, and the user. */
 const ALLOWED_SIDS = new Set(['S-1-5-18', 'S-1-5-32-544'])
 
