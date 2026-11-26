@@ -15,7 +15,10 @@ import {
   WorkspaceError,
   bindRoot,
   RESTART_SENTENCE,
+  flipCase,
   makeExcluder,
+  volumeFolds as decideFolds,
+  type CaseProbe,
   realParts,
   type Excluder,
   rootProblem,
@@ -72,6 +75,24 @@ export type BindInput = {
 
 const real = (file: string): Promise<string> => realpathNative(file)
 
+/** macOS: whether the volume of `folder` folds case. Two `stat` calls, no write; any failure is the strict side. */
+const volumeFolds = async (folder: string): Promise<boolean> => {
+  const flipped = flipCase(folder)
+  const id = (file: string) => fs.promises.stat(file, { bigint: true })
+  let probe: CaseProbe = 'noletter'
+  if (flipped !== undefined)
+    try {
+      const a = await id(folder)
+      probe = await id(flipped).then(
+        b => (a.dev === b.dev && a.ino === b.ino ? 'same' : 'other'),
+        (err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? 'missing' : 'error'),
+      )
+    } catch {
+      probe = 'error'
+    }
+  return decideFolds(probe)
+}
+
 /**
  * The root after the client roots: the bound root, or a folder inside it. Each entry goes through `fileUriPath`, then
  * `realpath`, then it must be a folder that `rootProblem` accepts. An entry that fails a step grants nothing and is
@@ -84,6 +105,7 @@ const narrowed = async (
   platform: string,
   log: (line: string) => void,
   hidden: (folder: string) => boolean,
+  folds: boolean | undefined,
 ): Promise<string> => {
   const read = uris.slice(0, LIMITS.roots)
   const kept: string[] = []
@@ -99,7 +121,7 @@ const narrowed = async (
   }
   if (kept.length < read.length)
     log(`Workspace: ${read.length - kept.length} of ${read.length} client roots were dropped`)
-  const root = narrowRoot(bound, kept, platform)
+  const root = narrowRoot(bound, kept, platform, folds)
   if (root !== bound && hidden(root)) return bound
   if (root !== bound) log(`Workspace: a client root narrowed the root to ${root}`)
   return root
@@ -153,7 +175,7 @@ const stepOf = async ({
     if (found === undefined) return refuse(`${place} is not a folder that exists`)
     const problem = rootProblem(found, homeReal, platform)
     if (problem !== undefined) return refuse(`${place} is refused: ${problem}`)
-    roots.push({ path: found, write: root.write })
+    roots.push({ path: found, write: root.write, folds: platform === 'darwin' ? await volumeFolds(found) : undefined })
   }
   const bound = bindRoot(roots, await real(start).catch(() => path.resolve(start)), platform)
   // The reason of `bindRoot` already ends with the sentence.
@@ -200,7 +222,15 @@ export const bindWorkspace = async ({
   let root = bound.root
   if (clientRoots !== undefined) {
     try {
-      root = await narrowed(bound.root, await clientRoots().catch(() => []), homeReal, platform, log, hidden)
+      root = await narrowed(
+        bound.root,
+        await clientRoots().catch(() => []),
+        homeReal,
+        platform,
+        log,
+        hidden,
+        entry.folds,
+      )
     } catch {
       root = bound.root
     }

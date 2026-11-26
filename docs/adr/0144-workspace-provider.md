@@ -101,7 +101,8 @@ do not wait. The model is told nothing new: paths stay relative. The person sees
 `Workspace: a client root narrowed the root to <path>` on stderr and the root in the approval prompt. A task still runs in
 its `cwd` under the entry, which can be outside a narrowed root.
 
-The session root must pass the same refusals as an entry. The compare of paths ignores case on Windows and macOS.
+The session root must pass the same refusals as an entry. The compare of paths ignores case on Windows and, for the entry of a volume that folds case, on macOS. At the bind,
+macOS stats each entry and its spelling with one letter flipped: only the same `dev` and `ino` means folding, and a probe that cannot decide means none.
 A backslash separates the parts of a real path on Windows only. On Linux and macOS it is a letter of a name, so the start
 folder `/home/me/projects\app` is not inside the entry `/home/me/projects/app`.
 

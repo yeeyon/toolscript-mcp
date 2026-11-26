@@ -335,6 +335,22 @@ export const makeExcluder = (root: string, exclude: readonly string[], forbidden
 /** The platforms whose volumes ignore case by default. */
 export const foldsCase = (platform: string): boolean => platform === 'win32' || platform === 'darwin'
 
+/** What the probe of a macOS volume saw: the path and its case-flipped spelling name one file, two, none, or it failed. */
+export type CaseProbe = 'same' | 'other' | 'missing' | 'error' | 'noletter'
+
+/** Whether a macOS volume folds case. Only the same file under both spellings proves it: any other outcome is strict. */
+export const volumeFolds = (probe: CaseProbe): boolean => probe === 'same'
+
+/** `text` with the case of its last letter flipped, or undefined when it has no letter that has a case. */
+export const flipCase = (text: string): string | undefined => {
+  const chars = [...text]
+  const at = chars.findLastIndex(c => c.toLowerCase() !== c.toUpperCase())
+  if (at < 0) return undefined
+  const c = chars[at]!
+  chars[at] = c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()
+  return chars.join('')
+}
+
 /**
  * The parts of a real path. `\` separates parts only on Windows: on Linux and macOS it is a legal character of a name,
  * so `/home/me/projects\app` is one folder `projects\app` and never the folder `/home/me/projects/app`.
@@ -343,13 +359,13 @@ export const realParts = (path: string, platform: string): string[] =>
   path.split(platform === 'win32' ? /[\\/]+/ : /\/+/).filter(p => p !== '')
 
 /** The real path as a list of parts. On Windows and macOS with no regard to case. */
-const partsOf = (path: string, platform: string): string[] =>
-  realParts(path, platform).map(p => (foldsCase(platform) ? fold(p) : p))
+const partsOf = (path: string, platform: string, folds: boolean): string[] =>
+  realParts(path, platform).map(p => (folds ? fold(p) : p))
 
-/** True when `child` is `parent` or inside it. Both are real paths. */
-export const isInside = (child: string, parent: string, platform: string): boolean => {
-  const c = partsOf(child, platform)
-  const p = partsOf(parent, platform)
+/** True when `child` is `parent` or inside it. Both are real paths. `folds`: the volume ignores case. */
+export const isInside = (child: string, parent: string, platform: string, folds = foldsCase(platform)): boolean => {
+  const c = partsOf(child, platform, folds)
+  const p = partsOf(parent, platform, folds)
   return c.length >= p.length && p.every((part, i) => part === c[i])
 }
 
@@ -369,7 +385,7 @@ export const rootProblem = (real: string, home: string, platform: string): strin
 }
 
 /** One entry of `workspace.roots`, its path as a real path. `write` has no effect before the editing tools. */
-export type RealRoot = { readonly path: string; readonly write: boolean }
+export type RealRoot = { readonly path: string; readonly write: boolean; readonly folds?: boolean }
 
 export type Binding =
   | { readonly ok: true; readonly index: number; readonly root: string }
@@ -383,8 +399,8 @@ export type Binding =
  */
 export const bindRoot = (roots: readonly RealRoot[], start: string, platform: string): Binding => {
   const inside = roots
-    .map((root, index) => ({ root, index, depth: partsOf(root.path, platform).length }))
-    .filter(({ root }) => isInside(start, root.path, platform))
+    .map((root, index) => ({ root, index, depth: realParts(root.path, platform).length }))
+    .filter(({ root }) => isInside(start, root.path, platform, root.folds))
     .sort((a, b) => b.depth - a.depth)
   if (inside.length > 0) return { ok: true, index: inside[0]!.index, root: start }
   if (roots.length === 1) return { ok: true, index: 0, root: roots[0]!.path }

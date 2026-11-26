@@ -26,6 +26,8 @@ import {
   parseWriteInput,
   pathParts,
   folderParts,
+  flipCase,
+  volumeFolds,
   realParts,
   planEdits,
   rootProblem,
@@ -449,6 +451,21 @@ describe('the root of a session', () => {
     assert.equal(isInside('C:\\home\\me\\projects\\app\\private', 'C:\\home\\me\\projects\\app', 'win32'), true)
     assert.equal(isInside('C:\\home\\me\\projects/app/private', 'C:\\home\\me\\projects\\app', 'win32'), true)
     assert.deepEqual(realParts('C:\\a\\b/c', 'win32'), ['C:', 'a', 'b', 'c'])
+  })
+
+  test('a macOS volume that does not fold case keeps two spellings apart; only the same file proves folding', () => {
+    for (const probe of ['other', 'missing', 'error', 'noletter'] as const) assert.equal(volumeFolds(probe), false)
+    assert.equal(volumeFolds('same'), true)
+    assert.equal(flipCase('/v/proj/app'), '/v/proj/apP')
+    assert.equal(flipCase('/v/proj/APP/1'), '/v/proj/APp/1')
+    assert.equal(flipCase('/123/456'), undefined)
+    const strict = [{ path: '/work/app', write: false, folds: false }]
+    assert.deepEqual(bindRoot(strict, '/work/App', 'darwin'), { ok: true, index: 0, root: '/work/app' })
+    assert.equal(bindRoot([...strict, { path: '/work/other', write: false }], '/work/App/src', 'darwin').ok, false)
+    assert.equal(bindRoot(strict, '/work/app/src', 'darwin').ok, true)
+    assert.equal(isInside('/work/App', '/work/app', 'darwin', false), false)
+    assert.equal(isInside('/work/App', '/work/app', 'darwin', true), true)
+    assert.equal(bindRoot([{ ...strict[0]!, folds: true }], '/work/App/src', 'darwin').ok, true)
   })
 
   test('a name that only starts like an entry is not inside it', () => {

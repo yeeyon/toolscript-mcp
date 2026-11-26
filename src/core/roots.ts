@@ -60,12 +60,19 @@ export const fileUriPath = (uri: unknown, platform: string): string | undefined 
  * that holds every usable client root, so it is the bound root or inside it, whatever the order of the list. With no
  * usable root it is the bound root.
  */
-export const narrowRoot = (bound: string, clientRoots: readonly string[], platform: string): string => {
-  const same = (a: string, b: string) => (foldsCase(platform) ? fold(a) === fold(b) : a === b)
-  const usable = clientRoots.filter(root => isInside(root, bound, platform) || isInside(bound, root, platform))
+export const narrowRoot = (
+  bound: string,
+  clientRoots: readonly string[],
+  platform: string,
+  folds = foldsCase(platform),
+): string => {
+  const same = (a: string, b: string) => (folds ? fold(a) === fold(b) : a === b)
+  const usable = clientRoots.filter(
+    root => isInside(root, bound, platform, folds) || isInside(bound, root, platform, folds),
+  )
   if (usable.length === 0) return bound
   const lists = usable.map(root =>
-    isInside(bound, root, platform) ? realParts(bound, platform) : realParts(root, platform),
+    isInside(bound, root, platform, folds) ? realParts(bound, platform) : realParts(root, platform),
   )
   const first = lists[0]!
   let common = first.length
