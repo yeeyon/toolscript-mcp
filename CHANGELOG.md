@@ -3,6 +3,7 @@
 ## 1.0.4
 
 - Workspace `list` and `search` walks run one at a time, and the 10 s budget starts when a walk runs (issue #160), so 8 searches started with `Promise.all` all finish instead of each running to the budget and coming back cut.
+- A tool or argument name of more than 200 characters gets no "did you mean" hint, and a listed name of that length is never compared (issue #174). A program that called a 100,000-character name blocked the host for 7 to 20 s in the edit distance; it now gets the plain refusal at once.
 - A program that calls a tool name that its server does not list, where edit distance finds nothing, now gets up to 2 likely tools of the same server, those that share the rarest name words (issue #171). It saves a `search_tools` call.
 - Workspace `list` and `search` accept one final `/` on a folder `path` (`src/` is `src`, issue #170), so a program that writes `src/` no longer fails. `read`, `stat` and the change tools still refuse it.
 - A built-in Workspace (issue #144) reads the files of one project folder (exclude globs are relative to the entry path), with no Claude Code and no other process. It is off by default. Add a `workspace` section with `roots` to the config. Programs call `mcp__workspace__list`, `search`, `read` and `stat`. The read tools run with no policy rule, each result is untrusted text, and no tool follows a link or reads `.git`, `.env`, secrets or client settings. See "Workspace" in the README.
