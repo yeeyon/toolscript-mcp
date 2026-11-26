@@ -339,16 +339,19 @@ export const foldsCase = (platform: string): boolean => platform === 'win32' || 
 export type CaseProbe = 'same' | 'other' | 'missing' | 'error' | 'noletter'
 
 /** Whether a macOS volume folds case. Only the same file under both spellings proves it: any other outcome is strict. */
-export const volumeFolds = (probe: CaseProbe): boolean => probe === 'same'
+export const probeFolds = (probe: CaseProbe): boolean => probe === 'same'
 
-/** `text` with the case of its last letter flipped, or undefined when it has no letter that has a case. */
-export const flipCase = (text: string): string | undefined => {
-  const chars = [...text]
-  const at = chars.findLastIndex(c => c.toLowerCase() !== c.toUpperCase())
+/**
+ * `path` with the case of the last ASCII letter of its last part flipped, or undefined when that part has none. Only
+ * ASCII flips one letter to one letter, so `ß` or `İ` cannot make a folding volume look strict.
+ */
+export const flipCase = (path: string): string | undefined => {
+  const base = path.lastIndexOf('/') + 1
+  const at = path.slice(base).search(/[A-Za-z](?=[^A-Za-z]*$)/)
   if (at < 0) return undefined
-  const c = chars[at]!
-  chars[at] = c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()
-  return chars.join('')
+  const i = base + at
+  const c = path[i]!
+  return path.slice(0, i) + (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()) + path.slice(i + 1)
 }
 
 /**

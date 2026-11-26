@@ -490,12 +490,12 @@ describe('a macOS volume that does not fold case (issue #157)', () => {
       exclude: [],
       skip: [],
     }
-    const s = await bindStep({
-      workspace,
-      start: path.join(dir, 'proj/App'),
-      home: folders(t)(),
-      configFile: path.join(dir, 'c.json'),
-    })
+    const run = (start: string) =>
+      bindStep({ workspace, start, home: folders(t)(), configFile: path.join(dir, 'c.json') })
+    const control = await run(path.join(dir, 'proj/app/'))
+    assert.equal(control.ok, true, 'a start in the entry binds')
+    const s = await run(path.join(dir, 'proj/App'))
     assert.equal(s.ok, false)
+    assert.match(s.ok ? '' : s.reason, /is in none of the 2 entries of workspace\.roots/)
   })
 })

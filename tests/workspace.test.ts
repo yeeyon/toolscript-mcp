@@ -27,7 +27,7 @@ import {
   pathParts,
   folderParts,
   flipCase,
-  volumeFolds,
+  probeFolds,
   realParts,
   planEdits,
   rootProblem,
@@ -454,11 +454,13 @@ describe('the root of a session', () => {
   })
 
   test('a macOS volume that does not fold case keeps two spellings apart; only the same file proves folding', () => {
-    for (const probe of ['other', 'missing', 'error', 'noletter'] as const) assert.equal(volumeFolds(probe), false)
-    assert.equal(volumeFolds('same'), true)
+    for (const probe of ['other', 'missing', 'error', 'noletter'] as const) assert.equal(probeFolds(probe), false)
+    assert.equal(probeFolds('same'), true)
     assert.equal(flipCase('/v/proj/app'), '/v/proj/apP')
-    assert.equal(flipCase('/v/proj/APP/1'), '/v/proj/APp/1')
-    assert.equal(flipCase('/123/456'), undefined)
+    assert.equal(flipCase('/v/proj/APP-1'), '/v/proj/APp-1')
+    assert.equal(flipCase('/v/proj/app/123'), undefined, 'only the last part is flipped')
+    assert.equal(flipCase('/v/proj/straße'), '/v/proj/straßE', 'ß stays')
+    assert.equal(flipCase('/v/proj/İß'), undefined)
     const strict = [{ path: '/work/app', write: false, folds: false }]
     assert.deepEqual(bindRoot(strict, '/work/App', 'darwin'), { ok: true, index: 0, root: '/work/app' })
     assert.equal(bindRoot([...strict, { path: '/work/other', write: false }], '/work/App/src', 'darwin').ok, false)

@@ -17,8 +17,7 @@ import {
   RESTART_SENTENCE,
   flipCase,
   makeExcluder,
-  volumeFolds as decideFolds,
-  type CaseProbe,
+  probeFolds,
   realParts,
   type Excluder,
   rootProblem,
@@ -75,22 +74,19 @@ export type BindInput = {
 
 const real = (file: string): Promise<string> => realpathNative(file)
 
-/** macOS: whether the volume of `folder` folds case. Two `stat` calls, no write; any failure is the strict side. */
+/**
+ * macOS: whether the volume of `folder` folds case. Two `lstat` calls (a link at the flipped name is never followed),
+ * no write; any failure is the strict side.
+ */
 const volumeFolds = async (folder: string): Promise<boolean> => {
   const flipped = flipCase(folder)
-  const id = (file: string) => fs.promises.stat(file, { bigint: true })
-  let probe: CaseProbe = 'noletter'
-  if (flipped !== undefined)
-    try {
-      const a = await id(folder)
-      probe = await id(flipped).then(
-        b => (a.dev === b.dev && a.ino === b.ino ? 'same' : 'other'),
-        (err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? 'missing' : 'error'),
-      )
-    } catch {
-      probe = 'error'
-    }
-  return decideFolds(probe)
+  if (flipped === undefined) return probeFolds('noletter')
+  try {
+    const [a, b] = await Promise.all([folder, flipped].map(f => fs.promises.lstat(f, { bigint: true })))
+    return probeFolds(a!.dev === b!.dev && a!.ino === b!.ino ? 'same' : 'other')
+  } catch {
+    return probeFolds('error')
+  }
 }
 
 /**
@@ -222,15 +218,8 @@ export const bindWorkspace = async ({
   let root = bound.root
   if (clientRoots !== undefined) {
     try {
-      root = await narrowed(
-        bound.root,
-        await clientRoots().catch(() => []),
-        homeReal,
-        platform,
-        log,
-        hidden,
-        entry.folds,
-      )
+      const uris = await clientRoots().catch(() => [])
+      root = await narrowed(bound.root, uris, homeReal, platform, log, hidden, entry.folds)
     } catch {
       root = bound.root
     }

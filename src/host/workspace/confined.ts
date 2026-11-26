@@ -543,7 +543,11 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
 // ---------------------------------------------------------------------------------------------------------------
 // Windows and macOS: the full path, proven as a whole
 
-/** The parts of `real` below `root` as the volume spells them, or undefined when `real` is not below it. */
+/**
+ * The parts of `real` below `root` as the volume spells them, or undefined when `real` is not below it. It folds case
+ * on macOS whatever the volume: `spellMac` runs `realpath` after the open, and `O_NOFOLLOW_ANY` covers the open only, so
+ * a swap between them can change this spelling, never the file that was opened (issue #157 left this as it was).
+ */
 const below = (real: string, root: string, platform: string): string[] | undefined => {
   if (!isInside(real, root, platform)) return undefined
   return realParts(real, platform).slice(realParts(root, platform).length)
