@@ -1248,6 +1248,34 @@ export const literalCalls = (code: string): LiteralCall[] => {
   return found
 }
 
+/**
+ * The plain strings of a program that equal a name in `known`, once each, in the order of their first position. A
+ * plain string is `'…'`, `"…"` or a template with no `${`, not in a comment. A name written there is a mention: the
+ * program may pass it to `call` by a variable. A name that the program builds at run time is not found.
+ */
+export const mentionedTools = (code: string, known: ReadonlySet<string>): string[] => {
+  const masked = maskCode(code)
+  const found = new Set<string>()
+  let i = 0
+  while (i < masked.length) {
+    const q = masked[i]!
+    if (q !== '"' && q !== "'" && q !== '`') {
+      i++
+      continue
+    }
+    const end = masked.indexOf(q, i + 1)
+    const text = end < 0 ? '' : code.slice(i + 1, end)
+    // A string that the mask left open (no closing quote before the line ends) has no pair: its quote stands alone.
+    if (end < 0 || (q !== '`' && text.includes('\n'))) {
+      i++
+      continue
+    }
+    if (known.has(text) && !(q === '`' && text.includes('${'))) found.add(text)
+    i = end + 1
+  }
+  return [...found]
+}
+
 // The keys of an object literal, or undefined for a spread, a computed key or a method.
 const objectKeys = (code: string, masked: string, parts: [number, number][]): string[] | undefined => {
   const keys: string[] = []

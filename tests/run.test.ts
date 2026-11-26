@@ -1424,7 +1424,7 @@ describe('a tool of a bridge', () => {
     const rule = '{"match": "mcp__f__echo", "action": "allow"}'
     assert.ok(
       r.text.includes(
-        `not approved: an allow rule for a tool of the Claude Code bridge f must start with mcp__f__, such as ${rule}, and the person did not approve it for this run`,
+        `not approved: an allow rule for a tool of the Claude Code bridge f must start with mcp__f__, such as ${rule}, and the person was not asked about mcp__f__echo for this run`,
       ),
       r.text,
     )
@@ -1469,6 +1469,116 @@ describe('a tool of a bridge', () => {
     assert.equal(r.isError, false, r.text)
     assert.deepEqual(asked, [])
     assert.deepEqual(called, ['echo'])
+  })
+})
+
+describe('a tool name written outside call("…")', () => {
+  const none = rules()
+  const viaConst = (name: string) => `const g = "${name}"\nreturn await call(g, { n: 1 })`
+
+  test('a name in a const is asked before the run, and the call is made when the person accepts', async () => {
+    const { run, called, asked } = setup({ policy: none })
+    const r = await run(viaConst('mcp__f__echo'))
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [['mcp__f__echo']])
+    assert.deepEqual(called, ['echo'])
+  })
+
+  test('forms of the string: array item, object value, single quotes, template with no substitution', async () => {
+    for (const code of [
+      'const l = ["mcp__f__echo"]\nreturn await call(l[0], {})',
+      'const o = { t: "mcp__f__echo" }\nreturn await call(o.t, {})',
+      "const g = 'mcp__f__echo'\nreturn await call(g, {})",
+      'const g = `mcp__f__echo`\nreturn await call(g, {})',
+    ]) {
+      const { run, called, asked } = setup({ policy: none })
+      const r = await run(code)
+      assert.equal(r.isError, false, r.text)
+      assert.deepEqual(asked, [['mcp__f__echo']], code)
+      assert.deepEqual(called, ['echo'], code)
+    }
+  })
+
+  test('a decline: the program did not run, and no call was made', async () => {
+    const { run, called, asked } = setup({ policy: none, answer: 'decline' })
+    const r = await run(viaConst('mcp__f__echo'))
+    assert.equal(r.isError, true)
+    assert.deepEqual(asked, [['mcp__f__echo']])
+    assert.ok(r.text.includes('the program did not run'), r.text)
+    assert.ok(r.text.includes('No call was made.'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('the same name in a literal call and a const is asked once, and the key check still runs on the literal call', async () => {
+    const { run, called, asked } = setup({ policy: none })
+    const r = await run('const g = "mcp__f__echo"\nawait call("mcp__f__echo", { n: 1 })\nreturn await call(g, {})')
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [['mcp__f__echo']])
+    assert.deepEqual(called, ['echo', 'echo'])
+    const bad = setup({ policy: none })
+    const refused = await bad.run('const g = "mcp__f__echo"\nawait call("mcp__f__echo", { nope: 1 })\nreturn g')
+    assert.equal(refused.isError, true)
+    assert.deepEqual(bad.asked, [])
+    assert.deepEqual(bad.called, [])
+  })
+
+  test('two tools of two servers are asked together, literal names first', async () => {
+    const g = [{ name: 'echo', inputSchema: { type: 'object' } }]
+    const { run, called, asked } = setup({
+      policy: none,
+      others: [{ key: 'g' as ServerKey, status: 'connected', tools: g }],
+    })
+    const r = await run(
+      'const names = ["mcp__g__echo", "mcp__f__slow"]\nawait call("mcp__f__echo", {})\nreturn await call(names[0], {})',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(asked, [['mcp__f__echo', 'mcp__g__echo', 'mcp__f__slow']])
+    assert.deepEqual(called, ['echo', 'echo'])
+  })
+
+  test('a denied name in a const does not stop the run or get a prompt: its call is denied, other tools are still asked', async () => {
+    const { run, called, asked } = setup({ policy: rules(['mcp__f__fail', 'deny']) })
+    const r = await run(
+      'const g = "mcp__f__fail"\nawait call("mcp__f__echo", {})\ntry { await call(g, {}) } catch (e) { return e.message }',
+    )
+    assert.deepEqual(asked, [['mcp__f__echo']])
+    assert.ok(r.text.includes('denied by policy[0]'), r.text)
+    assert.deepEqual(called, ['echo'])
+  })
+
+  test('an allowed name in a const has no prompt; an interactive one is asked', async () => {
+    const allow = setup({ policy: rules(['mcp__f__*', 'allow']) })
+    assert.equal((await allow.run(viaConst('mcp__f__echo'))).isError, false)
+    assert.deepEqual(allow.asked, [])
+    assert.deepEqual(allow.called, ['echo'])
+    const person = setup({ policy: rules(['mcp__f__*', 'allow']) })
+    const r = await person.run(viaConst('mcp__f__grant'))
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(person.asked, [['mcp__f__grant']])
+    assert.deepEqual(person.marked, [['mcp__f__grant']])
+    assert.deepEqual(person.called, ['grant'])
+  })
+
+  test('a string that is no tool name, a comment, and a name built at run time get no prompt; the call gets the new text', async () => {
+    const { run, called, asked } = setup({ policy: none })
+    const r = await run(
+      'const s = "hello"\n// const g = "mcp__f__echo"\n/* "mcp__f__slow" */\ntry { await call("mcp__f__" + "echo", {}) } catch (e) { return e.message }',
+    )
+    assert.deepEqual(asked, [])
+    assert.ok(r.text.includes('and the person was not asked about mcp__f__echo for this run'), r.text)
+    assert.ok(!r.text.includes('did not approve it for this run'), r.text)
+    assert.ok(r.text.includes('put the tool name in a string directly inside call("…")'), r.text)
+    assert.deepEqual(called, [])
+  })
+
+  test('a client that cannot ask: the mention is not added, the run starts, and the call is refused with no promise of a prompt', async () => {
+    const { run, called, asked } = setup({ policy: none, canAsk: false })
+    const r = await run('const g = "mcp__f__echo"\ntry { await call(g, {}) } catch (e) { return e.message }')
+    assert.deepEqual(asked, [])
+    assert.ok(r.text.includes('was not asked about mcp__f__echo for this run'), r.text)
+    assert.ok(r.text.includes('restart toolscript-mcp'), r.text)
+    assert.ok(!r.text.includes('run again'), r.text)
+    assert.deepEqual(called, [])
   })
 })
 

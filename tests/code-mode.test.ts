@@ -20,6 +20,7 @@ import {
   formatOutcome,
   literalCalls,
   maskCode,
+  mentionedTools,
   mergeArgNames,
   parseArgNames,
   problemReport,
@@ -589,6 +590,37 @@ describe('protocol', () => {
       { tool: 'mcp__j__del', line: 5, keys: undefined },
       { tool: 'mcp__j__multi', line: 9, keys: ['query'] },
     ])
+  })
+
+  test('mentionedTools finds a known tool name in a plain string, once, in the order of first position', () => {
+    const known = new Set(['mcp__s__t', 'mcp__s__u', 'mcp__g__v'])
+    const found = (code: string) => mentionedTools(code, known)
+    assert.deepEqual(found('const g = "mcp__s__t"; await call(g, {})'), ['mcp__s__t'])
+    assert.deepEqual(found('const names = ["mcp__s__u", \'mcp__s__t\']'), ['mcp__s__u', 'mcp__s__t'])
+    assert.deepEqual(found('const o = { a: "mcp__g__v", b: `mcp__s__t` }'), ['mcp__g__v', 'mcp__s__t'])
+    assert.deepEqual(found('await call("mcp__s__t", {}); const g = "mcp__s__t"; const h = "mcp__s__u"'), [
+      'mcp__s__t',
+      'mcp__s__u',
+    ])
+    assert.deepEqual(found('const g = "mcp__s__other"; const s = "mcp__s__t extra"'), [], 'not a known name')
+    assert.deepEqual(found('// const g = "mcp__s__t"\n/* "mcp__s__u" */ const h = 1'), [], 'a comment')
+    assert.deepEqual(found('const g = "mcp__s__" + "t"'), [], 'built at run time')
+    assert.deepEqual(found('const x = 1; const g = `mcp__s__${x}`'), [])
+    assert.deepEqual(found('const g = "mcp__s__t\nconst h = "mcp__s__u"'), ['mcp__s__u'], 'an open string has no pair')
+    assert.deepEqual(found('const r = /"/; const g = "mcp__s__t"'), ['mcp__s__t'])
+    assert.deepEqual(found(''), [])
+  })
+
+  test('mentionedTools finishes on a hostile program', () => {
+    const known = new Set(['mcp__s__t'])
+    const many = Array.from({ length: 10_000 }, (_, i) => `"x${i % 7}"`).join(',')
+    assert.deepEqual(mentionedTools(`const a = [${many}, "mcp__s__t"]`, known), ['mcp__s__t'])
+    assert.deepEqual(mentionedTools('"'.repeat(100_000), known), [])
+    assert.deepEqual(mentionedTools('\'"`'.repeat(33_000), known), [])
+  })
+
+  test('literalCalls ignores a name in a plain string that no call holds', () => {
+    assert.deepEqual(literalCalls('const g = "mcp__s__t"; await call(g, {})'), [])
   })
 
   test('declarationKeys reads names, required names and index signatures', () => {
