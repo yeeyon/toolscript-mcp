@@ -2,6 +2,7 @@
 
 ## 1.0.4
 
+- A tool name held in a plain string, such as `const g = "mcp__s__t"; await call(g, {})`, is now asked in the prompt before the run, like a name written inside `call("…")`, when the client can ask. A call refused at call time for a name nobody asked about now says that the person was not asked, and tells the model to write the name as a string in the program and run again, so a model no longer reports it as declined.
 - Workspace `list` and `search` walks run one at a time, and the 10 s budget starts when a walk runs (issue #160), so 8 searches started with `Promise.all` all finish instead of each running to the budget and coming back cut.
 - Workspace decides case folding for each macOS volume (issue #157): on a case-sensitive APFS volume, a start folder or client root that differs from an entry only in case is no longer inside it. Windows and the default macOS volume are unchanged.
 - On Linux, Workspace reads the names of a folder for a part of a path that has a non-ASCII character, also on ext4, xfs, tmpfs and the other plain file systems, so on a casefolded folder `.ſſh/known_hosts` no longer opens the excluded `.ssh` (issue #162). An ASCII name still pays nothing on those.
