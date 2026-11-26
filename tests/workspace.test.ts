@@ -11,6 +11,7 @@ import {
   fold,
   globMatches,
   globProblem,
+  includeReach,
   includeTest,
   isInside,
   appliedChange,
@@ -163,6 +164,134 @@ describe('globs', () => {
   test('an empty include list matches each path', () => {
     assert.ok(includeTest([])(['a', 'b']))
     assert.ok(!includeTest(['src/**'])(['lib', 'a']))
+  })
+})
+
+describe('includeReach', () => {
+  const split = (f: string): string[] => (f === '' ? [] : f.split('/'))
+  const table: [string[], [string, boolean][]][] = [
+    [[], [['a', true]]],
+    [
+      ['src/**/*.ts'],
+      [
+        ['src', true],
+        ['src/a/b', true],
+        ['lib', false],
+        ['Src', false],
+      ],
+    ],
+    [
+      ['a/b/c.cs'],
+      [
+        ['a', true],
+        ['a/b', true],
+        ['a/b/c.cs', false],
+        ['a/x', false],
+        ['b', false],
+      ],
+    ],
+    [
+      ['*.cs'],
+      [
+        ['a', false],
+        ['a/b', false],
+      ],
+    ],
+    [
+      ['**/*.cs'],
+      [
+        ['a', true],
+        ['a/b/c', true],
+      ],
+    ],
+    [
+      ['**'],
+      [
+        ['a', true],
+        ['a/b/c', true],
+      ],
+    ],
+    [
+      ['a/*/c'],
+      [
+        ['a', true],
+        ['a/x', true],
+        ['a/x/c', false],
+        ['a/x/y', false],
+      ],
+    ],
+    [
+      ['a/**'],
+      [
+        ['a', true],
+        ['a/x/y', true],
+        ['b', false],
+      ],
+    ],
+    [
+      ['s?c/*'],
+      [
+        ['src', true],
+        ['sc', false],
+      ],
+    ],
+    [
+      ['a/b', 'c/**'],
+      [
+        ['a', true],
+        ['c/d', true],
+        ['d', false],
+      ],
+    ],
+  ]
+  test('follows the table', () => {
+    for (const [globs, rows] of table)
+      for (const [folder, want] of rows) assert.equal(includeReach(globs)(split(folder)), want, `${globs} at ${folder}`)
+  })
+
+  test('is false only where no path below the folder passes includeTest', () => {
+    let seed = 7
+    const rand = (n: number): number => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), (seed >> 8) % n)
+    const names = ['a', 'b', 'src', 'Src', 'x.ts', 'c.cs']
+    const paths: string[][] = []
+    while (paths.length < 200) paths.push(Array.from({ length: 1 + rand(5) }, () => names[rand(names.length)]!))
+    const globs = [
+      'src/**/*.ts',
+      '**/*.ts',
+      'a/**',
+      'a/b/c.cs',
+      '**/b/**',
+      '*/x.ts',
+      's?c/*',
+      'a/*/c.cs',
+      '*.cs',
+      'Src/**',
+      '**',
+      'a/**/b/**/*.cs',
+    ]
+    const folders = new Set(paths.flatMap(p => p.slice(0, -1).map((_, i) => p.slice(0, i + 1).join('/'))))
+    let pruned = 0
+    for (let g = 0; g < globs.length; g++) {
+      for (const list of [[globs[g]!], [globs[g]!, globs[(g + 5) % globs.length]!]]) {
+        const reach = includeReach(list)
+        const inList = includeTest(list)
+        for (const f of folders) {
+          const depth = f.split('/').length
+          const below = paths.some(p => p.length > depth && p.join('/').startsWith(`${f}/`) && inList(p))
+          if (below) assert.ok(reach(f.split('/')), `${list} must reach ${f}`)
+          if (!reach(f.split('/'))) {
+            pruned++
+            assert.ok(!below, `${list} said no at ${f}`)
+          }
+        }
+      }
+    }
+    assert.ok(pruned > 20, 'the tree prunes something')
+  })
+
+  test('is bounded for 16 globs of 6 wildcards on a path of 64 parts', () => {
+    const reach = includeReach(Array.from({ length: 16 }, () => '*a*/*b*/**/*c?/**'))
+    assert.equal(typeof reach(Array.from({ length: 64 }, () => 'abc')), 'boolean')
   })
 })
 

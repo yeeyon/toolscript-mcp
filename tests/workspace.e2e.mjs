@@ -223,6 +223,14 @@ describe('the built server with the Workspace', () => {
       assert.ok(!text.includes(MARKER), `the secret is in the ${name}`)
   })
 
+  test('search with a folder glob beside a sibling folder finds its hits and is not truncated', async () => {
+    const r = await session.run(
+      'const r = await call("mcp__workspace__search", { query: "ttempts", include: ["src/**/*.ts"] })\nreturn { paths: r.matches.map(m => m.path), truncated: r.truncated, scanned: r.filesScanned }',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(returned(r.text), { paths: ['src/retry.ts'], truncated: false, scanned: 1 })
+  })
+
   test('the excluded file and a path that leaves the root are refused, and the refusal holds no secret', async () => {
     const r = await session.run(
       'const out = []\nfor (const path of [".env", "../outside.txt", "src/../.env", "C:/Windows/win.ini"])\n  try { await call("mcp__workspace__read", { path }) } catch (e) { out.push(e.message.split(":")[0]) }\nreturn out',
