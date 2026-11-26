@@ -722,7 +722,27 @@ export type Projection = {
   wholeRef?: number
   /** `tool` is absent when the footer must not name it: the footer is outside the wrapper of untrusted content. */
   serial?: { readonly calls: number; readonly ms: number; readonly tool?: string }
+  /** Calls of the built-in Workspace `list` and `search` that stopped early: how many were cut, of how many that worked. */
+  cut?: { readonly list?: CutCount; readonly search?: CutCount }
 }
+
+export type CutCount = { readonly cut: number; readonly total: number }
+
+const CUT_HELP = {
+  list: 'give a narrower path or include, or a smaller depth.',
+  search: 'give a narrower path or include, or raise maxMatches.',
+} as const
+
+/** One fixed line for each tool with a cut call: two tool names, two counts and fixed words, no text of a reply. */
+const cutLines = (cut: Projection['cut']): string[] =>
+  (['list', 'search'] as const).flatMap(name => {
+    const count = cut?.[name]
+    return count === undefined || count.cut === 0
+      ? []
+      : [
+          `mcp__workspace__${name}: ${count.cut} of ${count.total} calls stopped early (truncated). Their results are partial: ${CUT_HELP[name]}`,
+        ]
+  })
 
 /**
  * The results one session keeps for recall(n), by number, each as JSON with
@@ -1486,6 +1506,7 @@ export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerErro
   const missed = missedData(outcome, p.calls)
     ? ['The result is empty, but the calls returned data: check the shapes.']
     : []
+  const cut = cutLines(p.cut)
   const serial =
     p.serial === undefined
       ? []
@@ -1493,12 +1514,13 @@ export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerErro
           `${p.serial.calls} calls of ${p.serial.tool ?? 'one tool'} ran one after another (${(p.serial.ms / 1000).toFixed(1)} s). If the calls do not need each other's result and their order does not matter, start them together with Promise.all.`,
         ]
   // A line per call names its recall(n). A group line has a range of numbers, so the note says how to use them.
-  if (n <= MAX_CALL_LINES) return [head, ...p.calls.map(callLine), ...recalled, ...missed, ...serial].join('\n')
+  if (n <= MAX_CALL_LINES) return [head, ...p.calls.map(callLine), ...recalled, ...missed, ...cut, ...serial].join('\n')
   return [
     head,
     ...groupLines(p.calls),
     ...recalled,
     ...missed,
+    ...cut,
     ...serial,
     'await recall(n) returns result #n again, with no new call.',
   ].join('\n')

@@ -436,6 +436,24 @@ describe('the root of a session', () => {
 })
 
 describe('the tool table', () => {
+  test('the list and search descriptions say when truncated is true, with the numbers of LIMITS', () => {
+    const num = (n: number) => n.toLocaleString('en-US')
+    const list = WORKSPACE_TOOLS.list.description
+    const search = WORKSPACE_TOOLS.search.description
+    assert.ok(
+      list.endsWith(
+        `truncated is true when it stopped early (${LIMITS.searchMs / 1000} s, ${num(LIMITS.searchFiles)} names or ${num(LIMITS.listEntries)} entries).`,
+      ),
+      list,
+    )
+    assert.ok(
+      search.endsWith(
+        `truncated is true when it stopped early (${LIMITS.searchMs / 1000} s, ${num(LIMITS.searchFiles)} names or maxMatches): the matches are then partial.`,
+      ),
+      search,
+    )
+  })
+
   test('lists the tools of the read, write and exec classes', () => {
     assert.deepEqual(WORKSPACE_TOOL_NAMES, ['list', 'search', 'read', 'stat', 'run_task', 'diff', 'edit', 'write'])
     for (const name of WORKSPACE_TOOL_NAMES) {
@@ -446,7 +464,8 @@ describe('the tool table', () => {
       assert.equal(WORKSPACE_TOOLS[name].inputSchema.type, 'object')
       assert.equal((WORKSPACE_TOOLS[name].inputSchema as { additionalProperties: boolean }).additionalProperties, false)
       assert.equal(WORKSPACE_TOOLS[name].outputSchema.type, 'object')
-      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 260)
+      // search is the longest: the .gitignore sentence and the truncated sentence.
+      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 360)
     }
     assert.equal(workspaceClass('mcp__workspace__read'), 'read')
     assert.equal(workspaceClass('mcp__workspace__diff'), 'read')
