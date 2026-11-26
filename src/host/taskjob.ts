@@ -34,6 +34,8 @@ export const HELPER_CONNECT_MS = 15_000
 export const HELPER_START_MS = 60_000
 /** The most of the helper's own output that a failure shows. */
 const SAID_MAX = 1200
+/** A helper that needs more than this to be ready writes one line to the log with its crumbs. */
+const SLOW_START_MS = 3_000
 /** The Windows helper stops after this long with no task, and the next task starts a new one. */
 export const IDLE_MS = 10 * 60_000
 /** The perl of the system: an absolute path, never a `PATH` lookup. */
@@ -129,6 +131,8 @@ type Helper = {
   why: string | undefined
   /** What the helper wrote to its output streams, bounded and without control characters. */
   said: string
+  /** When the helper was spawned. */
+  readonly began: number
   /** A helper that did not start in time: the call does not retry it. */
   hung: boolean
   stopped: boolean
@@ -211,6 +215,10 @@ export const createJobHost = (options: {
       if (h.state !== 'starting') return
       h.state = 'idle'
       clearTimeout(h.startTimer)
+      // A slow start shows where the time went (the PowerShell start, the lookup, the compile) in the log of the server.
+      const took = Date.now() - h.began
+      if (took > SLOW_START_MS)
+        process.stderr.write(`Workspace: the task helper took ${took} ms to start. ${h.said.trim()}\n`)
       h.settleReady(true)
       return
     }
@@ -265,6 +273,7 @@ export const createJobHost = (options: {
       idleTimer: undefined,
       why: undefined,
       said: '',
+      began: Date.now(),
       hung: false,
       stopped: false,
     }
