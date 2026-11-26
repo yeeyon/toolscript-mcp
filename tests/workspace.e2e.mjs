@@ -308,6 +308,10 @@ describe('the built server with no workspace section', () => {
       const shown = await s.search('workspace')
       assert.match(shown, /## Not connected\n- workspace: .*Start the client in one of them/)
       assert.match(shown, /reconnect toolscript-mcp or restart the client/)
+      // A failed bind never heals: later searches show the same reason, with no note and no double period.
+      let again = shown
+      for (let i = 0; i < 4; i++) again = await s.search('workspace')
+      assert.doesNotMatch(again, /tries again|\.\./)
       // The model reads it from the instructions at initialize, with no reason and no path.
       const instructions = s.client.getInstructions() ?? ''
       assert.match(
