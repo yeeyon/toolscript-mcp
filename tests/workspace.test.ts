@@ -25,6 +25,7 @@ import {
   parseSearchInput,
   parseWriteInput,
   pathParts,
+  folderParts,
   realParts,
   planEdits,
   rootProblem,
@@ -53,6 +54,35 @@ const code = (f: () => unknown): string | undefined => {
   }
   return undefined
 }
+
+describe('the folder form of a path', () => {
+  test('cuts one final slash and keeps every other rule', () => {
+    for (const windows of [false, true]) {
+      assert.deepEqual(folderParts('a/', windows), ['a'])
+      assert.deepEqual(folderParts('a/b/', windows), ['a', 'b'])
+      assert.deepEqual(folderParts('a/b', windows), ['a', 'b'])
+      assert.deepEqual(folderParts('./', windows), [])
+      assert.deepEqual(folderParts('.', windows), [])
+      for (const text of ['/', '//', 'a//', 'a//b', 'a/./', 'a/../', '../', 'a\\'])
+        assert.equal(
+          code(() => folderParts(text, windows)),
+          'bad-path',
+          text,
+        )
+      assert.equal(
+        code(() => pathParts('a/', windows)),
+        'bad-path',
+      )
+    }
+    assert.throws(() => folderParts('/', false), /the path is absolute/)
+    for (const text of ['a /', 'a./'])
+      assert.equal(
+        code(() => folderParts(text, true)),
+        'bad-path',
+        text,
+      )
+  })
+})
 
 describe('the text of a path', () => {
   test('refuses each bad form with bad-path, on every system', () => {

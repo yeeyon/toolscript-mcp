@@ -243,6 +243,10 @@ export const pathParts = (text: string, windows: boolean): string[] => {
   return parts
 }
 
+/** `pathParts` of a folder path: one final `/` is cut first, unless the text is `/`. All other rules hold. */
+export const folderParts = (text: string, windows: boolean): string[] =>
+  pathParts(text.length > 1 && text.endsWith('/') ? text.slice(0, -1) : text, windows)
+
 /** The path as the tools show it: the parts with `/`, and `.` for the root. */
 export const showPath = (parts: readonly string[]): string => (parts.length === 0 ? '.' : parts.join('/'))
 
@@ -483,7 +487,7 @@ export const WORKSPACE_TOOLS = {
       type: 'object',
       properties: {
         path: pathArg(
-          'The folder, relative to the workspace root, with /. Default ".". Name the smallest folder that holds what you look for.',
+          'The folder, relative to the workspace root. Default ".". Name the smallest folder that holds what you look for.',
         ),
         depth: {
           type: 'integer',

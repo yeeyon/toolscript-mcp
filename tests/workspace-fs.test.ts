@@ -347,6 +347,39 @@ describe('list, stat, read and search', () => {
   })
 })
 
+describe('a folder path with a final slash', () => {
+  test('list and search give the plain result and open nothing more; read refuses it', async t => {
+    const root = folders(t)()
+    const outside = folders(t)()
+    write(root, {
+      'a/b/c.txt': 'needle',
+      'a/x.txt': 'needle',
+      'a.txt': 'needle',
+      '.git/h': 'needle',
+      '.env/e': 'needle',
+    })
+    const linked = trySymlink(outside, path.join(root, 'lnk'), win ? 'junction' : 'dir')
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    for (const p of ['a', 'a/b', '.']) {
+      const slash = p === '.' ? './' : `${p}/`
+      assert.deepEqual(await rig.call('list', { path: slash, depth: 2 }), await rig.call('list', { path: p, depth: 2 }))
+      assert.deepEqual(
+        await rig.call('search', { query: 'needle', path: slash }),
+        await rig.call('search', { query: 'needle', path: p }),
+      )
+    }
+    const names = ['.git', '.env', 'a.txt', 'missing', ...(linked ? ['lnk'] : [])]
+    for (const tool of ['list', 'search'])
+      for (const name of names) {
+        const args = (p: string) => (tool === 'search' ? { query: 'needle', path: p } : { path: p })
+        assert.equal(codeOf(await rig.fail(tool, args(`${name}/`))), codeOf(await rig.fail(tool, args(name))), name)
+      }
+    assert.equal(codeOf(await rig.fail('read', { path: 'a.txt/' })), 'bad-path')
+    assert.equal(codeOf(await rig.fail('stat', { path: 'a/' })), 'bad-path')
+  })
+})
+
 describe('the text of a path', () => {
   test('a bad path is refused with bad-path before any file system call', async t => {
     const root = folders(t)()

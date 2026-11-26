@@ -164,7 +164,8 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
 The provider checks the text of a path before any file system call. It refuses these forms on each OS:
 
 - An empty path, an absolute path, a drive, a network path, a backslash, and a control character.
-- A part that is empty, `.` or `..`. No part is ever resolved away.
+- A part that is empty, `.` or `..`. No part is ever resolved away. The `path` of `list` and `search` alone may end in
+  one `/`, which `folderParts` cuts before these rules run (`src/` is `src`, `./` is `.`); `a//` and `/` stay refused.
 - More than 64 parts, or more than 1024 characters.
 - On Windows also a `:`, a part that ends in a dot or a space, and a device name such as `NUL`.
 
