@@ -1302,9 +1302,14 @@ export const editDistance = (a: string, b: string): number => {
   return row[b.length]!
 }
 
+const NAME_CAP = 200
+
 const nearest = (name: string, names: readonly string[], most: number): string | undefined => {
   let best: { name: string; d: number } | undefined
+  // Edit distance costs the product of the lengths: a name over the cap (a bug, or a server's) gets no hint.
+  if (name.length > NAME_CAP) return undefined
   for (const n of names) {
+    if (n.length > NAME_CAP) continue
     const d = n.toLowerCase() === name.toLowerCase() ? 0.5 : editDistance(n, name)
     if (d <= most && (best === undefined || d < best.d)) best = { name: n, d }
   }
@@ -1319,7 +1324,7 @@ const typoOf = (key: string, names: readonly string[]): string | undefined =>
 /** The error of a tool that its connected server does not list, with the nearest name of `names`. */
 export const notListedText = (tool: string, server: string, all: readonly string[]): string => {
   // A name that a server lists is data: only a plain short one may reach the text, and it is dropped before any work.
-  const names = all.filter(n => n.length <= 200 && /^[A-Za-z0-9_.-]{1,64}$/.test(splitToolName(n)?.name ?? ''))
+  const names = all.filter(n => n.length <= NAME_CAP && /^[A-Za-z0-9_.-]{1,64}$/.test(splitToolName(n)?.name ?? ''))
   const near = nearest(tool, names, 3)
   const likely = near === undefined ? likelyNames(tool, server, names) : []
   const help =
@@ -1336,6 +1341,7 @@ const FUNCTION_WORDS: ReadonlySet<string> = new Set(['to', 'for', 'by', 'of', 'o
 
 // Words that the wrong name shares with tools of the same server, weighted by how few tools use them: at most 2.
 const likelyNames = (tool: string, server: string, names: readonly string[]): string[] => {
+  if (tool.length > NAME_CAP) return []
   const mine = names.filter(n => splitToolName(n)?.server === server)
   const fold = (w: string) => (w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w)
   const sets = mine.map(n => nameWords(n))
