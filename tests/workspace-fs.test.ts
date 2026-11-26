@@ -183,15 +183,20 @@ describe('a casefolded folder opens a name that it does not list (Linux)', () =>
     const rig = await rigOf(t, root, { write: true })
     if (rig === undefined) return
     const hash = sha(Buffer.from(secret))
-    const calls = ['.ſſh/known_hosts', '.awſ/credentials', 'id_rſa', '.ſſh'].flatMap((p): [string, object][] => [
-      ['read', { path: p }],
+    // Split by kind, as the vfat test does: a tool that needs the other kind fails before the exclusion check.
+    const folderCalls = ['.ſſh', '.awſ'].flatMap((p): [string, object][] => [
       ['stat', { path: p }],
       ['list', { path: p }],
       ['search', { query: 'SECRET', path: p }],
+    ])
+    const fileCalls = ['.ſſh/known_hosts', '.awſ/credentials', 'id_rſa'].flatMap((p): [string, object][] => [
+      ['read', { path: p }],
+      ['stat', { path: p }],
       ['diff', { path: p, content: 'x' }],
       ['write', { path: p, content: 'x' }],
       ['edit', { path: p, expectedHash: hash, edits: [{ old: 'SECRET', new: 'x' }] }],
     ])
+    const calls = [...folderCalls, ...fileCalls]
     for (const [tool, args] of calls) {
       const message = await rig.fail(tool, args as Record<string, unknown>)
       assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
