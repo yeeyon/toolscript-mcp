@@ -17,6 +17,7 @@ import {
   WorkspaceError,
   applyRanges,
   fold,
+  includeReach,
   includeTest,
   lineEndWarnings,
   parseDiffInput,
@@ -61,6 +62,8 @@ export type ProviderOptions = {
   readonly skip: readonly string[]
   /** `false`: `list` and `search` never read the `.gitignore` of the root. Absent: they do. */
   readonly gitignore?: boolean
+  /** Tests only: `false` opens each folder, as the walk did before the prune. */
+  readonly prune?: boolean
   readonly windows: boolean
   /** The stderr log. Never holds a path, a name or file content. */
   readonly log: (line: string) => void
@@ -172,6 +175,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     signal: AbortSignal,
     within: ReturnType<typeof budget>,
     hides?: Hides,
+    reach?: (folder: readonly string[]) => boolean,
   ): Promise<boolean> => {
     const read = await dir.names({
       keep: name => !excluded([...dir.parts, name]),
@@ -191,6 +195,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
       if (hides?.(parts, entry.kind === 'folder') === true) continue
       if (!(await visit({ parts, kind: entry.kind, size: entry.size }, dir, name))) return false
       if (entry.kind !== 'folder' || levels <= 1 || read.more || skip.has(fold(name))) continue
+      // No glob of `include` reaches below this folder: its entry was visited, its names are not read.
+      if (reach?.(parts) === false) continue
       const child = await dir.openDir(name).catch((err: unknown) => {
         if (
           err instanceof WorkspaceError &&
@@ -201,7 +207,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
       })
       if (child === undefined) continue
       try {
-        if (!(await walk(child, levels - 1, visit, signal, within, hides))) return false
+        if (!(await walk(child, levels - 1, visit, signal, within, hides, reach))) return false
       } finally {
         await child.close()
       }
@@ -240,6 +246,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
     return (parts, isFolder) => ignored(rules, parts, isFolder, folds)
   }
 
+  const reachOf = (globs: readonly string[]) => (options.prune === false ? undefined : includeReach(globs))
+
   const list = async (input: ListInput, signal: AbortSignal) => {
     const start = target(input.path)
     const inList = includeTest(input.include)
@@ -264,6 +272,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
         signal,
         within,
         hides,
+        reachOf(input.include),
       )
       if (!complete || within.cut) truncated = true
     } finally {
@@ -329,6 +338,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
         signal,
         within,
         hides,
+        reachOf(input.include),
       )
       if (!complete || within.cut) truncated = true
     } finally {

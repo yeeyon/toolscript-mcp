@@ -17,6 +17,7 @@
 - Workspace was tested in Codex CLI 0.172.0 and Claude Code 2.1.331 with the same program and no Claude Code bridge. Cursor is not tested.
 - Roots of the MCP client narrow the root of a Workspace session (issue #150), and never widen it. A client that declares the `roots` capability is asked one time after it starts. The root becomes the deepest folder that holds every client root inside the bound root, and a root outside the grant, a link out of it or a file grants nothing. The server waits at most 2 seconds, and no Workspace call runs before the answer. A change of the roots needs a restart.
 - `list` and `search` leave out the names that the `.gitignore` in the root ignores (issue #150). It is discovery only: `read`, `edit` and the other tools never use it, and an exclusion decides first. A `path` that is ignored applies no rule. The key `"gitignore": false` in the `workspace` section turns it off.
+- Workspace `list` and `search` do not open a folder that no `include` glob can reach, so `include: ["services/**/*.cs"]` no longer walks the whole tree into the time limit. The results are the same.
 
 ## 1.0.3
 
