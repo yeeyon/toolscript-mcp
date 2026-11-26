@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install, update or remove toolscript-mcp from npm and connect it to Claude Code. Use also to switch from a GitHub clone, add a downstream server, set the policy, enable the Claude Code bridge, or log in with OAuth. Use /toolscript:start for a first run and /toolscript:doctor for a setup check.
+description: Install, update or remove toolscript-mcp from npm and connect it to Claude Code. Use also to switch from a GitHub clone, add a downstream server, set the policy, enable the Claude Code bridge, or log in with OAuth. Use /toolscript:start for a first run and /toolscript:doctor for a setup check. Use /toolscript:workspace for the built-in Workspace.
 argument-hint: "[install|update|add|login|policy|native|uninstall]"
 ---
 

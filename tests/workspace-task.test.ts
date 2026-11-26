@@ -4,19 +4,35 @@
 
 import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { getEventListeners } from 'node:events'
 import fs from 'node:fs'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import {
   TASK_ENV_NAMES,
   TASK_LIMITS,
+  argumentLine,
   commandProblem,
   cwdParts,
   isBareName,
   taskEnv,
   type TaskConfig,
 } from '../src/core/task.ts'
+import {
+  COMMAND_LINE_MAX,
+  decide,
+  parseReport,
+  posixFrame,
+  prctlNumber,
+  startCode,
+  taskRefusal,
+  windowsEnv,
+  windowsFrame,
+  type Report,
+} from '../src/core/taskjob.ts'
+import { perlPath, powershellPath } from '../src/host/taskjob.ts'
 import { createTaskRunner, findOnPath, launchProblem, type ResolvedTask } from '../src/host/workspace/task.ts'
 import { codeOf, open, rm, tempDir, trySymlink, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
@@ -71,8 +87,8 @@ const alive = (pid: number): boolean => {
   }
 }
 
-/** Waits until `check` is true, at most `ms`. */
-const until = async (check: () => boolean, ms = 6000): Promise<boolean> => {
+/** Waits until `check` is true, at most `ms`. The deadline covers a start of the helper, which a loaded machine slows. */
+const until = async (check: () => boolean, ms = 15_000): Promise<boolean> => {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(25)) if (check()) return true
   return check()
 }
@@ -363,9 +379,11 @@ describe('run_task: what runs', () => {
     // defaults of an account (`LOGONSERVER`, `USERDOMAIN`), and on macOS `__CF_USER_TEXT_ENCODING`.
     const system = /^(=|__CF|LOGONSERVER$|USERDOMAIN)/
     assert.deepEqual(
-      extra.filter(k => !system.test(k)),
+      extra.filter(k => !system.test(k) && !(mac && k === 'TOOLSCRIPT_TASK')),
       [],
     )
+    assert.equal('TOOLSCRIPT_TASK' in seen, mac)
+    if (mac) assert.match(seen.TOOLSCRIPT_TASK!, /^[0-9a-f]{32}$/)
   })
 
   test('a non-zero exit code is data, with stdout and stderr apart', async t => {
@@ -474,7 +492,7 @@ describe('run_task: the end of a task and its tree', () => {
     const out = await r.call('run_task', { task: 'hang' })
     assert.equal(out.timedOut, true)
     assert.equal(out.exitCode, null)
-    assert.ok(out.ms >= 900 && out.ms < 6000, `${out.ms} ms`)
+    assert.ok(out.ms >= 900 && out.ms < 15_000, `${out.ms} ms`)
     const pids = await treePids(dir)
     assert.ok(await gone(pids.child, pids.grand), `child ${alive(pids.child)}, grandchild ${alive(pids.grand)}`)
   })
@@ -520,7 +538,7 @@ describe('run_task: the end of a task and its tree', () => {
     await call
   })
 
-  test('a process that the task leaves behind in its group does not stay (outside Windows), and the call still returns', async t => {
+  test('a process that the task leaves behind in its group or its job does not stay, and the call still returns', async t => {
     const dir = folders(t)()
     const r = await rigOf(t, [task('leaver', ['leaver', dir])])
     if (r === undefined) return
@@ -529,9 +547,8 @@ describe('run_task: the end of a task and its tree', () => {
     try {
       assert.equal(out.exitCode, 0)
       assert.equal(out.timedOut, false)
-      assert.ok(out.ms < 6000, `${out.ms} ms`)
-      // Windows cannot find the descendants of a process that has exited: the test kills the leftover itself.
-      if (!win) assert.ok(await gone(grand), 'the grandchild is gone')
+      assert.ok(out.ms < 15_000, `${out.ms} ms`)
+      assert.ok(await gone(grand), 'the grandchild is gone')
     } finally {
       try {
         process.kill(grand, 'SIGKILL')
@@ -701,12 +718,780 @@ describe('run_task: a cancel or a shutdown during the proof of the folder', () =
   })
 })
 
+/** A task that is already resolved, run by `createTaskRunner` with no rig. */
+const resolved = (
+  dir: string,
+  name: string,
+  args: readonly string[],
+  over: Partial<ResolvedTask> = {},
+): ResolvedTask => ({
+  name,
+  file: process.execPath,
+  args: [CHILD, ...args],
+  cwd: dir,
+  timeoutMs: 30_000,
+  env: { ...process.env } as Record<string, string>,
+  proveCwd: async () => {},
+  ...over,
+})
+
+describe('the command line of a task on Windows', () => {
+  test('argumentLine quotes by the rule of libuv', () => {
+    const table: [string, string][] = [
+      ['a', 'a'],
+      ['', '""'],
+      ['a b', '"a b"'],
+      ['hello"world', '"hello\\"world"'],
+      ['hello\\world', 'hello\\world'],
+      ['hello\\"world', '"hello\\\\\\"world"'],
+      ['hello world\\', '"hello world\\\\"'],
+      ['C:\\Program Files\\x\\', '"C:\\Program Files\\x\\\\"'],
+      ['é 日本語', '"é 日本語"'],
+      ['a\tb', '"a\tb"'],
+    ]
+    for (const [arg, line] of table) assert.equal(argumentLine([arg]), line, JSON.stringify(arg))
+    assert.equal(argumentLine(['a', '', 'b c']), 'a "" "b c"')
+    assert.equal(argumentLine([]), '')
+  })
+
+  test('the arguments come back as given through the real command line parser', { skip: !win }, async t => {
+    const args = [
+      '',
+      'a b',
+      'a"b',
+      'trailing\\',
+      'a\\\\"b',
+      'é 日本語 ü',
+      'a && echo x',
+      '%PATH%',
+      '$(whoami)',
+      '`',
+      ';',
+      "'x'",
+      '*.ts',
+      'C:\\Program Files\\x\\',
+      'tab\there',
+    ]
+    const r = await rigOf(t, [task('argv', ['argv', ...args])])
+    if (r === undefined) return
+    assert.deepEqual(JSON.parse((await r.call('run_task', { task: 'argv' })).stdout), args)
+  })
+
+  test('a command line over the limit is the start error, and nothing starts', { skip: !win }, async t => {
+    const dir = folders(t)()
+    const long = Array.from({ length: 9 }, () => 'x'.repeat(4000))
+    const runner = createTaskRunner({ valid: [resolved(dir, 'long', ['argv', ...long])], invalid: [] })
+    t.after(() => runner.stop())
+    await assert.rejects(
+      runner.run('long', new AbortController().signal),
+      (e: Error) => e.message === 'io: the task could not start (ENAMETOOLONG)',
+    )
+  })
+})
+
+describe('the reports of the helpers, and what is decided from them', () => {
+  test('each line of a helper is one report, and nothing else is', () => {
+    assert.deepEqual(parseReport('ready'), { kind: 'ready' })
+    assert.deepEqual(parseReport('begin'), { kind: 'begin' })
+    assert.deepEqual(parseReport('started'), { kind: 'started', pid: undefined })
+    assert.deepEqual(parseReport('started:4242'), { kind: 'started', pid: 4242 })
+    assert.deepEqual(parseReport('error:2'), { kind: 'error', code: 2 })
+    assert.deepEqual(parseReport('exit:255'), { kind: 'exit', code: 255 })
+    assert.deepEqual(parseReport('exit:3221225786'), { kind: 'exit', code: 3221225786 })
+    assert.deepEqual(parseReport('signal:15'), { kind: 'signal', signal: 15 })
+    assert.deepEqual(parseReport('stopped'), { kind: 'stopped' })
+    assert.deepEqual(parseReport('left:3'), { kind: 'left', count: 3 })
+    assert.deepEqual(parseReport('failed:job'), { kind: 'failed', step: 'job' })
+    for (const bad of [
+      '',
+      'Begin',
+      'failed:',
+      'failed:C:\\secret',
+      'error:ENOENT',
+      'error:-1',
+      'exit:',
+      'exit:1 ',
+      'signal:x',
+      'started ',
+      'started:x',
+      'ps -ax output',
+    ])
+      assert.equal(parseReport(bad), undefined, bad)
+  })
+
+  test('the decision reads the reports only: no begin is a fallback, a lost helper is an error, never a second start', () => {
+    const r = (...text: string[]): Report[] => text.map(t => parseReport(t)!)
+    const table: [string[], ReturnType<typeof decide>][] = [
+      [[], { kind: 'fallback', step: 'ended' }],
+      [['ready'], { kind: 'fallback', step: 'ended' }],
+      [['failed:job'], { kind: 'fallback', step: 'job' }],
+      [['error:2'], { kind: 'start-error', code: 2 }],
+      [['begin', 'error:13'], { kind: 'start-error', code: 13 }],
+      [['begin', 'started:7', 'exit:0'], { kind: 'exit', code: 0 }],
+      [['begin', 'started:7', 'exit:255', 'left:2'], { kind: 'exit', code: 255 }],
+      [['begin', 'started:7', 'signal:15'], { kind: 'signal', signal: 15 }],
+      [['begin', 'started:7', 'stopped'], { kind: 'stopped' }],
+      [['begin'], { kind: 'lost' }],
+      [['begin', 'started:7'], { kind: 'lost' }],
+      [['begin', 'failed:assign'], { kind: 'lost' }],
+    ]
+    for (const [lines, expected] of table) assert.deepEqual(decide(r(...lines)), expected, lines.join(' '))
+  })
+
+  test('the start error numbers map to the Node codes, and the rest is error', () => {
+    for (const [n, code] of [
+      [2, 'ENOENT'],
+      [3, 'ENOENT'],
+      [5, 'EPERM'],
+      [87, 'EINVAL'],
+      [206, 'ENAMETOOLONG'],
+      [13, 'error'],
+    ] as const)
+      assert.equal(startCode(true, n), code, `win ${n}`)
+    for (const [n, code] of [
+      [2, 'ENOENT'],
+      [13, 'EACCES'],
+      [8, 'ENOEXEC'],
+      [7, 'E2BIG'],
+      [20, 'ENOTDIR'],
+      [87, 'error'],
+    ] as const)
+      assert.equal(startCode(false, n), code, `posix ${n}`)
+  })
+
+  test('the prctl number is a table of the machine type', () => {
+    assert.equal(prctlNumber('linux', 'x64'), 157)
+    assert.equal(prctlNumber('linux', 'arm64'), 167)
+    assert.equal(prctlNumber('linux', 'ia32'), undefined)
+    assert.equal(prctlNumber('darwin', 'arm64'), 0)
+    assert.equal(prctlNumber('freebsd', 'x64'), undefined)
+  })
+
+  test('a NUL anywhere, or a Windows command line over the limit, is refused with nothing cut', () => {
+    const base = { file: '/bin/x', line: '', args: ['a'], env: { A: 'b' } }
+    assert.equal(taskRefusal(base, false), undefined)
+    assert.equal(taskRefusal({ ...base, file: 'a\0b' }, false), 'EINVAL')
+    assert.equal(taskRefusal({ ...base, args: ['a\0'] }, false), 'EINVAL')
+    assert.equal(taskRefusal({ ...base, env: { 'A\0': 'b' } }, false), 'EINVAL')
+    assert.equal(taskRefusal({ ...base, env: { A: '\0' } }, true), 'EINVAL')
+    const long = 'x'.repeat(COMMAND_LINE_MAX)
+    assert.equal(taskRefusal({ ...base, line: long }, true), 'ENAMETOOLONG')
+    assert.equal(taskRefusal({ ...base, line: long }, false), undefined, 'the limit is the one of Windows')
+  })
+
+  test('the Windows environment is the task env plus the required names, sorted with letter case ignored', () => {
+    const server = {
+      SystemRoot: 'C:\\Windows',
+      USERDOMAIN: 'D',
+      LOGONSERVER: '\\\\L',
+      path: 'p',
+      Other: 'no',
+      TEMP: 't',
+    }
+    assert.deepEqual(windowsEnv({ Zed: '1', abc: '2' }, server), [
+      ['abc', '2'],
+      ['LOGONSERVER', '\\\\L'],
+      ['path', 'p'],
+      ['SystemRoot', 'C:\\Windows'],
+      ['TEMP', 't'],
+      ['USERDOMAIN', 'D'],
+      ['Zed', '1'],
+    ])
+    assert.deepEqual(windowsEnv({ Path: 'mine', USERDOMAIN: '' }, { PATH: 'server', USERDOMAIN: 'D' }), [
+      ['Path', 'mine'],
+      ['USERDOMAIN', ''],
+    ])
+  })
+
+  test('the frames hold the length and the fields, and a name or value with an unusual byte passes', () => {
+    const win = windowsFrame({ file: 'f', line: 'l', cwd: 'c', out: 'o', err: 'e' }, [['N', 'é']])
+    const body = Buffer.from(win.subarray(4)).toString('utf8')
+    assert.equal(Buffer.from(win).readUInt32LE(0), win.length - 4)
+    assert.deepEqual(body.split('\0'), ['f', 'l', 'c', 'o', 'e', 'N', 'é'])
+    const posix = posixFrame({ A: 'b=c', PERL5OPT: '-e1' })
+    assert.equal(Buffer.from(posix).readUInt32BE(0), posix.length - 4)
+    assert.deepEqual(Buffer.from(posix.subarray(4)).toString('utf8').split('\0'), ['A=b=c', 'PERL5OPT=-e1'])
+    assert.equal(Buffer.from(posixFrame({})).readUInt32BE(0), 0)
+  })
+
+  test('perl is /usr/bin/perl, a file, or nothing', { skip: win }, () => {
+    const found = perlPath()
+    assert.ok(found === undefined || found === '/usr/bin/perl')
+  })
+
+  test('PowerShell is the system file of Windows PowerShell, from SystemRoot, or nothing', { skip: !win }, () => {
+    assert.match(powershellPath() ?? '', /\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i)
+    assert.equal(powershellPath({ SystemRoot: 'C:\\no\\such\\root' }), undefined)
+    assert.equal(powershellPath({}), undefined)
+    assert.equal(powershellPath({ SystemRoot: 'relative' }), undefined)
+  })
+})
+
+describe('run_task: the exit and the start through the runner', () => {
+  test('the exit code of the task is the exitCode, with no signal and no timeout', async t => {
+    const dir = folders(t)()
+    const codes = [0, 1, 3, 255]
+    const runner = createTaskRunner({
+      valid: codes.map(n => resolved(dir, `exit${n}`, ['exit', String(n)])),
+      invalid: [],
+    })
+    t.after(() => runner.stop())
+    for (const n of codes) {
+      const out = await runner.run(`exit${n}`, new AbortController().signal)
+      assert.deepEqual([out.exitCode, out.signal, out.timedOut, out.stdout, out.stderr], [n, null, false, 'out', 'err'])
+    }
+  })
+
+  test('a program that is gone is the start error with ENOENT, and no helper failure', async t => {
+    const dir = folders(t)()
+    const notes: string[] = []
+    const file = path.join(dir, 'removed.exe')
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'gone', [], { file })], invalid: [] },
+      { note: l => notes.push(l) },
+    )
+    t.after(() => runner.stop())
+    await assert.rejects(
+      runner.run('gone', new AbortController().signal),
+      (e: Error) => e.message === 'io: the task could not start (ENOENT)',
+    )
+    assert.deepEqual(notes, [], 'a program that is gone is no failure of the helper')
+  })
+
+  test('a folder with a space and a letter outside ASCII is the folder of the task', async t => {
+    const r = await rigOf(t, [task('where', ['cwd'], { cwd: ['sub dir é'] })], { files: { 'sub dir é/x.txt': '' } })
+    if (r === undefined) return
+    const out = await r.call('run_task', { task: 'where' })
+    assert.equal(out.stdout, path.join(r.root, 'sub dir é'))
+  })
+
+  test(
+    'on Windows a PSModulePath of the task is kept, and PowerShell adds none of its own',
+    { skip: !win },
+    async t => {
+      const r = await rigOf(t, [
+        task('own', ['env'], { env: { PSModulePath: 'mine', Mixed_Case_1: 'ok' } }),
+        task('none', ['env']),
+      ])
+      if (r === undefined) return
+      const own = JSON.parse((await r.call('run_task', { task: 'own' })).stdout) as Record<string, string>
+      assert.equal(own.PSModulePath, 'mine')
+      assert.equal(own.Mixed_Case_1, 'ok')
+      const none = JSON.parse((await r.call('run_task', { task: 'none' })).stdout) as Record<string, string>
+      assert.deepEqual(
+        Object.keys(none).filter(k => /^(PSModulePath|TS_.*)$/i.test(k)),
+        [],
+        'no variable of the helper, and no PSModulePath that PowerShell added',
+      )
+    },
+  )
+})
+
+describe('run_task: the environment through the helper is the one of a direct spawn', () => {
+  /** The names and values that the child sees, for a runner with the helper and one with none. */
+  const both = async (
+    t: TestContext,
+    env: Record<string, string>,
+  ): Promise<[Record<string, string>, Record<string, string>]> => {
+    const dir = folders(t)()
+    const seen: Record<string, string>[] = []
+    for (const helper of [undefined, false as const]) {
+      const runner = createTaskRunner(
+        { valid: [resolved(dir, 'env', ['env'], { env })], invalid: [] },
+        helper === undefined ? {} : { helper },
+      )
+      t.after(() => runner.stop())
+      seen.push(JSON.parse((await runner.run('env', new AbortController().signal)).stdout))
+    }
+    return [seen[0]!, seen[1]!]
+  }
+
+  test(
+    'a task env without USERDOMAIN and LOGONSERVER gets the same block as a direct spawn',
+    { skip: !win },
+    async t => {
+      const { USERDOMAIN, LOGONSERVER, ...env } = process.env as Record<string, string>
+      void USERDOMAIN
+      void LOGONSERVER
+      const [helper, direct] = await both(t, env)
+      assert.deepEqual(helper, direct)
+    },
+  )
+
+  test(
+    'a task env that sets Path in another letter case keeps it, and no second PATH is added',
+    { skip: !win },
+    async t => {
+      const { Path, PATH, ...rest } = process.env as Record<string, string>
+      const [helper, direct] = await both(t, { ...rest, pAtH: Path ?? PATH ?? '' })
+      assert.deepEqual(helper, direct)
+      assert.equal(Object.keys(helper).filter(k => k.toUpperCase() === 'PATH').length, 1)
+    },
+  )
+
+  test(
+    'on POSIX PERL5OPT of the task reaches the task and not the helper, and the env is the given one',
+    { skip: win },
+    async t => {
+      const env = { ...(process.env as Record<string, string>), PERL5OPT: '-Mstrict -e1', EMPTY: '', 'X Y': 'v=1 é' }
+      const [helper, direct] = await both(t, env)
+      assert.equal(helper.PERL5OPT, '-Mstrict -e1')
+      const { TOOLSCRIPT_TASK: marker, ...rest } = helper
+      void marker
+      assert.deepEqual(rest, direct)
+      assert.equal('TOOLSCRIPT_TASK' in helper, mac, 'only macOS adds the marker')
+      assert.match(helper.TOOLSCRIPT_TASK ?? '00000000000000000000000000000000', /^[0-9a-f]{32}$/)
+    },
+  )
+})
+
+describe('run_task: a process whose parent exited ends with the task', () => {
+  /** The pid of the grandchild, after the top process wrote `ready`. The test kills it at the end if the task did not. */
+  const orphan = async (t: TestContext, dir: string): Promise<number> => {
+    assert.ok(await until(() => fs.existsSync(path.join(dir, 'ready')), 15_000), 'the orphan child did not get ready')
+    const pid = Number(fs.readFileSync(path.join(dir, 'grand.pid'), 'utf8'))
+    t.after(() => {
+      try {
+        process.kill(pid)
+      } catch {}
+    })
+    return pid
+  }
+
+  test('the time limit', async t => {
+    const dir = folders(t)()
+    const r = await rigOf(t, [task('orphan', ['orphan', dir, 'stay'], { timeoutSeconds: 3 })])
+    if (r === undefined) return
+    const out = await r.call('run_task', { task: 'orphan' })
+    assert.equal(out.timedOut, true)
+    const grand = await orphan(t, dir)
+    assert.ok(await gone(grand), 'the grandchild is gone')
+  })
+
+  test('a cancel of the call', async t => {
+    const dir = folders(t)()
+    const r = await rigOf(t, [task('orphan', ['orphan', dir, 'stay'])])
+    if (r === undefined) return
+    const controller = new AbortController()
+    const call = r.call('run_task', { task: 'orphan' }, controller.signal)
+    const grand = await orphan(t, dir)
+    assert.ok(alive(grand), 'the grandchild runs before the cancel')
+    controller.abort()
+    await assert.rejects(call)
+    assert.ok(await gone(grand), 'the grandchild is gone')
+  })
+
+  test('a shutdown', async t => {
+    const dir = folders(t)()
+    const r = await rigOf(t, [task('orphan', ['orphan', dir, 'stay'])])
+    if (r === undefined) return
+    const call = r.client.callTool({ name: 'run_task', arguments: { task: 'orphan' } })
+    const grand = await orphan(t, dir)
+    await r.bound.provider.stopTasks()
+    assert.ok(await gone(grand), 'the grandchild is gone')
+    assert.equal((await call).isError, true)
+  })
+
+  test('the normal exit of the top process', async t => {
+    const dir = folders(t)()
+    const r = await rigOf(t, [task('orphan', ['orphan', dir, 'exit'])])
+    if (r === undefined) return
+    const out = await r.call('run_task', { task: 'orphan' })
+    assert.deepEqual([out.exitCode, out.timedOut], [0, false])
+    const grand = await orphan(t, dir)
+    assert.ok(await gone(grand), 'the grandchild is gone')
+  })
+
+  test('a detached child of a living parent, as Playwright starts a browser, ends at a cancel', async t => {
+    const dir = folders(t)()
+    const r = await rigOf(t, [task('live', ['live', dir])])
+    if (r === undefined) return
+    const controller = new AbortController()
+    const call = r.call('run_task', { task: 'live' }, controller.signal)
+    const grand = await orphan(t, dir)
+    assert.ok(alive(grand), 'the detached child runs before the cancel')
+    controller.abort()
+    await assert.rejects(call)
+    assert.ok(await gone(grand, Number(fs.readFileSync(path.join(dir, 'top.pid'), 'utf8'))), 'both are gone')
+  })
+
+  test('a daemon that is an Apple or system program (/bin/sleep) whose parent exited', { skip: win }, async t => {
+    const dir = folders(t)()
+    const r = await rigOf(t, [task('apple', ['orphan', dir, 'exit', 'apple'])])
+    if (r === undefined) return
+    await r.call('run_task', { task: 'apple' })
+    const grand = await orphan(t, dir)
+    const found = await gone(grand)
+    // On macOS this is an observation: a program of the system may hide its environment from `ps`, so the marker
+    // may not find it. On Linux the subreaper helper ends it, and that is the rule.
+    if (mac)
+      t.diagnostic(
+        `macOS: a /bin/sleep daemon whose parent exited ${found ? 'was found by the marker and ended' : 'STAYED'}`,
+      )
+    else assert.ok(found, 'the grandchild is gone')
+  })
+})
+
+describe('run_task: a helper that fails falls back to the direct spawn, and no task runs two times', () => {
+  const fake = (windows: string, posix: string): string => path.join(import.meta.dirname, win ? windows : posix)
+  const FAIL = fake('task-job-fail.ps1', 'task-reap-fail.pl')
+  const END = fake('task-job-end.ps1', 'task-reap-end.pl')
+
+  test('failed before the start: the task runs once, the note comes once, and the next task goes direct', async t => {
+    const dir = folders(t)()
+    const log = path.join(dir, 'stamp.log')
+    const notes: string[] = []
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'stamp', ['stamp', log, '50']), resolved(dir, 'out', ['exit', '0'])], invalid: [] },
+      { helper: { script: FAIL }, note: line => notes.push(line) },
+    )
+    t.after(() => runner.stop())
+    const first = await runner.run('stamp', new AbortController().signal)
+    assert.equal(first.exitCode, 0)
+    assert.equal(fs.readFileSync(log, 'utf8').match(/^start /gm)?.length, 1, 'one start')
+    const second = await runner.run('out', new AbortController().signal)
+    assert.deepEqual([second.exitCode, second.stdout], [0, 'out'], 'no text of the failed helper is in the output')
+    assert.equal(notes.length, 1, 'one note for the process')
+    assert.match(notes[0]!, /the task helper failed at the step job, so tasks now run by the direct spawn/)
+    assert.match(notes[0]!, win ? /taskkill tree/ : /process group/)
+    assert.doesNotMatch(notes[0]!, /[A-Za-z]:\\|\/tmp|\/home/, 'no path in the note')
+  })
+
+  test('a helper that ends after begin with no end report is an error, and the task never starts a second time', async t => {
+    const dir = folders(t)()
+    const log = path.join(dir, 'stamp.log')
+    const notes: string[] = []
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'stamp', ['stamp', log, '50'])], invalid: [] },
+      { helper: { script: END }, note: line => notes.push(line) },
+    )
+    t.after(() => runner.stop())
+    await assert.rejects(
+      runner.run('stamp', new AbortController().signal),
+      (e: Error) => e.message === 'io: the task ended with no result: its helper stopped',
+    )
+    await sleep(300)
+    assert.ok(
+      !fs.existsSync(log) || (fs.readFileSync(log, 'utf8').match(/^start /gm)?.length ?? 0) <= 1,
+      'at most one start',
+    )
+    assert.deepEqual(notes, [], 'a task that began is no failure that falls back')
+  })
+
+  test(
+    'a helper that takes 5 s to get ready is waited for: no fallback, and the call gets its report',
+    { skip: !win },
+    async t => {
+      const dir = folders(t)()
+      const log = path.join(dir, 'stamp.log')
+      const notes: string[] = []
+      const runner = createTaskRunner(
+        { valid: [resolved(dir, 'stamp', ['stamp', log, '50'])], invalid: [] },
+        { helper: { script: path.join(import.meta.dirname, 'task-job-slow.ps1') }, note: line => notes.push(line) },
+      )
+      t.after(() => runner.stop())
+      const out = await runner.run('stamp', new AbortController().signal)
+      assert.equal(out.exitCode, 7, 'the report of the helper is the result')
+      assert.deepEqual(notes, [], 'a slow start is no failure')
+      assert.ok(!fs.existsSync(log), 'the direct spawn did not run the task as well')
+    },
+  )
+
+  test('two helpers that end before ready are the fallback', { skip: !win }, async t => {
+    const dir = folders(t)()
+    const notes: string[] = []
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'out', ['exit', '0'])], invalid: [] },
+      { helper: { script: path.join(import.meta.dirname, 'task-job-early.ps1') }, note: line => notes.push(line) },
+    )
+    t.after(() => runner.stop())
+    const out = await runner.run('out', new AbortController().signal)
+    assert.deepEqual([out.exitCode, out.stdout], [0, 'out'])
+    assert.equal(notes.length, 1)
+    assert.match(notes[0]!, /failed at the step exit4,/)
+  })
+
+  test('a start that fails at once leaves no listener, no live task and no timer, and the next call runs', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'bad', [], { file: '' }), resolved(dir, 'ok', ['exit', '0'])], invalid: [] },
+      { helper: false },
+    )
+    t.after(() => runner.stop())
+    const controller = new AbortController()
+    await assert.rejects(runner.run('bad', controller.signal), (e: Error) =>
+      /^io: the task could not start/.test(e.message),
+    )
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0, 'no abort listener is left')
+    assert.equal((await runner.run('ok', new AbortController().signal)).exitCode, 0, 'the next call runs')
+    const began = Date.now()
+    await runner.stop()
+    assert.ok(Date.now() - began < 500, 'stop settles at once: no live entry')
+  })
+
+  test('a cancel while the helper starts is no failure of the helper', async t => {
+    const dir = folders(t)()
+    const notes: string[] = []
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'sleep', ['sleep'])], invalid: [] },
+      { note: l => notes.push(l) },
+    )
+    t.after(() => runner.stop())
+    const controller = new AbortController()
+    const call = runner.run('sleep', controller.signal)
+    call.catch(() => {})
+    setTimeout(() => controller.abort(), 100)
+    await assert.rejects(call, /cancelled/)
+    assert.deepEqual(notes, [])
+  })
+})
+
 describe('the source of the task module', () => {
+  const source = (...parts: string[]): string => fs.readFileSync(path.join(import.meta.dirname, '..', ...parts), 'utf8')
+
   test('no shell and no cross-spawn: the spawn sets neither', () => {
-    const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'host', 'workspace', 'task.ts'), 'utf8')
-    assert.doesNotMatch(source, /from 'cross-spawn'|crossSpawn\(|require\(/)
-    assert.doesNotMatch(source, /\bshell\s*:/)
-    assert.match(source, /from 'node:child_process'/)
-    assert.match(source, /windowsHide: true/)
+    for (const text of [source('src', 'host', 'workspace', 'task.ts'), source('src', 'host', 'taskjob.ts')]) {
+      assert.doesNotMatch(text, /from 'cross-spawn'|crossSpawn\(|require\(/)
+      assert.doesNotMatch(text, /\bshell\s*:/)
+      assert.match(text, /from 'node:child_process'/)
+      assert.match(text, /windowsHide: true/)
+    }
+  })
+
+  test('no value of a task is part of PowerShell source or of its command line', () => {
+    const host = source('src', 'host', 'taskjob.ts')
+    assert.doesNotMatch(host, /-EncodedCommand|-Command\b|Invoke-Expression/i)
+    assert.match(host, /'-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'\]/)
+    assert.match(host, /\[\.\.\.SWITCHES, options\.script, pipe\]/)
+    assert.doesNotMatch(
+      source('runtime', 'task-job.ps1'),
+      /Invoke-Expression|\biex\b|-EncodedCommand|Reflection\.Emit/i,
+    )
+    // The perl helper is the system file, with an empty environment, and no value of a task is on its command line but
+    // the program and its arguments, which a direct spawn shows too.
+    assert.match(host, /export const PERL = '\/usr\/bin\/perl'/)
+    assert.match(host, /spawn\(perl, \[script, String\(prctl\), input\.file, \.\.\.input\.args\][\s\S]*?env: \{\}/)
+    assert.doesNotMatch(source('runtime', 'task-reap.pl'), /^use |^require /m)
+  })
+
+  test('the job has KILL_ON_JOB_CLOSE and no breakaway flag, and nothing is written to the streams', () => {
+    const script = source('runtime', 'task-job.ps1')
+    assert.match(script, /LimitFlags = 0x2000/)
+    assert.doesNotMatch(script, /LimitFlags\s*\|=|LimitFlags = 0x(?!2000;)|JOB_OBJECT_\w*BREAKAWAY/i)
+    assert.doesNotMatch(
+      script,
+      /Write-Host|Write-Output|Write-Error|Console\]::(Out|Error)|Out-Host|Console\.(Out|Error|Write)/,
+    )
+    // The task gets `nul` and its own two named pipes, and the standard handles of the helper are not inheritable.
+    assert.match(script, /-10, -11, -12 \}\)[\s\S]*?SetHandleInformation\(h, 1, 0\)/)
+    assert.match(script, /si\.flags = 0x100;[\s\S]*?si\.hIn = nul; si\.hOut = output; si\.hErr = error;/)
+    // No cmdlet anywhere in the helper (the first one took 20 to 30 s to look up on a runner under load), and the host gives
+    // it a module path of the system folder only.
+    const powershellOnly = script.replace(/@'[\s\S]*?\n'@/, '').replace(/^\s*#.*$/gm, '')
+    assert.doesNotMatch(
+      powershellOnly,
+      /\b(Get|Set|New|Add|Write|Out|Select|Where|ForEach|Invoke|Start|Stop|Remove|Import|Export|Test|Measure)-[A-Za-z]\w*/,
+    )
+    assert.match(powershellOnly, /CSharpCodeProvider\]::new\(\)\.CompileAssemblyFromSource\(\$options, \$source\)/)
+    assert.doesNotMatch(script, /Reflection\.Emit/)
+    assert.match(
+      source('src', 'host', 'taskjob.ts'),
+      /env\.PSModulePath = path\.win32\.join\(systemRoot, 'System32', 'WindowsPowerShell', 'v1\.0', 'Modules'\)/,
+    )
+    assert.ok(
+      script.indexOf('SetHandleInformation(h, 1, 0)') < script.indexOf('CreateProcessW(parts[0]'),
+      'the handles are made not inheritable before the first task starts',
+    )
+  })
+})
+
+describe('run_task: the warm helper of Windows', { skip: !win }, () => {
+  test('two tasks run on one helper, and the first one waits for the helper to be ready', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner({ valid: [resolved(dir, 'out', ['exit', '0'])], invalid: [] })
+    t.after(() => runner.stop())
+    assert.equal(runner.helperPid(), undefined, 'no helper before the first task')
+    await runner.run('out', new AbortController().signal)
+    const pid = runner.helperPid()
+    assert.ok(pid !== undefined && alive(pid), 'the helper lives after the first task')
+    const again = await runner.run('out', new AbortController().signal)
+    assert.equal(again.exitCode, 0)
+    assert.equal(runner.helperPid(), pid, 'one helper pid for both tasks')
+  })
+
+  test('a time limit ends the tree through the helper, which waits for it and stays for the next task', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner({
+      valid: [resolved(dir, 'hang', ['sleep'], { timeoutMs: 1000 }), resolved(dir, 'out', ['exit', '0'])],
+      invalid: [],
+    })
+    t.after(() => runner.stop())
+    await runner.run('out', new AbortController().signal)
+    const first = runner.helperPid()!
+    const hung = await runner.run('hang', new AbortController().signal)
+    assert.equal(hung.timedOut, true)
+    assert.equal(runner.helperPid(), first, 'the stop frame ended the job, not the helper')
+    assert.equal((await runner.run('out', new AbortController().signal)).exitCode, 0)
+    assert.equal(runner.helperPid(), first, 'the next task ran on the same helper')
+  })
+
+  test('the helper ends after the idle time, and a task after that starts a new one', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'out', ['exit', '0'])], invalid: [] },
+      { helper: { idleMs: 1500 } },
+    )
+    t.after(() => runner.stop())
+    await runner.run('out', new AbortController().signal)
+    const first = runner.helperPid()!
+    assert.ok(await gone(first), 'the idle helper is gone')
+    assert.equal(runner.helperPid(), undefined)
+    assert.equal((await runner.run('out', new AbortController().signal)).exitCode, 0)
+    assert.notEqual(runner.helperPid(), first)
+  })
+
+  test('a start error leaves the warm helper for the next task', async t => {
+    const dir = folders(t)()
+    const bad = resolved(dir, 'bad', [], { file: path.join(dir, 'x.exe') })
+    const runner = createTaskRunner({ valid: [bad, resolved(dir, 'out', ['exit', '0'])], invalid: [] })
+    t.after(() => runner.stop())
+    await runner.run('out', new AbortController().signal)
+    const pid = runner.helperPid()
+    await assert.rejects(runner.run('bad', new AbortController().signal), /ENOENT/)
+    assert.equal(runner.helperPid(), pid, 'the program that is gone did not end the helper')
+    assert.equal((await runner.run('out', new AbortController().signal)).exitCode, 0)
+    assert.equal(runner.helperPid(), pid, 'the next task ran on the same helper')
+  })
+
+  test('a helper that no task uses ends after the idle time: the first call was cancelled while it started', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'out', ['exit', '0'])], invalid: [] },
+      { helper: { idleMs: 1500 } },
+    )
+    t.after(() => runner.stop())
+    const controller = new AbortController()
+    const call = runner.run('out', controller.signal)
+    assert.ok(await until(() => runner.helperPid() !== undefined), 'the helper started')
+    const pid = runner.helperPid()!
+    controller.abort()
+    await call.catch(() => {})
+    assert.ok(await gone(pid), 'the idle helper ended by itself')
+  })
+
+  test('a helper that another program kills during a task gives an error, no second start, and nothing stays', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner({ valid: [resolved(dir, 'orphan', ['orphan', dir, 'stay'])], invalid: [] })
+    t.after(() => runner.stop())
+    const call = runner.run('orphan', new AbortController().signal)
+    call.catch(() => {})
+    assert.ok(await until(() => fs.existsSync(path.join(dir, 'ready'))), 'the task is ready')
+    const grand = Number(fs.readFileSync(path.join(dir, 'grand.pid'), 'utf8'))
+    process.kill(runner.helperPid()!)
+    await assert.rejects(call, (e: Error) => /^io: the task ended with no result/.test(e.message))
+    assert.ok(await gone(grand), 'the grandchild is gone')
+  })
+})
+
+describe('run_task: the helper of Linux and macOS', { skip: win }, () => {
+  test('a script that signals its own group ends as a direct spawn does: SIGTERM and nothing left', async t => {
+    const dir = folders(t)()
+    const pidFile = path.join(dir, 'sleep.pid')
+    const runner = createTaskRunner({
+      valid: [
+        resolved(dir, 'group', [], {
+          file: '/bin/sh',
+          args: ['-c', `sleep 30 & echo $! > '${pidFile}'; kill -TERM 0`],
+        }),
+      ],
+      invalid: [],
+    })
+    t.after(() => runner.stop())
+    const out = await runner.run('group', new AbortController().signal)
+    assert.deepEqual([out.exitCode, out.signal, out.timedOut], [null, 'SIGTERM', false])
+    const sleeper = Number(fs.readFileSync(pidFile, 'utf8'))
+    assert.ok(await gone(sleeper), 'the background process of the script is gone')
+  })
+
+  test('a program that is gone is the start error ENOENT, one time, with no fallback', async t => {
+    const dir = folders(t)()
+    const notes: string[] = []
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'gone', [], { file: path.join(dir, 'removed') })], invalid: [] },
+      { note: l => notes.push(l) },
+    )
+    t.after(() => runner.stop())
+    await assert.rejects(
+      runner.run('gone', new AbortController().signal),
+      (e: Error) => e.message === 'io: the task could not start (ENOENT)',
+    )
+    assert.deepEqual(notes, [])
+  })
+
+  test('a helper that fails to spawn is retired: the fallback result comes, and the next call waits for it', async t => {
+    const dir = folders(t)()
+    const log = path.join(dir, 'stamp.log')
+    const notes: string[] = []
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'slow', ['stamp', log, '300'])], invalid: [] },
+      { helper: { perl: path.join(dir, 'no-perl') }, note: l => notes.push(l) },
+    )
+    t.after(() => runner.stop())
+    const run = () => runner.run('slow', new AbortController().signal)
+    const [a, b] = await Promise.all([run(), run()])
+    assert.deepEqual([a.exitCode, b.exitCode, notes.length], [0, 0, 1])
+    assert.match(fs.readFileSync(log, 'utf8'), /^start .*\nend .*\nstart .*\nend .*\n?$/)
+  })
+
+  test(
+    'without /usr/bin/perl the direct spawn takes the call: this one is skipped where perl is there',
+    { skip: perlPath() !== undefined },
+    async t => {
+      const dir = folders(t)()
+      const notes: string[] = []
+      const runner = createTaskRunner(
+        { valid: [resolved(dir, 'out', ['exit', '0'])], invalid: [] },
+        { note: l => notes.push(l) },
+      )
+      t.after(() => runner.stop())
+      assert.equal((await runner.run('out', new AbortController().signal)).exitCode, 0)
+      assert.match(notes[0]!, /failed at the step perl/)
+    },
+  )
+})
+
+describe('run_task: the server is killed hard', () => {
+  test('the task and its orphan are gone inside 10 s of a SIGKILL of the host', async t => {
+    const dir = folders(t)()
+    // Node 22.13 needs the flag to run a .ts file. The stderr of the host shows why it did not get ready.
+    const host = spawn(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--no-warnings',
+        path.join(import.meta.dirname, 'task-host-child.ts'),
+        dir,
+        'stay',
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true },
+    )
+    let stderr = ''
+    host.stderr.on('data', (chunk: Buffer) => (stderr = (stderr + chunk).slice(-2000)))
+    t.after(() => host.kill('SIGKILL'))
+    assert.ok(
+      await until(() => fs.existsSync(path.join(dir, 'ready'))),
+      `the orphan case is ready; the host said: ${stderr || '(nothing)'}`,
+    )
+    const top = Number(fs.readFileSync(path.join(dir, 'top.pid'), 'utf8'))
+    const grand = Number(fs.readFileSync(path.join(dir, 'grand.pid'), 'utf8'))
+    t.after(() => {
+      for (const pid of [top, grand])
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {}
+    })
+    assert.ok(alive(top) && alive(grand), 'both run before the kill')
+    host.kill('SIGKILL')
+    assert.ok(await gone(top, grand), `top ${alive(top)}, grandchild ${alive(grand)}`)
   })
 })

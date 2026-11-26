@@ -63,6 +63,8 @@ export type BindInput = {
   /** The environment of the server: its `PATH` finds the command of a task, and a short list of it reaches the task. */
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly locks?: ProviderOptions['locks']
+  /** `sandbox.callTimeoutSeconds`: a task is stopped one second before the call that runs it. Default 60. */
+  readonly callSeconds?: number
   /**
    * The `uri` of the client roots (issue #150), settled one time. They only narrow the root of the session: each one
    * is proven here, and one that fails a step grants nothing. Absent: the root is the bound root.
@@ -206,6 +208,7 @@ export const bindWorkspace = async ({
   prune,
   env = process.env,
   locks,
+  callSeconds,
   clientRoots,
   step,
 }: BindInput): Promise<Binding> => {
@@ -253,7 +256,10 @@ export const bindWorkspace = async ({
           }
         },
       })
-      tasks = createTaskRunner(set)
+      tasks = createTaskRunner(set, {
+        ...(callSeconds !== undefined && { callMs: callSeconds * 1000 }),
+        note: log,
+      })
     }
     const made = createProvider({
       confined,

@@ -53,9 +53,11 @@ const RULES = [
     // console method writes to stdout. In src/core, tsc already fails on
     // console and process (no Node types), and RUN_DESCRIPTION names the
     // sandbox's console.log.
-    pattern: /\bprocess\.stdout\b|\bconsole\.(?!(error|warn|trace|assert)\b)\w+/,
+    // writeSync(1, ...) is the same stream by file descriptor.
+    pattern: /\bprocess\.stdout\b|\bwriteSync\(\s*1\b|\bconsole\.(?!(error|warn|trace|assert)\b)\w+/,
     message: 'writes to stdout, which carries only MCP JSON-RPC: log with console.error',
     applies: rel => rel.startsWith('src/host/'),
+    stdout: true,
   },
   {
     pattern: /['"`]bundled:/,
@@ -64,13 +66,18 @@ const RULES = [
   },
 ]
 
+const STDOUT_OK = '// stdout-ok: --version'
+
 // The problems of one file, as "file:line: message". Comments are skipped.
 const codeProblems = (rel, text) => {
   const rules = RULES.filter(r => r.applies(rel))
   return text.split('\n').flatMap((raw, i) => {
     const code = raw.replace(/\/\*.*?\*\//g, '')
     const line = /^\s*\/?\*/.test(code) ? '' : code.replace(/(^|\s)\/\/.*$/, '')
-    return rules.filter(r => r.pattern.test(line)).map(r => `${rel}:${i + 1}: ${r.message}`)
+    // The one exemption: the `--version` answer of src/host/main.ts, which exits before any MCP transport exists.
+    // The marker skips the stdout rule on that line only.
+    const exempt = rel === 'src/host/main.ts' && raw.includes(STDOUT_OK)
+    return rules.filter(r => !(exempt && r.stdout) && r.pattern.test(line)).map(r => `${rel}:${i + 1}: ${r.message}`)
   })
 }
 
@@ -128,6 +135,20 @@ const tests = {
       "// console.log('debug')",
     ]
     assert.deepEqual(flagged('src/host/x.ts', code), [1, 2, 3, 4])
+    const sync = ['fs.writeSync(1, v) // stdout-ok: --version', 'fs.writeSync(2, v)', 'fs.writeSync( 1, v)']
+    assert.deepEqual(
+      flagged('src/host/main.ts', sync),
+      [3],
+      'the marker exempts only main.ts, and only fd 1 is flagged',
+    )
+    assert.deepEqual(flagged('src/host/x.ts', sync), [1, 3], 'the marker exempts no other file')
+    assert.deepEqual(
+      flagged('src/host/main.ts', ["fs.writeSync(1, 'mcp__toolscript__run_code') // stdout-ok: --version"]),
+      [1],
+      'the marker skips only the stdout rule: the tool id rule still fires',
+    )
+    const main = fs.readFileSync(path.join(ROOT, 'src/host/main.ts'), 'utf8')
+    assert.equal(main.split(STDOUT_OK).length - 1, 1, 'main.ts holds exactly one marker')
     assert.deepEqual(flagged('src/core/x.ts', code), [], 'tsc rejects console and process in src/core')
     assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests print their results')
   },
