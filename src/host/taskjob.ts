@@ -25,7 +25,8 @@ export const TASK_REAP = fileURLToPath(new URL('../../runtime/task-reap.pl', imp
  * The Windows helper has this long to connect, then it counts as failed (step `connect`). Starting PowerShell is cheap
  * even on a busy machine, so a helper that does not connect has not started.
  */
-export const HELPER_CONNECT_MS = 15_000 /**
+export const HELPER_CONNECT_MS = 15_000
+/**
  * After the helper connected it compiles its class one time (`Add-Type` runs `csc.exe`), which a cold or busy machine
  * can slow to many seconds. It has this long, from its spawn, to report `ready`, then it counts as failed (step
  * `compile`). A task that waits for it has not started, so a slow first start never runs a task two times.
