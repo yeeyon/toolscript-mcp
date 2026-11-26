@@ -227,6 +227,19 @@ never access control: `read`, `stat`, `diff`, `edit`, `write` and `run_task` nev
 - Deferred: `.gitignore` files below or above the root, `.git/info/exclude`, the global ignore file, a count of ignored
   names in a result, and a new field of a result.
 
+## Parallel walks
+
+Walks of `list` and `search` run one at a time in a provider (`LIMITS.walkSlots`, issue #160), as parallel walks share
+the file threads and the CPU and each ran to the 10 s budget. The others wait in order, and the budget starts at the
+slot. A call cancelled while it waits fails at once. The other tools never wait. Batch of 8, `--cpus 1`, 3 runs:
+
+| Cut calls of 8 (`bench/RESULTS-walks.md`) | no include | `include` |
+| ----------------------------------------- | ---------- | --------- |
+| No limit                                  | 8 8 8      | 8 8 8     |
+| 1 slot                                    | 0 0 0      | 0 0 0     |
+
+Two slots were cut with no `include` (2 of 8 in one run). The container does not reproduce the Windows sighting.
+
 ## Confinement
 
 Rule: no result holds a byte or a name that did not come through a proven handle.

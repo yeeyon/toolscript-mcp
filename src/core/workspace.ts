@@ -19,6 +19,8 @@ export const LIMITS = {
   searchFiles: 20_000,
   searchMs: 10_000,
   listEntries: 5_000,
+  /** Walks of `list` and `search` that run at one time in a provider (issue #160). */
+  walkSlots: 1,
   /** `search` cuts the text of a line at this length. */
   lineChars: 400,
   parts: 64,
