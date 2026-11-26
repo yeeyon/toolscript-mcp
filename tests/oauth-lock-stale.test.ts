@@ -50,6 +50,8 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
     const s = await setup()
     const [fake] = s.fakes as [Fake]
     const children = await group(s, 6, 1000)
+    // Both groups start before any lock or expiry: the warm-up round of a group must not meet a lock.
+    const takers = await group(s, 6, SLOW_WAIT_MS)
     // After the start of the processes: on a slow machine it takes longer than the age of a lock (12 s here).
     putLock(s, lockText(process.pid), 0)
     const young = await round(s, children)
@@ -61,7 +63,6 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
     await stop(children)
     // The old phase: one process takes over and refreshes while the others wait for it, and on a slow machine
     // that takes more than the 1 s that the young phase gives a waiter. So these waiters wait longer.
-    const takers = await group(s, 6, SLOW_WAIT_MS)
     putLock(s, lockText(process.pid), 600)
     const old = await round(s, takers)
     assert.deepEqual(
@@ -82,12 +83,12 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
       const s = await setup()
       const [fake] = s.fakes as [Fake]
       const children = await group(s, 6, 1000)
+      const takers = await group(s, 6, SLOW_WAIT_MS)
       putLock(s, text, 0)
       const young = await round(s, children)
       for (const l of young.lines) assert.match(l.text, /another toolscript-mcp process is refreshing/, l.text)
       assert.equal(requests(fake), 0)
       await stop(children)
-      const takers = await group(s, 6, SLOW_WAIT_MS)
       putLock(s, text, 600)
       const old = await round(s, takers)
       assert.deepEqual(
