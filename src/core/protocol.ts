@@ -1297,10 +1297,44 @@ const typoOf = (key: string, names: readonly string[]): string | undefined =>
   key.length < 4 ? undefined : nearest(key, names, key.length <= 6 ? 1 : 2)
 
 /** The error of a tool that its connected server does not list, with the nearest name of `names`. */
-export const notListedText = (tool: string, server: string, names: readonly string[]): string => {
+export const notListedText = (tool: string, server: string, all: readonly string[]): string => {
+  // A name that a server lists is data: only a plain short one may reach the text, and it is dropped before any work.
+  const names = all.filter(n => n.length <= 200 && /^[A-Za-z0-9_.-]{1,64}$/.test(splitToolName(n)?.name ?? ''))
   const near = nearest(tool, names, 3)
-  const help = near === undefined ? '. Find its tools with search_tools' : ` (did you mean "${near}"?)`
+  const likely = near === undefined ? likelyNames(tool, server, names) : []
+  const help =
+    near !== undefined
+      ? ` (did you mean "${near}"?)`
+      : likely.length === 0
+        ? '. Find its tools with search_tools'
+        : ` (likely: ${likely.map(n => `"${n}"`).join(', ')}). If none fits, find its tools with search_tools`
   return `no tool "${tool}" on the connected server "${server}"${help}`
+}
+
+// Words that the wrong name shares with tools of the same server, weighted by how few tools use them: at most 2.
+const likelyNames = (tool: string, server: string, names: readonly string[]): string[] => {
+  const mine = names.filter(n => splitToolName(n)?.server === server)
+  const fold = (w: string) => (w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w)
+  const sets = mine.map(n => nameWords(n))
+  const df = new Map<string, number>()
+  for (const ws of sets) for (const w of new Set(ws.map(fold))) df.set(w, (df.get(w) ?? 0) + 1)
+  const common = (w: string) => (mine.length >= 8 ? df.get(w)! * 4 > mine.length : df.get(w)! * 2 >= mine.length)
+  const scored: { name: string; score: number }[] = []
+  mine.forEach((name, i) => {
+    let score = 0
+    let rare = false
+    for (const w of new Set(nameWords(tool))) {
+      const d = df.get(fold(w))
+      if (d === undefined || !sets[i]!.some(x => fold(x) === fold(w))) continue
+      if (!common(fold(w))) rare = true
+      score += (sets[i]!.includes(w) ? 2 : 1) / d
+    }
+    if (rare) scored.push({ name, score })
+  })
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2)
+    .map(s => s.name)
 }
 
 /** A wrong name in a program, found before it runs. `isGuess`: from learned names, not a declaration. */
