@@ -14,9 +14,9 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
 import { after, before, describe, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { ElicitRequestSchema, ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = process.env.TOOLSCRIPT_E2E_MAIN || path.join(ROOT, 'dist', 'host', 'main.js')
@@ -119,12 +119,15 @@ class RecordingTransport {
  * A client that can ask the person and says yes. `prompts` keeps each prompt. `answer`: 'decline' says no, and 'none'
  * is a client that cannot ask at all.
  */
-const connect = async (config, cwd, answer = 'accept') => {
+const connect = async (config, cwd, answer = 'accept', roots = undefined) => {
   const prompts = []
   const client = new Client(
     { name: 'workspace-e2e', version: '0' },
-    { capabilities: answer === 'none' ? {} : { elicitation: {} } },
+    { capabilities: { ...(answer !== 'none' && { elicitation: {} }), ...(roots !== undefined && { roots: {} }) } },
   )
+  // `roots`: the URIs that the client answers to roots/list. Undefined is a client that declares no roots capability.
+  if (roots !== undefined)
+    client.setRequestHandler(ListRootsRequestSchema, () => ({ roots: roots.map(uri => ({ uri })) }))
   if (answer !== 'none')
     client.setRequestHandler(ElicitRequestSchema, req => {
       prompts.push(req.params.message)
@@ -220,6 +223,14 @@ describe('the built server with the Workspace', () => {
       assert.ok(!text.includes(MARKER), `the secret is in the ${name}`)
   })
 
+  test('search with a folder glob beside a sibling folder finds its hits and is not truncated', async () => {
+    const r = await session.run(
+      'const r = await call("mcp__workspace__search", { query: "ttempts", include: ["src/**/*.ts"] })\nreturn { paths: r.matches.map(m => m.path), truncated: r.truncated, scanned: r.filesScanned }',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(returned(r.text), { paths: ['src/retry.ts'], truncated: false, scanned: 1 })
+  })
+
   test('the excluded file and a path that leaves the root are refused, and the refusal holds no secret', async () => {
     const r = await session.run(
       'const out = []\nfor (const path of [".env", "../outside.txt", "src/../.env", "C:/Windows/win.ini"])\n  try { await call("mcp__workspace__read", { path }) } catch (e) { out.push(e.message.split(":")[0]) }\nreturn out',
@@ -296,6 +307,19 @@ describe('the built server with no workspace section', () => {
     try {
       const shown = await s.search('workspace')
       assert.match(shown, /## Not connected\n- workspace: .*Start the client in one of them/)
+      assert.match(shown, /reconnect toolscript-mcp or restart the client/)
+      // A failed bind never heals: later searches show the same reason, with no note and no double period.
+      let again = shown
+      for (let i = 0; i < 4; i++) again = await s.search('workspace')
+      assert.doesNotMatch(again, /tries again|\.\./)
+      // The model reads it from the instructions at initialize, with no reason and no path.
+      const instructions = s.client.getInstructions() ?? ''
+      assert.match(
+        instructions,
+        /The built-in workspace server is not available in this session: search_tools says why\./,
+      )
+      assert.doesNotMatch(instructions, /MCP servers:[^.]*\bworkspace\b/)
+      assert.ok(!instructions.includes(base) && !/workspace\.roots/.test(instructions), instructions)
       const r = await s.run('return 1')
       assert.deepEqual(r.isError, false)
     } finally {
@@ -653,6 +677,54 @@ return { path, preview: preview.diff, diff: change.diff, applied: change.applied
       const pid = await s.close()
       assert.equal(alive(pid), false, 'no process of the server is left')
       for (const line of s.transport.lines) assert.doesNotThrow(() => JSON.parse(line))
+    } finally {
+      await s.close()
+    }
+  })
+})
+
+describe('the client roots and the .gitignore (issue #150)', () => {
+  const listProgram = 'return (await call("mcp__workspace__list", { depth: 4 })).entries.map(e => e.path)'
+
+  test('a client that declares roots narrows the root, and one that does not keeps the whole root', async () => {
+    const narrowed = await connect(withWorkspace, base, 'accept', [pathToFileURL(path.join(project, 'src')).href])
+    const plain = await connect(withWorkspace, base)
+    try {
+      const a = await narrowed.run(listProgram)
+      assert.equal(a.isError, false, a.text)
+      assert.deepEqual(returned(a.text), ['retry.ts'])
+      const b = await narrowed.run(
+        'try { await call("mcp__workspace__read", { path: "src/retry.ts" }) } catch (e) { return e.message.split(":")[0] }',
+      )
+      assert.equal(returned(b.text), 'not-found')
+      assert.match(narrowed.transport.stderr, /Workspace: a client root narrowed the root to /)
+      const c = await plain.run(listProgram)
+      assert.ok(returned(c.text).includes('src/retry.ts'), c.text)
+      assert.doesNotMatch(plain.transport.stderr, /narrowed the root/)
+    } finally {
+      await narrowed.close()
+      await plain.close()
+    }
+  })
+
+  test('the .gitignore of the root hides names from list and search, and read still works', async () => {
+    const ignoring = path.join(base, 'ignoring')
+    fs.mkdirSync(path.join(ignoring, 'out'), { recursive: true })
+    fs.writeFileSync(path.join(ignoring, '.gitignore'), 'out/\r\n*.log')
+    fs.writeFileSync(path.join(ignoring, 'out', 'a.txt'), 'needle')
+    fs.writeFileSync(path.join(ignoring, 'x.log'), 'needle')
+    fs.writeFileSync(path.join(ignoring, 'b.txt'), 'needle')
+    const config = configWith('ignoring.json', { mcpServers: {}, workspace: { roots: [{ path: ignoring }] } })
+    const s = await connect(config, ignoring)
+    try {
+      const listed = await s.run(listProgram)
+      assert.deepEqual(returned(listed.text), ['.gitignore', 'b.txt'])
+      const found = await s.run(
+        'return (await call("mcp__workspace__search", { query: "needle" })).matches.map(m => m.path)',
+      )
+      assert.deepEqual(returned(found.text), ['b.txt'])
+      const read = await s.run('return (await call("mcp__workspace__read", { path: "out/a.txt" })).content')
+      assert.equal(returned(read.text), 'needle')
     } finally {
       await s.close()
     }

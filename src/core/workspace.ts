@@ -44,6 +44,13 @@ export const LIMITS = {
   lockWaitMs: 2_000,
   /** A lock file older than this, or of a dead process, is taken over. */
   lockStaleMs: 30_000,
+  /** The `.gitignore` of the root: a larger file gives no rules. */
+  ignoreBytes: 64 * 1024,
+  /** Rules that count. The rest of the file is skipped. */
+  ignoreRules: 500,
+  /** A line of the `.gitignore` with more characters, or more wildcards, is skipped. */
+  ignoreLineChars: 200,
+  ignoreWildcards: 6,
 } as const
 
 /** The folders that `list` and `search` do not enter. It is not access control: `path` can name one. */
@@ -172,6 +179,36 @@ export const includeTest = (globs: readonly string[]): ((parts: readonly string[
   return parts => compiled.length === 0 || compiled.some(g => globMatches(g, parts))
 }
 
+/**
+ * A test of a folder (its parts from the root): true when a glob can match a path strictly below it, and for each
+ * folder when the list is empty. The same part match as `includeTest`.
+ */
+export const includeReach = (globs: readonly string[]): ((folder: readonly string[]) => boolean) => {
+  const compiled = globs.map(g => compileGlob(g))
+  // The glob positions that hold after `parts`: `**` stays, or is skipped.
+  const after = (glob: Glob, parts: readonly string[]): boolean => {
+    let at = new Set<number>([0])
+    const close = (set: Set<number>): Set<number> => {
+      for (const i of set) if (glob[i] === undefined && i < glob.length) set.add(i + 1)
+      return set
+    }
+    close(at)
+    for (const part of parts) {
+      const next = new Set<number>()
+      for (const i of at) {
+        const seg = glob[i]
+        if (i >= glob.length) continue
+        if (seg === undefined) next.add(i)
+        else if (partMatch(seg, part)) next.add(i + 1)
+      }
+      if (next.size === 0) return false
+      at = close(next)
+    }
+    return [...at].some(i => i < glob.length)
+  }
+  return folder => compiled.length === 0 || compiled.some(g => after(g, folder))
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Path text
 
@@ -205,6 +242,10 @@ export const pathParts = (text: string, windows: boolean): string[] => {
   }
   return parts
 }
+
+/** `pathParts` of a folder path: one final `/` is cut first, unless the text is `/`. All other rules hold. */
+export const folderParts = (text: string, windows: boolean): string[] =>
+  pathParts(text.length > 1 && text.endsWith('/') ? text.slice(0, -1) : text, windows)
 
 /** The path as the tools show it: the parts with `/`, and `.` for the root. */
 export const showPath = (parts: readonly string[]): string => (parts.length === 0 ? '.' : parts.join('/'))
@@ -294,6 +335,25 @@ export const makeExcluder = (root: string, exclude: readonly string[], forbidden
 /** The platforms whose volumes ignore case by default. */
 export const foldsCase = (platform: string): boolean => platform === 'win32' || platform === 'darwin'
 
+/** What the probe of a macOS volume saw: the path and its case-flipped spelling name one file, two, none, or it failed. */
+export type CaseProbe = 'same' | 'other' | 'missing' | 'error' | 'noletter'
+
+/** Whether a macOS volume folds case. Only the same file under both spellings proves it: any other outcome is strict. */
+export const probeFolds = (probe: CaseProbe): boolean => probe === 'same'
+
+/**
+ * `path` with the case of the last ASCII letter of its last part flipped, or undefined when that part has none. Only
+ * ASCII flips one letter to one letter, so `ß` or `İ` cannot make a folding volume look strict.
+ */
+export const flipCase = (path: string): string | undefined => {
+  const base = path.lastIndexOf('/') + 1
+  const at = path.slice(base).search(/[A-Za-z](?=[^A-Za-z]*$)/)
+  if (at < 0) return undefined
+  const i = base + at
+  const c = path[i]!
+  return path.slice(0, i) + (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()) + path.slice(i + 1)
+}
+
 /**
  * The parts of a real path. `\` separates parts only on Windows: on Linux and macOS it is a legal character of a name,
  * so `/home/me/projects\app` is one folder `projects\app` and never the folder `/home/me/projects/app`.
@@ -302,13 +362,13 @@ export const realParts = (path: string, platform: string): string[] =>
   path.split(platform === 'win32' ? /[\\/]+/ : /\/+/).filter(p => p !== '')
 
 /** The real path as a list of parts. On Windows and macOS with no regard to case. */
-const partsOf = (path: string, platform: string): string[] =>
-  realParts(path, platform).map(p => (foldsCase(platform) ? fold(p) : p))
+const partsOf = (path: string, platform: string, folds: boolean): string[] =>
+  realParts(path, platform).map(p => (folds ? fold(p) : p))
 
-/** True when `child` is `parent` or inside it. Both are real paths. */
-export const isInside = (child: string, parent: string, platform: string): boolean => {
-  const c = partsOf(child, platform)
-  const p = partsOf(parent, platform)
+/** True when `child` is `parent` or inside it. Both are real paths. `folds`: the volume ignores case. */
+export const isInside = (child: string, parent: string, platform: string, folds = foldsCase(platform)): boolean => {
+  const c = partsOf(child, platform, folds)
+  const p = partsOf(parent, platform, folds)
   return c.length >= p.length && p.every((part, i) => part === c[i])
 }
 
@@ -328,7 +388,7 @@ export const rootProblem = (real: string, home: string, platform: string): strin
 }
 
 /** One entry of `workspace.roots`, its path as a real path. `write` has no effect before the editing tools. */
-export type RealRoot = { readonly path: string; readonly write: boolean }
+export type RealRoot = { readonly path: string; readonly write: boolean; readonly folds?: boolean }
 
 export type Binding =
   | { readonly ok: true; readonly index: number; readonly root: string }
@@ -342,16 +402,20 @@ export type Binding =
  */
 export const bindRoot = (roots: readonly RealRoot[], start: string, platform: string): Binding => {
   const inside = roots
-    .map((root, index) => ({ root, index, depth: partsOf(root.path, platform).length }))
-    .filter(({ root }) => isInside(start, root.path, platform))
+    .map((root, index) => ({ root, index, depth: realParts(root.path, platform).length }))
+    .filter(({ root }) => isInside(start, root.path, platform, root.folds))
     .sort((a, b) => b.depth - a.depth)
   if (inside.length > 0) return { ok: true, index: inside[0]!.index, root: start }
   if (roots.length === 1) return { ok: true, index: 0, root: roots[0]!.path }
   return {
     ok: false,
-    reason: `the client started toolscript-mcp in a folder that is in none of the ${roots.length} entries of workspace.roots. Start the client in one of them, or keep one entry`,
+    reason: `the client started toolscript-mcp in a folder that is in none of the ${roots.length} entries of workspace.roots. Start the client in one of them. ${RESTART_SENTENCE}`,
   }
 }
+
+/** The end of each reason that comes from the config: Workspace reads the config one time, so a change needs a restart. */
+export const RESTART_SENTENCE =
+  'Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.'
 
 // ---------------------------------------------------------------------------------------------------------------
 // The config section
@@ -368,6 +432,8 @@ export type WorkspaceConfig = {
   readonly exclude: readonly string[]
   /** The folder names that `list` and `search` do not enter. */
   readonly skip: readonly string[]
+  /** `false`: `list` and `search` never read the `.gitignore` of the root. Absent: they do. */
+  readonly gitignore?: boolean
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -439,11 +505,13 @@ export const WORKSPACE_TOOLS = {
   list: {
     class: 'read',
     description:
-      'List files and folders under a folder of the workspace, sorted by path. A link is listed and never entered. Excluded paths such as .git and .env never show.',
+      'List files and folders under a folder of the workspace, sorted by path. A link is listed and never entered. Excluded paths such as .git and .env never show. The .gitignore of the root hides names too: name an ignored folder in path to list it. truncated is true when it stopped early (10 s, 20,000 names or 5,000 entries).',
     inputSchema: {
       type: 'object',
       properties: {
-        path: pathArg('The folder, relative to the workspace root, with /. Default ".".'),
+        path: pathArg(
+          'The folder, relative to the workspace root. Default ".". Name the smallest folder that holds what you look for.',
+        ),
         depth: {
           type: 'integer',
           minimum: 1,
@@ -454,7 +522,7 @@ export const WORKSPACE_TOOLS = {
           type: 'array',
           items: { type: 'string' },
           description:
-            'Globs over paths from the root, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts.',
+            'Globs over paths from the workspace root, also when path is set, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts. A folder that no glob can reach is not read.',
         },
       },
       additionalProperties: false,
@@ -478,16 +546,19 @@ export const WORKSPACE_TOOLS = {
   search: {
     class: 'read',
     description:
-      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program.',
+      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program. The .gitignore of the root hides files: name an ignored folder in path to search it. truncated is true when it stopped early (10 s, 20,000 names or maxMatches): the matches are then partial.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'The text to find, on one line.' },
-        path: pathArg('The folder, relative to the workspace root. Default ".".'),
+        path: pathArg(
+          'The folder to search, relative to the workspace root. Default ".". Name the smallest folder that holds what you look for.',
+        ),
         include: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Globs over paths from the root, such as "src/**/*.ts".',
+          description:
+            'Globs over paths from the workspace root, also when path is set, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts.',
         },
         ignoreCase: { type: 'boolean', description: 'Default false.' },
         maxMatches: { type: 'integer', minimum: 1, maximum: LIMITS.maxMatches, description: 'Default 200.' },

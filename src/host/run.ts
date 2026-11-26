@@ -640,9 +640,14 @@ const execute = async (
 
   // A change of the built-in Workspace shows in the result and in the run log, also when the program returns nothing.
   // `failure`: the code of a call that failed. Only a reply of the provider counts, not a refusal of the policy.
+  const inWorkspace = (tool: string): boolean => {
+    const target = splitToolName(tool)
+    return target !== undefined && config.servers.get(target.server as ServerKey)?.kind === 'workspace'
+  }
+
   const noteChange = (tool: string, args: Record<string, unknown>, r: Reply, failure: CallError | undefined): void => {
     const target = splitToolName(tool)
-    if (target === undefined || config.servers.get(target.server as ServerKey)?.kind !== 'workspace') return
+    if (target === undefined || !inWorkspace(tool)) return
     if (target.name !== 'edit' && target.name !== 'write') return
     if (r.ok) {
       const change = appliedChange(r.value)
@@ -651,6 +656,19 @@ const execute = async (
       const code = /^([a-z-]+):/.exec(r.error)?.[1] ?? 'error'
       failedChanges.push({ tool: target.name, path: typeof args.path === 'string' ? args.path : '', code })
     }
+  }
+
+  // Calls of the built-in Workspace `list` and `search` that stopped early, for the footer. Only the provider of the
+  // config counts, and only the boolean `true`: the footer is outside the wrapper of untrusted content.
+  const cutCounts = { list: { cut: 0, total: 0 }, search: { cut: 0, total: 0 } }
+  const noteCut = (tool: string, r: Reply): void => {
+    const target = splitToolName(tool)
+    if (target === undefined || config.servers.get(target.server as ServerKey)?.kind !== 'workspace') return
+    if (!r.ok || (target.name !== 'list' && target.name !== 'search')) return
+    const count = cutCounts[target.name]
+    count.total++
+    if (typeof r.value === 'object' && r.value !== null && (r.value as { truncated?: unknown }).truncated === true)
+      count.cut++
   }
 
   const answerCall = async (
@@ -675,6 +693,7 @@ const execute = async (
       ...(r.ok || cls === undefined ? {} : { class: cls }),
     })
     noteChange(tool, args, r, failure)
+    noteCut(tool, r)
     // The call counts as finished before its reply is written: the runner can read the reply and send its next call
     // at once, and that call must find this one done. A throw here ends only this run, through `answer`.
     const key = sentKey ?? callKey(tool, args)
@@ -857,7 +876,12 @@ const execute = async (
   const calls = [...records]
     .sort((a, b) => a[0] - b[0])
     .map(([, r]) => (listed === undefined || listed.has(r.tool) ? r : { ...r, tool: '(a name that no server lists)' }))
-  const streak = serialStreak([...timed.values()], ctx.serialLimits)
+  // The walks of Workspace share the host's file threads (4 by default), so parallel calls do not take as long as
+  // the slowest one: the note would send a program to Promise.all, and 8 searches each ran to the 10 s time limit.
+  const streak = serialStreak(
+    [...timed.values()].filter(c => !inWorkspace(c.tool)),
+    ctx.serialLimits,
+  )
   const serial =
     streak === undefined || listed === undefined || listed.has(streak.tool)
       ? streak
@@ -883,7 +907,16 @@ const execute = async (
     calls.length,
     stderr,
     MAX_RESULT_CHARS,
-    { calls, recalls, recalled, wholeRef, serial },
+    {
+      calls,
+      recalls,
+      recalled,
+      wholeRef,
+      serial,
+      ...(cutCounts.list.cut + cutCounts.search.cut > 0 && {
+        cut: { list: cutCounts.list, search: cutCounts.search },
+      }),
+    },
     untrusted ? randomBytes(16).toString('hex') : undefined,
     shown.note,
     notes,

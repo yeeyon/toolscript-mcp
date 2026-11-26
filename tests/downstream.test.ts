@@ -145,6 +145,31 @@ describe('reconnect', () => {
     assert.equal(lines.filter(l => l.includes('connecting again')).length, 0, lines.join('\n'))
   })
 
+  test('a failed Workspace bind is final: no note, no new attempt', async () => {
+    const reason = 'Start the client in a root. Restart the client to change it.'
+    const WS = 'workspace' as ServerKey
+    const lines: string[] = []
+    const clock = { now: 0 }
+    const downstream = connectAll(
+      new Map([[WS, { kind: 'workspace', untrusted: true } as const]]),
+      '0',
+      line => lines.push(line),
+      { now: () => clock.now, workspace: { ok: false, reason } },
+    )
+    opened.push(downstream)
+    await downstream.settled
+    for (let i = 0; i < 4; i++) {
+      clock.now += 1000
+      await downstream.retry()
+      await downstream.retry([WS])
+      const link = await downstream.client(WS)
+      assert.deepEqual(link, { ok: false, reason: `the MCP server "workspace" is not connected: ${reason}` })
+      assert.deepEqual(downstream.states(), [{ key: WS, status: 'failed', reason }])
+    }
+    assert.equal(lines.filter(l => l.includes('failed')).length, 1, lines.join('\n'))
+    assert.equal(lines.filter(l => l.includes('connecting again')).length, 0, lines.join('\n'))
+  })
+
   test('a transport that cannot be made fails only its server', async () => {
     const downstream = connectAll(
       new Map([[KEY, { kind: 'http', url: 'http://', headers: {} } as const]]),

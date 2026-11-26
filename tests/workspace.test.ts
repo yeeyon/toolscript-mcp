@@ -11,6 +11,7 @@ import {
   fold,
   globMatches,
   globProblem,
+  includeReach,
   includeTest,
   isInside,
   appliedChange,
@@ -24,6 +25,9 @@ import {
   parseSearchInput,
   parseWriteInput,
   pathParts,
+  folderParts,
+  flipCase,
+  probeFolds,
   realParts,
   planEdits,
   rootProblem,
@@ -52,6 +56,35 @@ const code = (f: () => unknown): string | undefined => {
   }
   return undefined
 }
+
+describe('the folder form of a path', () => {
+  test('cuts one final slash and keeps every other rule', () => {
+    for (const windows of [false, true]) {
+      assert.deepEqual(folderParts('a/', windows), ['a'])
+      assert.deepEqual(folderParts('a/b/', windows), ['a', 'b'])
+      assert.deepEqual(folderParts('a/b', windows), ['a', 'b'])
+      assert.deepEqual(folderParts('./', windows), [])
+      assert.deepEqual(folderParts('.', windows), [])
+      for (const text of ['/', '//', 'a//', 'a//b', 'a/./', 'a/../', '../', 'a\\'])
+        assert.equal(
+          code(() => folderParts(text, windows)),
+          'bad-path',
+          text,
+        )
+      assert.equal(
+        code(() => pathParts('a/', windows)),
+        'bad-path',
+      )
+    }
+    assert.throws(() => folderParts('/', false), /the path is absolute/)
+    for (const text of ['a /', 'a./'])
+      assert.equal(
+        code(() => folderParts(text, true)),
+        'bad-path',
+        text,
+      )
+  })
+})
 
 describe('the text of a path', () => {
   test('refuses each bad form with bad-path, on every system', () => {
@@ -166,6 +199,134 @@ describe('globs', () => {
   })
 })
 
+describe('includeReach', () => {
+  const split = (f: string): string[] => (f === '' ? [] : f.split('/'))
+  const table: [string[], [string, boolean][]][] = [
+    [[], [['a', true]]],
+    [
+      ['src/**/*.ts'],
+      [
+        ['src', true],
+        ['src/a/b', true],
+        ['lib', false],
+        ['Src', false],
+      ],
+    ],
+    [
+      ['a/b/c.cs'],
+      [
+        ['a', true],
+        ['a/b', true],
+        ['a/b/c.cs', false],
+        ['a/x', false],
+        ['b', false],
+      ],
+    ],
+    [
+      ['*.cs'],
+      [
+        ['a', false],
+        ['a/b', false],
+      ],
+    ],
+    [
+      ['**/*.cs'],
+      [
+        ['a', true],
+        ['a/b/c', true],
+      ],
+    ],
+    [
+      ['**'],
+      [
+        ['a', true],
+        ['a/b/c', true],
+      ],
+    ],
+    [
+      ['a/*/c'],
+      [
+        ['a', true],
+        ['a/x', true],
+        ['a/x/c', false],
+        ['a/x/y', false],
+      ],
+    ],
+    [
+      ['a/**'],
+      [
+        ['a', true],
+        ['a/x/y', true],
+        ['b', false],
+      ],
+    ],
+    [
+      ['s?c/*'],
+      [
+        ['src', true],
+        ['sc', false],
+      ],
+    ],
+    [
+      ['a/b', 'c/**'],
+      [
+        ['a', true],
+        ['c/d', true],
+        ['d', false],
+      ],
+    ],
+  ]
+  test('follows the table', () => {
+    for (const [globs, rows] of table)
+      for (const [folder, want] of rows) assert.equal(includeReach(globs)(split(folder)), want, `${globs} at ${folder}`)
+  })
+
+  test('is false only where no path below the folder passes includeTest', () => {
+    let seed = 7
+    const rand = (n: number): number => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), (seed >> 8) % n)
+    const names = ['a', 'b', 'src', 'Src', 'x.ts', 'c.cs']
+    const paths: string[][] = []
+    while (paths.length < 200) paths.push(Array.from({ length: 1 + rand(5) }, () => names[rand(names.length)]!))
+    const globs = [
+      'src/**/*.ts',
+      '**/*.ts',
+      'a/**',
+      'a/b/c.cs',
+      '**/b/**',
+      '*/x.ts',
+      's?c/*',
+      'a/*/c.cs',
+      '*.cs',
+      'Src/**',
+      '**',
+      'a/**/b/**/*.cs',
+    ]
+    const folders = new Set(paths.flatMap(p => p.slice(0, -1).map((_, i) => p.slice(0, i + 1).join('/'))))
+    let pruned = 0
+    for (let g = 0; g < globs.length; g++) {
+      for (const list of [[globs[g]!], [globs[g]!, globs[(g + 5) % globs.length]!]]) {
+        const reach = includeReach(list)
+        const inList = includeTest(list)
+        for (const f of folders) {
+          const depth = f.split('/').length
+          const below = paths.some(p => p.length > depth && p.join('/').startsWith(`${f}/`) && inList(p))
+          if (below) assert.ok(reach(f.split('/')), `${list} must reach ${f}`)
+          if (!reach(f.split('/'))) {
+            pruned++
+            assert.ok(!below, `${list} said no at ${f}`)
+          }
+        }
+      }
+    }
+    assert.ok(pruned > 20, 'the tree prunes something')
+  })
+
+  test('is bounded for 16 globs of 6 wildcards on a path of 64 parts', () => {
+    const reach = includeReach(Array.from({ length: 16 }, () => '*a*/*b*/**/*c?/**'))
+    assert.equal(typeof reach(Array.from({ length: 64 }, () => 'abc')), 'boolean')
+  })
+})
+
 describe('the exclusions', () => {
   const excluded = makeExcluder(
     '/work/app',
@@ -267,6 +428,10 @@ describe('the root of a session', () => {
     const r = bindRoot(roots, '/elsewhere', 'linux')
     assert.equal(r.ok, false)
     assert.match(r.ok ? '' : r.reason, /Start the client in one of them/)
+    assert.equal(
+      r.ok ? '' : r.reason,
+      'the client started toolscript-mcp in a folder that is in none of the 3 entries of workspace.roots. Start the client in one of them. Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.',
+    )
     assert.doesNotMatch(r.ok ? '' : r.reason, /\/work|elsewhere/)
   })
 
@@ -288,6 +453,23 @@ describe('the root of a session', () => {
     assert.deepEqual(realParts('C:\\a\\b/c', 'win32'), ['C:', 'a', 'b', 'c'])
   })
 
+  test('a macOS volume that does not fold case keeps two spellings apart; only the same file proves folding', () => {
+    for (const probe of ['other', 'missing', 'error', 'noletter'] as const) assert.equal(probeFolds(probe), false)
+    assert.equal(probeFolds('same'), true)
+    assert.equal(flipCase('/v/proj/app'), '/v/proj/apP')
+    assert.equal(flipCase('/v/proj/APP-1'), '/v/proj/APp-1')
+    assert.equal(flipCase('/v/proj/app/123'), undefined, 'only the last part is flipped')
+    assert.equal(flipCase('/v/proj/straße'), '/v/proj/straßE', 'ß stays')
+    assert.equal(flipCase('/v/proj/İß'), undefined)
+    const strict = [{ path: '/work/app', write: false, folds: false }]
+    assert.deepEqual(bindRoot(strict, '/work/App', 'darwin'), { ok: true, index: 0, root: '/work/app' })
+    assert.equal(bindRoot([...strict, { path: '/work/other', write: false }], '/work/App/src', 'darwin').ok, false)
+    assert.equal(bindRoot(strict, '/work/app/src', 'darwin').ok, true)
+    assert.equal(isInside('/work/App', '/work/app', 'darwin', false), false)
+    assert.equal(isInside('/work/App', '/work/app', 'darwin', true), true)
+    assert.equal(bindRoot([{ ...strict[0]!, folds: true }], '/work/App/src', 'darwin').ok, true)
+  })
+
   test('a name that only starts like an entry is not inside it', () => {
     assert.equal(bindRoot(roots, '/work2', 'linux').ok, false)
   })
@@ -303,6 +485,24 @@ describe('the root of a session', () => {
 })
 
 describe('the tool table', () => {
+  test('the list and search descriptions say when truncated is true, with the numbers of LIMITS', () => {
+    const num = (n: number) => n.toLocaleString('en-US')
+    const list = WORKSPACE_TOOLS.list.description
+    const search = WORKSPACE_TOOLS.search.description
+    assert.ok(
+      list.endsWith(
+        `truncated is true when it stopped early (${LIMITS.searchMs / 1000} s, ${num(LIMITS.searchFiles)} names or ${num(LIMITS.listEntries)} entries).`,
+      ),
+      list,
+    )
+    assert.ok(
+      search.endsWith(
+        `truncated is true when it stopped early (${LIMITS.searchMs / 1000} s, ${num(LIMITS.searchFiles)} names or maxMatches): the matches are then partial.`,
+      ),
+      search,
+    )
+  })
+
   test('lists the tools of the read, write and exec classes', () => {
     assert.deepEqual(WORKSPACE_TOOL_NAMES, ['list', 'search', 'read', 'stat', 'run_task', 'diff', 'edit', 'write'])
     for (const name of WORKSPACE_TOOL_NAMES) {
@@ -313,7 +513,8 @@ describe('the tool table', () => {
       assert.equal(WORKSPACE_TOOLS[name].inputSchema.type, 'object')
       assert.equal((WORKSPACE_TOOLS[name].inputSchema as { additionalProperties: boolean }).additionalProperties, false)
       assert.equal(WORKSPACE_TOOLS[name].outputSchema.type, 'object')
-      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 260)
+      // search is the longest: the .gitignore sentence and the truncated sentence.
+      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 360)
     }
     assert.equal(workspaceClass('mcp__workspace__read'), 'read')
     assert.equal(workspaceClass('mcp__workspace__diff'), 'read')

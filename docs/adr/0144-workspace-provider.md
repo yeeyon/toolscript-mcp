@@ -31,8 +31,10 @@ The public server still lists only `search_tools` and `run_code`. The sandbox ge
 | A `dryRun` flag on `edit` | The policy matches names. A flag cannot give preview and change separate permissions. |
 | Several files in one `edit` call | It adds partial states and no guarantee. A program previews each file, then edits each file. |
 | Regular expressions in `search` | A pattern from the model can stall the host. The program filters the lines in the sandbox. |
-| `.gitignore` rules, or `git ls-files` | A matcher of our own or a child process. A fixed skip list comes first. It is a follow-up. |
-| MCP client roots | They are advisory. This version does not read them. A later version can use them only to narrow. |
+| `git ls-files` or `git check-ignore` | A child process, and a git binary on `PATH`. The ignore rules are discovery only, so a matcher of our own is enough. |
+| `.gitignore` as access control | A rule is a convenience of the project, not a grant. Exclusions and the grant stay in the config. See [The `.gitignore` of the root](#the-gitignore-of-the-root). |
+| MCP client roots that widen the root | They are advisory. Client roots only narrow the bound root. See [The root of a session](#the-root-of-a-session), step 4. |
+| A strict key that turns Workspace off when every client root is outside the grant | A follow-up. Today such a root grants nothing and the bound root stays. |
 | A shell, or `cross-spawn`, for tasks | A shell parses the command line. `cross-spawn` starts `cmd.exe` for a `.cmd` file. |
 
 ## Config
@@ -51,7 +53,7 @@ The policy reload of each run never reads it, so no reload can widen a root, a w
       },
       { "path": "C:/Users/me/Projects" }
     ],
-    "exclude": ["fixtures/secrets/**", "*.sqlite"], "skip": ["node_modules", "dist"]
+    "exclude": ["fixtures/secrets/**", "*.sqlite"], "skip": ["node_modules", "dist"], "gitignore": true
   }
 }
 ```
@@ -62,8 +64,10 @@ The policy reload of each run never reads it, so no reload can widen a root, a w
   tool to enable yet. Pull request C reads `tasks`. See [Tasks](#tasks).
 - `exclude`: globs of paths that no tool reads, lists or writes, added to the built-in list. No key removes a built-in
   exclusion. A glob with no `/` matches the name of any part, at any depth. A glob with `/` matches the path from the
-  root, and a folder that it names takes each path below it. Up to 64 globs of 200 characters, with at most 6 wildcards.
+  entry path, and a folder that it names takes each path below it. Up to 64 globs of 200 characters, with at most 6 wildcards. A glob is relative to the entry path, not to the session root, so it holds when a client root or a start folder narrows the root. A start folder that an exclude glob hides makes Workspace unavailable. A client root that a glob hides is dropped.
 - `skip`: folder names that `list` and `search` do not enter. It replaces the default list.
+- `gitignore`: `true` by default. `false` turns off the read of the `.gitignore` of the root. Any other value is a config
+  error that names the key. See [The `.gitignore` of the root](#the-gitignore-of-the-root).
 - An error in the section, or a clash with an `mcpServers` entry of the key `workspace`, makes only the entry
   `workspace` invalid. The other servers start. Every error names its key and holds no value of the file.
 
@@ -82,8 +86,23 @@ The server binds the root one time, at the start, from the real path of each ent
 1. If the start folder is inside one or more entries, the deepest entry gives the grants. The session root is the start folder.
 2. Else, if the config has exactly one entry, the session root is the path of that entry.
 3. Else Workspace is unavailable. The reason says to start the client in one of the entries.
+4. Client roots (issue #150) can make the root smaller, never larger. The result of steps 1 to 3 is the *bound root*. If
+   the client declares the `roots` capability, the server sends `roots/list` one time, after
+   `notifications/initialized`. Its first 16 entries each go through `fileUriPath`, `realpath` and the checks of a root:
+   an entry that fails a step grants nothing. A usable client root is inside the bound root, equal to it, or holds it
+   (and then counts as the bound root). The *effective root* is the deepest folder that holds every usable client root,
+   and the bound root when none is usable. The entry, `write` and the tasks do not change.
 
-The session root must pass the same refusals as an entry. The compare of paths ignores case on Windows and macOS.
+The server settles the effective root one time: at the answer, at an error, or 2 seconds (`ROOTS_WAIT_MS`) after
+`notifications/initialized`. A late answer changes nothing, and `notifications/roots/list_changed` has no handler, so a
+change of the roots needs a restart. The provider is bound after the settle. Until then `search_tools` and each run
+wait, and no call sees a root wider than the effective one. The `tools/list` reply, the other servers and the start time
+do not wait. The model is told nothing new: paths stay relative. The person sees the line
+`Workspace: a client root narrowed the root to <path>` on stderr and the root in the approval prompt. A task still runs in
+its `cwd` under the entry, which can be outside a narrowed root.
+
+The session root must pass the same refusals as an entry. The compare of paths ignores case on Windows and, for the entry of a volume that folds case, on macOS. At the bind,
+macOS stats each entry and its spelling with one letter flipped: only the same `dev` and `ino` means folding, and a probe that cannot decide means none.
 A backslash separates the parts of a real path on Windows only. On Linux and macOS it is a letter of a name, so the start
 folder `/home/me/projects\app` is not inside the entry `/home/me/projects/app`.
 
@@ -127,7 +146,11 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
   it costs one stream entry and one glob test, and only the 10 seconds bound it. A folder is read as a stream to its end
   or to the budget, before any folder below it is entered, so one walk holds at most 20,000 names and one read buffer.
   A cut folder gives some of its names, in the order of the volume. `list` also stops at 5,000 entries. Each cut sets
-  `truncated`. So a tree with no match for the `include`, or one of folders only, ends too.
+  `truncated`. So a tree with no match for the `include`, or one of folders only, ends too. A folder that no `include`
+  glob can reach below it is not opened (`includeReach`): its own entry is still listed, and its names are not read, so
+  they neither count nor take time. `include` is still matched from the root when `path` is set.
+  The footer of a run says when a `list` or `search` call was cut: one fixed line for each tool, with the number of cut
+  calls of the calls that worked, and only for the Workspace of the config.
 - `read` and `search` read through the handle at most one byte more than their limit (4 MiB and 1 MiB), whatever the
   size said when the file was opened. A file that holds more is refused by `read` and skipped by `search`.
 - `include` holds up to 16 globs with `*`, `?` and `**`, over paths from the session root, matched in bounded time: a
@@ -144,13 +167,27 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
 The provider checks the text of a path before any file system call. It refuses these forms on each OS:
 
 - An empty path, an absolute path, a drive, a network path, a backslash, and a control character.
-- A part that is empty, `.` or `..`. No part is ever resolved away.
+- A part that is empty, `.` or `..`. No part is ever resolved away. The `path` of `list` and `search` alone may end in
+  one `/`, which `folderParts` cuts before these rules run (`src/` is `src`, `./` is `.`); `a//` and `/` stay refused.
 - More than 64 parts, or more than 1024 characters.
 - On Windows also a `:`, a part that ends in a dot or a space, and a device name such as `NUL`.
 
 A path that passes is then opened and proven, as [Confinement](#confinement) describes. The proof gives the real spelling
 of the path. Exclusions match that spelling, never the text of the argument. They match with no regard to case, after
 Unicode NFC, on each OS. So `.ENV` and a short name do not pass.
+
+On Linux the proof opens the name of the text, and a volume with short names (vfat, NTFS, SMB, a 9p share of a
+Windows folder) can open `GIT~1` for `.git` while `readdir` lists only `.git`. So for each part that comes from the text
+of a path, after its open (or its `lstat` in `stat`), the held parent folder is read once: a listed name that equals the
+text byte for byte stands. Else the real name is the listed name whose `lstat` through the held folder has the `dev` and
+`ino` of what was opened, the names that fold to the text first, with at most 20,000 `lstat` calls. With no match the call
+fails with `not-found`. `parts` hold the real names, so the exclusions see them, and a change takes its lock under the
+real name too. This read is no lookup of a name and calls no hook. It is skipped only for a part with ASCII characters only (a casefolded folder on ext4, f2fs or tmpfs folds `ſ` to `s`, and `fold` keeps it, so a part with another character always pays the read, issue #162), and only in a folder whose file system
+(`statfs`) is on a short list of types known not to hold such names (ext2/3/4, xfs, btrfs, tmpfs, overlayfs, ramfs, zfs,
+f2fs), so a folder on ext4 or tmpfs pays nothing. Any other type, and a `statfs` that fails, pay the one read: SMB2 and
+SMB3 (`0xfe534d42`) and NFS are not on the list of the first design, and a missed alias leaks an excluded file. A name that comes from a listing
+(the walk of `list` and `search`) needs no check. A residual case stays: an overlay made by hand whose lower layer is 9p over a Windows drive, or NFS from a server that ignores case, reports the overlay type, so it stays plain and an ASCII alias such as `GIT~1` is not read.
+
 An exclusion holds for every tool, also for `list`, `stat`, `diff` and a new file. The built-in list:
 
 - Version control data: `.git`, `.hg`, `.svn`.
@@ -162,6 +199,33 @@ An exclusion holds for every tool, also for `list`, `stat`, `diff` and a new fil
 The generic guard of `src/core/guard.ts` still runs on each call. It is not the boundary of Workspace.
 The default `skip` list is not access control: `node_modules`, `dist`, `build`, `target`, `vendor`, `coverage`, `.venv`,
 `venv` and `__pycache__`.
+
+## The `.gitignore` of the root
+
+`list` and `search` leave out the names that the `.gitignore` in the root ignores (issue #150). It is discovery only and
+never access control: `read`, `stat`, `diff`, `edit`, `write` and `run_task` never read the rules.
+
+- One file counts: `.gitignore` in the effective root. Each call reads it again through the confined open, with the
+  proofs that `search` asks of a file. A file that is missing, excluded, a link, has more than one hard link, is not
+  UTF-8 or is over 64 KiB (`LIMITS.ignoreBytes`) gives no rules and no error.
+- Syntax: blank lines and `#` comments, `\#` and `\!` at the start, trailing spaces cut, `!` negation (the last rule that
+  matches wins), a trailing `/` for folders only, a `/` at the start or in the middle that anchors the pattern to the
+  root, `*` and `?` inside a part, `**` as a whole part, and classes such as `[abc]`, `[a-z]` and `[!a]`.
+- A line is skipped whole, with no error, when it has another `\`, a `**` beside other characters, a class that does
+  not close or holds `[:`, more than 200 characters or more than 6 wildcards. At most 500 rules count
+  (`LIMITS.ignoreRules`). Names compare after NFC, with no regard to case where `foldsCase` says so. The match of one
+  part runs in bounded time and builds no regular expression from the file. It is `src/core/ignore.ts`, not the matcher
+  of the exclusions, so access control does not move.
+- The walk leaves out a name that the rules ignore and does not enter an ignored folder, so a `!` rule below an ignored
+  folder shows nothing, as in git. An ignored name still counts as a visited name of the 20,000.
+- The exclusions and `skip` decide first: no rule shows an excluded name or enters a folder of `skip`.
+  The file `.gitignore` shows in `list` like any file.
+- When the `path` of a call is ignored, or inside an ignored folder, the call applies no rule. `include` never shows an
+  ignored name.
+- The two descriptions of `list` and `search` add one sentence. No text of the file reaches an error, a log line or a
+  description.
+- Deferred: `.gitignore` files below or above the root, `.git/info/exclude`, the global ignore file, a count of ignored
+  names in a result, and a new field of a result.
 
 ## Confinement
 
@@ -175,7 +239,7 @@ A listing by name gives candidates only. Each entry is opened and proven before 
 | --- | --- | --- |
 | Linux | The provider holds the root folder open. It opens one path part at a time, with `O_NOFOLLOW`, as `/proc/self/fd/<fd>/<part>` of the held parent. | A temp file made with `O_EXCL` in the held folder, then a rename with both names relative to that folder. |
 | macOS | It opens the full path with `O_NOFOLLOW_ANY` (`0x20000000`). The kernel refuses a symlink in any part. | In place, through the proven handle. |
-| Windows | It opens the full path. Then, two times, `realpath.native` must give the same real path, and `lstat` of that path must give the identity of the handle. The real path must be inside the root. It can differ from the name in case or by a short name. Then `lstat` of each part must show no link. | In place, through the proven handle. |
+| Windows | It opens the full path. Then, two times, `realpath.native` must give the same real path, and `lstat` of that path must give the identity of the handle. The real path must be inside the root. It can differ from the name in case or by a short name. Then `lstat` of each part must show no link. A handle on another volume than the root is refused with `link` before these rounds (see below). | In place, through the proven handle. |
 
 The provider tests its method one time for each process, at the first use, in a temp folder. If the test fails, Workspace
 is unavailable and the reason says why. Such cases are Linux with no `/proc`, a macOS kernel that ignores the flag, and a
@@ -186,6 +250,15 @@ the folder must show as the proven one (no link, same identity) right before the
 that fails a proof drops what it read. On Linux a folder is held open, so its names and entries are exact.
 The root of a Linux session is opened first and then compared with its path (`lstat` of the path, no link, same identity
 as the held folder), so a swap of the root around its open fails the start with `root-changed`.
+
+On Windows the volume of the root is its `dev` from `fstat` of a handle of the root, taken at the start. In `proveWindows`,
+a handle whose `dev` differs gets `link`, "Workspace does not cross to another volume", before the two rounds (`sameFile`
+in `confined.ts` is the compare). Node 22.13 gives `dev` 0 for `lstat` and `stat` of a path, so the compare keeps that case:
+a path `dev` of 0 matches when the handle is on the root volume, where a file id names one file. A junction to another
+volume with a matching file id no longer passes. Every file on another volume leaves the read and write family, and every
+folder on another volume leaves the nested folder family. A folder inside the root that mounts another volume is refused.
+`list` and `stat` read by path, so they can still show a name or a size from any volume, and an empty new file or folder can
+still be made there.
 
 ### What was measured
 
@@ -200,6 +273,17 @@ Windows 11 build 26300, Node 22.23.3, temp folders. Linux: Docker with one CPU, 
 - On Linux, a read and a rename through the held folder stayed in the real folder while its name was a symlink to outside.
   A path of two parts through `/proc/self/fd` followed the symlink. So each open takes one part.
 - macOS was not measured. The test of pull request A must prove it on macOS CI, or Workspace stays unavailable there.
+- On Windows, Node has no path of an open fd. `fs` takes an fd only in `fstat`, `fchmod`, `fchown`, `fsync`, `fdatasync`,
+  `ftruncate` and `futimes`: `realpath.native(fd)`, `readlink(fd)`, `readdir(fd)` and `opendir(fd)` throw
+  `ERR_INVALID_ARG_TYPE` (Node 22.13.0 and 22.23.3). So no pure-Node proof ties a handle to the root there.
+- On Windows, `dev` is 0 from `lstat` and `stat` of a path on Node 22.13.0, and the volume serial from `fstat`. Node 22.23.3
+  gives the volume serial from all three. `ino` is equal in all three.
+- On Linux (Docker with one CPU, Node 22.23.5), on a bind mount of a Windows folder (9p) and on a vfat loop mount,
+  `GIT~1`, `ENV~1`, `SSH~1`, `ALONGF~1.TXT`, `.GIT` and `readme.md` each open through `/proc/self/fd/<fd>/<name>`. None is in
+  `readdir` of the held folder. Each has the `dev` and `ino` of exactly one listed name. `readlink` of the opened fd often
+  shows the alias text, so it does not give the real name.
+- A PowerShell 5.1 helper with one `Add-Type` class took 3.1 s for one cold start and held 62 MB private, and it compiles
+  through `%TEMP%`. Not measured: anything on macOS, and a second volume on Windows.
 
 ### What stays possible
 
@@ -226,14 +310,19 @@ name, and through the `lstat` of an entry a size, from outside is listed. No byt
 pattern that is in neither family. Before the proofs, a swap out at the `readdir` and at the
 `lstat` of an entry, and in at the one proof between them, listed `b/<outside name>` with its size. The test names the
 family (`alternating` in `tests/workspace-fs.test.ts`) and fails on any other pattern. macOS has the same family for
-`list` and `stat`: its `read` is exact, because each open refuses a link in any part. An exact `list` on macOS needs an
+`list`: its `read` is exact, because each open refuses a link in any part, and so is its `stat`. `stat` opens the entry by
+its full path with `O_RDONLY | O_NOFOLLOW_ANY | O_NONBLOCK` and reads the kind and the size with `fstat` of that handle
+(`ENOENT` and `ENOTDIR` give `missing`, `ELOOP` gives a link, and another error such as `EACCES` falls back to the
+bracketed `lstat`, which keeps the alternating family for such an entry). The open has side effects: it releases a
+writer that waits on a FIFO, and it may fetch a dataless iCloud file. The spelling still comes from `realpath`. macOS is proven on CI only: if that leg fails because of this
+change, the change is reverted and `stat` joins the alternating family again. An exact `list` on macOS needs an
 open of each entry with a flag that opens a link itself (`O_SYMLINK` with `O_NOFOLLOW_ANY`), which was not measured: it
 is a follow-up.
 
 | Case | Result | Who can do it |
 | --- | --- | --- |
-| Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root. A write into one whose bytes match `expectedHash`. An empty new file or folder outside. | A process that writes in the root and runs at that moment. |
-| Windows and macOS: a swap of a folder in turn with the proofs of one listing or `stat` | A name, a size or a kind from outside the root, in `list` or `stat`. No byte of a file. | The same. |
+| Windows: 4 swaps of a folder for a junction, each between 2 lookups of one proof | A read of a file outside the root, on the volume of the root only. A write into one whose bytes match `expectedHash`, on that volume only. An empty new file or folder outside, on any volume. | A process that writes in the root and runs at that moment. |
+| Windows: a swap of a folder in turn with the proofs of one listing or `stat`. macOS: the same for a listing, and for a `stat` of an entry that the process cannot open | A name, a size or a kind from outside the root, in `list` or `stat` (macOS: `list`, and `stat` of an unopenable entry). No byte of a file. | The same. |
 | macOS: a swap during the make of a new folder | An empty folder outside the root. | The same. |
 | Each OS: a file or folder moved into the root | It is in the root. | The same. |
 | Each OS: a task | Any act of the user. A task is not confined. | The project code that the task runs. |
@@ -242,7 +331,12 @@ is a follow-up.
 A process that swaps or moves a folder gains from Workspace only when it is not code of the user: another account, or a
 process with fewer rights, that can write in the root. So give Workspace a root that only your account can write.
 On Windows, `doctor` reads the access rules of the root and warns. A static link is refused on each OS, with no race.
-A native binding with folder-relative opens can close the Windows case. It is a follow-up and an optional install.
+A native binding with folder-relative opens (`NtCreateFile` with the handle of the root, as an optional prebuilt N-API
+package) can close the Windows case. It is a follow-up: its build, signing and release path do not exist yet. Two options
+are rejected. A PowerShell helper for the opens costs 62 MB and 1 to 3 s for each session, compiles through `%TEMP%`
+(which a locked down machine blocks) and puts every file call through a second process. A signed `.exe` helper needs a
+certificate that does not exist. More `lstat` or `realpath` calls on the folders above a nested folder cost 2 calls for
+each level and entry, and only turn the nested family into the alternating one: they close nothing.
 
 ## Edits
 

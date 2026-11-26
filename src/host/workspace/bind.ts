@@ -9,10 +9,17 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type { Config } from '../../core/config.ts'
 import { appPath } from '../../core/paths.ts'
+import { fileUriPath, narrowRoot } from '../../core/roots.ts'
 import {
+  LIMITS,
   WorkspaceError,
   bindRoot,
+  RESTART_SENTENCE,
+  flipCase,
   makeExcluder,
+  probeFolds,
+  realParts,
+  type Excluder,
   rootProblem,
   type RealRoot,
   type WorkspaceConfig,
@@ -51,12 +58,141 @@ export type BindInput = {
   readonly platform?: string
   readonly hook?: Hook
   readonly limits?: ProviderOptions['limits']
+  /** Tests only: `false` turns the prune of `list` and `search` off. */
+  readonly prune?: boolean
   /** The environment of the server: its `PATH` finds the command of a task, and a short list of it reaches the task. */
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly locks?: ProviderOptions['locks']
+  /**
+   * The `uri` of the client roots (issue #150), settled one time. They only narrow the root of the session: each one
+   * is proven here, and one that fails a step grants nothing. Absent: the root is the bound root.
+   */
+  readonly clientRoots?: () => Promise<readonly unknown[]>
+  /** The result of `bindStep` for this config, when the caller ran it already. Absent: `bindWorkspace` runs it. */
+  readonly step?: Step
 }
 
 const real = (file: string): Promise<string> => realpathNative(file)
+
+/**
+ * macOS: whether the volume of `folder` folds case. Two `lstat` calls (a link at the flipped name is never followed),
+ * no write; any failure is the strict side.
+ */
+const volumeFolds = async (folder: string): Promise<boolean> => {
+  const flipped = flipCase(folder)
+  if (flipped === undefined) return probeFolds('noletter')
+  try {
+    const [a, b] = await Promise.all([folder, flipped].map(f => fs.promises.lstat(f, { bigint: true })))
+    return probeFolds(a!.dev === b!.dev && a!.ino === b!.ino ? 'same' : 'other')
+  } catch {
+    return probeFolds('error')
+  }
+}
+
+/**
+ * The root after the client roots: the bound root, or a folder inside it. Each entry goes through `fileUriPath`, then
+ * `realpath`, then it must be a folder that `rootProblem` accepts. An entry that fails a step grants nothing and is
+ * dropped. The log says how many were dropped and never shows a URI.
+ */
+const narrowed = async (
+  bound: string,
+  uris: readonly unknown[],
+  homeReal: string,
+  platform: string,
+  log: (line: string) => void,
+  hidden: (folder: string) => boolean,
+  folds: boolean | undefined,
+): Promise<string> => {
+  const read = uris.slice(0, LIMITS.roots)
+  const kept: string[] = []
+  for (const uri of read) {
+    const text = fileUriPath(uri, platform)
+    const found =
+      text === undefined
+        ? undefined
+        : await real(text)
+            .then(async p => ((await fs.promises.stat(p)).isDirectory() ? p : undefined))
+            .catch(() => undefined)
+    if (found !== undefined && rootProblem(found, homeReal, platform) === undefined && !hidden(found)) kept.push(found)
+  }
+  if (kept.length < read.length)
+    log(`Workspace: ${read.length - kept.length} of ${read.length} client roots were dropped`)
+  const root = narrowRoot(bound, kept, platform, folds)
+  if (root !== bound && hidden(root)) return bound
+  if (root !== bound) log(`Workspace: a client root narrowed the root to ${root}`)
+  return root
+}
+
+/** What the config alone decides: the entry of the session, its root before the client roots, and the exclusions. */
+export type Step =
+  | { readonly ok: false; readonly reason: string }
+  | {
+      readonly ok: true
+      readonly homeReal: string
+      readonly entry: RealRoot
+      readonly index: number
+      readonly root: string
+      readonly offsetOf: (folder: string) => string[]
+      readonly entryExcluded: Excluder
+      readonly hidden: (folder: string) => boolean
+    }
+
+/**
+ * The part of the bind that reads the config and no client root: the real path and the check of each entry, `bindRoot`,
+ * the refusal of the start folder and its `workspace.exclude` check. Client roots only narrow what it gives (decision
+ * 035), so a step that failed stays failed. Each reason ends with the restart sentence: the section is read one time.
+ */
+export const bindStep = async (input: StepInput): Promise<Step> => {
+  try {
+    return await stepOf(input)
+  } catch {
+    // The step never rejects: the server awaits it at its start.
+    return { ok: false, reason: `Workspace could not read its roots. ${RESTART_SENTENCE}` }
+  }
+}
+
+type StepInput = Pick<BindInput, 'workspace' | 'start' | 'home' | 'configFile' | 'platform'>
+
+const stepOf = async ({
+  workspace,
+  start,
+  home,
+  configFile,
+  platform = process.platform,
+}: StepInput): Promise<Step> => {
+  const refuse = (reason: string): Step => ({ ok: false, reason: `${reason}. ${RESTART_SENTENCE}` })
+  const homeReal = await real(home).catch(() => home)
+  const roots: RealRoot[] = []
+  for (const [i, root] of workspace.roots.entries()) {
+    const place = `workspace.roots[${i}].path`
+    const found = await real(root.path)
+      .then(async p => ((await fs.promises.stat(p)).isDirectory() ? p : undefined))
+      .catch(() => undefined)
+    if (found === undefined) return refuse(`${place} is not a folder that exists`)
+    const problem = rootProblem(found, homeReal, platform)
+    if (problem !== undefined) return refuse(`${place} is refused: ${problem}`)
+    roots.push({ path: found, write: root.write, folds: platform === 'darwin' ? await volumeFolds(found) : undefined })
+  }
+  const bound = bindRoot(roots, await real(start).catch(() => path.resolve(start)), platform)
+  // The reason of `bindRoot` already ends with the sentence.
+  if (!bound.ok) return { ok: false, reason: bound.reason }
+  const problem = rootProblem(bound.root, homeReal, platform)
+  if (problem !== undefined)
+    return refuse(`the folder where the client started toolscript-mcp is refused as a root: ${problem}`)
+  // The exclude globs are relative to the entry path, so a root below the entry keeps every glob that goes through it.
+  const entry = roots[bound.index]!
+  const forbidden = [await real(configFile).catch(() => path.resolve(configFile)), appPath(homeReal)]
+  const entryExcluded = makeExcluder(entry.path, workspace.exclude, forbidden)
+  const entryParts = realParts(entry.path, platform).length
+  const offsetOf = (folder: string): string[] => realParts(folder, platform).slice(entryParts)
+  const hidden = (folder: string): boolean => {
+    const offset = offsetOf(folder)
+    return offset.length > 0 && entryExcluded(offset)
+  }
+  if (hidden(bound.root))
+    return refuse('the folder where the client started toolscript-mcp is excluded by workspace.exclude')
+  return { ok: true, homeReal, entry, index: bound.index, root: bound.root, offsetOf, entryExcluded, hidden }
+}
 
 export const bindWorkspace = async ({
   workspace,
@@ -67,44 +203,41 @@ export const bindWorkspace = async ({
   platform = process.platform,
   hook,
   limits,
+  prune,
   env = process.env,
   locks,
+  clientRoots,
+  step,
 }: BindInput): Promise<Binding> => {
   const refuse = (reason: string): Binding => ({ ok: false, reason })
-  const homeReal = await real(home).catch(() => home)
-  const roots: RealRoot[] = []
-  for (const [i, root] of workspace.roots.entries()) {
-    const place = `workspace.roots[${i}].path`
-    const found = await real(root.path).then(
-      async p => ((await fs.promises.stat(p)).isDirectory() ? p : undefined),
-      () => undefined,
-    )
-    if (found === undefined) return refuse(`${place} is not a folder that exists`)
-    const problem = rootProblem(found, homeReal, platform)
-    if (problem !== undefined) return refuse(`${place} is refused: ${problem}`)
-    roots.push({ path: found, write: root.write })
+  const stepped = step ?? (await bindStep({ workspace, start, home, configFile, platform }))
+  if (!stepped.ok) return refuse(stepped.reason)
+  const { homeReal, entry, offsetOf, entryExcluded, hidden } = stepped
+  const bound = { index: stepped.index, root: stepped.root }
+  // The roots of the client only narrow the bound root. This is settled one time, before the provider exists.
+  let root = bound.root
+  if (clientRoots !== undefined) {
+    try {
+      const uris = await clientRoots().catch(() => [])
+      root = await narrowed(bound.root, uris, homeReal, platform, log, hidden, entry.folds)
+    } catch {
+      root = bound.root
+    }
   }
-  const bound = bindRoot(roots, await real(start).catch(() => path.resolve(start)), platform)
-  if (!bound.ok) return refuse(bound.reason)
-  const problem = rootProblem(bound.root, homeReal, platform)
-  if (problem !== undefined)
-    return refuse(`the folder where the client started toolscript-mcp is refused as a root: ${problem}`)
   try {
-    const confined = await openConfined(bound.root, { platform, ...(hook !== undefined && { hook }) })
-    const forbidden = [await real(configFile).catch(() => path.resolve(configFile)), appPath(homeReal)]
-    const excluded = makeExcluder(bound.root, workspace.exclude, forbidden)
+    const confined = await openConfined(root, { platform, ...(hook !== undefined && { hook }) })
+    const offset = offsetOf(root)
+    const excluded: Excluder = parts => entryExcluded([...offset, ...parts])
     // The tasks of the entry that the root is in. A session whose entry has none runs none, and the tasks of another
     // entry are never looked at.
-    const entry = roots[bound.index]!
     const configured = workspace.roots[bound.index]!.tasks ?? []
     let own: Awaited<ReturnType<typeof openConfined>> | undefined
     let set: TaskSet = { valid: [], invalid: [] }
     let tasks: TaskRunner | undefined
     if (configured.length > 0) {
       // The folder of a task is relative to the entry. The root of the session can be a folder inside the entry.
-      own = entry.path === bound.root ? undefined : await openConfined(entry.path, { platform })
+      own = entry.path === root ? undefined : await openConfined(entry.path, { platform })
       const proofFs = own ?? confined
-      const entryExcluded = own === undefined ? excluded : makeExcluder(entry.path, workspace.exclude, forbidden)
       set = await resolveTasks({
         tasks: configured,
         entry: entry.path,
@@ -124,14 +257,16 @@ export const bindWorkspace = async ({
     }
     const made = createProvider({
       confined,
-      root: bound.root,
+      root,
       home: homeReal,
       write: entry.write,
       excluded,
       skip: workspace.skip,
+      ...(workspace.gitignore === false && { gitignore: false }),
       windows: platform === 'win32',
       log,
       ...(limits !== undefined && { limits }),
+      ...(prune === false && { prune: false }),
       ...(tasks !== undefined && { tasks }),
       ...(locks !== undefined && { locks }),
     })
@@ -141,7 +276,7 @@ export const bindWorkspace = async ({
     return {
       ok: true,
       bound: {
-        root: bound.root,
+        root,
         write: entry.write,
         method: confined.method,
         provider,

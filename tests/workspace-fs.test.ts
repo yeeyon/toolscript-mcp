@@ -15,6 +15,9 @@ import { DEFAULT_SKIP, LIMITS, makeExcluder } from '../src/core/workspace.ts'
 import {
   openConfined,
   readCapped,
+  canHoldAliases,
+  readsNames,
+  sameFile,
   type Confined,
   type Dir,
   type Hook,
@@ -92,6 +95,149 @@ describe('the method of this system', () => {
     await ok.handle.close()
     await confined.close()
   })
+})
+
+describe('which file systems can hold names that their folder does not list', () => {
+  const plain = [0xef53, 0x58465342, 0x9123683e, 0x01021994, 0x794c7630, 0x858458f6, 0x2fc12fc1, 0xf2f52010]
+  const aliasing = [
+    0x4d44, // vfat
+    0x01021997, // 9p
+    0x517b, // smb
+    0xff534d42, // smb1 cifs
+    0xfe534d42, // smb2 and smb3
+    0x6969, // nfs
+    0x2011bab0, // exfat
+    0x7366746e, // ntfs3
+    0x5346544e, // ntfs
+    0x65735546, // fuse
+    0x12345678, // a type that nobody listed
+  ]
+  test('a plain type pays nothing', () => plain.forEach(type => assert.equal(canHoldAliases(type), false, `${type}`)))
+  test('any other type is checked', () => aliasing.forEach(type => assert.equal(canHoldAliases(type), true, `${type}`)))
+  test('a type as a bigint or above 2^31 gives the same answer', () => {
+    assert.equal(canHoldAliases(BigInt(0xef53)), false)
+    assert.equal(canHoldAliases(0xfe534d42), true)
+  })
+})
+
+describe('which part of a path text pays the read of the names', () => {
+  const types = [0xef53, 0x58465342, 0x9123683e, 0x01021994, 0x794c7630, 0x858458f6, 0x2fc12fc1, 0xf2f52010, 0x4d44]
+  test('an ASCII name pays only on a type that can alias, a non-ASCII name pays on every type', () => {
+    for (const type of types) {
+      assert.equal(readsNames(canHoldAliases(type), '.ssh'), canHoldAliases(type), `${type} ascii`)
+      assert.equal(readsNames(canHoldAliases(type), '.ſſh'), true, `${type} non-ASCII`)
+      assert.equal(readsNames(canHoldAliases(type), 'café.txt'), true, `${type} accent`)
+    }
+  })
+})
+
+describe('non-ASCII names on a folder that does not fold (Linux)', () => {
+  const linux = process.platform === 'linux' ? false : 'Linux only'
+
+  test('a name with its own non-ASCII spelling works, and an unlisted one is not there', { skip: linux }, async t => {
+    const dir = folders(t)()
+    write(dir, {
+      'café.txt': 'cafe bytes\n',
+      'docs/日本語.md': 'nihongo bytes\n',
+      '.ſſh/known_hosts': 'long s bytes\n',
+    })
+    const rig = await rigOf(t, dir)
+    if (rig === undefined) return
+    for (const [name, text] of [
+      ['café.txt', 'cafe bytes'],
+      ['docs/日本語.md', 'nihongo bytes'],
+      ['.ſſh/known_hosts', 'long s bytes'],
+    ] as const) {
+      const read = await rig.call('read', { path: name })
+      assert.equal(read.path, name)
+      assert.match(read.content, new RegExp(text))
+    }
+    assert.equal(codeOf(await rig.fail('read', { path: 'cafë.txt' })), 'not-found')
+    // `stat` answers a name that is not there with its type, not with an error.
+    assert.deepEqual(await rig.call('stat', { path: 'docs/日本.md' }), { path: 'docs/日本.md', type: 'missing' })
+  })
+})
+
+// A casefolded folder (ext4 with `chattr +F`, as on Android or a share for SMB clients) opens `.ſſh` as `.ssh`. CI makes
+// an ext4 image with casefold and names a folder on it in the variable.
+const foldBase = process.env.TOOLSCRIPT_TEST_CASEFOLD_DIR
+describe('a casefolded folder opens a name that it does not list (Linux)', () => {
+  const skipWhy =
+    process.platform !== 'linux'
+      ? 'Linux only'
+      : foldBase === undefined
+        ? 'TOOLSCRIPT_TEST_CASEFOLD_DIR does not name a casefolded folder'
+        : false
+
+  test('an excluded name in another spelling is excluded in every tool', { skip: skipWhy }, async t => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(foldBase!, 'ws-fold-')))
+    t.after(() => rm(root))
+    const secret = marker()
+    write(root, { '.ssh/known_hosts': secret, '.aws/credentials': secret, '.env': secret, id_rsa: secret })
+    try {
+      fs.closeSync(fs.openSync(path.join(root, '.ſſh/known_hosts'), 'r'))
+    } catch {
+      // CI makes the volume and sets CI: a volume that does not fold there is a failed step, not a skip.
+      assert.ok(!process.env.CI, 'the casefolded volume does not open .ſſh as .ssh')
+      return void t.skip('this folder does not fold')
+    }
+    const rig = await rigOf(t, root, { write: true })
+    if (rig === undefined) return
+    const hash = sha(Buffer.from(secret))
+    // Split by kind, as the vfat test does: a tool that needs the other kind fails before the exclusion check.
+    const folderCalls = ['.ſſh', '.awſ'].flatMap((p): [string, object][] => [
+      ['stat', { path: p }],
+      ['list', { path: p }],
+      ['search', { query: 'SECRET', path: p }],
+    ])
+    const fileCalls = ['.ſſh/known_hosts', '.awſ/credentials', 'id_rſa'].flatMap((p): [string, object][] => [
+      ['read', { path: p }],
+      ['stat', { path: p }],
+      ['diff', { path: p, content: 'x' }],
+      ['write', { path: p, content: 'x' }],
+      ['edit', { path: p, expectedHash: hash, edits: [{ old: 'SECRET', new: 'x' }] }],
+    ])
+    const calls = [...folderCalls, ...fileCalls]
+    for (const [tool, args] of calls) {
+      const message = await rig.fail(tool, args as Record<string, unknown>)
+      assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
+      assert.ok(!message.includes(secret), `${tool} shows the bytes`)
+    }
+    assert.equal(fs.readFileSync(path.join(root, '.ssh/known_hosts'), 'utf8'), secret)
+  })
+})
+
+describe('the compare of a handle and its path', () => {
+  const id = (dev: bigint, ino: bigint) => ({ dev, ino })
+  // [name, handle, path, root dev, platform, same]
+  const table: [string, ReturnType<typeof id>, ReturnType<typeof id>, bigint, string, boolean][] = [
+    ['windows: same file on the root volume', id(7n, 5n), id(7n, 5n), 7n, 'win32', true],
+    [
+      'windows: Node 22.13 gives dev 0 for the path, and the handle is on the root volume',
+      id(7n, 5n),
+      id(0n, 5n),
+      7n,
+      'win32',
+      true,
+    ],
+    ['windows: dev 0 with a handle on another volume never passes', id(9n, 5n), id(0n, 5n), 7n, 'win32', false],
+    [
+      'windows: equal ino and dev on another volume than the root never passes',
+      id(9n, 5n),
+      id(9n, 5n),
+      7n,
+      'win32',
+      false,
+    ],
+    ['windows: a real path dev that differs never passes', id(7n, 5n), id(9n, 5n), 7n, 'win32', false],
+    ['windows: a different ino never passes', id(7n, 5n), id(7n, 6n), 7n, 'win32', false],
+    ['linux: plain compare', id(7n, 5n), id(7n, 5n), 1n, 'linux', true],
+    ['linux: dev 0 is no wildcard', id(7n, 5n), id(0n, 5n), 7n, 'linux', false],
+    ['darwin: a different dev never passes', id(7n, 5n), id(8n, 5n), 7n, 'darwin', false],
+    ['darwin: a different ino never passes', id(7n, 5n), id(7n, 6n), 7n, 'darwin', false],
+  ]
+  for (const [name, handle, atPath, rootDev, platform, same] of table)
+    test(name, () => assert.equal(sameFile(handle, atPath, rootDev, platform), same))
 })
 
 describe('list, stat, read and search', () => {
@@ -286,6 +432,39 @@ describe('list, stat, read and search', () => {
     if (rig === undefined) return
     assert.equal((await rig.call('read', { path: 'SRC/retry.TS' })).path, 'src/Retry.ts')
     assert.equal((await rig.call('stat', { path: 'SRC/retry.TS' })).path, 'src/Retry.ts')
+  })
+})
+
+describe('a folder path with a final slash', () => {
+  test('list and search give the plain result and open nothing more; read refuses it', async t => {
+    const root = folders(t)()
+    const outside = folders(t)()
+    write(root, {
+      'a/b/c.txt': 'needle',
+      'a/x.txt': 'needle',
+      'a.txt': 'needle',
+      '.git/h': 'needle',
+      '.env/e': 'needle',
+    })
+    const linked = trySymlink(outside, path.join(root, 'lnk'), win ? 'junction' : 'dir')
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    for (const p of ['a', 'a/b', '.']) {
+      const slash = p === '.' ? './' : `${p}/`
+      assert.deepEqual(await rig.call('list', { path: slash, depth: 2 }), await rig.call('list', { path: p, depth: 2 }))
+      assert.deepEqual(
+        await rig.call('search', { query: 'needle', path: slash }),
+        await rig.call('search', { query: 'needle', path: p }),
+      )
+    }
+    const names = ['.git', '.env', 'a.txt', 'missing', ...(linked ? ['lnk'] : [])]
+    for (const tool of ['list', 'search'])
+      for (const name of names) {
+        const args = (p: string) => (tool === 'search' ? { query: 'needle', path: p } : { path: p })
+        assert.equal(codeOf(await rig.fail(tool, args(`${name}/`))), codeOf(await rig.fail(tool, args(name))), name)
+      }
+    assert.equal(codeOf(await rig.fail('read', { path: 'a.txt/' })), 'bad-path')
+    assert.equal(codeOf(await rig.fail('stat', { path: 'a/' })), 'bad-path')
   })
 })
 
@@ -886,7 +1065,8 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
         [0, cut],
         [cut, lookups.length],
       ],
-      known: (mask, lookups) => (win || mac) && alternating(mask, lookups),
+      // macOS reads kind and size through a handle that the kernel opened with no link in any part: no leak.
+      known: (mask, lookups) => win && alternating(mask, lookups),
     },
     // One range over the proof and the lookups after it, so that a pattern of the proof followed by any other is tried.
     listNested: {
@@ -905,7 +1085,7 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
       safe: r => r.type === 'missing' || JSON.stringify(r) === JSON.stringify(insideNested),
       windows: lookups => [[0, lookups.length]],
       free: nestedFree,
-      known: nestedKnown,
+      known: (mask, lookups) => win && nestedKnown(mask, lookups),
     },
   }
 
@@ -918,7 +1098,8 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     const probe = probes[name]
     const { root, secret, swap } = setup(t, probe.nested)
     let hook: Hook = () => {}
-    const rig = await rigOf(t, root, { hook: name => hook(name) })
+    // The sweep counts the lookups of one proof. The read of the .gitignore adds lookups of its own, so it is off here.
+    const rig = await rigOf(t, root, { hook: name => hook(name), gitignore: false })
     if (rig === undefined) return []
     const record = async (tool: string, args: Record<string, unknown>): Promise<string[]> => {
       const seen: string[] = []
@@ -1149,4 +1330,89 @@ describe('cancel', () => {
     assert.equal(rig.bound.provider.inFlight(), 0)
     assert.ok(performance.now() - aborted < 1000)
   })
+})
+
+// A volume that opens a file under a name that its folder does not list (a short name such as GIT~1, another case) needs
+// a folder on vfat, exFAT, SMB or a 9p share of a Windows folder. CI mounts a vfat image and names it in the variable.
+const aliasBase = process.env.TOOLSCRIPT_TEST_ALIAS_DIR
+describe('names that the volume opens but does not list (Linux)', () => {
+  const skipWhy =
+    process.platform !== 'linux'
+      ? 'Linux only'
+      : aliasBase === undefined
+        ? 'TOOLSCRIPT_TEST_ALIAS_DIR does not name a folder on a volume with short names'
+        : false
+
+  const fixture = (t: TestContext) => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(aliasBase!, 'ws-alias-')))
+    t.after(() => rm(root))
+    const secret = marker()
+    // The order of the writes decides the short names: each is the first of its kind.
+    write(root, {
+      '.git/config': secret,
+      '.env': secret,
+      '.ssh/known_hosts': secret,
+      'a long file name.txt': 'long file bytes\n',
+      'README.md': 'readme bytes\n',
+    })
+    const opens = (name: string) => {
+      try {
+        fs.closeSync(fs.openSync(path.join(root, name), 'r'))
+        return true
+      } catch {
+        return false
+      }
+    }
+    const missing = ['GIT~1/config', 'ENV~1', 'SSH~1/known_hosts', 'ALONGF~1.TXT'].filter(n => !opens(n))
+    if (missing.length > 0) {
+      // CI mounts the vfat image and sets CI: a volume that gives no alias there is a failed step, not a skip.
+      assert.ok(!process.env.CI, `the alias volume gives no short name for ${missing.join(', ')}`)
+      t.skip(`this volume gives no short name for ${missing.join(', ')}`)
+      return undefined
+    }
+    return { root, secret }
+  }
+
+  test('an alias of an excluded name is excluded, and no result holds its bytes', { skip: skipWhy }, async t => {
+    const fx = fixture(t)
+    if (fx === undefined) return
+    const rig = await rigOf(t, fx.root, { write: true })
+    if (rig === undefined) return
+    const calls: [string, Record<string, unknown>][] = [
+      ['read', { path: 'GIT~1/config' }],
+      ['list', { path: 'GIT~1' }],
+      ['stat', { path: 'GIT~1' }],
+      ['search', { query: 'SECRET', path: 'GIT~1' }],
+      ['read', { path: 'ENV~1' }],
+      ['stat', { path: 'ENV~1' }],
+      ['diff', { path: 'ENV~1', content: 'x' }],
+      ['diff', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), content: 'x' }],
+      ['read', { path: 'SSH~1/known_hosts' }],
+      ['write', { path: 'GIT~1/new.txt', content: 'x' }],
+      ['write', { path: 'ENV~1', content: 'x' }],
+      ['edit', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), edits: [{ old: 'SECRET', new: 'x' }] }],
+    ]
+    for (const [tool, args] of calls) {
+      const message = await rig.fail(tool, args)
+      assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
+      assert.ok(!message.includes(fx.secret), `${tool} shows the bytes`)
+    }
+    assert.equal(fs.readFileSync(path.join(fx.root, '.env'), 'utf8'), fx.secret)
+    assert.deepEqual(fs.readdirSync(path.join(fx.root, '.git')), ['config'])
+  })
+
+  test(
+    'an alias of a file that is not excluded works, and the result has the listed name',
+    { skip: skipWhy },
+    async t => {
+      const fx = fixture(t)
+      if (fx === undefined) return
+      const rig = await rigOf(t, fx.root)
+      if (rig === undefined) return
+      const read = await rig.call('read', { path: 'ALONGF~1.TXT' })
+      assert.equal(read.path, 'a long file name.txt')
+      assert.match(read.content, /long file bytes/)
+      assert.deepEqual(await rig.call('stat', { path: 'readme.md' }), { path: 'README.md', type: 'file', size: 13 })
+    },
+  )
 })

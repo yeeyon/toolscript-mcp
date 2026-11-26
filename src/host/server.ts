@@ -74,14 +74,20 @@ export const createServer = (
   configFile: string,
   version: string,
   log: (line: string) => void,
-  /** The session root of the built-in Workspace, when it is bound. */
-  workspaceRoot?: string,
-  /** The names of the tasks of its root entry, for the approval prompt. */
-  workspaceTasks?: readonly string[],
+  /**
+   * The session root of the built-in Workspace and the names of the tasks of its root entry, for the approval prompt
+   * and the guard, when it is bound. It settles after the client roots (issue #150), so a run waits for it.
+   */
+  workspace?: Promise<{ readonly root: string; readonly tasks: readonly string[] } | undefined>,
+  /** True when the config part of the Workspace bind failed (`bindStep`): the instructions say it is not available. */
+  workspaceDown = false,
 ): Served => {
   const mcp = new McpServer(
     { name: 'toolscript-mcp', version },
-    { capabilities: { tools: {} }, instructions: serverInstructions([...config.servers.keys()], config.bridges) },
+    {
+      capabilities: { tools: {} },
+      instructions: serverInstructions([...config.servers.keys()], config.bridges, workspaceDown),
+    },
   )
   // One server process serves one client session: its kept results and its saveFile folder.
   const kept = newKept()
@@ -175,6 +181,10 @@ export const createServer = (
 
   const run = async (code: string, extra: Extra): Promise<CallToolResult> => {
     const fresh = await freshPolicy(extra)
+    // No run starts on a root wider than the effective one: the prompt and the guard use the settled root.
+    const bound = await workspace
+    const workspaceRoot = bound?.root
+    const workspaceTasks = bound?.tasks
     const ctx: RunContext = {
       downstream,
       config: { ...config, policy: fresh.policy },

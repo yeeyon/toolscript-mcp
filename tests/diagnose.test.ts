@@ -749,7 +749,9 @@ describe('tools workspace', () => {
     const root = path.join(ROOT, 'missing-root')
     const s = setup({ mcpServers: {}, workspace: { roots: [{ path: root }] } })
     assert.equal(await s.tools('workspace'), 1)
-    assert.deepEqual(s.printed, ['workspace: cannot connect: workspace.roots[0].path is not a folder that exists'])
+    assert.deepEqual(s.printed, [
+      'workspace: cannot connect: workspace.roots[0].path is not a folder that exists. Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.',
+    ])
   })
 
   test('runs shows the Workspace calls of a run', async () => {

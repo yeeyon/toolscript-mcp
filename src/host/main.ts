@@ -26,7 +26,10 @@ import { INIT_USAGE, runInit } from './init.ts'
 import { LOGIN_USAGE, runLogin } from './login.ts'
 import { createServer } from './server.ts'
 import { detectLaunch, loadConfig, loginFor } from './start.ts'
-import { bindWorkspace, linkOf } from './workspace/bind.ts'
+import type { WorkspaceConfig } from '../core/workspace.ts'
+import { within } from './shapes.ts'
+import { bindStep, bindWorkspace, linkOf, type Binding, type Step } from './workspace/bind.ts'
+import { createRoots, type Roots } from './workspace/roots.ts'
 
 const log = (line: string) => console.error(`toolscript-mcp: ${line}`)
 
@@ -93,18 +96,27 @@ const { config } = loaded
 // A launch of Claude Code that parseConfig does not see is not a bridge: this line lets the person see the miss.
 log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
 
-// The built-in Workspace binds its root one time, here. The section is never read again.
-const workspace =
+// The built-in Workspace binds its root one time, after the client roots settle (issue #150): at the answer to
+// roots/list, or ROOTS_WAIT_MS after the client initialized. The section is never read again. The server starts at once,
+// and a call to the Workspace waits for the bind.
+// A config with no workspace section never asks the client for its roots.
+const roots = config.workspace === undefined ? undefined : createRoots({ log })
+// The part of the bind that reads the config alone runs first: when it failed, the instructions at `initialize` say
+// that Workspace is not available (issue #163). A step that takes over 2 s (a dead network share) is not waited for.
+const step: Promise<Step> | undefined =
   config.workspace === undefined
     ? undefined
-    : await bindWorkspace({
-        workspace: config.workspace,
-        start: process.cwd(),
-        home: os.homedir(),
-        configFile: file,
-        log,
-      })
-if (workspace !== undefined) {
+    : bindStep({ workspace: config.workspace, start: process.cwd(), home: os.homedir(), configFile: file })
+const bindOf = async (section: WorkspaceConfig, clientRoots: Roots, stepped: Promise<Step>): Promise<Binding> => {
+  const workspace = await bindWorkspace({
+    workspace: section,
+    start: process.cwd(),
+    home: os.homedir(),
+    configFile: file,
+    log,
+    clientRoots: clientRoots.read,
+    step: await stepped,
+  })
   log(
     workspace.ok
       ? `Workspace: root ${workspace.bound.root}, ${workspace.bound.write ? 'read and write' : 'read-only'}, confined by ${workspace.bound.method}${workspace.bound.tasks.names.length > 0 ? `, tasks: ${workspace.bound.tasks.names.join(', ')}` : ''}`
@@ -112,11 +124,16 @@ if (workspace !== undefined) {
   )
   if (workspace.ok)
     for (const { name, reason } of workspace.bound.tasks.invalid) log(`Workspace: task ${name} is invalid: ${reason}`)
+  return workspace
 }
+const workspace =
+  config.workspace === undefined || roots === undefined || step === undefined
+    ? undefined
+    : bindOf(config.workspace, roots, step)
 
 const downstream = connectAll(config.servers, version, log, {
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
-  ...(workspace !== undefined && { workspace: linkOf(workspace) }),
+  ...(workspace !== undefined && { workspace: workspace.then(linkOf) }),
   // Lazy start (decision 028): the bridge starts on its first call and stops when idle. TOOLSCRIPT_LAZY=0 turns it off.
   ...(config.lazy && {
     lazy: {
@@ -134,28 +151,35 @@ const downstream = connectAll(config.servers, version, log, {
     },
   }),
 })
+// The downstream servers have started: only now does the server wait for the step, at most 2 s.
+const workspaceDown = step !== undefined && (await within<Step | undefined>(step, 2000, undefined))?.ok === false
 const { server, stopRuns } = createServer(
   downstream,
   config,
   file,
   version,
   log,
-  workspace?.ok ? workspace.bound.root : undefined,
-  workspace?.ok ? workspace.bound.tasks.names : undefined,
+  workspace?.then(w => (w.ok ? { root: w.bound.root, tasks: w.bound.tasks.names } : undefined)),
+  workspaceDown,
 )
+roots?.attach(server.server)
 
 // A run in flight gets its sandbox killed and its exchange dir removed before the exit.
 let closing: Promise<void> | undefined
-const shutdown = () =>
-  (closing ??= Promise.allSettled([
+const shutdown = () => {
+  // A shutdown before the client answered settles the roots, so the bind ends and its provider can close.
+  roots?.close()
+  return (closing ??= Promise.allSettled([
     stopRuns(),
     server.close(),
     downstream.close(),
     // A task ends with its tree before the exit, whatever the other closes wait for.
-    workspace?.ok ? workspace.bound.provider.stopTasks() : undefined,
+    workspace?.then(w => (w.ok ? w.bound.provider.stopTasks() : undefined)),
   ])
-    .then(() => (workspace?.ok ? workspace.bound.provider.close() : undefined))
+    .then(() => workspace)
+    .then(w => (w?.ok ? w.bound.provider.close() : undefined))
     .then(() => process.exit(0)))
+}
 
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)

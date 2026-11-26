@@ -722,7 +722,27 @@ export type Projection = {
   wholeRef?: number
   /** `tool` is absent when the footer must not name it: the footer is outside the wrapper of untrusted content. */
   serial?: { readonly calls: number; readonly ms: number; readonly tool?: string }
+  /** Calls of the built-in Workspace `list` and `search` that stopped early: how many were cut, of how many that worked. */
+  cut?: { readonly list?: CutCount; readonly search?: CutCount }
 }
+
+export type CutCount = { readonly cut: number; readonly total: number }
+
+const CUT_HELP = {
+  list: 'give a narrower path or include, or a smaller depth.',
+  search: 'give a narrower path or include, or raise maxMatches.',
+} as const
+
+/** One fixed line for each tool with a cut call: two tool names, two counts and fixed words, no text of a reply. */
+const cutLines = (cut: Projection['cut']): string[] =>
+  (['list', 'search'] as const).flatMap(name => {
+    const count = cut?.[name]
+    return count === undefined || count.cut === 0
+      ? []
+      : [
+          `mcp__workspace__${name}: ${count.cut} of ${count.total} calls stopped early (truncated). Their results are partial: ${CUT_HELP[name]}`,
+        ]
+  })
 
 /**
  * The results one session keeps for recall(n), by number, each as JSON with
@@ -1282,9 +1302,14 @@ export const editDistance = (a: string, b: string): number => {
   return row[b.length]!
 }
 
+const NAME_CAP = 200
+
 const nearest = (name: string, names: readonly string[], most: number): string | undefined => {
   let best: { name: string; d: number } | undefined
+  // Edit distance costs the product of the lengths: a name over the cap (a bug, or a server's) gets no hint.
+  if (name.length > NAME_CAP) return undefined
   for (const n of names) {
+    if (n.length > NAME_CAP) continue
     const d = n.toLowerCase() === name.toLowerCase() ? 0.5 : editDistance(n, name)
     if (d <= most && (best === undefined || d < best.d)) best = { name: n, d }
   }
@@ -1297,10 +1322,48 @@ const typoOf = (key: string, names: readonly string[]): string | undefined =>
   key.length < 4 ? undefined : nearest(key, names, key.length <= 6 ? 1 : 2)
 
 /** The error of a tool that its connected server does not list, with the nearest name of `names`. */
-export const notListedText = (tool: string, server: string, names: readonly string[]): string => {
+export const notListedText = (tool: string, server: string, all: readonly string[]): string => {
+  // A name that a server lists is data: only a plain short one may reach the text, and it is dropped before any work.
+  const names = all.filter(n => n.length <= NAME_CAP && /^[A-Za-z0-9_.-]{1,64}$/.test(splitToolName(n)?.name ?? ''))
   const near = nearest(tool, names, 3)
-  const help = near === undefined ? '. Find its tools with search_tools' : ` (did you mean "${near}"?)`
+  const likely = near === undefined ? likelyNames(tool, server, names) : []
+  const help =
+    near !== undefined
+      ? ` (did you mean "${near}"?)`
+      : likely.length === 0
+        ? '. Find its tools with search_tools'
+        : ` (likely: ${likely.map(n => `"${n}"`).join(', ')}). If none fits, find its tools with search_tools`
   return `no tool "${tool}" on the connected server "${server}"${help}`
+}
+
+// Words that say nothing about what a tool does: "or" and "by" alone never make a name likely.
+const FUNCTION_WORDS: ReadonlySet<string> = new Set(['to', 'for', 'by', 'of', 'or', 'and', 'the'])
+
+// Words that the wrong name shares with tools of the same server, weighted by how few tools use them: at most 2.
+const likelyNames = (tool: string, server: string, names: readonly string[]): string[] => {
+  if (tool.length > NAME_CAP) return []
+  const mine = names.filter(n => splitToolName(n)?.server === server)
+  const fold = (w: string) => (w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w)
+  const sets = mine.map(n => nameWords(n))
+  const df = new Map<string, number>()
+  for (const ws of sets) for (const w of new Set(ws.map(fold))) df.set(w, (df.get(w) ?? 0) + 1)
+  const common = (w: string) => (mine.length >= 8 ? df.get(w)! * 4 > mine.length : df.get(w)! * 2 >= mine.length)
+  const scored: { name: string; score: number }[] = []
+  mine.forEach((name, i) => {
+    let score = 0
+    let rare = false
+    for (const w of new Set(nameWords(tool).filter(x => !FUNCTION_WORDS.has(x)))) {
+      const d = df.get(fold(w))
+      if (d === undefined || !sets[i]!.some(x => fold(x) === fold(w))) continue
+      if (!common(fold(w))) rare = true
+      score += (sets[i]!.includes(w) ? 2 : 1) / d
+    }
+    if (rare) scored.push({ name, score })
+  })
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2)
+    .map(s => s.name)
 }
 
 /** A wrong name in a program, found before it runs. `isGuess`: from learned names, not a declaration. */
@@ -1486,6 +1549,7 @@ export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerErro
   const missed = missedData(outcome, p.calls)
     ? ['The result is empty, but the calls returned data: check the shapes.']
     : []
+  const cut = cutLines(p.cut)
   const serial =
     p.serial === undefined
       ? []
@@ -1493,12 +1557,13 @@ export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerErro
           `${p.serial.calls} calls of ${p.serial.tool ?? 'one tool'} ran one after another (${(p.serial.ms / 1000).toFixed(1)} s). If the calls do not need each other's result and their order does not matter, start them together with Promise.all.`,
         ]
   // A line per call names its recall(n). A group line has a range of numbers, so the note says how to use them.
-  if (n <= MAX_CALL_LINES) return [head, ...p.calls.map(callLine), ...recalled, ...missed, ...serial].join('\n')
+  if (n <= MAX_CALL_LINES) return [head, ...p.calls.map(callLine), ...recalled, ...missed, ...cut, ...serial].join('\n')
   return [
     head,
     ...groupLines(p.calls),
     ...recalled,
     ...missed,
+    ...cut,
     ...serial,
     'await recall(n) returns result #n again, with no new call.',
   ].join('\n')
@@ -1773,6 +1838,9 @@ export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolsc
 const INSTRUCTIONS_MAX = 4096
 // A session that also had the servers as direct tools never called run_code (#47), so the text names when to prefer it.
 const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.`
+// The built-in workspace could not bind from the config at the start. The model reads that it is gone, not why.
+const INSTRUCTIONS_WORKSPACE_DOWN =
+  'The built-in workspace server is not available in this session: search_tools says why.'
 // The tools of a bridge are the client's own: a program that calls them skips the client's permission rules and hooks.
 const instructionsBridge = (names: string) =>
   `For Read, Bash, Edit and the other tools of ${names}, use your own built-in tools directly. Call ${names} from a program only for data that stays in the program.`
@@ -1781,11 +1849,19 @@ const instructionsBridge = (names: string) =>
  * The server's instructions, read by the model at the start of a session. They
  * name the servers of the config, so a task that names only a product finds
  * toolscript. Names that do not fit in INSTRUCTIONS_MAX become "and N more".
- * `bridges`: the servers that serve the client's own tools (config.ts).
+ * `bridges`: the servers that serve the client's own tools (config.ts). `workspaceDown`: the config of the built-in
+ * workspace could not bind, so its name is left out and one fixed sentence says so. It holds no path and no reason.
  */
-export const serverInstructions = (servers: readonly string[], bridges: ReadonlySet<string>): string => {
+export const serverInstructions = (
+  all: readonly string[],
+  bridges: ReadonlySet<string>,
+  workspaceDown = false,
+): string => {
+  const servers = workspaceDown ? all.filter(key => key !== 'workspace') : all
   const bridged = servers.filter(key => bridges.has(key))
-  const use = bridged.length > 0 ? `${INSTRUCTIONS_USE} ${instructionsBridge(bridged.join(' and '))}` : INSTRUCTIONS_USE
+  const base =
+    bridged.length > 0 ? `${INSTRUCTIONS_USE} ${instructionsBridge(bridged.join(' and '))}` : INSTRUCTIONS_USE
+  const use = workspaceDown ? `${INSTRUCTIONS_WORKSPACE_DOWN} ${base}` : base
   const text = (shown: number) => {
     const more = servers.length - shown
     if (shown === 0) return `toolscript connects to other MCP servers. ${use}`

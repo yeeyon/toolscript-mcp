@@ -1135,8 +1135,9 @@ that name.
 ```
 
 - `roots` holds 1 to 16 entries. Each `path` is absolute and must be a folder that exists. `write` is `false` by default. See [Change files](#change-files). `tasks` holds the [named tasks](#named-tasks) of the entry.
-- `exclude` holds globs of paths that no tool reads or shows. They add to the built-in list below.
+- `exclude` holds globs of paths that no tool reads or shows. They add to the built-in list below. A glob is relative to the `path` of the entry, not to the root of the session: `app/fixtures/**` still holds when the session root is `app` under an entry `Projects`. A start folder that an `exclude` glob hides makes Workspace unavailable. A client root that a glob hides is dropped.
 - `skip` holds the folder names that `list` and `search` do not enter. It replaces the default list: `node_modules`, `dist`, `build`, `target`, `vendor`, `coverage`, `.venv`, `venv` and `__pycache__`. A call can still name such a folder in `path`.
+- `gitignore` is `true` by default. Set it to `false` and `list` and `search` never read the `.gitignore` of the root. See [What the read tools cover](#what-the-read-tools-cover).
 
 The server reads the section one time, at the start. A policy reload never reads it. To change a root, edit the config and
 restart toolscript-mcp. An error in the section makes only the `workspace` entry invalid, and the other servers start.
@@ -1150,6 +1151,9 @@ folder where your client started it:
 2. Else, if the config has one entry, its path is the root.
 3. Else Workspace is unavailable, and `search_tools` says to start the client in one of the entries.
 
+Workspace reads `workspace.roots` only at its start. After a change, reconnect toolscript-mcp or restart the client.
+When the config cannot bind, the instructions of the server tell the model that Workspace is not available. Each reason ends with that restart advice.
+
 So two sessions in two folders under one entry see only their own folder. The folder where the client started never grants
 access alone. Workspace refuses a root in these cases, and the reason names the entry:
 
@@ -1157,6 +1161,13 @@ access alone. Workspace refuses a root in these cases, and the reason names the 
 - The root is your home folder, or a folder that holds it.
 - The root is a Windows network path.
 - A part of the root path has a name such as `.git` or `.ssh`.
+
+Roots of the client can make the root smaller, and never larger. If your client declares the `roots` capability, the
+server asks for its roots one time, after the client starts. The root becomes the deepest folder that holds every client
+root inside the bound root. A client root outside the bound root, a link to a folder outside it, a file, or a refused
+folder grants nothing. The server waits at most 2 seconds for the answer. Until then no Workspace call runs. After that
+time, or after an error, the bound root stays. A change of the roots needs a restart of toolscript-mcp. A task still runs
+in its `cwd` under the entry, which can be outside a smaller root. The prompt and the stderr log show the root.
 
 ### The tools
 
@@ -1186,6 +1197,12 @@ tools add `stale`, `busy`, `exists`, `no-match`, `many-matches` and `read-only`.
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8. `search` skips these files and files over 1 MiB, and counts them in `skipped`.
 - `search` and `list` stop after they read 20,000 names or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. Excluded names do not count toward the 20,000, and only the 10 seconds bound them. A folder with more names than the rest of the budget gives a part of its names, in the order of the volume. A cancel ends a `search` within one second.
 - `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
+- `list` and `search` leave out the names that the `.gitignore` in the root ignores. Each call reads that file again. The files below the root, `.git/info/exclude` and the global ignore file count for nothing.
+- The rules are discovery only. `read`, `stat`, `diff`, `edit`, `write` and `run_task` never use them, so an ignored file reads and changes as before. A `path` that is ignored, or inside an ignored folder, applies no rule.
+- The syntax has `#` comments, `*`, `?`, `**` as a whole part, and classes such as `[Bb]in/`. A trailing `/` takes folders only. A `/` at the start or in the middle anchors the pattern to the root.
+- A `!` rule un-ignores a name, and the last rule that matches wins. A `!` rule below an ignored folder shows nothing, as in git.
+- A line with another `\`, a `**` beside other characters, an unclosed class, over 200 characters or over 6 wildcards is skipped. At most 500 rules count. A file that is missing, excluded, a link, with more than one hard link, not UTF-8 or over 64 KiB gives no rules.
+- An exclusion and `skip` decide first: no rule shows an excluded name. An ignored name still counts as one of the 20,000 names. Set `"gitignore": false` to turn the rules off.
 
 ### Named tasks
 
@@ -1301,17 +1318,19 @@ trusts a check that it made before. The proof differs by system:
 
 | System | Proof |
 | --- | --- |
-| Linux | Each part of the path is opened with `O_NOFOLLOW`, relative to the folder that is held open. A later swap of a name changes nothing that is held. |
+| Linux | Each part of the path is opened with `O_NOFOLLOW`, relative to the folder that is held open. A later swap of a name changes nothing that is held. On a volume with short names (vfat, NTFS, SMB, a share of a Windows folder), a name such as `GIT~1` is found under the name that the folder lists, so an exclusion holds for it. |
 | macOS | The full path is opened with `O_NOFOLLOW_ANY`, which refuses a symlink in any part. |
-| Windows | The full path is opened. Then `realpath` and `lstat` must agree with the identity of the handle, two times. |
+| Windows | The full path is opened. A handle on another volume than the root is refused. Then `realpath` and `lstat` must agree with the identity of the handle, two times. |
 
 At its first use, Workspace tests its method in a temp folder. If the test fails, Workspace is unavailable and the reason
 says why. On macOS, the CI run of the repo decides if the method works. A macOS system where it does not work has Workspace unavailable.
 
+On Windows, Workspace does not cross to another volume: a folder inside the root that mounts another volume is refused.
+
 ### What stays possible
 
-- On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root. `edit` and `write` can write a file outside the root whose bytes match `expectedHash`, and make an empty file or folder there.
-- On Windows and macOS, a swap can alternate with each lookup of a `list` or a `stat`. Then it can show a name, a size or a kind from outside the root. It never shows the bytes of a file.
+- On Windows, a process that writes in the root can swap a folder for a junction at each lookup of one proof. Then `read` can return a file outside the root, if that file is on the same volume as the root. `edit` and `write` can write such a file whose bytes match `expectedHash`. A new empty file or folder can be made outside the root, on any volume.
+- On Windows, a swap can alternate with each lookup of a `list` or a `stat`. On macOS it can do so for a `list`. It can also do so for a `stat` of an entry that the process cannot open. Then it can show a name, a size or a kind from outside the root. It never shows the bytes of a file.
 - On Windows, the same can happen for a folder in the middle of a path, such as `b` in `list b/c`: the swap must be out at the open of `b/c` and then alternate. Later lookups can be outside in a row.
 - On macOS, a swap while a new folder is made can make an empty folder outside the root.
 - Both cases need a process of another account, or a process with fewer rights. Code that runs as you can read the files itself.
