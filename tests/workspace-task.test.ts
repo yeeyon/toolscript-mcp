@@ -1307,10 +1307,16 @@ describe('the source of the task module', () => {
       /foreach \(int which in new int\[\] \{ -10, -11, -12 \}\)[\s\S]*?SetHandleInformation\(h, 1, 0\)/,
     )
     assert.match(script, /si\.flags = 0x100;[\s\S]*?si\.hIn = nul; si\.hOut = output; si\.hErr = error;/)
-    // No cmdlet before the compile (the first one makes PowerShell search every module of a runner), and the host gives the
-    // helper a module path of the system folder only.
-    const beforeCompile = script.slice(script.indexOf('param('), script.indexOf('Add-Type'))
-    assert.doesNotMatch(beforeCompile.replace(/^\s*#.*$/gm, ''), /\b(Get|New|Set|Write|Out|Select|Where|ForEach)-\w+/)
+    // No cmdlet anywhere in the helper (the first one makes PowerShell look up its command and load its module, which took
+    // 20 to 30 s on a runner under load), also not for the compile, which is the CodeDom provider that Add-Type calls. The
+    // host gives the helper a module path of the system folder only.
+    const powershellOnly = script.replace(/@'[\s\S]*?\n'@/, '').replace(/^\s*#.*$/gm, '')
+    assert.doesNotMatch(
+      powershellOnly,
+      /\b(Get|Set|New|Add|Write|Out|Select|Where|ForEach|Invoke|Start|Stop|Remove|Import|Export|Test|Measure)-[A-Za-z]\w*/,
+    )
+    assert.match(powershellOnly, /CSharpCodeProvider\]::new\(\)\.CompileAssemblyFromSource\(\$options, \$source\)/)
+    assert.doesNotMatch(script, /Reflection\.Emit/)
     assert.match(
       source('src', 'host', 'taskjob.ts'),
       /env\.PSModulePath = path\.win32\.join\(systemRoot, 'System32', 'WindowsPowerShell', 'v1\.0', 'Modules'\)/,
@@ -1333,7 +1339,7 @@ describe('run_task: the warm helper of Windows', { skip: !win }, () => {
     t.diagnostic(`helper ready after ${Date.now() - began} ms, failed step: ${step ?? 'none'}`)
     t.diagnostic(`helper crumbs: ${host.said()}`)
     assert.equal(step, undefined)
-    for (const crumb of ['script started', 'connected at', 'Add-Type found at', 'compiling at', 'compiled at'])
+    for (const crumb of ['script started', 'connected at', 'compiling at', 'compiled at'])
       assert.ok(host.said().includes(`ts-helper: ${crumb}`) || host.said().includes(crumb), `the crumb ${crumb}`)
   })
 

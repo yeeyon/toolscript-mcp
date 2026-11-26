@@ -18,9 +18,9 @@ $ProgressPreference = 'SilentlyContinue'
 # Breadcrumbs go to the standard error, which the host reads (bounded) and shows when the start fails: no value of a task.
 function Crumb([string]$text) { try { [Console]::Error.WriteLine("ts-helper: $text") } catch {} }
 $sw = [Diagnostics.Stopwatch]::StartNew()
-# No cmdlet runs before the compile except Add-Type itself: the first cmdlet makes Windows PowerShell search its modules, and
-# a runner with many modules on the machine path takes many seconds for that. The host sets a PSModulePath of the system
-# folder only, and the steps here are .NET calls, which need no search. The crumbs hold no cmdlet either.
+# No cmdlet runs in this file: the first cmdlet makes Windows PowerShell look up the command and load its module, which took
+# 20 to 30 s on a runner that starts several PowerShell processes at once. Every step is a .NET call, also the compile.
+# The host also sets a PSModulePath of the system folder only, so no foreign module can load.
 Crumb ('script started ps=' + $PSVersionTable.PSVersion + ' clr=' + [Environment]::Version + ' up=' + [int]([DateTime]::Now - [Diagnostics.Process]::GetCurrentProcess().StartTime).TotalMilliseconds + 'ms')
 try {
   # Each step of the connect has its own crumb with the time since the script started, so a stall names its statement.
@@ -35,11 +35,8 @@ try {
   Crumb ('connected at ' + $sw.ElapsedMilliseconds + 'ms')
 } catch { Crumb ('connect failed: ' + $_.Exception.Message); exit 3 }
 if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
-[void]$ExecutionContext.SessionState.InvokeCommand.GetCommand('Add-Type', 'Cmdlet')
-Crumb ('Add-Type found at ' + $sw.ElapsedMilliseconds + 'ms')
 Crumb ('compiling at ' + $sw.ElapsedMilliseconds + 'ms')
-try {
-  Add-Type -TypeDefinition @'
+$source = @'
 using System;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
@@ -142,6 +139,14 @@ public static class TsHost {
   }
 }
 '@
+# The same csc compile that the Add-Type cmdlet runs, called as .NET: no cmdlet, so no command lookup.
+try {
+  $options = [System.CodeDom.Compiler.CompilerParameters]::new()
+  $options.GenerateInMemory = $true
+  [void]$options.ReferencedAssemblies.Add('System.dll')
+  [void]$options.ReferencedAssemblies.Add('System.Core.dll')
+  $results = [Microsoft.CSharp.CSharpCodeProvider]::new().CompileAssemblyFromSource($options, $source)
+  if ($results.Errors.HasErrors) { throw $results.Errors[0].ErrorText }
 } catch { Crumb ('compile failed: ' + $_.Exception.Message); $writer.Write("failed:compile`n"); exit 4 }
 Crumb ('compiled at ' + $sw.ElapsedMilliseconds + 'ms')
 try { [TsHost]::Serve($channel) } catch { Crumb ('serve failed: ' + $_.Exception.Message); exit 5 }

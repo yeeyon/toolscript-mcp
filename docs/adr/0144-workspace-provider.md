@@ -400,8 +400,10 @@ of the error, as the open for writing does on Windows and macOS.
   A task ends with its process tree however it ends: at its exit, at the time limit, at a cancel, at a shutdown and at a
   hard kill of the server (issue #149). A helper of each OS does it, and no native binary ships.
   - Windows: one warm Windows PowerShell 5.1 process (`runtime/task-job.ps1`, `src/host/taskjob.ts`) for each task
-    runner. It starts at the first task, stops after 10 minutes with no task, and compiles a small C# class once with
-    `Add-Type`. For each task it makes a new Job Object (`KILL_ON_JOB_CLOSE`, no breakaway), starts the task suspended,
+    runner. It starts at the first task, stops after 10 minutes with no task, and compiles a small C# class once through
+    the `Microsoft.CSharp.CSharpCodeProvider` that the `Add-Type` cmdlet calls (a .NET call: the helper runs no cmdlet,
+    because the first cmdlet took 20 to 30 s to look up on a runner that starts several PowerShell processes at once;
+    no `Reflection.Emit`, no precompiled binary), with a `PSModulePath` of the system folder only. For each task it makes a new Job Object (`KILL_ON_JOB_CLOSE`, no breakaway), starts the task suspended,
     puts it in the job, then resumes it. A stop ends the helper, so Windows closes the job. Not in the job: a process that
     a service, the Task Scheduler or WMI starts. The values of a task are frames on the standard input of the helper,
     never source or a command line. The environment is the block that a direct spawn gives (`windowsEnv`).
@@ -418,7 +420,7 @@ of the error, as the open for writing does on Windows and macOS.
     call only before `begin`.
   - Rejected for Linux: a PID namespace (`unshare`) fails in a default Docker container and on Ubuntu 24.04, and the task
     is PID 1; a cgroup (`systemd-run`) needs a user manager and D-Bus; `PR_SET_PDEATHSIG` alone reaches the child only.
-  - Fallback, not refusal: when the helper cannot run (no PowerShell, `Add-Type` refused, no `/usr/bin/perl`, no connection
+  - Fallback, not refusal: when the helper cannot run (no PowerShell, the compile refused, no `/usr/bin/perl`, no connection
     in 15 s, no `ready` in 60 s: a cold runner can take many seconds to compile), the task runs by the direct spawn, with the `taskkill /T` tree on Windows and the process group elsewhere. A
     refusal would take the feature from each locked-down laptop, and a task is not contained in any case. One stderr
     line says so, one time for each process, and `doctor` names the way that applies.
