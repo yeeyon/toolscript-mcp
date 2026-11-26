@@ -1290,7 +1290,27 @@ describe('the source of the task module', () => {
     const script = source('runtime', 'task-job.ps1')
     assert.match(script, /LimitFlags = 0x2000/)
     assert.doesNotMatch(script, /LimitFlags\s*\|=|LimitFlags = 0x(?!2000;)|JOB_OBJECT_\w*BREAKAWAY/i)
-    assert.doesNotMatch(script, /Write-Host|Write-Output|Write-Error|Console\]::(Out|Error)|Out-Host/)
+    assert.doesNotMatch(
+      script,
+      /Write-Host|Write-Output|Write-Error|Console\]::Out|Out-Host|Console\.(Out|Error|Write)/,
+    )
+    // The one write that stays is the breadcrumb on the standard error of the helper, which the host reads. It can never be
+    // a stream of a task: the task gets `nul` and its own two named pipes (STARTF_USESTDHANDLES), and the three standard
+    // handles of the helper are made not inheritable before any task starts, so the task inherits none of them.
+    assert.equal(script.match(/Console\]::Error/g)?.length, 1, 'one place writes to the error stream: Crumb')
+    assert.match(
+      script,
+      /function Crumb\(\[string\]\$text\) \{ try \{ \[Console\]::Error\.WriteLine\("ts-helper: \$text"\) \} catch \{\} \}/,
+    )
+    assert.match(
+      script,
+      /foreach \(int which in new int\[\] \{ -10, -11, -12 \}\)[\s\S]*?SetHandleInformation\(h, 1, 0\)/,
+    )
+    assert.match(script, /si\.flags = 0x100;[\s\S]*?si\.hIn = nul; si\.hOut = output; si\.hErr = error;/)
+    assert.ok(
+      script.indexOf('SetHandleInformation(h, 1, 0)') < script.indexOf('CreateProcessW(parts[0]'),
+      'the handles are made not inheritable before the first task starts',
+    )
   })
 })
 
