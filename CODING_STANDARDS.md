@@ -194,7 +194,7 @@ bundled hints in `hints/`.
 - A hint is one short, factual bullet about a server. No data, no instructions about other actions.
 
 ## Docs
-User docs are `README.md`, `FAQ.md` and the three skills `plugin/skills/setup/SKILL.md`, `plugin/skills/start/SKILL.md` and `plugin/skills/doctor/SKILL.md`. Out of this set: `AGENTS.md`, this file and the model-facing text above.
+User docs are `README.md`, `FAQ.md` and the four skills `plugin/skills/setup/SKILL.md`, `plugin/skills/start/SKILL.md`, `plugin/skills/doctor/SKILL.md` and `plugin/skills/workspace/SKILL.md`. Out of this set: `AGENTS.md`, this file and the model-facing text above.
 `tests/docs.check.mjs` checks the rules marked `[test]`.
 
 ### Format

@@ -7,6 +7,7 @@
 // `toolscript-mcp tools <server>` and `toolscript-mcp runs` check a first run, and
 // `toolscript-mcp allow <tool>...` allows the tools of its task.
 // `toolscript-mcp doctor` checks the whole setup.
+// `toolscript-mcp --version` prints the package version.
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import fs from 'node:fs'
@@ -43,7 +44,7 @@ const { version } = JSON.parse(fs.readFileSync(new URL('../../package.json', imp
 
 const launch = detectLaunch(process.argv[1] ?? '')
 const USAGE = [
-  'usage: toolscript-mcp [--config <path>] [--help]',
+  'usage: toolscript-mcp [--config <path>] [--help] [--version]',
   INIT_USAGE,
   LOGIN_USAGE,
   TOOLS_USAGE,
@@ -51,6 +52,13 @@ const USAGE = [
   RUNS_USAGE,
   DOCTOR_USAGE,
 ]
+
+// The package proof for the plugin skills: one line, no config read, no server started. It answers on stdout (owner
+// decision, issue #156) and exits before any MCP transport exists, so no JSON-RPC stream can meet this line.
+if (process.argv.length === 3 && (process.argv[2] === '--version' || process.argv[2] === '-v')) {
+  fs.writeSync(1, `${version}\n`) // stdout-ok: --version
+  process.exit(0)
+}
 
 if (process.argv[2] === 'init')
   process.exit(

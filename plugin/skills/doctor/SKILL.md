@@ -93,6 +93,7 @@ For each `warn` and `fail`, give the cause and the step that fixes it:
 | `policy` | does not allow the tools of the Claude Code bridge | Only a rule that starts with `mcp__<bridge>__` allows them. `/toolscript:setup` step 8. |
 | `sandbox` | no network block, no CPU limit | Windows has neither layer. [SECURITY.md](https://github.com/yeeyon/toolscript-mcp/blob/main/SECURITY.md) describes the sandbox. |
 | `sandbox` | any `fail` line | The sandbox did not run `return 1`. Check the `node` lines first. Then `/toolscript:setup` step 3. |
+| `workspace` | `unavailable` | The line names the reason. `/toolscript:workspace` adds, removes or checks a root. |
 | `run-log` | off | The config sets `"log": false`. `/toolscript:start verify` needs the run log. The person removes the key in an editor. |
 | `run-log` | newest run | `/toolscript:start verify` shows the calls of the run and the next step. |
 | `files` | not writable | The person checks the permissions of `<home>/.toolscript-mcp`. |

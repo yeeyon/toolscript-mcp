@@ -15,6 +15,7 @@
 - The policy functions take one `Guards` value, the bridges and whether Workspace is on, in place of the set of bridges.
 - `toolscript-mcp tools workspace` lists the tools of Workspace. `toolscript-mcp doctor` has a `workspace` line, and on Windows it warns when another account can write in the root.
 - Workspace `list` and `search` stop the read of a very large folder at the limit of names, and excluded names no longer count toward it (issue #148).
+- `toolscript-mcp --version` (and `-v`) prints the package version on one line, reads no config and starts no server.
 - The footer of a run says when a Workspace `list` or `search` call stopped early (`truncated`), with the number of cut calls of the calls that worked, so a cut search no longer reads as "not found".
 - A loop of Workspace calls no longer gets the footer note that advises `Promise.all`. Parallel walks share the host's file threads, so they do not finish faster together: 8 searches started at once each ran to the 10 s limit and came back empty.
 - On Windows, Workspace refuses a file or folder on another volume than the root, so a junction to another drive can no longer be read or written through a swap. A folder inside the root that mounts another volume is refused (issue #147).

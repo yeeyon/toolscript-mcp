@@ -6,6 +6,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, describe, it } from 'node:test'
 import { parseConfig } from '../src/core/config.ts'
+import { BUILT_IN_NAMES, LIMITS, rootProblem as coreRootProblem } from '../src/core/workspace.ts'
+import { TASK_LIMITS, TASK_NAME, commandProblem as coreCommandProblem, cwdParts } from '../src/core/task.ts'
+import * as roots from '../plugin/skills/setup/roots.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../plugin/skills/setup/config.mjs', import.meta.url))
 const SECRETS = [
@@ -399,4 +402,593 @@ describe('plugin config helper', () => {
     assert.equal(run(makeConfig(), 'policy', 'allow').code, 2)
     assert.equal(run(makeConfig(), 'unknown').code, 2)
   })
+})
+
+describe('the plugin copy of the root rules', () => {
+  const names = BUILT_IN_NAMES.map(name => name.replaceAll('*', 'x').replaceAll('?', 'x'))
+  const rows: [string, string][] = [
+    ['/', '/home/me'],
+    ['C:\\', 'C:\\Users\\me'],
+    ['C:', 'C:\\Users\\me'],
+    ['/home/me', '/home/me'],
+    ['/home', '/home/me'],
+    ['C:\\Users', 'C:\\Users\\me'],
+    ['/home/me/app/.git/modules', '/home/me'],
+    ['C:\\Users\\me\\.ssh', 'C:\\Users\\me'],
+    ['\\\\server\\share\\app', 'C:\\Users\\me'],
+    ['//server/share/x', 'C:\\Users\\me'],
+    ['/home/me/app', '/home/me'],
+    ['C:\\work\\app', 'C:\\Users\\me'],
+    ['/home/me/projects\\app', '/home/me/projects/app'],
+    ['/home/me/projects', '/home/me/projects/app'],
+    ['/home/me/app/.GIT', '/home/me'],
+    ['C:\\USERS\\Me', 'C:\\Users\\me'],
+    ['/Users/ME', '/Users/me'],
+    ['/home/Zo\u00e9', '/home/Zoe\u0301'],
+    ['/home/Zoe\u0301', '/home/Zo\u00e9'],
+    ['/home/me/.E\u006e\u0076', '/home/me'],
+    ...names.flatMap((name): [string, string][] => [
+      [`/home/me/${name}/x`, '/home/me'],
+      [`C:\\work\\${name}`, 'C:\\Users\\me'],
+      [`/work/${name.toUpperCase()}`, '/home/me'],
+    ]),
+  ]
+
+  it('has the same names and the same limit as the core', () => {
+    assert.deepEqual(roots.BUILT_IN_NAMES, [...BUILT_IN_NAMES])
+    assert.equal(roots.ROOTS_MAX, LIMITS.roots)
+    assert.equal(roots.TASK_NAME.source, TASK_NAME.source)
+    assert.equal(roots.TASKS_MAX, TASK_LIMITS.tasks)
+  })
+
+  it('gives the same answer as the core on each command text', () => {
+    const commands = [
+      'node',
+      './gradlew',
+      'sub/x',
+      'a\\b',
+      '/usr/bin/node',
+      'C:\\x\\node.exe',
+      'C:/x/node',
+      'C:node',
+      '\\\\s\\x',
+      '//s/x',
+      'a\u0007b',
+    ]
+    for (const windows of [true, false])
+      for (const command of commands)
+        assert.equal(
+          roots.commandProblem(command, windows),
+          coreCommandProblem(command, windows),
+          `${windows} ${command}`,
+        )
+  })
+
+  it('has the task limits of the core', () => {
+    const { args, argChars, envVars, envChars } = TASK_LIMITS
+    assert.deepEqual(roots.TASK_LIMITS, { args, argChars, envVars, envChars })
+  })
+
+  it('gives the same answer as cwdParts on each folder text, for both windows flags', () => {
+    const texts = [
+      '.',
+      '',
+      'packages/app',
+      './packages/app',
+      'packages/app/',
+      'packages\\app',
+      '../other',
+      'a/../b',
+      '/abs',
+      'C:rel',
+      'C:/abs',
+      'a//b',
+      'a\u0007b',
+      'a/CON',
+      'a/nul.txt',
+      'a/b.',
+      'a/b ',
+      'a/b:c',
+      'a/b*',
+      'x'.repeat(1025),
+      Array.from({ length: 65 }, () => 'p').join('/'),
+      Array.from({ length: 64 }, () => 'p').join('/'),
+    ]
+    for (const windows of [true, false])
+      for (const text of texts) {
+        const core = cwdParts(text, windows)
+        assert.equal(roots.cwdProblem(text, windows), typeof core === 'string' ? core : undefined, `${windows} ${text}`)
+      }
+  })
+
+  it('refuses the same task texts as parseConfig, which turns the section off for each', () => {
+    const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`K${i}`, 'v']))
+    const rows: unknown[] = [
+      { command: 'node' },
+      { command: 'node', args: ['${FAKE}', 'a'], cwd: 'packages/app', env: { K: '${FAKE}' }, timeoutSeconds: 10 },
+      { command: '' },
+      { command: '   ' },
+      { command: 5 },
+      { command: '${a-b}' },
+      { command: './gradlew' },
+      { command: 'node', shell: true },
+      { command: 'node', args: 'x' },
+      { command: 'node', args: [1] },
+      { command: 'node', args: Array.from({ length: 64 }, () => 'a') },
+      { command: 'node', args: Array.from({ length: 65 }, () => 'a') },
+      { command: 'node', args: ['a'.repeat(4096)] },
+      { command: 'node', args: ['a'.repeat(4097)] },
+      { command: 'node', args: ['a\u0000b'] },
+      { command: 'node', args: ['${a b}'] },
+      { command: 'node', cwd: 5 },
+      { command: 'node', cwd: '../other' },
+      { command: 'node', cwd: './packages/app' },
+      { command: 'node', cwd: 'packages/app/' },
+      { command: 'node', cwd: 'packages\\app' },
+      { command: 'node', cwd: 'a/CON' },
+      { command: 'node', timeoutSeconds: 10 },
+      { command: 'node', timeoutSeconds: 11 },
+      { command: 'node', env: 'x' },
+      { command: 'node', env: ['K'] },
+      { command: 'node', env: { K: 5 } },
+      { command: 'node', env: { 'bad-name': 'v' } },
+      { command: 'node', env: { '1K': 'v' } },
+      { command: 'node', env: many(64) },
+      { command: 'node', env: many(65) },
+      { command: 'node', env: { K: 'v'.repeat(4096) } },
+      { command: 'node', env: { K: 'v'.repeat(4097) } },
+      { command: 'node', env: { K: 'a\u0000b' } },
+      { command: 'node', env: { K: '${a-b}' } },
+    ]
+    for (const windows of [true, false])
+      for (const task of rows) {
+        const platform = windows ? 'win32' : 'linux'
+        const text = JSON.stringify({
+          mcpServers: {},
+          sandbox: { callTimeoutSeconds: 10 },
+          workspace: { roots: [{ path: windows ? 'C:/work/app' : '/work/app', tasks: { t: task } }] },
+        })
+        const parsed = parseConfig(text, { FAKE: 'v' }, process.execPath, platform)
+        assert.ok(parsed.ok, JSON.stringify(task))
+        assert.equal(
+          roots.taskProblem(task as Record<string, unknown>, windows, 10) !== undefined,
+          parsed.config.workspace === undefined,
+          `${platform} ${JSON.stringify(task)}`,
+        )
+      }
+  })
+
+  it('has the task keys of parseTasks: each key is taken, any other is refused', () => {
+    const parse = (task: unknown) =>
+      parseConfig(
+        JSON.stringify({ mcpServers: {}, workspace: { roots: [{ path: '/work/app', tasks: { t: task } }] } }),
+        {},
+        process.execPath,
+        'linux',
+      )
+    const all = { command: 'node', args: ['a'], cwd: '.', timeoutSeconds: 5, env: { K: 'v' } }
+    assert.deepEqual(Object.keys(all), roots.TASK_KEYS)
+    for (const key of roots.TASK_KEYS) {
+      const one = parse({ command: 'node', [key]: (all as Record<string, unknown>)[key] })
+      assert.equal(one.ok && one.config.workspace !== undefined, true, key)
+    }
+    const extra = parse({ ...all, shell: true })
+    assert.equal(extra.ok && extra.config.workspace === undefined, true)
+  })
+
+  it('gives the same answer as the core on every row, reason text included', () => {
+    for (const platform of ['linux', 'darwin', 'win32'])
+      for (const [real, home] of rows)
+        assert.equal(
+          roots.rootProblem(real, home, platform),
+          coreRootProblem(real, home, platform),
+          `${platform} ${JSON.stringify([real, home])}`,
+        )
+  })
+})
+
+describe('plugin config helper: workspace', () => {
+  const FIXED = ['mcpServers', 'policy', 'sandbox', 'share']
+  let home: string
+  before(() => {
+    home = fs.mkdtempSync(path.join(dir, 'home-'))
+  })
+
+  const ws = (...args: string[]) => runWith({ HOME: home, USERPROFILE: home }, ...args)
+  const folder = (name: string) => {
+    const made = path.join(dir, 'work', `${n++}-${name}`)
+    fs.mkdirSync(made, { recursive: true })
+    return made
+  }
+  const slash = (text: string) => text.replaceAll('\\', '/')
+  const real = (text: string) => slash(fs.realpathSync.native(text))
+  const section = (file: string) => JSON.parse(read(file)).workspace
+  const valid = (file: string) => {
+    const parsed = parseConfig(read(file), {}, process.execPath, process.platform)
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
+    const entry = parsed.config.servers.get('workspace')
+    assert.ok(parsed.config.workspace !== undefined, JSON.stringify(entry))
+  }
+  const taskFile = (value: unknown) => makeEntry(value)
+  const TASK = {
+    command: 'fake-cmd-secret',
+    args: ['fake-arg-789'],
+    env: { TOKEN: 'fake-secret-123' },
+    cwd: 'fake-dir',
+  }
+
+  it('adds a root under its real path, makes the config, and the file passes parseConfig', () => {
+    const file = path.join(dir, `new-${n++}`, 'config.json')
+    const app = folder('app')
+    const { code, out } = ws(file, 'workspace', 'add', app)
+    assert.equal(code, 0, out)
+    assert.deepEqual(JSON.parse(read(file)), {
+      mcpServers: {},
+      policy: [],
+      workspace: { roots: [{ path: real(app) }] },
+    })
+    assert.equal(out.trim(), `${JSON.stringify(real(app))}  read-only`)
+    valid(file)
+  })
+
+  it('stores a path with spaces whole, and remove finds it with the same text', () => {
+    const file = makeConfig()
+    const app = folder('my app')
+    assert.equal(ws(file, 'workspace', 'add', app).code, 0)
+    assert.equal(section(file).roots[0].path, real(app))
+    assert.equal(ws(file, 'workspace', 'remove', app).code, 0)
+    assert.equal(section(file), undefined)
+  })
+
+  it('converges: the same folder again, with a trailing separator, or in another case, changes nothing', () => {
+    const file = makeConfig()
+    const app = folder('app')
+    assert.equal(ws(file, 'workspace', 'add', app).code, 0)
+    const before = read(file)
+    const variants = [app, `${app}/`, `${app}${path.sep}`]
+    if (process.platform === 'win32' || process.platform === 'darwin') variants.push(app.toUpperCase())
+    for (const variant of variants) {
+      const { code, out } = ws(file, 'workspace', 'add', variant)
+      assert.equal(code, 0, variant)
+      assert.equal(out.trim(), 'already a root')
+      assert.equal(read(file), before)
+    }
+  })
+
+  it('adds a folder inside a root and a folder that holds a root, with one note each', () => {
+    const file = makeConfig()
+    const outer = folder('outer')
+    const inner = path.join(outer, 'inner')
+    fs.mkdirSync(inner)
+    assert.equal(ws(file, 'workspace', 'add', outer).code, 0)
+    const inside = ws(file, 'workspace', 'add', inner)
+    assert.equal(inside.code, 0)
+    assert.match(inside.out, /^Note: the new root is inside a root that exists\./)
+    const other = makeConfig()
+    assert.equal(ws(other, 'workspace', 'add', inner).code, 0)
+    const holds = ws(other, 'workspace', 'add', outer)
+    assert.equal(holds.code, 0)
+    assert.match(holds.out, /^Note: the new root holds a root that exists\./)
+    valid(file)
+    valid(other)
+  })
+
+  it('keeps every other key and the entries of the section', () => {
+    const first = folder('first')
+    const extra = { exclude: ['*.sqlite'], skip: ['tmp'] }
+    const file = makeConfig(
+      JSON.stringify({ ...FIXTURE, share: true, workspace: { ...extra, roots: [{ path: real(first), write: true }] } }),
+    )
+    assert.equal(ws(file, 'workspace', 'add', folder('second')).code, 0)
+    const saved = JSON.parse(read(file))
+    for (const key of FIXED)
+      assert.deepEqual(saved[key], key === 'share' ? true : (FIXTURE as Record<string, unknown>)[key])
+    assert.deepEqual(saved.workspace.roots[0], { path: real(first), write: true })
+    assert.equal(saved.workspace.roots.length, 2)
+    assert.deepEqual({ exclude: saved.workspace.exclude, skip: saved.workspace.skip }, extra)
+    valid(file)
+  })
+
+  it('refuses a folder that the core refuses, a missing one and a bad one, with the file as it was', () => {
+    const file = makeConfig()
+    const before = read(file)
+    const file2 = path.join(dir, `a-file-${n++}`)
+    fs.writeFileSync(file2, 'x')
+    const gitPart = folder('g')
+    const hidden = path.join(gitPart, '.git')
+    fs.mkdirSync(hidden)
+    const holder = path.dirname(home)
+    const cases: [string, RegExp][] = [
+      [home, /The folder is refused: it is your home folder or holds it\. config\.mjs wrote nothing\.$/],
+      [holder, /holds it/],
+      [hidden, /The folder is refused: a part of its path has a name that Workspace never opens/],
+      [file2, /not a folder/],
+      [path.join(dir, 'missing-folder'), /does not exist/],
+      ['relative/app', /absolute path/],
+      ['${HOME}/app', /absolute path/],
+    ]
+    if (process.platform === 'win32') cases.push([path.parse(dir).root, /drive or file system root/])
+    else cases.push(['/', /drive or file system root/])
+    for (const [text, pattern] of cases) {
+      const { code, err } = ws(file, 'workspace', 'add', text)
+      assert.equal(code, 1, text)
+      assert.match(err.trim(), pattern, text)
+      assert.match(err.trim(), /config\.mjs wrote nothing\.$/, text)
+      assert.equal(read(file), before)
+    }
+  })
+
+  it('refuses a section that it cannot add to, and a server named workspace, with the file as it was', () => {
+    const app = folder('app')
+    const bad: [unknown, RegExp][] = [
+      [{ ...FIXTURE, mcpServers: { workspace: { command: 'node' } } }, /key workspace/],
+      [{ ...FIXTURE, workspace: [] }, /key workspace must be an object/],
+      [{ ...FIXTURE, workspace: { roots: {} } }, /workspace\.roots must be an array/],
+      [{ ...FIXTURE, workspace: { roots: ['/x'] } }, /workspace\.roots\[0\] must be an object/],
+      [{ ...FIXTURE, workspace: { roots: [{ path: 5 }] } }, /string "path"/],
+    ]
+    for (const [config, pattern] of bad) {
+      const file = makeConfig(JSON.stringify(config))
+      const before = read(file)
+      const { code, err } = ws(file, 'workspace', 'add', app)
+      assert.equal(code, 1, JSON.stringify(config))
+      assert.match(err, pattern)
+      assert.equal(read(file), before)
+    }
+  })
+
+  it('refuses the 17th root, and still answers "already a root" at 16', () => {
+    const paths = Array.from({ length: 16 }, (_, i) => real(folder(`r${i}`)))
+    const file = makeConfig(JSON.stringify({ workspace: { roots: paths.map(p => ({ path: p })) } }))
+    const before = read(file)
+    const { code, err } = ws(file, 'workspace', 'add', folder('seventeen'))
+    assert.equal(code, 1)
+    assert.match(err, /16/)
+    assert.equal(read(file), before)
+    assert.equal(ws(file, 'workspace', 'add', paths[3]!).out.trim(), 'already a root')
+    assert.equal(read(file), before)
+  })
+
+  it('prints off for no section, and lists roots, grants, task names and counts only', () => {
+    const file = makeConfig()
+    assert.equal(ws(file, 'workspace').out.trim(), 'workspace: off')
+    const app = real(folder('app'))
+    const config = {
+      ...FIXTURE,
+      workspace: {
+        roots: [{ path: app, write: true, tasks: { test: TASK, Bad: TASK, Worse: TASK } }, { path: '${FAKE_ROOT}' }],
+        exclude: ['fake-glob-1', 'fake-glob-2'],
+        skip: ['fake-skip'],
+      },
+    }
+    const shown = makeConfig(JSON.stringify(config))
+    const { code, out } = ws(shown, 'workspace')
+    assert.equal(code, 0)
+    assert.deepEqual(out.trim().split('\n'), [
+      `${JSON.stringify(app)}  write  tasks: test, 2 invalid names`,
+      '"${FAKE_ROOT}"  read-only',
+      'exclude: 2 globs',
+      'skip: 1 name',
+    ])
+    for (const text of [...SECRETS, 'fake-cmd-secret', 'fake-dir', 'fake-glob', 'fake-skip', 'Bad'])
+      assert.ok(!out.includes(text), text)
+  })
+
+  it('removes a root with its grant and tasks, and the whole section with the last root', () => {
+    const a = real(folder('a'))
+    const b = real(folder('b'))
+    const file = makeConfig(
+      JSON.stringify({
+        ...FIXTURE,
+        workspace: { roots: [{ path: a, write: true, tasks: { test: TASK } }, { path: b }], exclude: ['*.x'] },
+      }),
+    )
+    assert.equal(ws(file, 'workspace', 'remove', a).code, 0)
+    assert.deepEqual(section(file), { roots: [{ path: b }], exclude: ['*.x'] })
+    const { code, out } = ws(file, 'workspace', 'remove', b)
+    assert.equal(code, 0)
+    assert.equal(out.trim(), 'workspace: off')
+    const saved = JSON.parse(read(file))
+    assert.equal(saved.workspace, undefined)
+    assert.deepEqual(saved.mcpServers, FIXTURE.mcpServers)
+    assert.deepEqual(saved.policy, FIXTURE.policy)
+  })
+
+  it('removes a root whose folder is gone, found by its text', () => {
+    const file = makeConfig(
+      JSON.stringify({ workspace: { roots: [{ path: 'C:/gone/App' }, { path: '${FAKE_ROOT}/x' }] } }),
+    )
+    // On Windows \ separates parts. Elsewhere it is a letter of a name, so the same text finds no root.
+    const gone = process.platform === 'win32' ? 'C:\\gone\\App' : 'C:/gone/App'
+    assert.equal(ws(file, 'workspace', 'remove', gone).code, 0)
+    assert.equal(ws(file, 'workspace', 'remove', '${FAKE_ROOT}/x').code, 0)
+    assert.equal(section(file), undefined)
+  })
+
+  it(
+    'reads \\ as a letter of a name outside Windows, so a backslash text finds no root',
+    { skip: process.platform === 'win32' },
+    () => {
+      const file = makeConfig(JSON.stringify({ workspace: { roots: [{ path: 'C:/gone/App' }] } }))
+      const before = read(file)
+      assert.equal(ws(file, 'workspace', 'remove', 'C:\\gone\\App').code, 1)
+      assert.equal(read(file), before)
+    },
+  )
+
+  it('sets and unsets the write grant and keeps the rest of the entry', () => {
+    const app = real(folder('app'))
+    const entry = { path: app, tasks: { test: TASK } }
+    const file = makeConfig(JSON.stringify({ mcpServers: {}, workspace: { roots: [entry] } }))
+    for (const args of [[app], [app, 'true']]) {
+      assert.equal(ws(file, 'workspace', 'write', ...args).code, 0)
+      assert.deepEqual(section(file).roots[0], { ...entry, write: true })
+    }
+    const { out } = ws(file, 'workspace', 'write', app, 'false')
+    assert.deepEqual(section(file).roots[0], entry)
+    assert.match(out, /read-only {2}tasks: test/)
+    valid(file)
+  })
+
+  it('sets a task, replaces it with a line that says so, and prints no command, argument or variable', () => {
+    const app = real(folder('app'))
+    const file = makeConfig(JSON.stringify({ ...FIXTURE, workspace: { roots: [{ path: app }] } }))
+    const first = ws(file, 'workspace', 'task', app, 'test', taskFile(TASK))
+    assert.equal(first.code, 0, first.err)
+    assert.match(first.out, /^Set the task "test"\./)
+    assert.deepEqual(section(file).roots[0].tasks.test, TASK)
+    const other = { command: 'node', args: ['--test'], timeoutSeconds: 5 }
+    const second = ws(file, 'workspace', 'task', app, 'test', taskFile({ ...other, env: { K: 'fake-header-456' } }))
+    assert.match(second.out, /^Replaced the task "test"\./)
+    assert.equal(section(file).roots[0].tasks.test.command, 'node')
+    for (const out of [first.out, second.out]) {
+      for (const text of [...SECRETS, 'fake-cmd-secret', 'fake-dir', '--test', 'timeoutSeconds'])
+        assert.ok(!out.includes(text), text)
+    }
+    assert.deepEqual(JSON.parse(read(file)).mcpServers, FIXTURE.mcpServers)
+    valid(file)
+  })
+
+  it('refuses a bad task file, name or count, with the file as it was', () => {
+    const app = real(folder('app'))
+    const tasks = Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`t${i}`, { command: 'node' }]))
+    const file = makeConfig(JSON.stringify({ workspace: { roots: [{ path: app, tasks }] } }))
+    const before = read(file)
+    const notJson = path.join(dir, `not-json-${n++}`)
+    fs.writeFileSync(notJson, '{ no')
+    const cases: [string, string][] = [
+      ['t0', taskFile({ command: 5 })],
+      ['t0', taskFile({ command: '' })],
+      ['t0', taskFile({ command: 'node', shell: true })],
+      ['t0', taskFile({ command: 'node', args: [1] })],
+      ['t0', taskFile({ command: 'node', args: 'x' })],
+      ['t0', taskFile(['node'])],
+      ['t0', notJson],
+      ['t0', path.join(dir, 'no-such-task.json')],
+      ['Test!', taskFile({ command: 'node' })],
+      ['x'.repeat(33), taskFile({ command: 'node' })],
+      ['t33', taskFile({ command: 'node' })],
+    ]
+    for (const [name, task] of cases) {
+      const { code } = ws(file, 'workspace', 'task', app, name, task)
+      assert.equal(code, 1, name)
+      assert.equal(read(file), before)
+    }
+    assert.equal(ws(file, 'workspace', 'task', app, 't0', taskFile({ command: 'node', args: ['a'] })).code, 0)
+  })
+
+  // The review of #156: a task that parseConfig refuses turns the whole section off, the new root included.
+  it('refuses a bad cwd, env or args of a task with the file as it was, and accepts a good one', () => {
+    const app = real(folder('app'))
+    const file = makeConfig(JSON.stringify({ mcpServers: {}, workspace: { roots: [{ path: app }] } }))
+    const before = read(file)
+    const bad: unknown[] = [
+      { command: 'node', cwd: '../other' },
+      { command: 'node', cwd: './packages/app' },
+      { command: 'node', cwd: 'packages/app/' },
+      { command: 'node', cwd: 'packages\\app' },
+      { command: 'node', env: { CI: 1 } },
+      { command: 'node', env: { 'BAD-NAME': 'v' } },
+      { command: 'node', args: Array.from({ length: 65 }, () => 'a') },
+      { command: 'node', args: ['a'.repeat(4097)] },
+      { command: 'node', args: ['${not a name}'] },
+    ]
+    for (const task of bad) {
+      const { code, err } = ws(file, 'workspace', 'task', app, 'test', taskFile(task))
+      assert.equal(code, 1, JSON.stringify(task))
+      assert.match(err, /config\.mjs wrote nothing\.$/m)
+      assert.equal(read(file), before)
+    }
+    const good = { command: 'node', args: ['--test'], cwd: 'packages/app', env: { CI: '1' } }
+    assert.equal(ws(file, 'workspace', 'task', app, 'test', taskFile(good)).code, 0)
+    valid(file)
+  })
+
+  it('refuses a task that turns the section off, and accepts a full path that parseConfig takes', () => {
+    const app = real(folder('app'))
+    const file = makeConfig(
+      JSON.stringify({ mcpServers: {}, sandbox: { callTimeoutSeconds: 10 }, workspace: { roots: [{ path: app }] } }),
+    )
+    const before = read(file)
+    const bad: unknown[] = [
+      { command: './gradlew' },
+      { command: 'tools\\gradle' },
+      { command: 'sub/gradle' },
+      { command: 'no\u0007bell' },
+      { command: 'node', timeoutSeconds: 11 },
+      { command: 'node', timeoutSeconds: 0 },
+      { command: 'node', timeoutSeconds: 1.5 },
+      { command: 'node', timeoutSeconds: '5' },
+    ]
+    for (const task of bad) {
+      const { code, err } = ws(file, 'workspace', 'task', app, 'test', taskFile(task))
+      assert.equal(code, 1, JSON.stringify(task))
+      assert.match(err, /config\.mjs wrote nothing\.$/m)
+      assert.equal(read(file), before)
+    }
+    const good = { command: slash(process.execPath), args: ['--test'], timeoutSeconds: 10 }
+    assert.equal(ws(file, 'workspace', 'task', app, 'test', taskFile(good)).code, 0)
+    valid(file)
+    const parsed = parseConfig(read(file), {}, process.execPath, process.platform)
+    assert.ok(parsed.ok && parsed.config.workspace?.roots[0]?.tasks?.length === 1)
+  })
+
+  it('fails on a missing config for every command but add, and makes no file', () => {
+    const absent = path.join(dir, `absent-${n++}`, 'config.json')
+    const app = folder('app')
+    const task = taskFile({ command: 'node' })
+    for (const args of [[], ['remove', app], ['write', app], ['task', app, 'test', task]]) {
+      assert.equal(ws(absent, 'workspace', ...args).code, 1, args.join(' '))
+    }
+    assert.equal(fs.existsSync(path.dirname(absent)), false)
+  })
+
+  it('fails with no section or an unknown root, with the file as it was', () => {
+    const app = folder('app')
+    const file = makeConfig()
+    const before = read(file)
+    for (const args of [
+      ['remove', app],
+      ['write', app],
+      ['task', app, 'test', taskFile({ command: 'node' })],
+    ])
+      assert.equal(ws(file, 'workspace', ...args).code, 1)
+    const withRoot = makeConfig(JSON.stringify({ workspace: { roots: [{ path: real(folder('other')) }] } }))
+    const before2 = read(withRoot)
+    assert.equal(ws(withRoot, 'workspace', 'remove', app).code, 1)
+    assert.equal(read(file), before)
+    assert.equal(read(withRoot), before2)
+  })
+
+  it('exits 2 for a usage error and leaves the file as it was', () => {
+    const app = folder('app')
+    const file = makeConfig()
+    const before = read(file)
+    for (const args of [
+      ['unknown'],
+      ['add'],
+      ['add', app, 'more'],
+      ['remove'],
+      ['write'],
+      ['write', app, 'yes'],
+      ['write', app, 'true', 'more'],
+      ['task', app, 'test'],
+      ['task', app, 'test', 'x', 'more'],
+    ])
+      assert.equal(ws(file, 'workspace', ...args).code, 2, args.join(' '))
+    assert.equal(read(file), before)
+  })
+
+  it(
+    'accepts a path with backslashes and a drive letter, and stores it with /',
+    { skip: process.platform !== 'win32' },
+    () => {
+      const file = makeConfig()
+      const app = folder('app').replaceAll('/', '\\')
+      assert.equal(ws(file, 'workspace', 'add', app).code, 0)
+      assert.equal(section(file).roots[0].path, real(app))
+      assert.ok(!section(file).roots[0].path.includes('\\'))
+      assert.equal(ws(file, 'workspace', 'add', app.toLowerCase()).out.trim(), 'already a root')
+    },
+  )
 })

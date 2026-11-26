@@ -1,4 +1,4 @@
-// The user docs (README.md, FAQ.md and the setup, start and doctor skills) follow the rules in
+// The user docs (README.md, FAQ.md and the setup, start, doctor and workspace skills) follow the rules in
 // CODING_STANDARDS.md, section "Docs".
 //
 // Checked here: front matter and H1, GitHub-safe MDX, the mechanical
@@ -22,6 +22,7 @@ const USER_DOCS = [
   'plugin/skills/setup/SKILL.md',
   'plugin/skills/start/SKILL.md',
   'plugin/skills/doctor/SKILL.md',
+  'plugin/skills/workspace/SKILL.md',
 ].map(f => path.join(ROOT, f))
 // Not written to the STE rules, but their links must keep working.
 const LINK_ONLY = ['AGENTS.md', 'CODING_STANDARDS.md', 'CONTRIBUTING.md', 'SECURITY.md'].map(f => path.join(ROOT, f))
