@@ -1058,6 +1058,14 @@ describe('the check before a run', () => {
     assert.deepEqual(called, [])
   })
 
+  test('a name built at run time that edit distance misses gets the likely name, as the check before a run does', async () => {
+    const { run } = setup()
+    const r = await run('try { await call("mcp__f__" + "item_lookup", {}) } catch (e) { return e.message }')
+    const want =
+      'no tool "mcp__f__item_lookup" on the connected server "f" (likely: "mcp__f__item"). If none fits, find its tools with search_tools'
+    assert.ok(r.text.includes(JSON.stringify(want)), r.text)
+  })
+
   test('a tool of a server that failed or is connecting gets the state of its server, not a guess', async () => {
     const { run, called } = setup({
       others: [
