@@ -163,6 +163,12 @@ const withLength = (body: Uint8Array, littleEndian: boolean): Uint8Array => {
   return out
 }
 
+/**
+ * The stop frame for the Windows helper: a length of 0. The helper ends every process of the job of the running task, waits
+ * until none is alive (at most 2 s), then reports `exit`. It stays ready for the next task.
+ */
+export const WINDOWS_STOP_FRAME: Uint8Array = new Uint8Array(4)
+
 /** The frame for the Windows helper: 4-byte length, then these fields with a NUL between them, then the environment pairs. */
 export const windowsFrame = (
   fields: {

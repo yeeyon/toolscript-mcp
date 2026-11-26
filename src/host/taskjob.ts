@@ -15,7 +15,16 @@ import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TASK_ENV_NAMES } from '../core/task.ts'
-import { decide, parseReport, posixFrame, prctlNumber, windowsEnv, windowsFrame, type Report } from '../core/taskjob.ts'
+import {
+  decide,
+  parseReport,
+  posixFrame,
+  prctlNumber,
+  WINDOWS_STOP_FRAME,
+  windowsEnv,
+  windowsFrame,
+  type Report,
+} from '../core/taskjob.ts'
 
 /** The helper scripts. `import.meta.url` gives the same folder in `src/host/` and in `dist/host/main.js`, as `RUNNER` does. */
 export const TASK_JOB = fileURLToPath(new URL('../../runtime/task-job.ps1', import.meta.url))
@@ -410,7 +419,10 @@ export const createJobHost = (options: {
         died(h)
       }
       return {
-        stop: end,
+        // The helper ends the tree, waits until it is gone and reports `exit`; the runner kills it after KILL_WAIT_MS if it does not.
+        stop: () => {
+          if (h.current?.hooks === hooks && h.state === 'busy') h.proc.stdin?.write(WINDOWS_STOP_FRAME)
+        },
         kill: () => {
           end()
           release()

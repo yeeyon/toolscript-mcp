@@ -38,9 +38,11 @@ if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
 Crumb ('compiling at ' + $sw.ElapsedMilliseconds + 'ms')
 $source = @'
 using System;
+using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 public static class TsHost {
   [StructLayout(LayoutKind.Sequential)]
@@ -66,6 +68,9 @@ public static class TsHost {
   [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
   [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
   [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr h, uint code);
+  [DllImport("kernel32.dll")] static extern bool TerminateJobObject(IntPtr j, uint code);
+  [StructLayout(LayoutKind.Sequential)] struct ACCOUNTING { public long a, b, c, d; public uint faults, total, active, terminated; }
+  [DllImport("kernel32.dll")] static extern bool QueryInformationJobObject(IntPtr j, int c, out ACCOUNTING i, uint l, IntPtr r);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
   [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int which);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
@@ -89,6 +94,38 @@ public static class TsHost {
     return CreateFileW(name, access, 3, ref sa, 3, 0, IntPtr.Zero);
   }
 
+  // One thread reads the frames for the life of the helper, so a stop frame (length 0) reaches it while a task runs.
+  static readonly BlockingCollection<string[]> frames = new BlockingCollection<string[]>();
+  static readonly object gate = new object();
+  static IntPtr live = IntPtr.Zero; // the job of the running task
+  static int enqueued = 0, pendingFor = -1;
+  // Ends every process of the job and waits until none is alive (at most 2 s), so a report of the end means a tree that is gone.
+  static void Reap(IntPtr job) {
+    ACCOUNTING info;
+    uint size = (uint)Marshal.SizeOf(typeof(ACCOUNTING));
+    bool killed = QueryInformationJobObject(job, 1, out info, size, IntPtr.Zero) && info.active > 0;
+    TerminateJobObject(job, 1);
+    for (int waited = 0; waited < 2000; waited += 10) {
+      if (!QueryInformationJobObject(job, 1, out info, size, IntPtr.Zero) || info.active == 0) break;
+      Thread.Sleep(10);
+    }
+    // A process that is gone can still hold its folder as its cwd for a few ms while Windows closes its handles (8 ms measured).
+    if (killed) Thread.Sleep(50);
+  }
+  static void Reader() {
+    for (;;) {
+      int size = BitConverter.ToInt32(Take(4), 0);
+      if (size == 0) {
+        lock (gate) { if (live != IntPtr.Zero) Reap(live); else pendingFor = enqueued; }
+        continue;
+      }
+      if (size < 0 || size > 4194304) Environment.Exit(6);
+      string[] fields = Encoding.UTF8.GetString(Take(size)).Split('\0');
+      lock (gate) { enqueued++; }
+      frames.Add(fields);
+    }
+  }
+
   public static void Serve(NamedPipeClientStream connected) {
     // No handle of the helper is inherited by a task: not the frame pipe on standard input, and not the other two.
     foreach (int which in new int[] { -10, -11, -12 }) {
@@ -98,11 +135,12 @@ public static class TsHost {
     input = Console.OpenStandardInput();
     pipe = connected;
     IntPtr bad = new IntPtr(-1);
+    Thread reader = new Thread(Reader);
+    reader.IsBackground = true;
+    reader.Start();
     Say("ready");
-    for (;;) {
-      int size = BitConverter.ToInt32(Take(4), 0);
-      if (size <= 0 || size > 4194304) Environment.Exit(6);
-      string[] parts = Encoding.UTF8.GetString(Take(size)).Split('\0');
+    for (int number = 1; ; number++) {
+      string[] parts = frames.Take();
       if (parts.Length < 5) { Say("failed:frame"); Environment.Exit(4); }
       IntPtr job = CreateJobObjectW(IntPtr.Zero, IntPtr.Zero);
       EXT limits = new EXT();
@@ -125,6 +163,8 @@ public static class TsHost {
       CloseHandle(nul); CloseHandle(output); CloseHandle(error);
       if (!made) { CloseHandle(job); Say("error:" + problem); continue; }
       if (!AssignProcessToJobObject(job, pi.hProcess)) { TerminateProcess(pi.hProcess, 1); Say("failed:assign"); Environment.Exit(4); }
+      // A stop frame that came before the task was in the job ends it now; it ran no code yet.
+      lock (gate) { live = job; if (pendingFor == number) Reap(job); }
       Say("begin");
       ResumeThread(pi.hThread);
       CloseHandle(pi.hThread);
@@ -133,7 +173,8 @@ public static class TsHost {
       uint code;
       GetExitCodeProcess(pi.hProcess, out code);
       CloseHandle(pi.hProcess);
-      CloseHandle(job); // ends what the task left behind, so no process holds the streams of the task
+      // Ends what the task left behind and waits until it is gone, so no process holds the streams or the folder of the task.
+      lock (gate) { Reap(job); live = IntPtr.Zero; CloseHandle(job); }
       Say("exit:" + code);
     }
   }

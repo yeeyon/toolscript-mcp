@@ -648,11 +648,12 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
       halted = true
       const running = [...live]
       for (const one of running) one.kill()
-      host?.close()
+      // The helper ends each tree and reports before it is closed: a shutdown also leaves no process of a task behind.
       await Promise.race([
         Promise.allSettled(running.map(one => one.done)),
         new Promise(resolve => setTimeout(resolve, KILL_WAIT_MS * 2).unref()),
       ])
+      host?.close()
     },
   }
 }

@@ -1356,7 +1356,7 @@ describe('run_task: the warm helper of Windows', { skip: !win }, () => {
     assert.equal(runner.helperPid(), pid, 'one helper pid for both tasks')
   })
 
-  test('a task after a time limit runs on a new helper, started at once', async t => {
+  test('a time limit ends the tree through the helper, which waits for it and stays for the next task', async t => {
     const dir = folders(t)()
     const runner = createTaskRunner({
       valid: [resolved(dir, 'hang', ['sleep'], { timeoutMs: 1000 }), resolved(dir, 'out', ['exit', '0'])],
@@ -1367,10 +1367,9 @@ describe('run_task: the warm helper of Windows', { skip: !win }, () => {
     const first = runner.helperPid()!
     const hung = await runner.run('hang', new AbortController().signal)
     assert.equal(hung.timedOut, true)
-    assert.ok(await gone(first), 'the helper that held the job ended')
-    assert.ok(await until(() => runner.helperPid() !== undefined), 'the next helper started off the path of a call')
-    assert.notEqual(runner.helperPid(), first)
+    assert.equal(runner.helperPid(), first, 'the stop frame ended the job, not the helper')
     assert.equal((await runner.run('out', new AbortController().signal)).exitCode, 0)
+    assert.equal(runner.helperPid(), first, 'the next task ran on the same helper')
   })
 
   test('the helper ends after the idle time, and a task after that starts a new one', async t => {

@@ -22,17 +22,16 @@ export const tempDir = (): string =>
 
 /** Removes a folder. A process that Windows still ends can hold it for a moment, so a busy folder is tried again. */
 export const rm = (dir: string): void => {
-  // The loop is here and not in `rmSync`: the `maxRetries` of Node 22.13 does not cover an EBUSY of the folder itself (the
-  // first `rmdir` in `rimrafSync` is not in its retry loop), so a folder that a dying process holds as its cwd failed the
-  // `t.after` hook, which skipped the hooks after it, and the helper pipes of the test kept the process alive.
+  // The `maxRetries` of Node 22.13 does not cover an EBUSY of the folder itself (the first `rmdir` is not in its retry loop).
+  // Windows keeps the cwd of a process that is gone for a few ms (8 ms measured: the pid was gone, `rmdir` still EBUSY), and
+  // a failed hook skips the hooks after it, which left helper pipes open. The tests check that the tree is gone with `gone`.
   for (let tries = 0; ; tries++) {
     try {
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 })
       return
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (tries >= 40 || (code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY')) throw error
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+      if (tries >= 200 || (error as NodeJS.ErrnoException).code !== 'EBUSY') throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
     }
   }
 }
