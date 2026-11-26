@@ -333,6 +333,10 @@ export type Asks = { readonly ask: readonly string[]; readonly interactive: read
  * string literals: refused when a deny rule matches one of them, else the
  * names that need the person's approval (none: the run starts at once).
  * `interactive` holds the tools whose server requires a person on every call.
+ * `mentions` are tool names that the program writes as plain strings outside
+ * call("…"): they only add to `ask` and `interactive`, after the names of
+ * `calls`. A denied mention is in neither list and never refuses the run: its
+ * call gets the deny at call time.
  */
 export type Plan =
   | { readonly kind: 'refused'; readonly denied: readonly { readonly call: LiteralCall; readonly rule: Rule }[] }
@@ -343,13 +347,15 @@ export const planRun = (
   guards: Guards,
   calls: readonly LiteralCall[],
   interactive: ReadonlySet<string>,
+  mentions: readonly string[] = [],
 ): Plan => {
   const denied = calls.flatMap(call => {
     const { action, rule } = decide(policy, guards, call.tool)
     return action === 'deny' && rule !== undefined ? [{ call, rule }] : []
   })
   if (denied.length > 0) return { kind: 'refused', denied }
-  const tools = [...new Set(calls.map(c => c.tool))]
+  const mentioned = mentions.filter(tool => decide(policy, guards, tool).action !== 'deny')
+  const tools = [...new Set([...calls.map(c => c.tool), ...mentioned])]
   return {
     kind: 'run',
     ask: tools.filter(tool => !interactive.has(tool) && decide(policy, guards, tool).action === 'ask'),
@@ -400,7 +406,11 @@ export const checkCall = (
       : needs(tool, guards) !== undefined
         ? `an ${changeRule}, such as ${allowRule(tool)}`
         : `no policy rule allows ${tool}`
-  return { ok: false, error: `not approved: ${missing}, and the person did not approve it for this run`, needs: 'rule' }
+  return {
+    ok: false,
+    error: `not approved: ${missing}, and the person was not asked about ${tool} for this run`,
+    needs: 'rule',
+  }
 }
 
 /**
@@ -494,7 +504,7 @@ export const refusedReport = ({ ask, interactive }: Asks, why: Refusal): string 
       ? 'Error: the program did not run, because the person did not approve the tools that need approval. No call was made.'
       : 'Error: the program did not run, because some tools need approval and this MCP client cannot ask the person. No call was made.'
   const canAsk = why === 'decline'
-  return [head, approvalNote(ask, canAsk), interactiveNote(interactive, canAsk ? 'declined' : 'cannot-ask')]
+  return [head, approvalNote(ask, canAsk, canAsk), interactiveNote(interactive, canAsk ? 'declined' : 'cannot-ask')]
     .filter(t => t !== '')
     .join('\n\n')
 }
@@ -542,16 +552,19 @@ const askNextRun = (tools: readonly string[], written: ReadonlySet<string>): str
 /**
  * The note after calls that the policy did not allow and nobody approved.
  * Only the person can add the allow rule. With a client that can ask, a tool
- * name written as a string in call() gets asked before the next run, and the
+ * name written as a plain string (in call() or elsewhere) gets asked before the next run, and the
  * person approves the new rule in a prompt. Without one, the new rule is a
  * looser policy that waits for a restart.
  */
-export const approvalNote = (tools: readonly string[], canAsk: boolean): string => {
+export const approvalNote = (tools: readonly string[], canAsk: boolean, declined = false): string => {
   if (tools.length === 0) return ''
   const one = tools.length === 1
-  const ask = canAsk
+  // After a decline the person has answered: no instruction to run again.
+  const ask = declined
     ? ` A tool name written as a string in call("…") is asked before the run. A name built while the program runs is not.`
-    : ''
+    : canAsk
+      ? ` A name built while the program runs is never asked. To ask the person, put the tool name in a string directly inside call("…"), or as a whole plain string in the program, and run again.`
+      : ''
   const restart = canAsk
     ? ''
     : ' This MCP client cannot ask the person, so the new rule applies only after they restart toolscript-mcp.'

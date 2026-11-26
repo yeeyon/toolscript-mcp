@@ -52,6 +52,7 @@ import {
   limiter,
   literalCalls,
   mcpReply,
+  mentionedTools,
   notListedText,
   problemReport,
   recallReply,
@@ -268,7 +269,9 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   const problems = checkCalls(literal, known, tool => specs.get(tool), {}, down)
   if (problems.length > 0) return refuse(problemReport(problems))
 
-  const plan = planRun(policy, guards, literal, interactiveTools(states))
+  // A name in a plain string that the program may pass to `call` by a variable is asked too, when a person can answer.
+  const mentions = ctx.canAsk() ? mentionedTools(code, known).filter(t => isCallable(t, SERVER_NAME)) : []
+  const plan = planRun(policy, guards, literal, interactiveTools(states), mentions)
   if (plan.kind === 'refused') return refuse(deniedReport(plan.denied))
   if (plan.ask.length + plan.interactive.length > 0) {
     const answer = ctx.canAsk() ? await ctx.ask(plan, code) : 'unsupported'
@@ -276,7 +279,7 @@ const attempt = async (ctx: RunContext, code: string): Promise<Attempt> => {
   }
   if (ctx.signal.aborted) return refuse('Error: the server is shutting down. The program did not run.')
   const approved = new Set([...plan.ask, ...plan.interactive])
-  const ran = await execute(ctx, code, approved, new Set(literal.map(c => c.tool)), known)
+  const ran = await execute(ctx, code, approved, new Set([...literal.map(c => c.tool), ...mentions]), known)
   return { ...ran, result: { ...ran.result, text: withNote(ran.result.text) }, known }
 }
 

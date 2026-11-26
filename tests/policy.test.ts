@@ -286,7 +286,7 @@ describe('a tool of a bridge', () => {
     assert.deepEqual(check, {
       ok: false,
       error:
-        'not approved: an allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__, such as {"match": "mcp__claude-code__PublishPlugin", "action": "allow"}, and the person did not approve it for this run',
+        'not approved: an allow rule for a tool of the Claude Code bridge claude-code must start with mcp__claude-code__, such as {"match": "mcp__claude-code__PublishPlugin", "action": "allow"}, and the person was not asked about mcp__claude-code__PublishPlugin for this run',
       needs: 'rule',
     })
     assert.ok(
@@ -445,6 +445,70 @@ describe('the decision before a run', () => {
     })
   })
 
+  test('a mention joins the ask and interactive lists after the literal calls, once, and never refuses', () => {
+    const marked = new Set(['mcp__bench__list_issues'])
+    const mentions = [
+      'mcp__x__z',
+      'mcp__bench__create_ticket',
+      'mcp__bench__list_issues',
+      'mcp__ops__restart',
+      'mcp__x__y',
+    ]
+    assert.deepEqual(planRun(p, NONE, [call('mcp__x__y'), call('mcp__x__y')], marked, mentions), {
+      kind: 'run',
+      ask: ['mcp__x__y', 'mcp__x__z', 'mcp__ops__restart'],
+      interactive: ['mcp__bench__list_issues'],
+    })
+    // a denied mention has no line and no refusal; an allowed one is not asked
+    assert.deepEqual(planRun(p, NONE, [], new Set(), ['mcp__bench__create_ticket', 'mcp__bench__list_issues']), {
+      kind: 'run',
+      ask: [],
+      interactive: [],
+    })
+    // a denied literal call still refuses, whatever the mentions
+    assert.equal(planRun(p, NONE, [call('mcp__bench__create_ticket')], new Set(), ['mcp__x__z']).kind, 'refused')
+  })
+
+  test('no mention gives the same plan as before', () => {
+    const calls = [call('mcp__ops__restart'), call('mcp__bench__list_issues')]
+    assert.deepEqual(planRun(p, NONE, calls, new Set(), []), planRun(p, NONE, calls, new Set()))
+  })
+
+  test('a call that nobody was asked about says so, in each of the four refusals, and the note carries the one instruction', () => {
+    const none = policy()
+    const text = (tool: string, guards: Guards) => {
+      const check = checkCall(none, guards, new Set(), tool, new Set())
+      assert.equal(check.ok, false)
+      return check.ok ? '' : check.error
+    }
+    assert.equal(
+      text('mcp__a__x', NONE),
+      'not approved: no policy rule allows mcp__a__x, and the person was not asked about mcp__a__x for this run',
+    )
+    assert.ok(
+      text('mcp__a__x', guardsOf(new Set(['a' as ServerKey]))).endsWith('was not asked about mcp__a__x for this run'),
+    )
+    assert.ok(
+      text('mcp__workspace__edit', guardsOf(new Set(), true)).includes(
+        'was not asked about mcp__workspace__edit for this run',
+      ),
+    )
+    const exec = text('mcp__workspace__run_task', guardsOf(new Set(), true))
+    assert.ok(exec.includes('must name it exactly'), exec)
+    assert.ok(exec.endsWith('and the person was not asked about mcp__workspace__run_task for this run'), exec)
+    // After a decline the note keeps its text from before: no instruction to run again.
+    assert.equal(
+      refusedReport({ ask: ['mcp__x__y'], interactive: [] }, 'decline'),
+      'Error: the program did not run, because the person did not approve the tools that need approval. No call was made.\n\n## No allow rule\n\nNo policy rule allows mcp__x__y. A tool name written as a string in call("…") is asked before the run. A name built while the program runs is not. If the person wants programs to call this tool with no prompt, ask them to add {"match": "mcp__x__y", "action": "allow"} to "policy" in the toolscript-mcp config. Do not change the config yourself.',
+    )
+    const error = text('mcp__a__x', NONE)
+    assert.ok(!error.includes('did not approve') && !error.includes('call("'), error)
+    const asks = approvalNote(['mcp__a__x'], true)
+    assert.equal(asks.split('run again').length, 2, 'one instruction')
+    assert.ok(!approvalNote(['mcp__a__x'], false).includes('run again'))
+    assert.ok(!approvalNote(['mcp__a__x'], false).includes('is asked'))
+  })
+
   test('a tool whose server requires a person is asked under an allow or ask rule, and a deny rule still denies it', () => {
     const marked = new Set(['mcp__bench__list_issues', 'mcp__ops__restart', 'mcp__bench__create_ticket'])
     assert.deepEqual(
@@ -566,8 +630,14 @@ describe('the check of each nested call', () => {
       note,
     )
     const asks = approvalNote(['mcp__a__x'], true)
-    assert.ok(asks.includes('A tool name written as a string in call("…") is asked before the run.'), asks)
+    assert.ok(
+      asks.includes(
+        'A name built while the program runs is never asked. To ask the person, put the tool name in a string directly inside call("…"), or as a whole plain string in the program, and run again.',
+      ),
+      asks,
+    )
     assert.ok(!asks.includes('restart'), asks)
+    assert.ok(!asks.includes('did not approve'), asks)
   })
 })
 
