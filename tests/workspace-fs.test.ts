@@ -16,6 +16,7 @@ import {
   openConfined,
   readCapped,
   canHoldAliases,
+  readsNames,
   sameFile,
   type Confined,
   type Dir,
@@ -116,6 +117,87 @@ describe('which file systems can hold names that their folder does not list', ()
   test('a type as a bigint or above 2^31 gives the same answer', () => {
     assert.equal(canHoldAliases(BigInt(0xef53)), false)
     assert.equal(canHoldAliases(0xfe534d42), true)
+  })
+})
+
+describe('which part of a path text pays the read of the names', () => {
+  const types = [0xef53, 0x58465342, 0x9123683e, 0x01021994, 0x794c7630, 0x858458f6, 0x2fc12fc1, 0xf2f52010, 0x4d44]
+  test('an ASCII name pays only on a type that can alias, a non-ASCII name pays on every type', () => {
+    for (const type of types) {
+      assert.equal(readsNames(canHoldAliases(type), '.ssh'), canHoldAliases(type), `${type} ascii`)
+      assert.equal(readsNames(canHoldAliases(type), '.ſſh'), true, `${type} non-ASCII`)
+      assert.equal(readsNames(canHoldAliases(type), 'café.txt'), true, `${type} accent`)
+    }
+  })
+})
+
+describe('non-ASCII names on a folder that does not fold (Linux)', () => {
+  const linux = process.platform === 'linux' ? false : 'Linux only'
+
+  test('a name with its own non-ASCII spelling works, and an unlisted one is not-found', { skip: linux }, async t => {
+    const dir = folders(t)()
+    write(dir, {
+      'café.txt': 'cafe bytes\n',
+      'docs/日本語.md': 'nihongo bytes\n',
+      '.ſſh/known_hosts': 'long s bytes\n',
+    })
+    const rig = await rigOf(t, dir)
+    if (rig === undefined) return
+    for (const [name, text] of [
+      ['café.txt', 'cafe bytes'],
+      ['docs/日本語.md', 'nihongo bytes'],
+      ['.ſſh/known_hosts', 'long s bytes'],
+    ] as const) {
+      const read = await rig.call('read', { path: name })
+      assert.equal(read.path, name)
+      assert.match(read.content, new RegExp(text))
+    }
+    assert.equal(codeOf(await rig.fail('read', { path: 'cafë.txt' })), 'not-found')
+    assert.equal(codeOf(await rig.fail('stat', { path: 'docs/日本.md' })), 'not-found')
+  })
+})
+
+// A casefolded folder (ext4 with `chattr +F`, as on Android or a share for SMB clients) opens `.ſſh` as `.ssh`. CI makes
+// an ext4 image with casefold and names a folder on it in the variable.
+const foldBase = process.env.TOOLSCRIPT_TEST_CASEFOLD_DIR
+describe('a casefolded folder opens a name that it does not list (Linux)', () => {
+  const skipWhy =
+    process.platform !== 'linux'
+      ? 'Linux only'
+      : foldBase === undefined
+        ? 'TOOLSCRIPT_TEST_CASEFOLD_DIR does not name a casefolded folder'
+        : false
+
+  test('an excluded name in another spelling is excluded in every tool', { skip: skipWhy }, async t => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(foldBase!, 'ws-fold-')))
+    t.after(() => rm(root))
+    const secret = marker()
+    write(root, { '.ssh/known_hosts': secret, '.aws/credentials': secret, '.env': secret, id_rsa: secret })
+    try {
+      fs.closeSync(fs.openSync(path.join(root, '.ſſh/known_hosts'), 'r'))
+    } catch {
+      // CI makes the volume and sets CI: a volume that does not fold there is a failed step, not a skip.
+      assert.ok(!process.env.CI, 'the casefolded volume does not open .ſſh as .ssh')
+      return void t.skip('this folder does not fold')
+    }
+    const rig = await rigOf(t, root, { write: true })
+    if (rig === undefined) return
+    const hash = sha(Buffer.from(secret))
+    const calls = ['.ſſh/known_hosts', '.awſ/credentials', 'id_rſa', '.ſſh'].flatMap((p): [string, object][] => [
+      ['read', { path: p }],
+      ['stat', { path: p }],
+      ['list', { path: p }],
+      ['search', { query: 'SECRET', path: p }],
+      ['diff', { path: p, content: 'x' }],
+      ['write', { path: p, content: 'x' }],
+      ['edit', { path: p, expectedHash: hash, edits: [{ old: 'SECRET', new: 'x' }] }],
+    ])
+    for (const [tool, args] of calls) {
+      const message = await rig.fail(tool, args as Record<string, unknown>)
+      assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
+      assert.ok(!message.includes(secret), `${tool} shows the bytes`)
+    }
+    assert.equal(fs.readFileSync(path.join(root, '.ssh/known_hosts'), 'utf8'), secret)
   })
 })
 

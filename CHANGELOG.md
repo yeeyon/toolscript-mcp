@@ -2,6 +2,7 @@
 
 ## 1.0.4
 
+- On Linux, Workspace reads the names of a folder for a part of a path that has a non-ASCII character, also on ext4, xfs, tmpfs and the other plain file systems, so on a casefolded folder `.ſſh/known_hosts` no longer opens the excluded `.ssh` (issue #162). An ASCII name still pays nothing on those.
 - A program that calls a tool name that its server does not list, where edit distance finds nothing, now gets up to 2 likely tools of the same server, those that share the rarest name words (issue #171). It saves a `search_tools` call.
 - Workspace `list` and `search` accept one final `/` on a folder `path` (`src/` is `src`, issue #170), so a program that writes `src/` no longer fails. `read`, `stat` and the change tools still refuse it.
 - A built-in Workspace (issue #144) reads the files of one project folder (exclude globs are relative to the entry path), with no Claude Code and no other process. It is off by default. Add a `workspace` section with `roots` to the config. Programs call `mcp__workspace__list`, `search`, `read` and `stat`. The read tools run with no policy rule, each result is untrusted text, and no tool follows a link or reads `.git`, `.env`, secrets or client settings. See "Workspace" in the README.
