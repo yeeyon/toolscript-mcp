@@ -134,7 +134,7 @@ describe('which part of a path text pays the read of the names', () => {
 describe('non-ASCII names on a folder that does not fold (Linux)', () => {
   const linux = process.platform === 'linux' ? false : 'Linux only'
 
-  test('a name with its own non-ASCII spelling works, and an unlisted one is not-found', { skip: linux }, async t => {
+  test('a name with its own non-ASCII spelling works, and an unlisted one is not there', { skip: linux }, async t => {
     const dir = folders(t)()
     write(dir, {
       'café.txt': 'cafe bytes\n',
@@ -153,7 +153,8 @@ describe('non-ASCII names on a folder that does not fold (Linux)', () => {
       assert.match(read.content, new RegExp(text))
     }
     assert.equal(codeOf(await rig.fail('read', { path: 'cafë.txt' })), 'not-found')
-    assert.equal(codeOf(await rig.fail('stat', { path: 'docs/日本.md' })), 'not-found')
+    // `stat` answers a name that is not there with its type, not with an error.
+    assert.deepEqual(await rig.call('stat', { path: 'docs/日本.md' }), { path: 'docs/日本.md', type: 'missing' })
   })
 })
 
