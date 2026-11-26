@@ -23,19 +23,13 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 # The host also sets a PSModulePath of the system folder only, so no foreign module can load.
 Crumb ('script started ps=' + $PSVersionTable.PSVersion + ' clr=' + [Environment]::Version + ' up=' + [int]([DateTime]::Now - [Diagnostics.Process]::GetCurrentProcess().StartTime).TotalMilliseconds + 'ms')
 try {
-  # Each step of the connect has its own crumb with the time since the script started, so a stall names its statement.
-  $direction = [System.IO.Pipes.PipeDirection]::Out
-  Crumb ('enum resolved at ' + $sw.ElapsedMilliseconds + 'ms')
-  $channel = [System.IO.Pipes.NamedPipeClientStream]::new('.', $Pipe, $direction)
-  Crumb ('connecting at ' + $sw.ElapsedMilliseconds + 'ms')
+  $channel = [System.IO.Pipes.NamedPipeClientStream]::new('.', $Pipe, [System.IO.Pipes.PipeDirection]::Out)
   $channel.Connect(5000)
-  Crumb ('pipe open at ' + $sw.ElapsedMilliseconds + 'ms')
   $writer = [System.IO.StreamWriter]::new($channel, [System.Text.UTF8Encoding]::new($false))
   $writer.AutoFlush = $true
   Crumb ('connected at ' + $sw.ElapsedMilliseconds + 'ms')
 } catch { Crumb ('connect failed: ' + $_.Exception.Message); exit 3 }
 if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
-Crumb ('compiling at ' + $sw.ElapsedMilliseconds + 'ms')
 $source = @'
 using System;
 using System.Collections.Concurrent;
@@ -100,7 +94,8 @@ public static class TsHost {
   static IntPtr live = IntPtr.Zero; // the job of the running task
   static int enqueued = 0, pendingFor = -1;
   // Ends every process of the job and waits until none is alive (at most 2 s), so a report of the end means a tree that is gone.
-  static void Reap(IntPtr job) {
+  // It gives the number of processes that are still alive after the wait.
+  static uint Reap(IntPtr job) {
     ACCOUNTING info;
     uint size = (uint)Marshal.SizeOf(typeof(ACCOUNTING));
     bool killed = QueryInformationJobObject(job, 1, out info, size, IntPtr.Zero) && info.active > 0;
@@ -111,6 +106,7 @@ public static class TsHost {
     }
     // A process that is gone can still hold its folder as its cwd for a few ms while Windows closes its handles (8 ms measured).
     if (killed) Thread.Sleep(50);
+    return info.active;
   }
   static void Reader() {
     for (;;) {
@@ -174,7 +170,9 @@ public static class TsHost {
       GetExitCodeProcess(pi.hProcess, out code);
       CloseHandle(pi.hProcess);
       // Ends what the task left behind and waits until it is gone, so no process holds the streams or the folder of the task.
-      lock (gate) { Reap(job); live = IntPtr.Zero; CloseHandle(job); }
+      uint left;
+      lock (gate) { left = Reap(job); live = IntPtr.Zero; CloseHandle(job); }
+      if (left > 0) Say("left:" + left); // before exit: the exit report ends the channel
       Say("exit:" + code);
     }
   }

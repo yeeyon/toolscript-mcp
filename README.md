@@ -1266,7 +1266,6 @@ How a task runs:
 - By default each program that calls `run_task` asks you first. Only an `allow` rule with the exact name `mcp__workspace__run_task` skips the prompt. The rules `*`, `mcp__*` and `mcp__workspace__*` do not allow it. A client that cannot ask gets no task without that rule.
 - Write only commands that you trust. A test command runs the code of the project, and that code can read, change and send what your account can reach.
 - On Windows, a `.cmd`, `.bat` or `.ps1` file cannot be a command: a shell must parse it. Set `command` to `node` and give the script as the first argument.
-- A background process that a task leaves behind is ended with the task on Linux and macOS. On Windows it can stay when the task has already exited.
 
 ### Change files
 

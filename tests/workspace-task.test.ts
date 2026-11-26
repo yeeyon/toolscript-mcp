@@ -32,7 +32,7 @@ import {
   windowsFrame,
   type Report,
 } from '../src/core/taskjob.ts'
-import { createJobHost, perlPath, powershellPath, TASK_JOB } from '../src/host/taskjob.ts'
+import { perlPath, powershellPath } from '../src/host/taskjob.ts'
 import { createTaskRunner, findOnPath, launchProblem, type ResolvedTask } from '../src/host/workspace/task.ts'
 import { codeOf, open, rm, tempDir, trySymlink, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
@@ -1181,7 +1181,7 @@ describe('run_task: a helper that fails falls back to the direct spawn, and no t
   })
 
   test(
-    'a helper that takes 11 s to get ready is waited for: no fallback, and the call gets its report',
+    'a helper that takes 5 s to get ready is waited for: no fallback, and the call gets its report',
     { skip: !win },
     async t => {
       const dir = folders(t)()
@@ -1329,20 +1329,6 @@ describe('the source of the task module', () => {
 })
 
 describe('run_task: the warm helper of Windows', { skip: !win }, () => {
-  test('a cold start of the real helper reports its crumbs with times, for the cold numbers of a runner', async t => {
-    const powershell = powershellPath()
-    assert.ok(powershell !== undefined)
-    const host = createJobHost({ powershell, script: TASK_JOB })
-    t.after(() => host.close())
-    const began = Date.now()
-    const step = await host.probe()
-    t.diagnostic(`helper ready after ${Date.now() - began} ms, failed step: ${step ?? 'none'}`)
-    t.diagnostic(`helper crumbs: ${host.said()}`)
-    assert.equal(step, undefined)
-    for (const crumb of ['script started', 'connected at', 'compiling at', 'compiled at'])
-      assert.ok(host.said().includes(`ts-helper: ${crumb}`) || host.said().includes(crumb), `the crumb ${crumb}`)
-  })
-
   test('two tasks run on one helper, and the first one waits for the helper to be ready', async t => {
     const dir = folders(t)()
     const runner = createTaskRunner({ valid: [resolved(dir, 'out', ['exit', '0'])], invalid: [] })
@@ -1385,6 +1371,43 @@ describe('run_task: the warm helper of Windows', { skip: !win }, () => {
     assert.equal(runner.helperPid(), undefined)
     assert.equal((await runner.run('out', new AbortController().signal)).exitCode, 0)
     assert.notEqual(runner.helperPid(), first)
+  })
+
+  test('a start error leaves the warm helper for the next task', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner(
+      {
+        valid: [
+          resolved(dir, 'gone', [], { file: path.join(dir, 'removed.exe') }),
+          resolved(dir, 'out', ['exit', '0']),
+        ],
+        invalid: [],
+      },
+      { helper: { idleMs: 1500 } },
+    )
+    t.after(() => runner.stop())
+    await runner.run('out', new AbortController().signal)
+    const pid = runner.helperPid()
+    await assert.rejects(runner.run('gone', new AbortController().signal), /ENOENT/)
+    assert.equal(runner.helperPid(), pid, 'the program that is gone did not end the helper')
+    assert.equal((await runner.run('out', new AbortController().signal)).exitCode, 0)
+    assert.equal(runner.helperPid(), pid, 'the next task ran on the same helper')
+  })
+
+  test('a helper that no task uses ends after the idle time: the first call was cancelled while it started', async t => {
+    const dir = folders(t)()
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'out', ['exit', '0'])], invalid: [] },
+      { helper: { idleMs: 1500 } },
+    )
+    t.after(() => runner.stop())
+    const controller = new AbortController()
+    const call = runner.run('out', controller.signal)
+    assert.ok(await until(() => runner.helperPid() !== undefined), 'the helper started')
+    const pid = runner.helperPid()!
+    controller.abort()
+    await call.catch(() => {})
+    assert.ok(await gone(pid), 'the idle helper ended by itself')
   })
 
   test('a helper that another program kills during a task gives an error, no second start, and nothing stays', async t => {

@@ -34,17 +34,15 @@ export const TASK_REAP = fileURLToPath(new URL('../../runtime/task-reap.pl', imp
  * The Windows helper has this long to connect, then it counts as failed (step `connect`). Starting PowerShell is cheap
  * even on a busy machine, so a helper that does not connect has not started.
  */
-export const HELPER_CONNECT_MS = 15_000
+export const HELPER_CONNECT_MS = 10_000
 /**
  * After the helper connected it compiles its class one time (the CodeDom provider runs `csc.exe`), which a cold or busy machine
  * can slow to many seconds. It has this long, from its spawn, to report `ready`, then it counts as failed (step
  * `compile`). A task that waits for it has not started, so a slow first start never runs a task two times.
  */
-export const HELPER_START_MS = 60_000
+export const HELPER_START_MS = 10_000
 /** The most of the helper's own output that a failure shows. */
 const SAID_MAX = 1200
-/** A helper that needs more than this to be ready writes one line to the log with its crumbs. */
-const SLOW_START_MS = 3_000
 /** The Windows helper stops after this long with no task, and the next task starts a new one. */
 export const IDLE_MS = 10 * 60_000
 /** The perl of the system: an absolute path, never a `PATH` lookup. */
@@ -140,8 +138,6 @@ type Helper = {
   why: string | undefined
   /** What the helper wrote to its output streams, bounded and without control characters. */
   said: string
-  /** When the helper was spawned. */
-  readonly began: number
   /** A helper that did not start in time: the call does not retry it. */
   hung: boolean
   stopped: boolean
@@ -159,8 +155,6 @@ export type JobHost = {
   readonly pid: () => number | undefined
   /** Starts the helper if it is not there and waits for `ready`: the failed step, or undefined. Runs no task. */
   readonly probe: () => Promise<string | undefined>
-  /** What the latest helper wrote to its error stream (its crumbs, with times), also after it ended, for the tests. */
-  readonly said: () => string
   /** Ends the helper and starts no other. */
   readonly close: () => void
 }
@@ -176,8 +170,6 @@ export const createJobHost = (options: {
   const idleMs = options.idleMs ?? IDLE_MS
   const server = options.env ?? process.env
   let helper: Helper | undefined
-  /** The latest helper, also after it ended: its crumbs are for the tests. */
-  let latest: Helper | undefined
   let closing = false
 
   const setRef = (h: Helper, on: boolean): void => {
@@ -224,10 +216,7 @@ export const createJobHost = (options: {
       if (h.state !== 'starting') return
       h.state = 'idle'
       clearTimeout(h.startTimer)
-      // A slow start shows where the time went (the PowerShell start, the lookup, the compile) in the log of the server.
-      const took = Date.now() - h.began
-      if (took > SLOW_START_MS)
-        process.stderr.write(`Workspace: the task helper took ${took} ms to start. ${h.said.trim()}\n`)
+      rest(h)
       h.settleReady(true)
       return
     }
@@ -238,12 +227,18 @@ export const createJobHost = (options: {
       h.current = undefined
       if (h.state === 'busy') {
         h.state = 'idle'
-        h.idleTimer = setTimeout(() => died(h), idleMs)
-        h.idleTimer.unref()
-        setRef(h, false)
+        rest(h)
       }
       current?.hooks.channelClosed()
     }
+  }
+
+  /** An idle helper ends after `idleMs`, and no handle of it keeps the server alive. Each way to idle comes here. */
+  const rest = (h: Helper): void => {
+    clearTimeout(h.idleTimer)
+    h.idleTimer = setTimeout(() => died(h), idleMs)
+    h.idleTimer.unref()
+    setRef(h, false)
   }
 
   const spawnHelper = (): Helper => {
@@ -282,11 +277,9 @@ export const createJobHost = (options: {
       idleTimer: undefined,
       why: undefined,
       said: '',
-      began: Date.now(),
       hung: false,
       stopped: false,
     }
-    latest = h
     // No connection in time: the helper did not start. Connected but no `ready` in time: the compile is too slow.
     h.connectTimer = setTimeout(() => {
       if (h.state !== 'starting' || h.socket !== undefined) return
@@ -380,7 +373,6 @@ export const createJobHost = (options: {
 
   return {
     pid: () => (helper === undefined || helper.state === 'dead' ? undefined : helper.proc.pid),
-    said: () => latest?.said ?? '',
     probe: async () => {
       const got = await acquire()
       return typeof got === 'string' ? got : undefined
@@ -398,15 +390,16 @@ export const createJobHost = (options: {
         out.close()
         err.close()
       }
-      if (!(await out.listening) || !(await err.listening) || h.state !== 'idle') {
+      // A call that drops here leaves an idle helper: it gets its idle timer back and no longer keeps the server alive.
+      const drop = (fallback: string): { readonly fallback: string } => {
         release()
-        return { fallback: 'streams' }
+        if (h.state === 'idle') rest(h)
+        return { fallback }
       }
-      if (skip()) {
-        release()
-        return { fallback: 'cancelled' }
-      }
+      if (!(await out.listening) || !(await err.listening) || h.state !== 'idle') return drop('streams')
+      if (skip()) return drop('cancelled')
       clearTimeout(h.idleTimer)
+      setRef(h, true)
       h.state = 'busy'
       h.current = { hooks }
       const frame = windowsFrame(
@@ -423,8 +416,9 @@ export const createJobHost = (options: {
         stop: () => {
           if (h.current?.hooks === hooks && h.state === 'busy') h.proc.stdin?.write(WINDOWS_STOP_FRAME)
         },
+        // After an `error`, `exit` or `failed` report the helper is idle or dead: it ends only while this task is its task.
         kill: () => {
-          end()
+          if (h.current?.hooks === hooks) end()
           release()
         },
         release,
@@ -511,7 +505,7 @@ export const probeHelper = async (): Promise<string | undefined> => {
     const powershell = powershellPath()
     if (powershell === undefined) return 'powershell'
     const host = createJobHost({ powershell, script: TASK_JOB })
-    // The limits of the helper itself bound the wait: no connection in 15 s, no `ready` in 60 s.
+    // The limits of the helper itself bound the wait: no connection in 10 s, no `ready` in 10 s.
     try {
       return await host.probe()
     } finally {

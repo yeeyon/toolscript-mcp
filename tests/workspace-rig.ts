@@ -25,12 +25,14 @@ export const rm = (dir: string): void => {
   // The `maxRetries` of Node 22.13 does not cover an EBUSY of the folder itself (the first `rmdir` is not in its retry loop).
   // Windows keeps the cwd of a process that is gone for a few ms (8 ms measured: the pid was gone, `rmdir` still EBUSY), and
   // a failed hook skips the hooks after it, which left helper pipes open. The tests check that the tree is gone with `gone`.
-  for (let tries = 0; ; tries++) {
+  // One deadline of 2 s for all of it, so a lock that is real fails fast.
+  const deadline = Date.now() + 2000
+  for (;;) {
     try {
-      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 })
+      fs.rmSync(dir, { recursive: true, force: true })
       return
     } catch (error) {
-      if (tries >= 200 || (error as NodeJS.ErrnoException).code !== 'EBUSY') throw error
+      if (Date.now() > deadline || (error as NodeJS.ErrnoException).code !== 'EBUSY') throw error
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
     }
   }
