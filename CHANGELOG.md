@@ -17,6 +17,7 @@
 - When the Workspace config cannot bind at the start, the server instructions now say that the built-in workspace is not available and leave it out of the server names, so the model learns it at once (issue #163). Each reason ends with: Workspace reads `workspace.roots` only at its start, so after a change reconnect toolscript-mcp or restart the client.
 - Roots of the MCP client narrow the root of a Workspace session (issue #150), and never widen it. A client that declares the `roots` capability is asked one time after it starts. The root becomes the deepest folder that holds every client root inside the bound root, and a root outside the grant, a link out of it or a file grants nothing. The server waits at most 2 seconds, and no Workspace call runs before the answer. A change of the roots needs a restart.
 - `list` and `search` leave out the names that the `.gitignore` in the root ignores (issue #150). It is discovery only: `read`, `edit` and the other tools never use it, and an exclusion decides first. A `path` that is ignored applies no rule. The key `"gitignore": false` in the `workspace` section turns it off.
+- A failed Workspace bind is final: its reason no longer ends with "toolscript-mcp tries again on next use", and no search or call makes a new attempt, because only a restart can bind it.
 - Workspace `list` and `search` do not open a folder that no `include` glob can reach, so `include: ["services/**/*.cs"]` no longer walks the whole tree into the time limit. The results are the same.
 
 ## 1.0.3

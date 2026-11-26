@@ -225,7 +225,8 @@ type Link =
     }
   /** A lazy server with no process. `stopping`: its last child is still ending, and a wake waits for that. */
   | { readonly status: 'asleep'; readonly tools: readonly DownstreamTool[]; readonly stopping?: Promise<void> }
-  | { readonly status: 'failed'; readonly reason: string; readonly sealed: string }
+  /** `final`: the bind of the built-in Workspace failed. It settles once at the start and never heals: no retry, no note. */
+  | { readonly status: 'failed'; readonly reason: string; readonly sealed: string; readonly final?: true }
 
 /** `tools`: the list after the last change of the server. */
 export type Linked =
@@ -572,11 +573,17 @@ export const connectAll = (
     const hide: Hide = text => (server.kind === 'workspace' ? text : redact(text, server, secrets()))
     const lazily = lazy !== undefined && lazyServer(key, server)
     // `hidden`: the start of the reason without the error text of the server or its child, when it holds such text.
-    const fail = (reason: string, hidden?: string) => {
+    const fail = (reason: string, hidden?: string, final?: true) => {
       const safe = hide(reason)
       log(`${key}: failed: ${safe}`)
-      links.set(key, { status: 'failed', reason: safe, sealed: hidden === undefined ? safe : `${hidden}. ${unshown}` })
+      links.set(key, {
+        status: 'failed',
+        reason: safe,
+        sealed: hidden === undefined ? safe : `${hidden}. ${unshown}`,
+        ...(final && { final }),
+      })
     }
+    let unbound = false
     // Only while this client is still the link of `key`: a late event of an old client changes nothing.
     const lost = (reason: string, hidden?: string): boolean => {
       const link = links.get(key)
@@ -651,7 +658,10 @@ export const connectAll = (
       if (closing) throw new OwnError('toolscript-mcp is shutting down')
       const made =
         server.kind === 'workspace'
-          ? await workspaceTransport(workspace)
+          ? await workspaceTransport(workspace).catch(err => {
+              unbound = true
+              throw err
+            })
           : transportOf(key, server, sessionEnded, auth, childStderr, share, lazily)
       lastError = made.lastError
       if (made.transport instanceof HttpTransport && !auth) secrets = made.transport.secrets
@@ -737,7 +747,7 @@ export const connectAll = (
         err instanceof BrokerError ||
         err instanceof AwsCredentialsError
       )
-        fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`)
+        fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, undefined, unbound || undefined)
       else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
     }
   }
@@ -778,7 +788,8 @@ export const connectAll = (
     const server = servers.get(key)
     // An entry with config errors never starts, so it never comes back either.
     if (closing || server === undefined || server.kind === 'invalid') return undefined
-    if (links.get(key)?.status !== 'failed' || capWait(key) > 0) return undefined
+    const link = links.get(key)
+    if (link?.status !== 'failed' || link.final || capWait(key) > 0) return undefined
     log(`${key}: connecting again`)
     return attempt(key, server)
   }
@@ -818,7 +829,7 @@ export const connectAll = (
       return { key, status: 'connecting', elapsedMs: Math.max(0, performance.now() - link.since) }
     if (link.status === 'connected') return { key, status: 'connected', tools: link.lists.tools() }
     if (link.status === 'asleep') return { key, status: 'asleep', tools: link.tools }
-    const wait = closing ? 0 : capWait(key)
+    const wait = closing || link.final ? 0 : capWait(key)
     const note = wait > 0 ? `. toolscript-mcp tries again on next use after ${Math.ceil(wait / 1000)} s` : ''
     // Read at each look: a server can return its first untrusted wrapper after its link failed.
     return { key, status: 'failed', reason: `${untrusted(key) ? link.sealed : link.reason}${note}` }
