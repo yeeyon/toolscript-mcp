@@ -3,15 +3,11 @@
 # No module is loaded on the path of a task: strict, warnings and Config cost 5 to 6 ms of the start (measured).
 #
 # fd 3 is a duplex socket to the host. In: one frame (4-byte big-endian length, then NAME=VALUE entries with NUL between
-# them), the whole environment of the task. After the frame, the end of the socket (the host stopped, or died) or any
-# byte is the order to stop. The helper also takes SIGTERM, SIGINT and SIGHUP as a stop.
-# Out: one report on each line: begin, started:<pid> or error:<errno>, then exit:<code>, signal:<number> or stopped,
-# and left:<count> when processes stayed. failed:<step> comes before begin only: the task was not started.
-# The helper writes nothing to the streams of the task.
-#
-# Linux: the helper is the child subreaper, so each orphan of the task becomes its child and no descendant can leave.
-# macOS: no such thing. The tree is the process group of the task, the live ppid chain, and each process whose
-# environment holds the marker TOOLSCRIPT_TASK.
+# them), the whole environment of the task. After it, the end of the socket or any byte is the order to stop (so are
+# SIGTERM, SIGINT and SIGHUP). Out: one report on each line: begin, started:<pid> or error:<errno>, then exit:<code>,
+# signal:<number> or stopped, and left:<count> when processes stayed. failed:<step> comes before begin only.
+# Linux: the helper is the child subreaper, so no descendant can leave. macOS: the tree is the process group, the live
+# ppid chain, and each process whose environment holds the marker TOOLSCRIPT_TASK. Nothing goes to the task streams.
 
 my $linux = $^O eq 'linux';
 open(my $ctl, '+<&=', 3) or exit 70;

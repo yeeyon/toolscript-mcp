@@ -2,33 +2,27 @@
 #   powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File task-job.ps1 <report pipe name>
 # One helper serves many tasks. It compiles its C# class one time, then only hosts it. For each task the class makes a new
 # Job Object (KILL_ON_JOB_CLOSE, no breakaway flag), starts the task suspended, puts it in the job, then resumes it. The
-# helper is not in the job and holds the only handle of it, so the job ends when the helper closes the handle or dies,
-# and Windows ends every process in it, also one whose parent already exited.
+# helper is not in the job and holds the only handle of it, so the job ends when the helper dies, with every process in it.
 #
 # The values of a task never are in this file or in a command line. They come as frames on the standard input of the
 # helper (4-byte length, UTF-8, fields with a NUL between them): file, command line, folder, the named pipe of stdout, the
 # named pipe of stderr, then the environment as name and value pairs, used as they are. The helper reports on the named
-# pipe of its argument, one line each: ready, begin, started:<pid>, error:<win32 code>, exit:<code>, failed:<step>.
-# `failed` comes before `begin` only. It writes nothing to its own streams, which are closed, and nothing to the task.
+# pipe of its argument, one line each: ready, begin, started:<pid>, error:<win32 code>, left:<n>, exit:<code>,
+# failed:<step> (before `begin` only). A frame of length 0 ends the job of the running task. The helper writes nothing to
+# its own streams, which are closed, and nothing to the task.
 
 param([string]$Pipe)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-# The pipe is connected first, so the host sees a helper that started, and tells a slow compile from no start at all.
-# Breadcrumbs go to the standard error, which the host reads (bounded) and shows when the start fails: no value of a task.
-function Crumb([string]$text) { try { [Console]::Error.WriteLine("ts-helper: $text") } catch {} }
-$sw = [Diagnostics.Stopwatch]::StartNew()
-# No cmdlet runs in this file: the first cmdlet makes Windows PowerShell look up the command and load its module, which took
+# No cmdlet runs in this file: the first one makes Windows PowerShell look up the command and load its module, which took
 # 20 to 30 s on a runner that starts several PowerShell processes at once. Every step is a .NET call, also the compile.
-# The host also sets a PSModulePath of the system folder only, so no foreign module can load.
-Crumb ('script started ps=' + $PSVersionTable.PSVersion + ' clr=' + [Environment]::Version + ' up=' + [int]([DateTime]::Now - [Diagnostics.Process]::GetCurrentProcess().StartTime).TotalMilliseconds + 'ms')
+# The pipe is connected first, so the host tells a slow compile from no start at all.
 try {
   $channel = [System.IO.Pipes.NamedPipeClientStream]::new('.', $Pipe, [System.IO.Pipes.PipeDirection]::Out)
   $channel.Connect(5000)
   $writer = [System.IO.StreamWriter]::new($channel, [System.Text.UTF8Encoding]::new($false))
   $writer.AutoFlush = $true
-  Crumb ('connected at ' + $sw.ElapsedMilliseconds + 'ms')
-} catch { Crumb ('connect failed: ' + $_.Exception.Message); exit 3 }
+} catch { exit 3 }
 if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
 $source = @'
 using System;
@@ -93,8 +87,8 @@ public static class TsHost {
   static readonly object gate = new object();
   static IntPtr live = IntPtr.Zero; // the job of the running task
   static int enqueued = 0, pendingFor = -1;
-  // Ends every process of the job and waits until none is alive (at most 2 s), so a report of the end means a tree that is gone.
-  // It gives the number of processes that are still alive after the wait.
+  // Ends every process of the job and waits until none is alive (2 s at most): a report of the end means a tree that is
+  // gone. It gives the number of processes still alive.
   static uint Reap(IntPtr job) {
     ACCOUNTING info;
     uint size = (uint)Marshal.SizeOf(typeof(ACCOUNTING));
@@ -178,14 +172,13 @@ public static class TsHost {
   }
 }
 '@
-# The same csc compile that the Add-Type cmdlet runs, called as .NET: no cmdlet, so no command lookup.
+# The same csc compile that the Add-Type cmdlet runs, called as .NET.
 try {
   $options = [System.CodeDom.Compiler.CompilerParameters]::new()
   $options.GenerateInMemory = $true
   [void]$options.ReferencedAssemblies.Add('System.dll')
   [void]$options.ReferencedAssemblies.Add('System.Core.dll')
   $results = [Microsoft.CSharp.CSharpCodeProvider]::new().CompileAssemblyFromSource($options, $source)
-  if ($results.Errors.HasErrors) { throw $results.Errors[0].ErrorText }
-} catch { Crumb ('compile failed: ' + $_.Exception.Message); $writer.Write("failed:compile`n"); exit 4 }
-Crumb ('compiled at ' + $sw.ElapsedMilliseconds + 'ms')
-try { [TsHost]::Serve($channel) } catch { Crumb ('serve failed: ' + $_.Exception.Message); exit 5 }
+  if ($results.Errors.HasErrors) { throw 'compile' }
+} catch { $writer.Write("failed:compile`n"); exit 4 }
+try { [TsHost]::Serve($channel) } catch { exit 5 }

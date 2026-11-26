@@ -378,7 +378,6 @@ describe('run_task: what runs', () => {
     // The system adds a few variables to each process: on Windows the current folders of drives (`=C:`) and the
     // defaults of an account (`LOGONSERVER`, `USERDOMAIN`), and on macOS `__CF_USER_TEXT_ENCODING`.
     const system = /^(=|__CF|LOGONSERVER$|USERDOMAIN)/
-    // macOS adds the marker TOOLSCRIPT_TASK by design, with 32 hex characters, and no other OS adds it.
     assert.deepEqual(
       extra.filter(k => !system.test(k) && !(mac && k === 'TOOLSCRIPT_TASK')),
       [],
@@ -898,7 +897,6 @@ describe('the reports of the helpers, and what is decided from them', () => {
       ['USERDOMAIN', 'D'],
       ['Zed', '1'],
     ])
-    // A task variable of another letter case stands in for the required name, and no second one is added.
     assert.deepEqual(windowsEnv({ Path: 'mine', USERDOMAIN: '' }, { PATH: 'server', USERDOMAIN: 'D' }), [
       ['Path', 'mine'],
       ['USERDOMAIN', ''],
@@ -1225,20 +1223,10 @@ describe('run_task: a helper that fails falls back to the direct spawn, and no t
       /^io: the task could not start/.test(e.message),
     )
     assert.equal(getEventListeners(controller.signal, 'abort').length, 0, 'no abort listener is left')
+    assert.equal((await runner.run('ok', new AbortController().signal)).exitCode, 0, 'the next call runs')
     const began = Date.now()
     await runner.stop()
     assert.ok(Date.now() - began < 500, 'stop settles at once: no live entry')
-  })
-
-  test('the next call runs after a start that failed at once', async t => {
-    const dir = folders(t)()
-    const runner = createTaskRunner(
-      { valid: [resolved(dir, 'bad', [], { file: '' }), resolved(dir, 'ok', ['exit', '0'])], invalid: [] },
-      { helper: false },
-    )
-    t.after(() => runner.stop())
-    await assert.rejects(runner.run('bad', new AbortController().signal))
-    assert.equal((await runner.run('ok', new AbortController().signal)).exitCode, 0)
   })
 
   test('a cancel while the helper starts is no failure of the helper', async t => {
@@ -1292,24 +1280,13 @@ describe('the source of the task module', () => {
     assert.doesNotMatch(script, /LimitFlags\s*\|=|LimitFlags = 0x(?!2000;)|JOB_OBJECT_\w*BREAKAWAY/i)
     assert.doesNotMatch(
       script,
-      /Write-Host|Write-Output|Write-Error|Console\]::Out|Out-Host|Console\.(Out|Error|Write)/,
+      /Write-Host|Write-Output|Write-Error|Console\]::(Out|Error)|Out-Host|Console\.(Out|Error|Write)/,
     )
-    // The one write that stays is the breadcrumb on the standard error of the helper, which the host reads. It can never be
-    // a stream of a task: the task gets `nul` and its own two named pipes (STARTF_USESTDHANDLES), and the three standard
-    // handles of the helper are made not inheritable before any task starts, so the task inherits none of them.
-    assert.equal(script.match(/Console\]::Error/g)?.length, 1, 'one place writes to the error stream: Crumb')
-    assert.match(
-      script,
-      /function Crumb\(\[string\]\$text\) \{ try \{ \[Console\]::Error\.WriteLine\("ts-helper: \$text"\) \} catch \{\} \}/,
-    )
-    assert.match(
-      script,
-      /foreach \(int which in new int\[\] \{ -10, -11, -12 \}\)[\s\S]*?SetHandleInformation\(h, 1, 0\)/,
-    )
+    // The task gets `nul` and its own two named pipes, and the standard handles of the helper are not inheritable.
+    assert.match(script, /-10, -11, -12 \}\)[\s\S]*?SetHandleInformation\(h, 1, 0\)/)
     assert.match(script, /si\.flags = 0x100;[\s\S]*?si\.hIn = nul; si\.hOut = output; si\.hErr = error;/)
-    // No cmdlet anywhere in the helper (the first one makes PowerShell look up its command and load its module, which took
-    // 20 to 30 s on a runner under load), also not for the compile, which is the CodeDom provider that Add-Type calls. The
-    // host gives the helper a module path of the system folder only.
+    // No cmdlet anywhere in the helper (the first one took 20 to 30 s to look up on a runner under load), and the host gives
+    // it a module path of the system folder only.
     const powershellOnly = script.replace(/@'[\s\S]*?\n'@/, '').replace(/^\s*#.*$/gm, '')
     assert.doesNotMatch(
       powershellOnly,
@@ -1375,20 +1352,12 @@ describe('run_task: the warm helper of Windows', { skip: !win }, () => {
 
   test('a start error leaves the warm helper for the next task', async t => {
     const dir = folders(t)()
-    const runner = createTaskRunner(
-      {
-        valid: [
-          resolved(dir, 'gone', [], { file: path.join(dir, 'removed.exe') }),
-          resolved(dir, 'out', ['exit', '0']),
-        ],
-        invalid: [],
-      },
-      { helper: { idleMs: 1500 } },
-    )
+    const bad = resolved(dir, 'bad', [], { file: path.join(dir, 'x.exe') })
+    const runner = createTaskRunner({ valid: [bad, resolved(dir, 'out', ['exit', '0'])], invalid: [] })
     t.after(() => runner.stop())
     await runner.run('out', new AbortController().signal)
     const pid = runner.helperPid()
-    await assert.rejects(runner.run('gone', new AbortController().signal), /ENOENT/)
+    await assert.rejects(runner.run('bad', new AbortController().signal), /ENOENT/)
     assert.equal(runner.helperPid(), pid, 'the program that is gone did not end the helper')
     assert.equal((await runner.run('out', new AbortController().signal)).exitCode, 0)
     assert.equal(runner.helperPid(), pid, 'the next task ran on the same helper')

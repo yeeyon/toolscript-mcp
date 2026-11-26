@@ -1,6 +1,5 @@
 # A fake Windows helper for the fallback test (issue #149): it reports `ready`, waits for the frame of a task, reports
 # `failed:job` and exits. It never starts the task. It writes noise on its streams to show that none reaches the output.
-# It runs no cmdlet, as task-job.ps1: the first cmdlet of a PowerShell can wait many seconds on a busy runner.
 param([string]$Pipe)
 [Console]::Out.Write('helper noise')
 [Console]::Error.Write('helper noise')

@@ -1,12 +1,8 @@
-// The helpers that end a Workspace task with every descendant (issue #149). They run the processes; the grammar of the
-// reports, the decision, the frames and the environment block are pure and live in `src/core/taskjob.ts`.
-//
-// Windows: one warm Windows PowerShell 5.1 process (`runtime/task-job.ps1`) for each task runner. It makes a Job Object
-// for each task and starts the task in it. Linux and macOS: `/usr/bin/perl runtime/task-reap.pl` for each task, which
-// ends every process under it. Nothing here decides a result: the runner reads the reports after a task's channel ended.
-//
-// A value of a task never is in PowerShell source, in a command line of PowerShell or in the environment of a helper:
-// it is a frame on the standard input of the Windows helper, or on the socket of the perl helper.
+// The helpers that end a Workspace task with every descendant (issue #149). Windows: one warm PowerShell 5.1 process
+// (`runtime/task-job.ps1`) for each runner, with a Job Object for each task. Linux and macOS: `runtime/task-reap.pl` for
+// each task. Nothing here decides a result (the runner reads the reports), and a value of a task never is in PowerShell
+// source, in a command line or in the environment of a helper: it is a frame on the standard input or the socket.
+// The pure parts (reports, decision, frames, environment block) are in `src/core/taskjob.ts`.
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -30,22 +26,11 @@ import {
 export const TASK_JOB = fileURLToPath(new URL('../../runtime/task-job.ps1', import.meta.url))
 export const TASK_REAP = fileURLToPath(new URL('../../runtime/task-reap.pl', import.meta.url))
 
-/**
- * The Windows helper has this long to connect, then it counts as failed (step `connect`). Starting PowerShell is cheap
- * even on a busy machine, so a helper that does not connect has not started.
- */
+/** The Windows helper has this long to connect, then it counts as failed (step `connect`). */
 export const HELPER_CONNECT_MS = 10_000
-/**
- * After the helper connected it compiles its class one time (the CodeDom provider runs `csc.exe`), which a cold or busy machine
- * can slow to many seconds. It has this long, from its spawn, to report `ready`, then it counts as failed (step
- * `compile`). A task that waits for it has not started, so a slow first start never runs a task two times.
- */
+/** It has this long, from its spawn, to report `ready` after its compile, then it counts as failed (step `compile`). */
 export const HELPER_START_MS = 10_000
-/** The most of the helper's own output that a failure shows. */
-const SAID_MAX = 1200
-/** The Windows helper stops after this long with no task, and the next task starts a new one. */
 export const IDLE_MS = 10 * 60_000
-/** The perl of the system: an absolute path, never a `PATH` lookup. */
 export const PERL = '/usr/bin/perl'
 
 const isFile = (file: string): boolean => {
@@ -78,7 +63,6 @@ export const perlPath = (): string | undefined => {
 export type LaunchInput = {
   readonly file: string
   readonly args: readonly string[]
-  /** The arguments as the one command-line text of Windows. */
   readonly line: string
   readonly cwd: string
   readonly env: Readonly<Record<string, string>>
@@ -100,7 +84,6 @@ export type Launch = {
   readonly stop: () => void | Promise<void>
   /** Ends the helper at once and, where it knows it, the group of the task. */
   readonly kill: () => void
-  /** Closes what this task holds: its stream pipes. */
   readonly release: () => void
 }
 
@@ -136,8 +119,6 @@ type Helper = {
   idleTimer: NodeJS.Timeout | undefined
   /** Why the helper failed before `ready`: a fixed code, with no path. */
   why: string | undefined
-  /** What the helper wrote to its output streams, bounded and without control characters. */
-  said: string
   /** A helper that did not start in time: the call does not retry it. */
   hung: boolean
   stopped: boolean
@@ -151,11 +132,9 @@ export type JobHost = {
     /** True when the call ended while the helper started: the frame is not written then. */
     skip: () => boolean,
   ) => Promise<Launch | { readonly fallback: string }>
-  /** The pid of the helper that lives, for the tests. */
   readonly pid: () => number | undefined
   /** Starts the helper if it is not there and waits for `ready`: the failed step, or undefined. Runs no task. */
   readonly probe: () => Promise<string | undefined>
-  /** Ends the helper and starts no other. */
   readonly close: () => void
 }
 
@@ -173,11 +152,7 @@ export const createJobHost = (options: {
   let closing = false
 
   const setRef = (h: Helper, on: boolean): void => {
-    for (const handle of [h.proc, h.proc.stdin, h.proc.stdout, h.proc.stderr, h.socket, h.server] as (
-      | Handle
-      | null
-      | undefined
-    )[]) {
+    for (const handle of [h.proc, h.proc.stdin, h.socket, h.server] as (Handle | null | undefined)[]) {
       if (handle === null || handle === undefined) continue
       if (on) handle.ref()
       else handle.unref()
@@ -190,7 +165,6 @@ export const createJobHost = (options: {
     clearTimeout(h.startTimer)
     clearTimeout(h.connectTimer)
     clearTimeout(h.idleTimer)
-    // A helper that ends before `ready` says how: the code of its process when it has one, else `ended`.
     h.why ??= h.proc.exitCode !== null ? `exit${h.proc.exitCode}` : 'ended'
     h.settleReady(false)
     h.server.close()
@@ -210,7 +184,6 @@ export const createJobHost = (options: {
   const onLine = (h: Helper, text: string): void => {
     const report = parseReport(text)
     if (report === undefined) return
-    // A helper that failed before `ready` names the step: it never started a task.
     if (report.kind === 'failed' && h.state === 'starting') h.why = report.step
     if (report.kind === 'ready') {
       if (h.state !== 'starting') return
@@ -247,21 +220,18 @@ export const createJobHost = (options: {
     const ready = new Promise<boolean>(resolve => (settleReady = resolve))
     const listener = net.createServer()
     listener.listen(PIPES + pipe)
-    // The helper gets the short list of system variables that a task gets, never a value of a task. `csc.exe` needs the
-    // temp folders and PowerShell the profile folders, and a fresh runner may not give them by itself.
+    // The helper gets the short list of system variables that a task gets, never a value of a task.
     const systemRoot = server.SystemRoot ?? server.SYSTEMROOT ?? ''
     const env: Record<string, string> = { SystemRoot: systemRoot }
     for (const name of TASK_ENV_NAMES.win32) {
       const value = server[name]
       if (value !== undefined) env[name] = value
     }
-    // The module path is the system folder only, fixed text. Without it PowerShell reads the machine path, and on a runner
-    // with hundreds of modules the first cmdlet makes it analyse them all (many seconds); no user or other module loads into
-    // the helper either.
+    // The module path is the system folder only, so no foreign module loads (and none is searched at a first cmdlet).
     env.PSModulePath = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules')
     const proc = spawn(options.powershell, [...SWITCHES, options.script, pipe], {
       env,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['pipe', 'ignore', 'ignore'],
       windowsHide: true,
     })
     const h: Helper = {
@@ -276,7 +246,6 @@ export const createJobHost = (options: {
       connectTimer: undefined,
       idleTimer: undefined,
       why: undefined,
-      said: '',
       hung: false,
       stopped: false,
     }
@@ -309,15 +278,7 @@ export const createJobHost = (options: {
       socket.on('close', () => died(h))
     })
     proc.stdin.on('error', () => {})
-    for (const stream of [proc.stdout, proc.stderr]) {
-      stream.setEncoding('utf8')
-      stream.on('error', () => {})
-      stream.on('data', (chunk: string) => {
-        if (h.said.length < SAID_MAX) h.said = (h.said + chunk.replace(/[^ -~]+/g, ' ')).slice(0, SAID_MAX)
-      })
-    }
     proc.once('error', error => {
-      // A spawn error is a fixed code of the OS, such as EPERM when a policy blocks the program.
       const code = (error as NodeJS.ErrnoException).code
       h.why ??= `spawn${typeof code === 'string' && /^[A-Z0-9_]{1,24}$/.test(code) ? code : ''}`
       died(h)
@@ -328,10 +289,6 @@ export const createJobHost = (options: {
     return h
   }
 
-  /** The failed step, with what the helper said when it said something: the next CI run names the cause. */
-  const reason = (h: Helper, step: string): string =>
-    h.said.trim() === '' ? step : `${step} (helper output: ${h.said.trim()})`
-
   /** A ready helper, or the step at which it failed. A helper that ends before `ready` is replaced one time. */
   const acquire = async (): Promise<Helper | string> => {
     let last = 'ended'
@@ -340,8 +297,8 @@ export const createJobHost = (options: {
       setRef(h, true)
       const ok = await h.ready
       if (ok && h.state === 'idle') return h
-      if (h.hung) return reason(h, h.why ?? 'start')
-      last = reason(h, h.why ?? 'ended')
+      if (h.hung) return h.why ?? 'start'
+      last = h.why ?? 'ended'
     }
     return last
   }
@@ -493,7 +450,6 @@ export const startReap = (
 // ---------------------------------------------------------------------------------------------------------------
 // The probe of `toolscript-mcp doctor`
 
-/** The longest wait for the probe. */
 const PROBE_MS = 10_000
 
 /**
@@ -505,7 +461,6 @@ export const probeHelper = async (): Promise<string | undefined> => {
     const powershell = powershellPath()
     if (powershell === undefined) return 'powershell'
     const host = createJobHost({ powershell, script: TASK_JOB })
-    // The limits of the helper itself bound the wait: no connection in 10 s, no `ready` in 10 s.
     try {
       return await host.probe()
     } finally {

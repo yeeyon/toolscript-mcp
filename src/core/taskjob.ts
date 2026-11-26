@@ -2,11 +2,7 @@
 // reap helper, the one decision that reads the reports, the error tables, the frames and the environment block. No
 // Node module and no host type: `src/host/taskjob.ts` runs the processes.
 
-/**
- * One line that a helper reports. `ready` comes from the Windows helper once. `begin` means the task may run code
- * from here on. `started` carries the pid of the task when the helper knows it. `error` is the code of the OS for a
- * program that did not start. `failed` is sent before `begin` only: the helper never started the task.
- */
+/** One line that a helper reports. `begin` means the task may run code from here on. `failed` comes before `begin` only. */
 export type Report =
   | { readonly kind: 'ready' }
   | { readonly kind: 'begin' }
@@ -122,11 +118,7 @@ const REQUIRED_WINDOWS = [
   'WINDIR',
 ]
 
-/**
- * The environment block of a Windows child as a direct spawn gives it (`make_program_env` of libuv): the task
- * environment, plus each required name that it lacks (names ignore case) and the server has, sorted by name with
- * letter case ignored. The helper uses it as it is.
- */
+/** The environment block of a Windows child as a direct spawn gives it (`make_program_env` of libuv). The helper uses it as it is. */
 export const windowsEnv = (
   task: Readonly<Record<string, string>>,
   server: Readonly<Record<string, string | undefined>>,
@@ -143,18 +135,8 @@ export const windowsEnv = (
 }
 
 /** The UTF-8 bytes of a text. A lone surrogate becomes U+FFFD, as a direct spawn would give it. */
-const utf8 = (text: string): Uint8Array => {
-  const bytes: number[] = []
-  for (const ch of text) {
-    let c = ch.codePointAt(0)!
-    if (c >= 0xd800 && c <= 0xdfff) c = 0xfffd
-    if (c < 0x80) bytes.push(c)
-    else if (c < 0x800) bytes.push(0xc0 | (c >> 6), 0x80 | (c & 63))
-    else if (c < 0x10000) bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
-    else bytes.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
-  }
-  return Uint8Array.from(bytes)
-}
+declare const TextEncoder: new () => { encode: (text: string) => Uint8Array } // a web global that every JS host has
+const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text)
 
 const withLength = (body: Uint8Array, littleEndian: boolean): Uint8Array => {
   const out = new Uint8Array(4 + body.length)
@@ -163,10 +145,7 @@ const withLength = (body: Uint8Array, littleEndian: boolean): Uint8Array => {
   return out
 }
 
-/**
- * The stop frame for the Windows helper: a length of 0. The helper ends every process of the job of the running task, waits
- * until none is alive (at most 2 s), then reports `exit`. It stays ready for the next task.
- */
+/** The stop frame for the Windows helper: a length of 0. It ends the job of the running task and waits for it (2 s at most). */
 export const WINDOWS_STOP_FRAME: Uint8Array = new Uint8Array(4)
 
 /** The frame for the Windows helper: 4-byte length, then these fields with a NUL between them, then the environment pairs. */

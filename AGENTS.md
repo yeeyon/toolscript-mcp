@@ -101,18 +101,17 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     lookup, the `.exe` rule of Windows, the proof of the folder), and `createTaskRunner` runs one task at a time with
     `node:child_process` (no shell, no `cross-spawn`), the caps, the time limit and the end of the process tree
     (the helper of the OS, with `endTree` of `broker.ts` as the fallback of the direct spawn).
-    `src/host/taskjob.ts` (beside `launch.ts`, so `import.meta.url` is the same in `dist/host/main.js`) runs the
-    helpers: `createJobHost`, the one warm Windows PowerShell process of a runner (frames on its standard input, reports
-    on a named pipe, a pipe for each stream of a task, a 10-minute idle stop), `startReap`, the perl helper of one task on
-    Linux and macOS (a frame and the reports on fd 3), and `probeHelper` for `doctor`. The grammar of the reports, the
-    decision, the error tables, the frames and the environment block are pure, in `src/core/taskjob.ts`.
-    `tests/workspace-rig.ts` is the helper of its tests, `tests/task-child.mjs` is the child of the task tests, and
-    `tests/task-host-child.ts` is the host that the hard-kill test kills.
+    `src/host/taskjob.ts` (beside `launch.ts`) runs the helpers: `createJobHost`, the one warm Windows PowerShell process
+    of a runner (frames on its standard input, reports on a named pipe, a pipe for each stream of a task, a stop frame, a
+    10-minute idle stop), `startReap`, the perl helper of one task on Linux and macOS, and `probeHelper` for `doctor`. The
+    pure parts (reports, decision, frames, environment block) are in `src/core/taskjob.ts`. `tests/workspace-rig.ts` is
+    the helper of its tests, `tests/task-child.mjs` the child of the task tests, and `tests/task-host-child.ts` the host
+    that the hard-kill test kills.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only. `runtime/task-job.ps1` is the warm Windows PowerShell 5.1
-  job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS, both for a Workspace task (issue #149).
-  They are shipped files, `scripts/pack-check.mjs` requires them, and the build does not bundle them.
+  job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS (issue #149). They are shipped files that
+  `scripts/pack-check.mjs` requires, and the build does not bundle them.
 - `hints/` holds the bundled hints and `hints/sha256.json`.
 - `.claude-plugin/marketplace.json` makes the repo a Claude Code plugin marketplace with one plugin, `plugin/`. Its
   skill `setup` installs toolscript-mcp from npm, and `config.mjs` beside it changes the

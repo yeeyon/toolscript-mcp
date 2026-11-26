@@ -5,16 +5,10 @@
 // A task is NOT contained: it runs project code with the rights of the user. What this file guarantees is narrower:
 // no shell (`shell` is never set, and `cross-spawn` is not used, because it starts `cmd.exe` for a `.cmd` file), the
 // arguments reach the child as given, the child gets a short list of variables, the output is capped, the time is
-// limited, and the process tree ends however the task ends: at its exit, at the time limit, at a cancel, at a shutdown
-// and at a hard kill of the server. A helper of each OS does that (src/host/taskjob.ts). Windows: one warm PowerShell
-// process makes a Job Object for each task, so every process that the task started ends with it, also one whose parent
-// already exited. Linux: a perl helper is the child subreaper and ends every descendant, also after `setsid`. macOS: the
-// same helper ends the process group, each process with a live parent chain and each process that still shows the
-// marker variable TOOLSCRIPT_TASK, a search and no boundary. What stays: a process that a service, the Task Scheduler,
-// WMI, a daemon outside the tree or `launchd` starts, and on macOS a process that left the group, lost its parent and
-// hides the marker. When no helper can run, the task runs by the direct spawn (the `taskkill /T` tree on Windows, the
-// process group elsewhere) with one note on stderr, and a process whose parent already exited can outlive it.
-// A result comes only from the reports of a helper, read after its channel ended, and a task never runs two times.
+// limited, and the process tree ends however the task ends (exit, time limit, cancel, shutdown, hard kill of the server)
+// through a helper of the OS (src/host/taskjob.ts; the rules and what stays are in the ADR of issue #149). When no helper
+// can run, the task runs by the direct spawn with one note on stderr. A result comes only from the reports of a helper,
+// read after its channel ended, and a task never runs two times.
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'

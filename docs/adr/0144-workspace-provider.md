@@ -405,10 +405,12 @@ of the error, as the open for writing does on Windows and macOS.
     runner. It starts at the first task, stops after 10 minutes with no task, and compiles a small C# class once through
     the `Microsoft.CSharp.CSharpCodeProvider` that the `Add-Type` cmdlet calls (a .NET call: the helper runs no cmdlet,
     because the first cmdlet took 20 to 30 s to look up on a runner that starts several PowerShell processes at once;
-    no `Reflection.Emit`, no precompiled binary), with a `PSModulePath` of the system folder only. For each task it makes a new Job Object (`KILL_ON_JOB_CLOSE`, no breakaway), starts the task suspended,
-    puts it in the job, then resumes it. A stop ends the helper, so Windows closes the job. Not in the job: a process that
-    a service, the Task Scheduler or WMI starts. The values of a task are frames on the standard input of the helper,
-    never source or a command line. The environment is the block that a direct spawn gives (`windowsEnv`).
+    no `Reflection.Emit`, no precompiled binary), with a `PSModulePath` of the system folder only. For each task it makes
+    a new Job Object (`KILL_ON_JOB_CLOSE`, no breakaway), starts the task suspended, puts it in the job, then resumes it.
+    A stop is a frame of length 0: the helper ends the job, waits until no process is alive (2 s at most), reports
+    `left:<n>` if some stay and `exit`, and stays warm. Not in the job: a process that a service, the Task Scheduler or WMI
+    starts. The values of a task are frames on the standard input of the helper, never source or a command line. The
+    environment is the block that a direct spawn gives (`windowsEnv`).
   - Linux: `/usr/bin/perl runtime/task-reap.pl` for each task. It is the child subreaper (`prctl`), so each orphan
     becomes its child, and it ends every process under it, also after `setsid`. A stop, and a hard kill of the server,
     close its socket, which is the order to end. Not ended: a process that a daemon outside the tree starts, and all of
@@ -422,12 +424,12 @@ of the error, as the open for writing does on Windows and macOS.
     call only before `begin`.
   - Rejected for Linux: a PID namespace (`unshare`) fails in a default Docker container and on Ubuntu 24.04, and the task
     is PID 1; a cgroup (`systemd-run`) needs a user manager and D-Bus; `PR_SET_PDEATHSIG` alone reaches the child only.
-  - Fallback, not refusal: when the helper cannot run (no PowerShell, the compile refused, no `/usr/bin/perl`, no connection
-    in 15 s, no `ready` in 60 s: a cold runner can take many seconds to compile), the task runs by the direct spawn, with the `taskkill /T` tree on Windows and the process group elsewhere. A
-    refusal would take the feature from each locked-down laptop, and a task is not contained in any case. One stderr
-    line says so, one time for each process, and `doctor` names the way that applies.
-  - Cost: on Windows the first task after a helper start waits for `ready` (0.55 to 0.7 s calm, up to 3 s loaded) and a
-    later task adds under 20 ms. On Linux a task adds about 7 ms. The time limit runs from the reported start.
+  - Fallback, not refusal: when the helper cannot run (no PowerShell, the compile refused, no `/usr/bin/perl`, no
+    connection or no `ready` in 10 s each), the task runs by the direct spawn, with the `taskkill /T` tree on Windows and
+    the process group elsewhere. A refusal would take the feature from each locked-down laptop, and a task is not
+    contained in any case. One stderr line says so, one time for each process, and `doctor` names the way that applies.
+  - Cost: on Windows the first task after a helper start waits for `ready` (0.3 to 0.7 s) and a later task adds under
+    20 ms. On Linux a task adds about 7 ms. The time limit runs from the reported start.
 - One task runs at a time in a session. A second call waits for its turn, and a call that ends while it waits starts
   nothing. Each stream keeps the first 64 KiB and the last 192 KiB, with a note of the cut bytes between them.
   A non-zero exit code is data, not an error. An unknown task fails and lists the task names.

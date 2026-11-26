@@ -140,16 +140,12 @@ quotes and the `^` of cmd dropped, hold the
   `cross-spawn`, which starts `cmd.exe` for a `.cmd` file, so on Windows a command that is not an `.exe` or `.com` file
   makes the task invalid. The child gets the variables of `TASK_ENV_NAMES` and the `env` of the task, never any other
   variable of the server. A task ends with its process tree however it ends (exit, time limit, cancel, shutdown, hard
-  kill of the server), through a helper of the OS (`src/host/taskjob.ts`): on Windows one warm PowerShell process
-  (`runtime/task-job.ps1`) makes a Job Object for each task, on Linux `/usr/bin/perl runtime/task-reap.pl` is the child
-  subreaper, and on macOS it is a search (group, parent chain, the marker `TOOLSCRIPT_TASK`) with no boundary. No value of
-  a task is ever part of PowerShell source, of a command line of `powershell.exe` or of the environment of a helper: it
-  is a frame on standard input or on the socket. The reports of a helper are one pure grammar in `src/core/taskjob.ts`;
-  the host decides after the channel ended, and the direct spawn takes a call only before `begin`, so a task never
-  runs two times. A process that a service, the Task Scheduler, WMI, a daemon outside the tree or `launchd` starts is
-  not ended. When no helper can run, the direct spawn ends the task (the `taskkill /T` tree, or the process group) with
-  one note on stderr. One task runs at a time. A task is not
-  contained, and no text may claim it is. `run_task` is the exec
+  kill of the server), through a helper of the OS (`src/host/taskjob.ts`, ADR 0144): a Job Object on Windows, a perl
+  subreaper on Linux, a search on macOS. No value of a task is ever part of PowerShell source, of a command line of
+  `powershell.exe` or of the environment of a helper: it is a frame on standard input or on the socket. The host decides
+  from the reports after the channel ended, and the direct spawn takes a call only before `begin`, so a task never runs
+  two times. When no helper can run, the direct spawn ends the task with one note on stderr. One task runs at a time. A
+  task is not contained, and no text may claim it is. `run_task` is the exec
   class: only an allow rule with its exact name allows it (`counts` and `onlyTightens` in `src/core/policy.ts`), and the
   prompt names the tasks and says that a task runs project code with the rights of the user.
   `[test: workspace-task.test.ts (argv, environment, argumentLine, the report grammar and decision, pids gone after a timeout, a cancel, a shutdown, a normal exit and a hard kill of the server, the orphan case, the fallback of a failed helper), workspace.test.ts, run.test.ts describe run_task, workspace.e2e.mjs]`
