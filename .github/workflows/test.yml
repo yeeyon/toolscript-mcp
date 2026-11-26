@@ -40,14 +40,7 @@ jobs:
           mkdir "$RUNNER_TEMP/alias"
           sudo mount -o loop,uid=$(id -u),gid=$(id -g) "$RUNNER_TEMP/alias.img" "$RUNNER_TEMP/alias"
           echo "TOOLSCRIPT_TEST_ALIAS_DIR=$RUNNER_TEMP/alias" >> "$GITHUB_ENV"
-      - if: ${{ !(runner.os == 'Windows' && matrix.node == '22.13') }}
-        run: npm test
-      # TEMPORARY diagnostic (revert before the PR leaves draft): node 22.13 on Windows hangs in the tail of npm test. This leg
-      # streams the spec reporter, fails a stuck test by name after 4 minutes, and the preload prints the open handles of
-      # a test file process that lives too long.
-      - if: ${{ runner.os == 'Windows' && matrix.node == '22.13' }}
-        timeout-minutes: 8
-        run: node --experimental-strip-types --import ./tests/diag-handles.mjs --test --test-reporter=spec --test-timeout=240000 "tests/*.test.ts"
+      - run: npm test
       - run: npm run build
       - run: node tests/server.e2e.mjs
       # The workspace tests of `npm test` and this end-to-end test run on Linux, macOS and Windows. The macOS run shows
