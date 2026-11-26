@@ -118,6 +118,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `memory.mjs`: what N sessions cost in private bytes, processes and start time, with no model and no spend.
     Fixture mode by default; `--config <file>` is real mode, for the owner only. Results in `RESULTS-memory.md`.
     `tests/memory.e2e.mjs` runs its smoke and the hard-kill case.
+  - `walks.mjs`: N parallel Workspace `search` calls on one tree, in Docker with `--cpus 1` only. Results in `RESULTS-walks.md`.
   - `CODEX.md`: the test plan for the same arms in Codex, and the result of the Codex smoke test. `check.mjs`
     judges an answer of another agent.
   - `data.mjs` holds the tasks and their checks, `fake-server.mjs` the fake MCP server, and `forget.mjs` removes the
