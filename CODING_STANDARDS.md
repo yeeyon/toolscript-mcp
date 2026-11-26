@@ -77,7 +77,7 @@ enforces; the others rely on discipline.
   `[test: runner.integration.mjs fails when the runner sends a kind that is not in RUNNER_FIELDS]`
 - Every nested call of a program goes through `checkCall` (`src/core/policy.ts`) at call time, also when the check
   before the run passed: a tool name built at run time is never asked, while a name in a plain string (`mentionedTools`)
-  is asked before the run, and only added to the prompt, never to a refusal. `[test: run.test.ts and server.e2e.mjs, case (e)]`
+  is asked before the run when the client can ask, and never causes a refusal before the run. `[test: run.test.ts and server.e2e.mjs, case (e)]`
 - A deny rule refuses a nested call first, and the call sends nothing to its server, not even a list for a miss. A
   nested call of a name that its connected server does not list is refused (`listedNames` in
   `src/core/catalog.ts`), before the other policy checks, so the refusal offers no rule for a name that cannot run. A miss

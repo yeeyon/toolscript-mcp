@@ -504,7 +504,7 @@ export const refusedReport = ({ ask, interactive }: Asks, why: Refusal): string 
       ? 'Error: the program did not run, because the person did not approve the tools that need approval. No call was made.'
       : 'Error: the program did not run, because some tools need approval and this MCP client cannot ask the person. No call was made.'
   const canAsk = why === 'decline'
-  return [head, approvalNote(ask, canAsk), interactiveNote(interactive, canAsk ? 'declined' : 'cannot-ask')]
+  return [head, approvalNote(ask, canAsk, canAsk), interactiveNote(interactive, canAsk ? 'declined' : 'cannot-ask')]
     .filter(t => t !== '')
     .join('\n\n')
 }
@@ -556,12 +556,15 @@ const askNextRun = (tools: readonly string[], written: ReadonlySet<string>): str
  * person approves the new rule in a prompt. Without one, the new rule is a
  * looser policy that waits for a restart.
  */
-export const approvalNote = (tools: readonly string[], canAsk: boolean): string => {
+export const approvalNote = (tools: readonly string[], canAsk: boolean, declined = false): string => {
   if (tools.length === 0) return ''
   const one = tools.length === 1
-  const ask = canAsk
-    ? ` A name built while the program runs is never asked. To ask the person, put the tool name in a string directly inside call("…"), or as a whole plain string in the program, and run again.`
-    : ''
+  // After a decline the person has answered: no instruction to run again.
+  const ask = declined
+    ? ` A tool name written as a string in call("…") is asked before the run. A name built while the program runs is not.`
+    : canAsk
+      ? ` A name built while the program runs is never asked. To ask the person, put the tool name in a string directly inside call("…"), or as a whole plain string in the program, and run again.`
+      : ''
   const restart = canAsk
     ? ''
     : ' This MCP client cannot ask the person, so the new rule applies only after they restart toolscript-mcp.'

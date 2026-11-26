@@ -493,7 +493,14 @@ describe('the decision before a run', () => {
         'was not asked about mcp__workspace__edit for this run',
       ),
     )
-    assert.ok(text('mcp__workspace__run_task', guardsOf(new Set(), true)).includes('must name it exactly'))
+    const exec = text('mcp__workspace__run_task', guardsOf(new Set(), true))
+    assert.ok(exec.includes('must name it exactly'), exec)
+    assert.ok(exec.endsWith('and the person was not asked about mcp__workspace__run_task for this run'), exec)
+    // After a decline the note keeps its text from before: no instruction to run again.
+    assert.equal(
+      refusedReport({ ask: ['mcp__x__y'], interactive: [] }, 'decline'),
+      'Error: the program did not run, because the person did not approve the tools that need approval. No call was made.\n\n## No allow rule\n\nNo policy rule allows mcp__x__y. A tool name written as a string in call("…") is asked before the run. A name built while the program runs is not. If the person wants programs to call this tool with no prompt, ask them to add {"match": "mcp__x__y", "action": "allow"} to "policy" in the toolscript-mcp config. Do not change the config yourself.',
+    )
     const error = text('mcp__a__x', NONE)
     assert.ok(!error.includes('did not approve') && !error.includes('call("'), error)
     const asks = approvalNote(['mcp__a__x'], true)

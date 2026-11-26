@@ -1509,6 +1509,21 @@ describe('a tool name written outside call("…")', () => {
     assert.deepEqual(called, [])
   })
 
+  test('a program with no mention that the person declines gets the text it got before', async () => {
+    const { run, called, asked } = setup({ policy: none, answer: 'decline' })
+    const r = await run('return await call("mcp__f__echo", {})')
+    assert.equal(r.isError, true)
+    assert.deepEqual(asked, [['mcp__f__echo']])
+    assert.ok(
+      r.text.includes(
+        'No policy rule allows mcp__f__echo. A tool name written as a string in call("…") is asked before the run. A name built while the program runs is not. If the person wants',
+      ),
+      r.text,
+    )
+    assert.ok(!r.text.includes('run again'), r.text)
+    assert.deepEqual(called, [])
+  })
+
   test('the same name in a literal call and a const is asked once, and the key check still runs on the literal call', async () => {
     const { run, called, asked } = setup({ policy: none })
     const r = await run('const g = "mcp__f__echo"\nawait call("mcp__f__echo", { n: 1 })\nreturn await call(g, {})')
