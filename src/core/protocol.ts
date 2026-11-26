@@ -1311,6 +1311,9 @@ export const notListedText = (tool: string, server: string, all: readonly string
   return `no tool "${tool}" on the connected server "${server}"${help}`
 }
 
+// Words that say nothing about what a tool does: "or" and "by" alone never make a name likely.
+const FUNCTION_WORDS: ReadonlySet<string> = new Set(['to', 'for', 'by', 'of', 'or', 'and', 'the'])
+
 // Words that the wrong name shares with tools of the same server, weighted by how few tools use them: at most 2.
 const likelyNames = (tool: string, server: string, names: readonly string[]): string[] => {
   const mine = names.filter(n => splitToolName(n)?.server === server)
@@ -1323,7 +1326,7 @@ const likelyNames = (tool: string, server: string, names: readonly string[]): st
   mine.forEach((name, i) => {
     let score = 0
     let rare = false
-    for (const w of new Set(nameWords(tool))) {
+    for (const w of new Set(nameWords(tool).filter(x => !FUNCTION_WORDS.has(x)))) {
       const d = df.get(fold(w))
       if (d === undefined || !sets[i]!.some(x => fold(x) === fold(w))) continue
       if (!common(fold(w))) rare = true

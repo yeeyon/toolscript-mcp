@@ -682,6 +682,17 @@ describe('protocol', () => {
       text('deleteJiraIssue'),
       'no tool "mcp__atlassian__deleteJiraIssue" on the connected server "atlassian". Find its tools with search_tools',
     )
+    // A function word alone (`or`, `by`) never makes a name likely.
+    for (const t of ['deleteOrArchiveJiraIssue', 'closeOrResolveJiraIssue'])
+      assert.ok(text(t).endsWith('. Find its tools with search_tools') && !text(t).includes('likely'), text(t))
+    const small = ['get_user_by_email', 'delete_item', 'a1', 'b1', 'c1', 'd1', 'e1', 'f1', 'g1'].map(
+      n => `mcp__s__${n}`,
+    )
+    assert.ok(!notListedText('mcp__s__delete_project_by_id', 's', small).includes('get_user_by_email'))
+    assert.equal(
+      notListedText('mcp__s__ship_by_id', 's', small),
+      'no tool "mcp__s__ship_by_id" on the connected server "s". Find its tools with search_tools',
+    )
     // Edit distance wins, with the present text.
     assert.equal(
       text('getJiraIsue'),
