@@ -1142,6 +1142,9 @@ folder where your client started it:
 2. Else, if the config has one entry, its path is the root.
 3. Else Workspace is unavailable, and `search_tools` says to start the client in one of the entries.
 
+Workspace reads `workspace.roots` only at its start. After a change, reconnect toolscript-mcp or restart the client.
+When the config cannot bind, the instructions of the server tell the model that Workspace is not available. Each reason ends with that restart advice.
+
 So two sessions in two folders under one entry see only their own folder. The folder where the client started never grants
 access alone. Workspace refuses a root in these cases, and the reason names the entry:
 

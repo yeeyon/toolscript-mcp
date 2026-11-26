@@ -91,3 +91,101 @@ describe('the walk of a big folder', () => {
     assert.equal(fs.existsSync(root), false)
   })
 })
+
+describe('the prune by include', () => {
+  const sibling = (): Record<string, string> => ({
+    ...Object.fromEntries(Object.keys(files('f', 40)).map(k => [`big/${k}`, 'hit\n'])),
+    'svc/api/a.cs': 'hit\n',
+    'svc/api/deep/b.cs': 'hit\n',
+    'svc/note.txt': 'hit\n',
+    'one/x.cs': 'hit\n',
+  })
+
+  test('a large sibling folder is not read under a small budget, for a folder glob and for one file', async t => {
+    const root = tree(t)
+    write(root, sibling())
+    for (const prune of [true, false]) {
+      const rig = await rigOf(t, root, { prune, limits: { searchFiles: 20 } })
+      if (rig === undefined) return
+      for (const [include, paths] of [
+        [['svc/**/*.cs'], ['svc/api/a.cs', 'svc/api/deep/b.cs']],
+        [['one/x.cs'], ['one/x.cs']],
+      ] as const) {
+        const r = await rig.call('search', { query: 'hit', include })
+        // With the prune off, `big` takes the whole budget before `svc` is read: the walk is cut and finds nothing.
+        assert.deepEqual(
+          r.matches.map((m: { path: string }) => m.path),
+          prune ? paths : [],
+        )
+        assert.equal(r.truncated, !prune, `prune ${prune} ${include}`)
+      }
+    }
+  })
+
+  test('with path set and no glob below it, one folder is read', async t => {
+    const root = tree(t)
+    write(root, {
+      ...Object.fromEntries(Object.keys(files('f', 40)).map(k => [`svc/big/${k}`, 'hit\n'])),
+      'svc/a.cs': 'hit\n',
+    })
+    for (const prune of [true, false]) {
+      const rig = await rigOf(t, root, { prune, limits: { searchFiles: 10 } })
+      if (rig === undefined) return
+      const r = await rig.call('search', { query: 'hit', path: 'svc', include: ['*.cs'] })
+      assert.deepEqual([r.matches.length, r.truncated], [0, !prune], `prune ${prune}`)
+    }
+  })
+
+  test('a folder of skip that a glob names is listed and not entered', async t => {
+    const root = tree(t)
+    write(root, { 'node_modules/p/i.js': 'hit\n', 'src/a.js': 'hit\n' })
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    const listed = await rig.call('list', { depth: 3, include: ['node_modules', 'node_modules/**/*.js', 'src/*.js'] })
+    assert.deepEqual(
+      listed.entries.map((e: { path: string }) => e.path),
+      ['node_modules', 'src/a.js'],
+    )
+    const found = await rig.call('search', { query: 'hit', include: ['node_modules/**/*.js'] })
+    assert.equal(found.matches.length, 0)
+  })
+
+  test('the results equal the walk with no prune, on a random tree', async t => {
+    let seed = 11
+    const rand = (n: number): number => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), (seed >> 8) % n)
+    const dirs = ['a', 'b', 'src', 'Src', 'node_modules', 'ign']
+    const leaves = ['x.cs', 'y.ts', 'z.txt', 'c.cs', 'k.sqlite']
+    const made: Record<string, string> = { '.gitignore': 'ign/\n', 'ign/i.cs': 'hit\n' }
+    while (Object.keys(made).length < 80) {
+      const parts = Array.from({ length: rand(4) }, () => dirs[rand(dirs.length)]!)
+      made[[...parts, leaves[rand(leaves.length)]!].join('/')] = 'hit\n'
+    }
+    const root = tree(t)
+    write(root, made)
+    const on = await rigOf(t, root, { exclude: ['*.sqlite'] })
+    const off = await rigOf(t, root, { exclude: ['*.sqlite'], prune: false })
+    if (on === undefined || off === undefined) return
+    const includes = [
+      [],
+      ['src/**/*.cs'],
+      ['**/*.ts'],
+      ['a/b/x.cs'],
+      ['*.txt'],
+      ['a/*/c.cs', 'Src/**'],
+      ['node_modules/**'],
+    ]
+    const both = (tool: string, args: Record<string, unknown>) =>
+      Promise.all([on, off].map(r => r.call(tool, args).catch((e: Error) => e.message)))
+    for (const include of includes)
+      for (const p of ['.', 'a', 'ign']) {
+        const s = { query: 'hit', path: p, include }
+        const [u, v] = await both('search', s)
+        assert.deepEqual(u, v, `search ${JSON.stringify(s)}`)
+        for (const depth of [1, 3, 8]) {
+          const args = { path: p, include, depth }
+          const [x, y] = await both('list', args)
+          assert.deepEqual(x, y, `list ${JSON.stringify(args)}`)
+        }
+      }
+  })
+})

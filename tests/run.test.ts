@@ -131,6 +131,8 @@ const TOOLS: Record<string, Tool> = {
     ],
   }),
   echo: args => json({ echoed: args }),
+  // A tool named like a Workspace tool, on a server that is not the Workspace.
+  search: () => json({ truncated: true, matches: [] }),
   // A tool with no schema: it takes any argument, as a file or shell tool of a bridge does.
   put: args => json({ put: Object.keys(args).length }),
   // A text block and `n` images (1 when absent), as a dashboard server renders panels.
@@ -2962,6 +2964,7 @@ describe('workspace', () => {
     extra: Partial<Options> = {},
     tasks: readonly TaskConfig[] = [],
     write = false,
+    limits?: { searchFiles?: number; listEntries?: number },
   ) => {
     const root = fs.realpathSync.native(dir('ws-root-'))
     const outside = fs.realpathSync.native(dir('ws-out-'))
@@ -2983,6 +2986,7 @@ describe('workspace', () => {
       home,
       configFile: path.join(home, 'c.json'),
       log: () => {},
+      ...(limits !== undefined && { limits }),
     })
     if (!binding.ok) {
       assert.ok(process.platform === 'darwin', binding.reason)
@@ -3018,6 +3022,92 @@ describe('workspace', () => {
       ],
       'the run log shows the Workspace calls',
     )
+  })
+
+  test('a cut search or list shows in the footer, with counts, and an uncut run adds no line', async t => {
+    const cut = await rig(t, { policy: [] }, [], false, { searchFiles: 3, listEntries: 2 })
+    if (cut === undefined) return
+    const out = await cut.run(
+      'const a = await call("mcp__workspace__search", { query: "file" })\nconst b = await call("mcp__workspace__search", { query: "file", path: "src" })\nconst c = await call("mcp__workspace__list", { depth: 3 })\nreturn [a.truncated, b.truncated, c.truncated]',
+    )
+    assert.equal(out.isError, false, out.text)
+    const lines = out.text.split('\n')
+    const at = (prefix: string) => lines.findIndex(l => l.startsWith(prefix))
+    assert.equal(
+      lines[at('mcp__workspace__list:')],
+      'mcp__workspace__list: 1 of 1 calls stopped early (truncated). Their results are partial: give a narrower path or include, or a smaller depth.',
+    )
+    assert.equal(
+      lines[at('mcp__workspace__search:')],
+      'mcp__workspace__search: 1 of 2 calls stopped early (truncated). Their results are partial: give a narrower path or include, or raise maxMatches.',
+    )
+    assert.ok(at('mcp__workspace__list:') < at('mcp__workspace__search:'), out.text)
+    const whole = await rig(t, { policy: [] })
+    if (whole === undefined) return
+    const fine = await whole.run('return (await call("mcp__workspace__search", { query: "file" })).truncated')
+    assert.equal(fine.isError, false, fine.text)
+    assert.ok(!fine.text.includes('stopped early'), fine.text)
+  })
+
+  test('a tool mcp__workspace__search of a server that is not the built-in Workspace gives no cut line', async () => {
+    const tools = [{ name: 'search', inputSchema: { type: 'object' } }]
+    const { run } = setup({
+      others: [{ key: 'workspace' as ServerKey, status: 'connected', tools }],
+      servers: new Map([['workspace' as ServerKey, { kind: 'stdio', command: 'fake', args: [], env: {} } as const]]),
+    })
+    const out = await run('return await call("mcp__workspace__search", {})')
+    assert.equal(out.isError, false, out.text)
+    assert.ok(out.text.includes('"truncated": true'), out.text)
+    assert.ok(!out.text.includes('stopped early'), out.text)
+  })
+
+  test('a loop of Workspace calls gets no serial note, because parallel walks are not as fast as the slowest one', async t => {
+    const r = await rig(t, { policy: [], serialLimits: { gapMs: 400, minSavedMs: 0 } })
+    if (r === undefined) return
+    const out = await r.run(
+      'for (const query of ["maxAttempts", "file 1", "file 2"]) await call("mcp__workspace__search", { query })\nreturn "ok"',
+    )
+    assert.equal(out.isError, false, out.text)
+    assert.ok(out.text.includes('--- 3 MCP calls: '), out.text)
+    assert.ok(!out.text.includes('one after another'), out.text)
+  })
+
+  test('a run that mixes fake-server calls and Workspace searches gets the note for the fake tool only', async t => {
+    const ws = await rig(t)
+    if (ws === undefined) return
+    // A tree that makes each search take a while (about 0.6 s on Windows): then the Workspace streak saves more than the 3 fake calls (0.6 s), so the old code named it and not the fake tool.
+    for (let i = 0; i < 80; i++) {
+      const file = path.join(ws.root, 'bulk', `d${i % 20}`, `f${i}.txt`)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, `file number ${i}\n`)
+    }
+    // The fake server `f` and the real Workspace answer in one run.
+    const fake = fakeDownstream(undefined, entry).downstream
+    const both = {
+      settled: Promise.resolve(),
+      settledFor: async () => {},
+      states: () => [...fake.states(), ...ws.downstream.states()],
+      retry: async () => {},
+      relist: async () => {},
+      client: (key: ServerKey) => (key === WS ? ws.downstream.client(key) : fake.client(key)),
+      untrusted: (key: ServerKey) => ws.downstream.untrusted(key),
+      distrust: () => {},
+      close: async () => {},
+    } as unknown as Downstream
+    const r = setup({
+      downstream: both,
+      servers: entry,
+      workspace: true,
+      workspaceRoot: ws.root,
+      policy: rules(['mcp__f__slow', 'allow']),
+      serialLimits: { gapMs: 400, minSavedMs: 0 },
+    })
+    const out = await r.run(
+      'for (let i = 0; i < 3; i++) await call("mcp__f__slow", { n: `a${i}` })\nfor (let i = 0; i < 4; i++) await call("mcp__workspace__search", { query: `nomatch-${i}-zzz` })\nfor (let i = 0; i < 3; i++) await call("mcp__f__slow", { n: `b${i}` })\nreturn "ok"',
+    )
+    assert.equal(out.isError, false, out.text)
+    assert.match(out.text, /3 calls of mcp__f__slow ran one after another/, out.text)
+    assert.ok(!/calls of mcp__workspace__/.test(out.text), out.text)
   })
 
   test('a name built at run time and tools.workspace.read() run the same way, through the same check', async t => {
@@ -3249,7 +3339,7 @@ describe('workspace', () => {
       shown,
     )
     const reason =
-      'the client started toolscript-mcp in a folder that is in none of the 2 entries of workspace.roots. Start the client in one of them, or keep one entry'
+      'the client started toolscript-mcp in a folder that is in none of the 2 entries of workspace.roots. Start the client in one of them. Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.'
     const down = connectAll(entry, '0', () => {}, { workspace: { ok: false, reason } })
     t.after(() => down.close())
     await down.settled

@@ -223,6 +223,14 @@ describe('the built server with the Workspace', () => {
       assert.ok(!text.includes(MARKER), `the secret is in the ${name}`)
   })
 
+  test('search with a folder glob beside a sibling folder finds its hits and is not truncated', async () => {
+    const r = await session.run(
+      'const r = await call("mcp__workspace__search", { query: "ttempts", include: ["src/**/*.ts"] })\nreturn { paths: r.matches.map(m => m.path), truncated: r.truncated, scanned: r.filesScanned }',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(returned(r.text), { paths: ['src/retry.ts'], truncated: false, scanned: 1 })
+  })
+
   test('the excluded file and a path that leaves the root are refused, and the refusal holds no secret', async () => {
     const r = await session.run(
       'const out = []\nfor (const path of [".env", "../outside.txt", "src/../.env", "C:/Windows/win.ini"])\n  try { await call("mcp__workspace__read", { path }) } catch (e) { out.push(e.message.split(":")[0]) }\nreturn out',
@@ -299,6 +307,15 @@ describe('the built server with no workspace section', () => {
     try {
       const shown = await s.search('workspace')
       assert.match(shown, /## Not connected\n- workspace: .*Start the client in one of them/)
+      assert.match(shown, /reconnect toolscript-mcp or restart the client/)
+      // The model reads it from the instructions at initialize, with no reason and no path.
+      const instructions = s.client.getInstructions() ?? ''
+      assert.match(
+        instructions,
+        /The built-in workspace server is not available in this session: search_tools says why\./,
+      )
+      assert.doesNotMatch(instructions, /MCP servers:[^.]*\bworkspace\b/)
+      assert.ok(!instructions.includes(base) && !/workspace\.roots/.test(instructions), instructions)
       const r = await s.run('return 1')
       assert.deepEqual(r.isError, false)
     } finally {
