@@ -1428,6 +1428,21 @@ describe('run_task: the helper of Linux and macOS', { skip: win }, () => {
     assert.deepEqual(notes, [])
   })
 
+  test('a helper that fails to spawn is retired: the fallback result comes, and the next call waits for it', async t => {
+    const dir = folders(t)()
+    const log = path.join(dir, 'stamp.log')
+    const notes: string[] = []
+    const runner = createTaskRunner(
+      { valid: [resolved(dir, 'slow', ['stamp', log, '300'])], invalid: [] },
+      { helper: { perl: path.join(dir, 'no-perl') }, note: l => notes.push(l) },
+    )
+    t.after(() => runner.stop())
+    const run = () => runner.run('slow', new AbortController().signal)
+    const [a, b] = await Promise.all([run(), run()])
+    assert.deepEqual([a.exitCode, b.exitCode, notes.length], [0, 0, 1])
+    assert.match(fs.readFileSync(log, 'utf8'), /^start .*\nend .*\nstart .*\nend .*\n?$/)
+  })
+
   test(
     'without /usr/bin/perl the direct spawn takes the call: this one is skipped where perl is there',
     { skip: perlPath() !== undefined },

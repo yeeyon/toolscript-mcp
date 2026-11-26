@@ -291,7 +291,6 @@ export type TaskRunner = {
   readonly run: (name: string, signal: AbortSignal) => Promise<TaskResult>
   /** Ends the task that runs, with its tree, and refuses each later call. It settles when the tree is gone. */
   readonly stop: () => Promise<void>
-  /** The pid of the warm Windows helper that lives, for the tests and for no other use. */
   readonly helperPid: () => number | undefined
 }
 
@@ -304,12 +303,10 @@ export type RunnerOptions = {
    * `false` never uses a helper. `script` replaces the helper script of this OS (a test of a helper that fails), and
    * `idleMs` shortens the idle stop of the Windows helper.
    */
-  readonly helper?: false | { readonly script?: string; readonly idleMs?: number }
-  /** The one line that says the helper failed. Default: stderr of the server. */
+  readonly helper?: false | { readonly script?: string; readonly idleMs?: number; readonly perl?: string }
   readonly note?: (line: string) => void
 }
 
-/** The name of a signal number, as `os.constants.signals` spells it. */
 const signalName = (n: number): string | null =>
   Object.entries(os.constants.signals).find(([, v]) => v === n)?.[0] ?? null
 
@@ -320,7 +317,6 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
   let tail: Promise<void> = Promise.resolve()
   const win = process.platform === 'win32'
   const callMs = options.callMs ?? 60_000
-  // After one failure of the helper, each later task of the process takes the direct spawn.
   let broken = options.helper === false
   let noted = false
   let host: JobHost | undefined
@@ -354,10 +350,6 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
     return 'reap'
   }
 
-  /**
-   * Starts a task and ends it with its tree. A helper of this OS runs it (see src/host/taskjob.ts), or the direct spawn
-   * does, when no helper can. A result comes only from the reports of a helper, read after its channel ended.
-   */
   const execute = (task: ResolvedTask, signal: AbortSignal): Promise<TaskResult> => {
     let settleDone = () => {}
     const entry: Live = { kill: () => {}, done: new Promise<void>(resolve => (settleDone = resolve)) }
@@ -380,7 +372,6 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
       let waiting: NodeJS.Timeout | undefined
       let backstop: NodeJS.Timeout | undefined
 
-      /** The end of the call, with or without a result: the timers, the listener and the pipes go. */
       const finish = (): void => {
         ended = true
         for (const t of [timer, cap, waiting, backstop]) clearTimeout(t)
@@ -433,7 +424,6 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
         streams = false
         launchDirect()
       }
-      /** Reads the reports once the channel ended, and the streams too, unless a stream outlives the helper. */
       const evaluate = (): void => {
         if (ended || !channel) return
         const o = decide(seen)
@@ -468,25 +458,33 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
       }
       entry.kill = () => stop('cancel')
 
-      const hooks: LaunchHooks = {
-        data: (which, chunk) => void (ended || (which === 'out' ? out : err).add(chunk)),
-        report: report => {
-          seen.push(report)
-          if (report.kind === 'started') arm()
-        },
-        channelClosed: () => {
-          channel = true
-          evaluate()
-        },
-        streamsEnded: () => {
-          streams = true
-          evaluate()
-        },
-        spawnFailed: () => fallBack('spawn'),
+      /** The hooks of one launch. A launch that the fallback retired gets no effect from its late callbacks. */
+      let generation = 0
+      const newHooks = (): LaunchHooks => {
+        const id = ++generation
+        const current = (run: () => void) => (): void => void (id === generation && run())
+        return {
+          data: (which, chunk) => void (id === generation && !ended && (which === 'out' ? out : err).add(chunk)),
+          report: report => {
+            if (id !== generation) return
+            seen.push(report)
+            if (report.kind === 'started') arm()
+          },
+          channelClosed: current(() => {
+            channel = true
+            evaluate()
+          }),
+          streamsEnded: current(() => {
+            streams = true
+            evaluate()
+          }),
+          spawnFailed: current(() => fallBack('spawn')),
+        }
       }
 
       /** The direct spawn. No `shell`, and no `cross-spawn`. Standard input is closed. The group ends the tree outside Windows. */
       const launchDirect = (): void => {
+        const hooks = newHooks()
         let proc: ChildProcess
         try {
           proc = spawn(task.file, [...task.args], {
@@ -548,7 +546,7 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
         launching = true
         const input = { file: task.file, args: task.args, line, cwd: task.cwd, env: task.env }
         void job
-          .launch(input, hooks, () => ended || why !== undefined)
+          .launch(input, newHooks(), () => ended || why !== undefined)
           .then(
             got => {
               launching = false
@@ -572,11 +570,11 @@ export const createTaskRunner = (set: TaskSet, options: RunnerOptions = {}): Tas
         const input = { file: task.file, args: task.args, line, cwd: task.cwd, env: { ...task.env, ...mark } }
         try {
           launch = startReap(
-            PERL,
+            (options.helper && options.helper.perl) || PERL,
             options.helper ? (options.helper.script ?? TASK_REAP) : TASK_REAP,
             prctlNumber(process.platform, process.arch) ?? 0,
             input,
-            hooks,
+            newHooks(),
           )
         } catch {
           return fallBack('spawn')

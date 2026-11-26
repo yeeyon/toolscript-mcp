@@ -22,7 +22,6 @@ import {
   type Report,
 } from '../core/taskjob.ts'
 
-/** The helper scripts. `import.meta.url` gives the same folder in `src/host/` and in `dist/host/main.js`, as `RUNNER` does. */
 export const TASK_JOB = fileURLToPath(new URL('../../runtime/task-job.ps1', import.meta.url))
 export const TASK_REAP = fileURLToPath(new URL('../../runtime/task-reap.pl', import.meta.url))
 
@@ -49,7 +48,6 @@ export const powershellPath = (env: Readonly<Record<string, string | undefined>>
   return isFile(file) ? file : undefined
 }
 
-/** `/usr/bin/perl`, or undefined when it is not an executable file. */
 export const perlPath = (): string | undefined => {
   try {
     fs.accessSync(PERL, fs.constants.X_OK)
@@ -59,7 +57,6 @@ export const perlPath = (): string | undefined => {
   return isFile(PERL) ? PERL : undefined
 }
 
-/** What a helper needs to run one task. `env` is the whole environment of the task. */
 export type LaunchInput = {
   readonly file: string
   readonly args: readonly string[]
@@ -71,11 +68,8 @@ export type LaunchInput = {
 export type LaunchHooks = {
   readonly data: (which: 'out' | 'err', chunk: Buffer) => void
   readonly report: (report: Report) => void
-  /** The report channel of this task ended: its last report came, or the helper ended. */
   readonly channelClosed: () => void
-  /** Both streams of the task ended. */
   readonly streamsEnded: () => void
-  /** The helper process could not be spawned. */
   readonly spawnFailed: () => void
 }
 
@@ -87,7 +81,6 @@ export type Launch = {
   readonly release: () => void
 }
 
-/** Splits text into lines and calls `line` for each one. */
 const lines = (line: (text: string) => void): ((chunk: string) => void) => {
   let rest = ''
   return chunk => {
@@ -117,9 +110,7 @@ type Helper = {
   startTimer: NodeJS.Timeout | undefined
   connectTimer: NodeJS.Timeout | undefined
   idleTimer: NodeJS.Timeout | undefined
-  /** Why the helper failed before `ready`: a fixed code, with no path. */
   why: string | undefined
-  /** A helper that did not start in time: the call does not retry it. */
   hung: boolean
   stopped: boolean
 }
@@ -129,7 +120,6 @@ export type JobHost = {
   readonly launch: (
     input: LaunchInput,
     hooks: LaunchHooks,
-    /** True when the call ended while the helper started: the frame is not written then. */
     skip: () => boolean,
   ) => Promise<Launch | { readonly fallback: string }>
   readonly pid: () => number | undefined
@@ -174,7 +164,6 @@ export const createJobHost = (options: {
     h.current = undefined
     if (helper === h) helper = undefined
     current?.hooks.channelClosed()
-    // A stop that ended the helper starts the next one at once, off the path of a call.
     if (h.stopped && !closing && helper === undefined) {
       helper = spawnHelper()
       setRef(helper, false)
@@ -249,7 +238,6 @@ export const createJobHost = (options: {
       hung: false,
       stopped: false,
     }
-    // No connection in time: the helper did not start. Connected but no `ready` in time: the compile is too slow.
     h.connectTimer = setTimeout(() => {
       if (h.state !== 'starting' || h.socket !== undefined) return
       h.hung = true
@@ -289,7 +277,6 @@ export const createJobHost = (options: {
     return h
   }
 
-  /** A ready helper, or the step at which it failed. A helper that ends before `ready` is replaced one time. */
   const acquire = async (): Promise<Helper | string> => {
     let last = 'ended'
     for (let attempt = 0; attempt < 2; attempt++) {
