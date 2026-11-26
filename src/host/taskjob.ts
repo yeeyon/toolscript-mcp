@@ -25,10 +25,7 @@ export const TASK_REAP = fileURLToPath(new URL('../../runtime/task-reap.pl', imp
  * The Windows helper has this long to connect, then it counts as failed (step `connect`). Starting PowerShell is cheap
  * even on a busy machine, so a helper that does not connect has not started.
  */
-export const HELPER_CONNECT_MS = 15_000
-/** A helper whose script has started but not connected has this long, from its spawn, before it counts as failed. */
-export const SLOW_CONNECT_MS = 30_000
-/**
+export const HELPER_CONNECT_MS = 15_000 /**
  * After the helper connected it compiles its class one time (`Add-Type` runs `csc.exe`), which a cold or busy machine
  * can slow to many seconds. It has this long, from its spawn, to report `ready`, then it counts as failed (step
  * `compile`). A task that waits for it has not started, so a slow first start never runs a task two times.
@@ -235,11 +232,16 @@ export const createJobHost = (options: {
     listener.listen(PIPES + pipe)
     // The helper gets the short list of system variables that a task gets, never a value of a task. `csc.exe` needs the
     // temp folders and PowerShell the profile folders, and a fresh runner may not give them by itself.
-    const env: Record<string, string> = { SystemRoot: server.SystemRoot ?? server.SYSTEMROOT ?? '' }
+    const systemRoot = server.SystemRoot ?? server.SYSTEMROOT ?? ''
+    const env: Record<string, string> = { SystemRoot: systemRoot }
     for (const name of TASK_ENV_NAMES.win32) {
       const value = server[name]
       if (value !== undefined) env[name] = value
     }
+    // The module path is the system folder only, fixed text. Without it PowerShell reads the machine path, and on a runner
+    // with hundreds of modules the first cmdlet makes it analyse them all (many seconds); no user or other module loads into
+    // the helper either.
+    env.PSModulePath = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules')
     const proc = spawn(options.powershell, [...SWITCHES, options.script, pipe], {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -262,21 +264,11 @@ export const createJobHost = (options: {
       stopped: false,
     }
     // No connection in time: the helper did not start. Connected but no `ready` in time: the compile is too slow.
-    const failConnect = (): void => {
+    h.connectTimer = setTimeout(() => {
       if (h.state !== 'starting' || h.socket !== undefined) return
       h.hung = true
       h.why = 'connect'
       died(h)
-    }
-    h.connectTimer = setTimeout(() => {
-      if (h.state !== 'starting' || h.socket !== undefined) return
-      // A script that said it started is slow, not absent (a cold runner): it gets the longer limit.
-      if (h.said.includes('ts-helper: script started')) {
-        h.connectTimer = setTimeout(failConnect, SLOW_CONNECT_MS - HELPER_CONNECT_MS)
-        h.connectTimer.unref()
-        return
-      }
-      failConnect()
     }, HELPER_CONNECT_MS)
     h.connectTimer.unref()
     h.startTimer = setTimeout(() => {

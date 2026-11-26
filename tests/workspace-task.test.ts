@@ -1307,6 +1307,14 @@ describe('the source of the task module', () => {
       /foreach \(int which in new int\[\] \{ -10, -11, -12 \}\)[\s\S]*?SetHandleInformation\(h, 1, 0\)/,
     )
     assert.match(script, /si\.flags = 0x100;[\s\S]*?si\.hIn = nul; si\.hOut = output; si\.hErr = error;/)
+    // No cmdlet before the compile (the first one makes PowerShell search every module of a runner), and the host gives the
+    // helper a module path of the system folder only.
+    const beforeCompile = script.slice(script.indexOf('param('), script.indexOf('Add-Type'))
+    assert.doesNotMatch(beforeCompile.replace(/^\s*#.*$/gm, ''), /\b(Get|New|Set|Write|Out|Select|Where|ForEach)-\w+/)
+    assert.match(
+      source('src', 'host', 'taskjob.ts'),
+      /env\.PSModulePath = path\.win32\.join\(systemRoot, 'System32', 'WindowsPowerShell', 'v1\.0', 'Modules'\)/,
+    )
     assert.ok(
       script.indexOf('SetHandleInformation(h, 1, 0)') < script.indexOf('CreateProcessW(parts[0]'),
       'the handles are made not inheritable before the first task starts',

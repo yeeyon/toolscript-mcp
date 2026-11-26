@@ -18,23 +18,24 @@ $ProgressPreference = 'SilentlyContinue'
 # Breadcrumbs go to the standard error, which the host reads (bounded) and shows when the start fails: no value of a task.
 function Crumb([string]$text) { try { [Console]::Error.WriteLine("ts-helper: $text") } catch {} }
 $sw = [Diagnostics.Stopwatch]::StartNew()
-Crumb ('script started ps=' + $PSVersionTable.PSVersion + ' clr=' + [Environment]::Version + ' up=' + [int]((Get-Date) - [Diagnostics.Process]::GetCurrentProcess().StartTime).TotalMilliseconds + 'ms')
+# No cmdlet runs before the compile except Add-Type itself: the first cmdlet makes Windows PowerShell search its modules, and
+# a runner with many modules on the machine path takes many seconds for that. The host sets a PSModulePath of the system
+# folder only, and the steps here are .NET calls, which need no search. The crumbs hold no cmdlet either.
+Crumb ('script started ps=' + $PSVersionTable.PSVersion + ' clr=' + [Environment]::Version + ' up=' + [int]([DateTime]::Now - [Diagnostics.Process]::GetCurrentProcess().StartTime).TotalMilliseconds + 'ms')
 try {
   # Each step of the connect has its own crumb with the time since the script started, so a stall names its statement.
   $direction = [System.IO.Pipes.PipeDirection]::Out
   Crumb ('enum resolved at ' + $sw.ElapsedMilliseconds + 'ms')
-  $kind = [System.IO.Pipes.NamedPipeClientStream]
-  Crumb ('type resolved at ' + $sw.ElapsedMilliseconds + 'ms')
-  $channel = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Pipe, $direction)
+  $channel = [System.IO.Pipes.NamedPipeClientStream]::new('.', $Pipe, $direction)
   Crumb ('connecting at ' + $sw.ElapsedMilliseconds + 'ms')
   $channel.Connect(5000)
   Crumb ('pipe open at ' + $sw.ElapsedMilliseconds + 'ms')
-  $writer = New-Object System.IO.StreamWriter($channel, (New-Object System.Text.UTF8Encoding($false)))
+  $writer = [System.IO.StreamWriter]::new($channel, [System.Text.UTF8Encoding]::new($false))
   $writer.AutoFlush = $true
   Crumb ('connected at ' + $sw.ElapsedMilliseconds + 'ms')
 } catch { Crumb ('connect failed: ' + $_.Exception.Message); exit 3 }
 if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
-Crumb 'compiling'
+Crumb ('compiling at ' + $sw.ElapsedMilliseconds + 'ms')
 try {
   Add-Type -TypeDefinition @'
 using System;
@@ -140,5 +141,5 @@ public static class TsHost {
 }
 '@
 } catch { Crumb ('compile failed: ' + $_.Exception.Message); $writer.Write("failed:compile`n"); exit 4 }
-Crumb 'compiled'
+Crumb ('compiled at ' + $sw.ElapsedMilliseconds + 'ms')
 try { [TsHost]::Serve($channel) } catch { Crumb ('serve failed: ' + $_.Exception.Message); exit 5 }
