@@ -1000,6 +1000,26 @@ describe('the tool table', () => {
     assert.doesNotMatch(serverInstructions([], NO_BRIDGES), /:\s*\./)
   })
 
+  // #163: a Workspace that could not bind is left out of the names, and one fixed sentence says so.
+  test('the instructions say that the built-in workspace is not available, and name no reason', () => {
+    const SENTENCE = 'The built-in workspace server is not available in this session: search_tools says why.'
+    const down = serverInstructions(['workspace', 'jira'], NO_BRIDGES, true)
+    assert.match(down, /MCP servers: jira\. The built-in workspace server is not available/)
+    assert.ok(!/workspace, |, workspace|: workspace\b/.test(down), down)
+    assert.ok(!/workspace\.roots|config|folder|entries/.test(down), down)
+    const only = serverInstructions(['workspace'], NO_BRIDGES, true)
+    assert.ok(only.startsWith(`toolscript connects to other MCP servers. ${SENTENCE} Find their tools`), only)
+    const keys = Array.from({ length: 400 }, (_, i) => `server${i}-with-a-long-name`)
+    const cut = serverInstructions(['workspace', ...keys], NO_BRIDGES, true)
+    assert.ok(cut.length <= 4096 && cut.includes(SENTENCE) && /and \d+ more/.test(cut), `length ${cut.length}`)
+    // Up, or no section: the text of a session with no Workspace problem.
+    assert.equal(
+      serverInstructions(['workspace', 'jira'], NO_BRIDGES, false),
+      serverInstructions(['workspace', 'jira'], NO_BRIDGES),
+    )
+    assert.match(serverInstructions(['workspace', 'jira'], NO_BRIDGES), /\bworkspace, jira\b/)
+  })
+
   // #47: with the same servers also listed as direct tools, a session never called run_code.
   test('the instructions say when to prefer run_code to direct tools', () => {
     for (const text of [serverInstructions(['jira'], NO_BRIDGES), serverInstructions([], NO_BRIDGES)])

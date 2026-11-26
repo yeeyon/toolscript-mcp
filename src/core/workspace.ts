@@ -386,9 +386,13 @@ export const bindRoot = (roots: readonly RealRoot[], start: string, platform: st
   if (roots.length === 1) return { ok: true, index: 0, root: roots[0]!.path }
   return {
     ok: false,
-    reason: `the client started toolscript-mcp in a folder that is in none of the ${roots.length} entries of workspace.roots. Start the client in one of them, or keep one entry`,
+    reason: `the client started toolscript-mcp in a folder that is in none of the ${roots.length} entries of workspace.roots. Start the client in one of them. ${RESTART_SENTENCE}`,
   }
 }
+
+/** The end of each reason that comes from the config: Workspace reads the config one time, so a change needs a restart. */
+export const RESTART_SENTENCE =
+  'Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.'
 
 // ---------------------------------------------------------------------------------------------------------------
 // The config section

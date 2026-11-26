@@ -1773,6 +1773,9 @@ export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolsc
 const INSTRUCTIONS_MAX = 4096
 // A session that also had the servers as direct tools never called run_code (#47), so the text names when to prefer it.
 const INSTRUCTIONS_USE = `Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.`
+// The built-in workspace could not bind from the config at the start. The model reads that it is gone, not why.
+const INSTRUCTIONS_WORKSPACE_DOWN =
+  'The built-in workspace server is not available in this session: search_tools says why.'
 // The tools of a bridge are the client's own: a program that calls them skips the client's permission rules and hooks.
 const instructionsBridge = (names: string) =>
   `For Read, Bash, Edit and the other tools of ${names}, use your own built-in tools directly. Call ${names} from a program only for data that stays in the program.`
@@ -1781,11 +1784,19 @@ const instructionsBridge = (names: string) =>
  * The server's instructions, read by the model at the start of a session. They
  * name the servers of the config, so a task that names only a product finds
  * toolscript. Names that do not fit in INSTRUCTIONS_MAX become "and N more".
- * `bridges`: the servers that serve the client's own tools (config.ts).
+ * `bridges`: the servers that serve the client's own tools (config.ts). `workspaceDown`: the config of the built-in
+ * workspace could not bind, so its name is left out and one fixed sentence says so. It holds no path and no reason.
  */
-export const serverInstructions = (servers: readonly string[], bridges: ReadonlySet<string>): string => {
+export const serverInstructions = (
+  all: readonly string[],
+  bridges: ReadonlySet<string>,
+  workspaceDown = false,
+): string => {
+  const servers = workspaceDown ? all.filter(key => key !== 'workspace') : all
   const bridged = servers.filter(key => bridges.has(key))
-  const use = bridged.length > 0 ? `${INSTRUCTIONS_USE} ${instructionsBridge(bridged.join(' and '))}` : INSTRUCTIONS_USE
+  const base =
+    bridged.length > 0 ? `${INSTRUCTIONS_USE} ${instructionsBridge(bridged.join(' and '))}` : INSTRUCTIONS_USE
+  const use = workspaceDown ? `${INSTRUCTIONS_WORKSPACE_DOWN} ${base}` : base
   const text = (shown: number) => {
     const more = servers.length - shown
     if (shown === 0) return `toolscript connects to other MCP servers. ${use}`

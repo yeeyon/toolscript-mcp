@@ -79,10 +79,15 @@ export const createServer = (
    * and the guard, when it is bound. It settles after the client roots (issue #150), so a run waits for it.
    */
   workspace?: Promise<{ readonly root: string; readonly tasks: readonly string[] } | undefined>,
+  /** True when the config part of the Workspace bind failed (`bindStep`): the instructions say it is not available. */
+  workspaceDown = false,
 ): Served => {
   const mcp = new McpServer(
     { name: 'toolscript-mcp', version },
-    { capabilities: { tools: {} }, instructions: serverInstructions([...config.servers.keys()], config.bridges) },
+    {
+      capabilities: { tools: {} },
+      instructions: serverInstructions([...config.servers.keys()], config.bridges, workspaceDown),
+    },
   )
   // One server process serves one client session: its kept results and its saveFile folder.
   const kept = newKept()

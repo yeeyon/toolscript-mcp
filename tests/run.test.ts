@@ -3298,7 +3298,7 @@ describe('workspace', () => {
       shown,
     )
     const reason =
-      'the client started toolscript-mcp in a folder that is in none of the 2 entries of workspace.roots. Start the client in one of them, or keep one entry'
+      'the client started toolscript-mcp in a folder that is in none of the 2 entries of workspace.roots. Start the client in one of them. Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.'
     const down = connectAll(entry, '0', () => {}, { workspace: { ok: false, reason } })
     t.after(() => down.close())
     await down.settled
