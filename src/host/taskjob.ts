@@ -26,6 +26,8 @@ export const TASK_REAP = fileURLToPath(new URL('../../runtime/task-reap.pl', imp
  * even on a busy machine, so a helper that does not connect has not started.
  */
 export const HELPER_CONNECT_MS = 15_000
+/** A helper whose script has started but not connected has this long, from its spawn, before it counts as failed. */
+export const SLOW_CONNECT_MS = 30_000
 /**
  * After the helper connected it compiles its class one time (`Add-Type` runs `csc.exe`), which a cold or busy machine
  * can slow to many seconds. It has this long, from its spawn, to report `ready`, then it counts as failed (step
@@ -260,17 +262,27 @@ export const createJobHost = (options: {
       stopped: false,
     }
     // No connection in time: the helper did not start. Connected but no `ready` in time: the compile is too slow.
-    h.connectTimer = setTimeout(() => {
+    const failConnect = (): void => {
       if (h.state !== 'starting' || h.socket !== undefined) return
       h.hung = true
       h.why = 'connect'
       died(h)
+    }
+    h.connectTimer = setTimeout(() => {
+      if (h.state !== 'starting' || h.socket !== undefined) return
+      // A script that said it started is slow, not absent (a cold runner): it gets the longer limit.
+      if (h.said.includes('ts-helper: script started')) {
+        h.connectTimer = setTimeout(failConnect, SLOW_CONNECT_MS - HELPER_CONNECT_MS)
+        h.connectTimer.unref()
+        return
+      }
+      failConnect()
     }, HELPER_CONNECT_MS)
     h.connectTimer.unref()
     h.startTimer = setTimeout(() => {
       if (h.state !== 'starting') return
       h.hung = true
-      h.why = 'compile'
+      h.why = h.socket === undefined ? 'connect' : 'compile'
       died(h)
     }, HELPER_START_MS)
     h.startTimer.unref()

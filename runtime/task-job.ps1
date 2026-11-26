@@ -17,14 +17,21 @@ $ProgressPreference = 'SilentlyContinue'
 # The pipe is connected first, so the host sees a helper that started, and tells a slow compile from no start at all.
 # Breadcrumbs go to the standard error, which the host reads (bounded) and shows when the start fails: no value of a task.
 function Crumb([string]$text) { try { [Console]::Error.WriteLine("ts-helper: $text") } catch {} }
-Crumb 'script started'
+$sw = [Diagnostics.Stopwatch]::StartNew()
+Crumb ('script started ps=' + $PSVersionTable.PSVersion + ' clr=' + [Environment]::Version + ' up=' + [int]((Get-Date) - [Diagnostics.Process]::GetCurrentProcess().StartTime).TotalMilliseconds + 'ms')
 try {
-  $channel = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Pipe, [System.IO.Pipes.PipeDirection]::Out)
-  Crumb 'connecting'
+  # Each step of the connect has its own crumb with the time since the script started, so a stall names its statement.
+  $direction = [System.IO.Pipes.PipeDirection]::Out
+  Crumb ('enum resolved at ' + $sw.ElapsedMilliseconds + 'ms')
+  $kind = [System.IO.Pipes.NamedPipeClientStream]
+  Crumb ('type resolved at ' + $sw.ElapsedMilliseconds + 'ms')
+  $channel = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Pipe, $direction)
+  Crumb ('connecting at ' + $sw.ElapsedMilliseconds + 'ms')
   $channel.Connect(5000)
+  Crumb ('pipe open at ' + $sw.ElapsedMilliseconds + 'ms')
   $writer = New-Object System.IO.StreamWriter($channel, (New-Object System.Text.UTF8Encoding($false)))
   $writer.AutoFlush = $true
-  Crumb 'connected'
+  Crumb ('connected at ' + $sw.ElapsedMilliseconds + 'ms')
 } catch { Crumb ('connect failed: ' + $_.Exception.Message); exit 3 }
 if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
 Crumb 'compiling'
