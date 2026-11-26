@@ -21,8 +21,21 @@ export const tempDir = (): string =>
   fs.realpathSync.native(fs.mkdtempSync(path.join(process.env.WS_TEST_TREES ?? os.tmpdir(), 'ws-test-')))
 
 /** Removes a folder. A process that Windows still ends can hold it for a moment, so a busy folder is tried again. */
-export const rm = (dir: string): void =>
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 })
+export const rm = (dir: string): void => {
+  // The loop is here and not in `rmSync`: the `maxRetries` of Node 22.13 does not cover an EBUSY of the folder itself (the
+  // first `rmdir` in `rimrafSync` is not in its retry loop), so a folder that a dying process holds as its cwd failed the
+  // `t.after` hook, which skipped the hooks after it, and the helper pipes of the test kept the process alive.
+  for (let tries = 0; ; tries++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 })
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (tries >= 40 || (code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY')) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+    }
+  }
+}
 
 /** Writes `files` (a path with `/` to its text or bytes) under `root`, and makes the folders. */
 export const write = (root: string, files: Record<string, string | Uint8Array>): void => {
