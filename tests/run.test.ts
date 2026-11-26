@@ -131,6 +131,8 @@ const TOOLS: Record<string, Tool> = {
     ],
   }),
   echo: args => json({ echoed: args }),
+  // A tool named like a Workspace tool, on a server that is not the Workspace.
+  search: () => json({ truncated: true, matches: [] }),
   // A tool with no schema: it takes any argument, as a file or shell tool of a bridge does.
   put: args => json({ put: Object.keys(args).length }),
   // A text block and `n` images (1 when absent), as a dashboard server renders panels.
@@ -2962,6 +2964,7 @@ describe('workspace', () => {
     extra: Partial<Options> = {},
     tasks: readonly TaskConfig[] = [],
     write = false,
+    limits?: { searchFiles?: number; listEntries?: number },
   ) => {
     const root = fs.realpathSync.native(dir('ws-root-'))
     const outside = fs.realpathSync.native(dir('ws-out-'))
@@ -2983,6 +2986,7 @@ describe('workspace', () => {
       home,
       configFile: path.join(home, 'c.json'),
       log: () => {},
+      ...(limits !== undefined && { limits }),
     })
     if (!binding.ok) {
       assert.ok(process.platform === 'darwin', binding.reason)
@@ -3018,6 +3022,43 @@ describe('workspace', () => {
       ],
       'the run log shows the Workspace calls',
     )
+  })
+
+  test('a cut search or list shows in the footer, with counts, and an uncut run adds no line', async t => {
+    const cut = await rig(t, { policy: [] }, [], false, { searchFiles: 3, listEntries: 2 })
+    if (cut === undefined) return
+    const out = await cut.run(
+      'const a = await call("mcp__workspace__search", { query: "file" })\nconst b = await call("mcp__workspace__search", { query: "file", path: "src" })\nconst c = await call("mcp__workspace__list", { depth: 3 })\nreturn [a.truncated, b.truncated, c.truncated]',
+    )
+    assert.equal(out.isError, false, out.text)
+    const lines = out.text.split('\n')
+    const at = (prefix: string) => lines.findIndex(l => l.startsWith(prefix))
+    assert.equal(
+      lines[at('mcp__workspace__list:')],
+      'mcp__workspace__list: 1 of 1 calls stopped early (truncated). Their results are partial: give a narrower path or include, or a smaller depth.',
+    )
+    assert.equal(
+      lines[at('mcp__workspace__search:')],
+      'mcp__workspace__search: 1 of 2 calls stopped early (truncated). Their results are partial: give a narrower path or include, or raise maxMatches.',
+    )
+    assert.ok(at('mcp__workspace__list:') < at('mcp__workspace__search:'), out.text)
+    const whole = await rig(t, { policy: [] })
+    if (whole === undefined) return
+    const fine = await whole.run('return (await call("mcp__workspace__search", { query: "file" })).truncated')
+    assert.equal(fine.isError, false, fine.text)
+    assert.ok(!fine.text.includes('stopped early'), fine.text)
+  })
+
+  test('a tool mcp__workspace__search of a server that is not the built-in Workspace gives no cut line', async () => {
+    const tools = [{ name: 'search', inputSchema: { type: 'object' } }]
+    const { run } = setup({
+      others: [{ key: 'workspace' as ServerKey, status: 'connected', tools }],
+      servers: new Map([['workspace' as ServerKey, { kind: 'stdio', command: 'fake', args: [], env: {} } as const]]),
+    })
+    const out = await run('return await call("mcp__workspace__search", {})')
+    assert.equal(out.isError, false, out.text)
+    assert.ok(out.text.includes('"truncated": true'), out.text)
+    assert.ok(!out.text.includes('stopped early'), out.text)
   })
 
   test('a loop of Workspace calls gets no serial note, because parallel walks are not as fast as the slowest one', async t => {

@@ -148,6 +148,8 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
   `truncated`. So a tree with no match for the `include`, or one of folders only, ends too. A folder that no `include`
   glob can reach below it is not opened (`includeReach`): its own entry is still listed, and its names are not read, so
   they neither count nor take time. `include` is still matched from the root when `path` is set.
+  The footer of a run says when a `list` or `search` call was cut: one fixed line for each tool, with the number of cut
+  calls of the calls that worked, and only for the Workspace of the config.
 - `read` and `search` read through the handle at most one byte more than their limit (4 MiB and 1 MiB), whatever the
   size said when the file was opened. A file that holds more is refused by `read` and skipped by `search`.
 - `include` holds up to 16 globs with `*`, `?` and `**`, over paths from the session root, matched in bounded time: a
@@ -164,7 +166,8 @@ run_task { task: string } -> { task: string, exitCode: number | null, signal: st
 The provider checks the text of a path before any file system call. It refuses these forms on each OS:
 
 - An empty path, an absolute path, a drive, a network path, a backslash, and a control character.
-- A part that is empty, `.` or `..`. No part is ever resolved away.
+- A part that is empty, `.` or `..`. No part is ever resolved away. The `path` of `list` and `search` alone may end in
+  one `/`, which `folderParts` cuts before these rules run (`src/` is `src`, `./` is `.`); `a//` and `/` stay refused.
 - More than 64 parts, or more than 1024 characters.
 - On Windows also a `:`, a part that ends in a dot or a space, and a device name such as `NUL`.
 
