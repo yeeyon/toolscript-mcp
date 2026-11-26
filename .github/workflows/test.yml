@@ -40,6 +40,26 @@ jobs:
           mkdir "$RUNNER_TEMP/alias"
           sudo mount -o loop,uid=$(id -u),gid=$(id -g) "$RUNNER_TEMP/alias.img" "$RUNNER_TEMP/alias"
           echo "TOOLSCRIPT_TEST_ALIAS_DIR=$RUNNER_TEMP/alias" >> "$GITHUB_ENV"
+      # A case-sensitive APFS image: tests/workspace-roots-fs.test.ts holds `app` and `App` there as two folders.
+      - name: Attach a case-sensitive APFS image
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -size 16m -fs "Case-sensitive APFS" -volname casefs "$RUNNER_TEMP/case.dmg"
+          mkdir "$RUNNER_TEMP/case"
+          hdiutil attach "$RUNNER_TEMP/case.dmg" -mountpoint "$RUNNER_TEMP/case" -nobrowse
+          echo "TOOLSCRIPT_TEST_CASE_DIR=$RUNNER_TEMP/case" >> "$GITHUB_ENV"
+      # A casefolded ext4 folder opens .ſſh as .ssh: the casefold test of tests/workspace-fs.test.ts runs on it.
+      - name: Mount a casefolded ext4 image
+        if: runner.os == 'Linux'
+        run: |
+          truncate -s 16M "$RUNNER_TEMP/fold.img"
+          mkfs.ext4 -q -O casefold "$RUNNER_TEMP/fold.img"
+          mkdir "$RUNNER_TEMP/fold"
+          sudo mount -o loop "$RUNNER_TEMP/fold.img" "$RUNNER_TEMP/fold"
+          sudo chown $(id -u):$(id -g) "$RUNNER_TEMP/fold"
+          mkdir "$RUNNER_TEMP/fold/dir"
+          chattr +F "$RUNNER_TEMP/fold/dir"
+          echo "TOOLSCRIPT_TEST_CASEFOLD_DIR=$RUNNER_TEMP/fold/dir" >> "$GITHUB_ENV"
       - run: npm test
       - run: npm run build
       - run: node tests/server.e2e.mjs

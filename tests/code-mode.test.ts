@@ -716,6 +716,36 @@ describe('protocol', () => {
     assert.ok(!problems[0]!.text.includes('other'))
   })
 
+  test('a very long name gets the plain refusal at once, and the cap is 200 characters (issue #174)', () => {
+    const names = Array.from({ length: 200 }, (_, i) => `mcp__j__tool${i}Thing`)
+    const long = 'mcp__j__' + 'k'.repeat(100000)
+    const learned = { mcp__j__search: ['jql', 'maxResults'] }
+    const spec = (tool: string) => ({ names: ['a'.repeat(200), 'b'.repeat(201)], required: [], isOpen: false })
+    const plain = `no tool "${long}" on the connected server "j". Find its tools with search_tools`
+    const t0 = performance.now()
+    assert.equal(notListedText(long, 'j', names), plain)
+    const problems = checkCalls(
+      [
+        { tool: long, line: 1, keys: [] },
+        { tool: 'mcp__j__search', line: 2, keys: ['m'.repeat(100000)] },
+        { tool: 'mcp__j__get', line: 3, keys: ['m'.repeat(100000)] },
+        { tool: 'mcp__j__get', line: 4, keys: ['x' + 'a'.repeat(199), 'x' + 'b'.repeat(200)] },
+      ],
+      new Set([...names, 'mcp__j__search', 'mcp__j__get', 'mcp__j__' + 'z'.repeat(300)]),
+      spec,
+      learned,
+      new Map(),
+    )
+    assert.ok(performance.now() - t0 < 1000)
+    assert.equal(problems[0]!.text, plain)
+    const hints = problems.filter(p => p.text.includes('did you mean'))
+    assert.deepEqual(
+      hints.map(p => p.line),
+      [4],
+    )
+    assert.ok(hints[0]!.text.includes('"' + 'a'.repeat(200) + '"') && !hints[0]!.text.includes('b'.repeat(201)))
+  })
+
   test('callKey ignores the order of keys', () => {
     assert.equal(callKey('mcp__x__y', { a: 1, b: { c: 2, d: 3 } }), callKey('mcp__x__y', { b: { d: 3, c: 2 }, a: 1 }))
     assert.notEqual(callKey('mcp__x__y', { a: 1 }), callKey('mcp__x__y', { a: 2 }))

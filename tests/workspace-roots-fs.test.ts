@@ -464,3 +464,38 @@ describe('the config step of the bind (issue #163)', () => {
     else assert.equal(opened.unavailable, failed)
   })
 })
+
+// A case-sensitive APFS volume holds `app` and `App` as two folders. CI makes one and names it in the variable. Without
+// the variable the test skips, and on CI a volume that folds case is a failure.
+describe('a macOS volume that does not fold case (issue #157)', () => {
+  const base = process.env.TOOLSCRIPT_TEST_CASE_DIR
+  const skipWhy =
+    process.platform !== 'darwin'
+      ? 'macOS only'
+      : base === undefined
+        ? 'TOOLSCRIPT_TEST_CASE_DIR does not name a folder on a case-sensitive volume'
+        : false
+
+  test('a start folder that differs from an entry in case is in no entry', { skip: skipWhy }, async t => {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(base!, 'ws-case-')))
+    t.after(() => rm(dir))
+    for (const name of ['proj/app', 'proj/App', 'proj/other']) fs.mkdirSync(path.join(dir, name), { recursive: true })
+    assert.equal(
+      fs.readdirSync(path.join(dir, 'proj')).filter(n => n.toLowerCase() === 'app').length,
+      2,
+      'the volume folds case',
+    )
+    const workspace = {
+      roots: ['proj/app', 'proj/other'].map(p => ({ path: path.join(dir, p), write: false })),
+      exclude: [],
+      skip: [],
+    }
+    const run = (start: string) =>
+      bindStep({ workspace, start, home: folders(t)(), configFile: path.join(dir, 'c.json') })
+    const control = await run(path.join(dir, 'proj/app/'))
+    assert.equal(control.ok, true, 'a start in the entry binds')
+    const s = await run(path.join(dir, 'proj/App'))
+    assert.equal(s.ok, false)
+    assert.match(s.ok ? '' : s.reason, /is in none of the 2 entries of workspace\.roots/)
+  })
+})

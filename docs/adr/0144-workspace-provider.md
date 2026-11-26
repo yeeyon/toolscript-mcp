@@ -101,7 +101,8 @@ do not wait. The model is told nothing new: paths stay relative. The person sees
 `Workspace: a client root narrowed the root to <path>` on stderr and the root in the approval prompt. A task still runs in
 its `cwd` under the entry, which can be outside a narrowed root.
 
-The session root must pass the same refusals as an entry. The compare of paths ignores case on Windows and macOS.
+The session root must pass the same refusals as an entry. The compare of paths ignores case on Windows and, for the entry of a volume that folds case, on macOS. At the bind,
+macOS stats each entry and its spelling with one letter flipped: only the same `dev` and `ino` means folding, and a probe that cannot decide means none.
 A backslash separates the parts of a real path on Windows only. On Linux and macOS it is a letter of a name, so the start
 folder `/home/me/projects\app` is not inside the entry `/home/me/projects/app`.
 
@@ -181,11 +182,11 @@ of a path, after its open (or its `lstat` in `stat`), the held parent folder is 
 text byte for byte stands. Else the real name is the listed name whose `lstat` through the held folder has the `dev` and
 `ino` of what was opened, the names that fold to the text first, with at most 20,000 `lstat` calls. With no match the call
 fails with `not-found`. `parts` hold the real names, so the exclusions see them, and a change takes its lock under the
-real name too. This read is no lookup of a name and calls no hook. It is skipped only in a folder whose file system
+real name too. This read is no lookup of a name and calls no hook. It is skipped only for a part with ASCII characters only (a casefolded folder on ext4, f2fs or tmpfs folds `ſ` to `s`, and `fold` keeps it, so a part with another character always pays the read, issue #162), and only in a folder whose file system
 (`statfs`) is on a short list of types known not to hold such names (ext2/3/4, xfs, btrfs, tmpfs, overlayfs, ramfs, zfs,
 f2fs), so a folder on ext4 or tmpfs pays nothing. Any other type, and a `statfs` that fails, pay the one read: SMB2 and
 SMB3 (`0xfe534d42`) and NFS are not on the list of the first design, and a missed alias leaks an excluded file. A name that comes from a listing
-(the walk of `list` and `search`) needs no check.
+(the walk of `list` and `search`) needs no check. A residual case stays: an overlay made by hand whose lower layer is 9p over a Windows drive, or NFS from a server that ignores case, reports the overlay type, so it stays plain and an ASCII alias such as `GIT~1` is not read.
 
 An exclusion holds for every tool, also for `list`, `stat`, `diff` and a new file. The built-in list:
 

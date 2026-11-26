@@ -347,7 +347,8 @@ const ensureMethod = (platform: string): Promise<void> => {
 
 /**
  * The `statfs` types of the file systems known NOT to open a file under a name that `readdir` does not list. A folder
- * on one of them pays nothing. Every other type (vfat, NTFS, SMB1, SMB2/3, NFS, 9p, FUSE, VirtualBox shares, and a type
+ * on one of them pays nothing for an ASCII name. A name with a character outside ASCII pays the read on every type: a
+ * casefolded folder (ext4 `chattr +F`, f2fs, tmpfs) opens `.ſſh` as `.ssh`, and `fold` keeps `ſ` (`readsNames`). Every other type (vfat, NTFS, SMB1, SMB2/3, NFS, 9p, FUSE, VirtualBox shares, and a type
  * that nobody listed) and a `statfs` that fails pay the one read of the names, because a missed alias leaks an excluded file.
  */
 const PLAIN = new Set([
@@ -363,6 +364,9 @@ const PLAIN = new Set([
 
 /** True when a folder on the file system of this `statfs` type can open a name that it does not list. */
 export const canHoldAliases = (type: number | bigint): boolean => !PLAIN.has(Number(type) >>> 0)
+
+/** True when the part `name` of a path text needs the read of the names: its file system can alias, or it is not ASCII. */
+export const readsNames = (aliasing: boolean, name: string): boolean => aliasing || /[^\x00-\x7f]/.test(name)
 
 /** At most this many `lstat` calls to find the real name of a part. */
 const ALIAS_LOOKS = 20_000
@@ -392,7 +396,7 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
    * Reading the names is no lookup of a name, so it calls no hook. A folder on another file system keeps `name`.
    */
   const spellOf = async (name: string, id: FileId): Promise<string> => {
-    if (!(await canAlias())) return name
+    if (!readsNames(await canAlias(), name)) return name
     const stream = await fs.promises
       .opendir(`/proc/self/fd/${handle.fd}`, { bufferSize: 512 })
       .catch(err => Promise.reject(mapError(err)))
@@ -543,7 +547,11 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
 // ---------------------------------------------------------------------------------------------------------------
 // Windows and macOS: the full path, proven as a whole
 
-/** The parts of `real` below `root` as the volume spells them, or undefined when `real` is not below it. */
+/**
+ * The parts of `real` below `root` as the volume spells them, or undefined when `real` is not below it. It folds case
+ * on macOS whatever the volume: `spellMac` runs `realpath` after the open, and `O_NOFOLLOW_ANY` covers the open only, so
+ * a swap between them can change this spelling, never the file that was opened (issue #157 left this as it was).
+ */
 const below = (real: string, root: string, platform: string): string[] | undefined => {
   if (!isInside(real, root, platform)) return undefined
   return realParts(real, platform).slice(realParts(root, platform).length)

@@ -114,6 +114,14 @@ describe('narrowRoot', () => {
     assert.equal(root(W, ['C:\\Users\\me'], 'win32'), W)
   })
 
+  test('macOS: the volume decides whether a client root that differs in case is inside the bound root', () => {
+    const P = '/Volumes/work/proj/app'
+    assert.equal(narrowRoot(P, ['/Volumes/work/proj/App'], 'darwin', false), P)
+    assert.equal(narrowRoot(P, ['/Volumes/work/proj/App/src'], 'darwin', false), P)
+    assert.equal(narrowRoot(P, ['/Volumes/work/proj/App/src'], 'darwin', true), '/Volumes/work/proj/App/src')
+    assert.equal(narrowRoot(P, ['/Volumes/work/proj/App/src'], 'darwin'), '/Volumes/work/proj/App/src')
+  })
+
   test('on POSIX a different case is another folder', () => {
     assert.equal(root(P, ['/home/me/projects/app']), P)
   })
