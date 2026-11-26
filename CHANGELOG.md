@@ -3,6 +3,7 @@
 ## 1.0.4
 
 - Workspace `list` and `search` walks run one at a time, and the 10 s budget starts when a walk runs (issue #160), so 8 searches started with `Promise.all` all finish instead of each running to the budget and coming back cut.
+- Workspace decides case folding for each macOS volume (issue #157): on a case-sensitive APFS volume, a start folder or client root that differs from an entry only in case is no longer inside it. Windows and the default macOS volume are unchanged.
 - On Linux, Workspace reads the names of a folder for a part of a path that has a non-ASCII character, also on ext4, xfs, tmpfs and the other plain file systems, so on a casefolded folder `.ſſh/known_hosts` no longer opens the excluded `.ssh` (issue #162). An ASCII name still pays nothing on those.
 - A tool or argument name of more than 200 characters gets no "did you mean" hint, and a listed name of that length is never compared (issue #174). A program that called a 100,000-character name blocked the host for 7 to 20 s in the edit distance; it now gets the plain refusal at once.
 - A program that calls a tool name that its server does not list, where edit distance finds nothing, now gets up to 2 likely tools of the same server, those that share the rarest name words (issue #171). It saves a `search_tools` call.
