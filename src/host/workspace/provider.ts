@@ -27,6 +27,7 @@ import {
   parseSearchInput,
   parseTaskInput,
   parseWriteInput,
+  folderParts,
   pathParts,
   planEdits,
   showPath,
@@ -135,8 +136,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
   let running = 0
 
   /** The parts of a path text, after the checks that need no file system call. */
-  const target = (text: string): string[] => {
-    const parts = pathParts(text, windows)
+  const target = (text: string, folderPath = false): string[] => {
+    const parts = (folderPath ? folderParts : pathParts)(text, windows)
     if (excluded(parts)) throw new WorkspaceError('excluded', 'the path is excluded from Workspace')
     return parts
   }
@@ -249,7 +250,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
   const reachOf = (globs: readonly string[]) => (options.prune === false ? undefined : includeReach(globs))
 
   const list = async (input: ListInput, signal: AbortSignal) => {
-    const start = target(input.path)
+    const start = target(input.path, true)
     const inList = includeTest(input.include)
     const entries: { path: string; type: Kind; size?: number }[] = []
     const within = budget()
@@ -282,7 +283,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   const search = async (input: SearchInput, signal: AbortSignal) => {
-    const start = target(input.path)
+    const start = target(input.path, true)
     const inList = includeTest(input.include)
     const query = input.ignoreCase ? lowered(input.query) : input.query
     const matches: { path: string; line: number; column: number; text: string }[] = []

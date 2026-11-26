@@ -920,6 +920,33 @@ describe('output projection', () => {
     assert.ok(!none.includes('one after another'), none)
   })
 
+  test('the footer says which Workspace calls stopped early, list first, before the serial note, in both shapes', () => {
+    const get = (ref: number): CallRecord => ({ ref, tool: 'mcp__workspace__search', status: 'ok', chars: 10 })
+    const done = { t: 'done', value: '[]', logs: [] } as const
+    const cut = { list: { cut: 1, total: 1 }, search: { cut: 2, total: 5 } }
+    const serial = { tool: 'mcp__x__get', calls: 6, ms: 16_520 }
+    const LIST =
+      'mcp__workspace__list: 1 of 1 calls stopped early (truncated). Their results are partial: give a narrower path or include, or a smaller depth.'
+    const SEARCH =
+      'mcp__workspace__search: 2 of 5 calls stopped early (truncated). Their results are partial: give a narrower path or include, or raise maxMatches.'
+    const few = projectionFooter({ calls: [1, 2].map(get), recalls: 0, recalled: [], cut, serial }, done)
+    const lines = few.split('\n')
+    assert.deepEqual(lines.slice(-3, -1), [LIST, SEARCH], few)
+    assert.ok(lines.at(-1)!.startsWith('6 calls of mcp__x__get ran one after another'), few)
+    const many = projectionFooter({ calls: [1, 2, 3, 4, 5, 6, 7, 8, 9].map(get), recalls: 0, recalled: [], cut }, done)
+    assert.ok(many.endsWith(`\n${LIST}\n${SEARCH}\nawait recall(n) returns result #n again, with no new call.`), many)
+    const only = projectionFooter(
+      { calls: [1].map(get), recalls: 0, recalled: [], cut: { list: { cut: 0, total: 3 }, search: cut.search } },
+      done,
+    )
+    assert.ok(only.endsWith(`\n${SEARCH}`) && !only.includes('workspace__list:'), only)
+    const plain = { calls: [1, 2].map(get), recalls: 0, recalled: [] }
+    assert.equal(
+      projectionFooter({ ...plain, cut: { list: { cut: 0, total: 1 } } }, done),
+      projectionFooter(plain, done),
+    )
+  })
+
   test('a result that fits shows as formatted JSON', () => {
     const text = formatOutcome({ t: 'done', value: '{"a":[1,2]}', logs: [] }, 0, '', 20_000, {
       calls: [],
@@ -1058,6 +1085,26 @@ describe('the tool table', () => {
     assert.match(text, /\bjira, grafana\b/)
     assert.match(text, /search_tools.*run_code/)
     assert.doesNotMatch(serverInstructions([], NO_BRIDGES), /:\s*\./)
+  })
+
+  // #163: a Workspace that could not bind is left out of the names, and one fixed sentence says so.
+  test('the instructions say that the built-in workspace is not available, and name no reason', () => {
+    const SENTENCE = 'The built-in workspace server is not available in this session: search_tools says why.'
+    const down = serverInstructions(['workspace', 'jira'], NO_BRIDGES, true)
+    assert.match(down, /MCP servers: jira\. The built-in workspace server is not available/)
+    assert.ok(!/workspace, |, workspace|: workspace\b/.test(down), down)
+    assert.ok(!/workspace\.roots|config|folder|entries/.test(down), down)
+    const only = serverInstructions(['workspace'], NO_BRIDGES, true)
+    assert.ok(only.startsWith(`toolscript connects to other MCP servers. ${SENTENCE} Find their tools`), only)
+    const keys = Array.from({ length: 400 }, (_, i) => `server${i}-with-a-long-name`)
+    const cut = serverInstructions(['workspace', ...keys], NO_BRIDGES, true)
+    assert.ok(cut.length <= 4096 && cut.includes(SENTENCE) && /and \d+ more/.test(cut), `length ${cut.length}`)
+    // Up, or no section: the text of a session with no Workspace problem.
+    assert.equal(
+      serverInstructions(['workspace', 'jira'], NO_BRIDGES, false),
+      serverInstructions(['workspace', 'jira'], NO_BRIDGES),
+    )
+    assert.match(serverInstructions(['workspace', 'jira'], NO_BRIDGES), /\bworkspace, jira\b/)
   })
 
   // #47: with the same servers also listed as direct tools, a session never called run_code.

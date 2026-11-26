@@ -25,6 +25,7 @@ import {
   parseSearchInput,
   parseWriteInput,
   pathParts,
+  folderParts,
   realParts,
   planEdits,
   rootProblem,
@@ -53,6 +54,35 @@ const code = (f: () => unknown): string | undefined => {
   }
   return undefined
 }
+
+describe('the folder form of a path', () => {
+  test('cuts one final slash and keeps every other rule', () => {
+    for (const windows of [false, true]) {
+      assert.deepEqual(folderParts('a/', windows), ['a'])
+      assert.deepEqual(folderParts('a/b/', windows), ['a', 'b'])
+      assert.deepEqual(folderParts('a/b', windows), ['a', 'b'])
+      assert.deepEqual(folderParts('./', windows), [])
+      assert.deepEqual(folderParts('.', windows), [])
+      for (const text of ['/', '//', 'a//', 'a//b', 'a/./', 'a/../', '../', 'a\\'])
+        assert.equal(
+          code(() => folderParts(text, windows)),
+          'bad-path',
+          text,
+        )
+      assert.equal(
+        code(() => pathParts('a/', windows)),
+        'bad-path',
+      )
+    }
+    assert.throws(() => folderParts('/', false), /the path is absolute/)
+    for (const text of ['a /', 'a./'])
+      assert.equal(
+        code(() => folderParts(text, true)),
+        'bad-path',
+        text,
+      )
+  })
+})
 
 describe('the text of a path', () => {
   test('refuses each bad form with bad-path, on every system', () => {
@@ -396,6 +426,10 @@ describe('the root of a session', () => {
     const r = bindRoot(roots, '/elsewhere', 'linux')
     assert.equal(r.ok, false)
     assert.match(r.ok ? '' : r.reason, /Start the client in one of them/)
+    assert.equal(
+      r.ok ? '' : r.reason,
+      'the client started toolscript-mcp in a folder that is in none of the 3 entries of workspace.roots. Start the client in one of them. Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.',
+    )
     assert.doesNotMatch(r.ok ? '' : r.reason, /\/work|elsewhere/)
   })
 
@@ -432,6 +466,24 @@ describe('the root of a session', () => {
 })
 
 describe('the tool table', () => {
+  test('the list and search descriptions say when truncated is true, with the numbers of LIMITS', () => {
+    const num = (n: number) => n.toLocaleString('en-US')
+    const list = WORKSPACE_TOOLS.list.description
+    const search = WORKSPACE_TOOLS.search.description
+    assert.ok(
+      list.endsWith(
+        `truncated is true when it stopped early (${LIMITS.searchMs / 1000} s, ${num(LIMITS.searchFiles)} names or ${num(LIMITS.listEntries)} entries).`,
+      ),
+      list,
+    )
+    assert.ok(
+      search.endsWith(
+        `truncated is true when it stopped early (${LIMITS.searchMs / 1000} s, ${num(LIMITS.searchFiles)} names or maxMatches): the matches are then partial.`,
+      ),
+      search,
+    )
+  })
+
   test('lists the tools of the read, write and exec classes', () => {
     assert.deepEqual(WORKSPACE_TOOL_NAMES, ['list', 'search', 'read', 'stat', 'run_task', 'diff', 'edit', 'write'])
     for (const name of WORKSPACE_TOOL_NAMES) {
@@ -442,7 +494,8 @@ describe('the tool table', () => {
       assert.equal(WORKSPACE_TOOLS[name].inputSchema.type, 'object')
       assert.equal((WORKSPACE_TOOLS[name].inputSchema as { additionalProperties: boolean }).additionalProperties, false)
       assert.equal(WORKSPACE_TOOLS[name].outputSchema.type, 'object')
-      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 260)
+      // search is the longest: the .gitignore sentence and the truncated sentence.
+      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 360)
     }
     assert.equal(workspaceClass('mcp__workspace__read'), 'read')
     assert.equal(workspaceClass('mcp__workspace__diff'), 'read')

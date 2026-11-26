@@ -243,6 +243,10 @@ export const pathParts = (text: string, windows: boolean): string[] => {
   return parts
 }
 
+/** `pathParts` of a folder path: one final `/` is cut first, unless the text is `/`. All other rules hold. */
+export const folderParts = (text: string, windows: boolean): string[] =>
+  pathParts(text.length > 1 && text.endsWith('/') ? text.slice(0, -1) : text, windows)
+
 /** The path as the tools show it: the parts with `/`, and `.` for the root. */
 export const showPath = (parts: readonly string[]): string => (parts.length === 0 ? '.' : parts.join('/'))
 
@@ -386,9 +390,13 @@ export const bindRoot = (roots: readonly RealRoot[], start: string, platform: st
   if (roots.length === 1) return { ok: true, index: 0, root: roots[0]!.path }
   return {
     ok: false,
-    reason: `the client started toolscript-mcp in a folder that is in none of the ${roots.length} entries of workspace.roots. Start the client in one of them, or keep one entry`,
+    reason: `the client started toolscript-mcp in a folder that is in none of the ${roots.length} entries of workspace.roots. Start the client in one of them. ${RESTART_SENTENCE}`,
   }
 }
+
+/** The end of each reason that comes from the config: Workspace reads the config one time, so a change needs a restart. */
+export const RESTART_SENTENCE =
+  'Workspace reads workspace.roots only at its start: after a change, reconnect toolscript-mcp or restart the client.'
 
 // ---------------------------------------------------------------------------------------------------------------
 // The config section
@@ -478,12 +486,12 @@ export const WORKSPACE_TOOLS = {
   list: {
     class: 'read',
     description:
-      'List files and folders under a folder of the workspace, sorted by path. A link is listed and never entered. Excluded paths such as .git and .env never show. The .gitignore of the root hides names too: name an ignored folder in path to list it.',
+      'List files and folders under a folder of the workspace, sorted by path. A link is listed and never entered. Excluded paths such as .git and .env never show. The .gitignore of the root hides names too: name an ignored folder in path to list it. truncated is true when it stopped early (10 s, 20,000 names or 5,000 entries).',
     inputSchema: {
       type: 'object',
       properties: {
         path: pathArg(
-          'The folder, relative to the workspace root, with /. Default ".". Name the smallest folder that holds what you look for.',
+          'The folder, relative to the workspace root. Default ".". Name the smallest folder that holds what you look for.',
         ),
         depth: {
           type: 'integer',
@@ -519,7 +527,7 @@ export const WORKSPACE_TOOLS = {
   search: {
     class: 'read',
     description:
-      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program. The .gitignore of the root hides files: name an ignored folder in path to search it.',
+      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program. The .gitignore of the root hides files: name an ignored folder in path to search it. truncated is true when it stopped early (10 s, 20,000 names or maxMatches): the matches are then partial.',
     inputSchema: {
       type: 'object',
       properties: {

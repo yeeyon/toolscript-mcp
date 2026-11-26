@@ -18,6 +18,10 @@ import {
 } from '../src/core/config.ts'
 import { argsText, catalogOf, searchResult, toolName, type ServerState } from '../src/core/catalog.ts'
 import { splitToolName } from '../src/core/protocol.ts'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { connectAll } from '../src/host/downstream.ts'
+import { createServer } from '../src/host/server.ts'
 
 const NODE = '/usr/bin/node'
 const ok = (value: unknown, env: Record<string, string> = {}, platform = 'linux'): Config => {
@@ -1664,5 +1668,31 @@ describe('the tasks of the workspace section', () => {
       'invalid',
       'a colon in a folder name is a stream on Windows',
     )
+  })
+})
+
+describe('the instructions of a session whose Workspace config could not bind (issue #163)', () => {
+  const instructionsOf = async (down: boolean): Promise<string> => {
+    const config = ok({ mcpServers: {}, workspace: { roots: [{ path: '/work/a' }, { path: '/work/b' }] } })
+    const downstream = connectAll(config.servers, '0', () => {}, {})
+    const served = createServer(downstream, config, '/c.json', '0', () => {}, undefined, down)
+    const [a, b] = InMemoryTransport.createLinkedPair()
+    const client = new Client({ name: 'test', version: '0' })
+    await Promise.all([served.server.connect(a), client.connect(b)])
+    const text = client.getInstructions() ?? ''
+    await client.close()
+    await served.stopRuns()
+    await downstream.close()
+    return text
+  }
+
+  test('a failed step gives the sentence and no workspace in the names, and a good one the text of main', async () => {
+    const down = await instructionsOf(true)
+    assert.match(
+      down,
+      /^toolscript connects to other MCP servers\. The built-in workspace server is not available in this session: search_tools says why\. /,
+    )
+    assert.doesNotMatch(down, /MCP servers:[^.]*workspace/)
+    assert.match(await instructionsOf(false), /^toolscript connects to these MCP servers: workspace\. Find their tools/)
   })
 })
