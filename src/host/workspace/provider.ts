@@ -628,8 +628,17 @@ export const createProvider = (options: ProviderOptions): Provider => {
   const runner = options.tasks !== undefined && options.tasks.names.length > 0 ? options.tasks : undefined
 
   const run: Partial<Record<WorkspaceToolName, (args: unknown, signal: AbortSignal) => Promise<unknown>>> = {
-    list: (args, signal) => slotted(signal, () => list(parseListInput(args), signal)),
-    search: (args, signal) => slotted(signal, () => search(parseSearchInput(args), signal)),
+    // Bad input and a bad path answer at once and take no slot.
+    list: async (args, signal) => {
+      const input = parseListInput(args)
+      target(input.path, true)
+      return slotted(signal, () => list(input, signal))
+    },
+    search: async (args, signal) => {
+      const input = parseSearchInput(args)
+      target(input.path, true)
+      return slotted(signal, () => search(input, signal))
+    },
     read: args => read(parsePathInput(args)),
     stat: args => stat(parsePathInput(args)),
     diff: args => diff(parseDiffInput(args)),

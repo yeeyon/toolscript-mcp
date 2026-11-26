@@ -259,6 +259,21 @@ describe('the walk slots (issue #160)', () => {
     await until(() => rig.bound.provider.inFlight() === 0)
   })
 
+  test('a call with bad input or a bad path answers while a walk holds the slot', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const h = holding()
+    const rig = await rigOf(t, root, { hook: h.hook })
+    if (rig === undefined) return
+    const walk = rig.call('list')
+    await until(() => h.held() === 1)
+    assert.match(await rig.fail('list', { depth: 'deep' }), /bad-input/)
+    assert.match(await rig.fail('search', { query: 'hit', path: '../outside' }), /./)
+    assert.equal(rig.bound.provider.inFlight(), 1)
+    h.release()
+    await walk
+  })
+
   test('a walk that fails gives its slot back', async t => {
     const root = tree(t)
     write(root, { 'a.txt': 'hit\n' })
