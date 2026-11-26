@@ -15,13 +15,19 @@ param([string]$Pipe)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 # The pipe is connected first, so the host sees a helper that started, and tells a slow compile from no start at all.
+# Breadcrumbs go to the standard error, which the host reads (bounded) and shows when the start fails: no value of a task.
+function Crumb([string]$text) { try { [Console]::Error.WriteLine("ts-helper: $text") } catch {} }
+Crumb 'script started'
 try {
   $channel = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Pipe, [System.IO.Pipes.PipeDirection]::Out)
+  Crumb 'connecting'
   $channel.Connect(5000)
   $writer = New-Object System.IO.StreamWriter($channel, (New-Object System.Text.UTF8Encoding($false)))
   $writer.AutoFlush = $true
-} catch { exit 3 }
+  Crumb 'connected'
+} catch { Crumb ('connect failed: ' + $_.Exception.Message); exit 3 }
 if ([IntPtr]::Size -ne 8) { $writer.Write("failed:bits`n"); exit 4 }
+Crumb 'compiling'
 try {
   Add-Type -TypeDefinition @'
 using System;
@@ -126,5 +132,6 @@ public static class TsHost {
   }
 }
 '@
-} catch { $writer.Write("failed:compile`n"); exit 4 }
-try { [TsHost]::Serve($channel) } catch { exit 5 }
+} catch { Crumb ('compile failed: ' + $_.Exception.Message); $writer.Write("failed:compile`n"); exit 4 }
+Crumb 'compiled'
+try { [TsHost]::Serve($channel) } catch { Crumb ('serve failed: ' + $_.Exception.Message); exit 5 }

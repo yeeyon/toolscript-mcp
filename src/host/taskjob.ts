@@ -32,6 +32,8 @@ export const HELPER_CONNECT_MS = 15_000
  * `compile`). A task that waits for it has not started, so a slow first start never runs a task two times.
  */
 export const HELPER_START_MS = 60_000
+/** The most of the helper's own output that a failure shows. */
+const SAID_MAX = 400
 /** The Windows helper stops after this long with no task, and the next task starts a new one. */
 export const IDLE_MS = 10 * 60_000
 /** The perl of the system: an absolute path, never a `PATH` lookup. */
@@ -125,6 +127,8 @@ type Helper = {
   idleTimer: NodeJS.Timeout | undefined
   /** Why the helper failed before `ready`: a fixed code, with no path. */
   why: string | undefined
+  /** What the helper wrote to its output streams, bounded and without control characters. */
+  said: string
   /** A helper that did not start in time: the call does not retry it. */
   hung: boolean
   stopped: boolean
@@ -160,7 +164,11 @@ export const createJobHost = (options: {
   let closing = false
 
   const setRef = (h: Helper, on: boolean): void => {
-    for (const handle of [h.proc, h.proc.stdin, h.socket, h.server] as (Handle | null | undefined)[]) {
+    for (const handle of [h.proc, h.proc.stdin, h.proc.stdout, h.proc.stderr, h.socket, h.server] as (
+      | Handle
+      | null
+      | undefined
+    )[]) {
       if (handle === null || handle === undefined) continue
       if (on) handle.ref()
       else handle.unref()
@@ -232,7 +240,7 @@ export const createJobHost = (options: {
     }
     const proc = spawn(options.powershell, [...SWITCHES, options.script, pipe], {
       env,
-      stdio: ['pipe', 'ignore', 'ignore'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })
     const h: Helper = {
@@ -247,6 +255,7 @@ export const createJobHost = (options: {
       connectTimer: undefined,
       idleTimer: undefined,
       why: undefined,
+      said: '',
       hung: false,
       stopped: false,
     }
@@ -279,6 +288,13 @@ export const createJobHost = (options: {
       socket.on('close', () => died(h))
     })
     proc.stdin.on('error', () => {})
+    for (const stream of [proc.stdout, proc.stderr]) {
+      stream.setEncoding('utf8')
+      stream.on('error', () => {})
+      stream.on('data', (chunk: string) => {
+        if (h.said.length < SAID_MAX) h.said = (h.said + chunk.replace(/[^ -~]+/g, ' ')).slice(0, SAID_MAX)
+      })
+    }
     proc.once('error', error => {
       // A spawn error is a fixed code of the OS, such as EPERM when a policy blocks the program.
       const code = (error as NodeJS.ErrnoException).code
@@ -291,6 +307,10 @@ export const createJobHost = (options: {
     return h
   }
 
+  /** The failed step, with what the helper said when it said something: the next CI run names the cause. */
+  const reason = (h: Helper, step: string): string =>
+    h.said.trim() === '' ? step : `${step} (helper output: ${h.said.trim()})`
+
   /** A ready helper, or the step at which it failed. A helper that ends before `ready` is replaced one time. */
   const acquire = async (): Promise<Helper | string> => {
     let last = 'ended'
@@ -299,8 +319,8 @@ export const createJobHost = (options: {
       setRef(h, true)
       const ok = await h.ready
       if (ok && h.state === 'idle') return h
-      if (h.hung) return h.why ?? 'start'
-      last = h.why ?? 'ended'
+      if (h.hung) return reason(h, h.why ?? 'start')
+      last = reason(h, h.why ?? 'ended')
     }
     return last
   }
