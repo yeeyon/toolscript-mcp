@@ -153,6 +153,36 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   /**
+   * At most `LIMITS.walkSlots` walks of `list` and `search` run at one time. Parallel walks share the file threads and
+   * the CPU, and each would run to `searchMs` (issue #160). The others wait in order, and the budget of a walk starts
+   * when it runs. A call that is cancelled while it waits fails at once and takes no slot. A slot passes on when a walk
+   * ends for any reason.
+   */
+  const turns: (() => void)[] = []
+  let walking = 0
+  const slotted = async <T>(signal: AbortSignal, task: () => Promise<T>): Promise<T> => {
+    cancelled(signal)
+    if (walking < LIMITS.walkSlots) walking++
+    else
+      await new Promise<void>((go, stop) => {
+        const turn = () => (signal.removeEventListener('abort', quit), go())
+        const quit = () => {
+          turns.splice(turns.indexOf(turn), 1)
+          stop(new WorkspaceError('cancelled', 'the call was cancelled'))
+        }
+        turns.push(turn)
+        signal.addEventListener('abort', quit, { once: true })
+      })
+    try {
+      return await task()
+    } finally {
+      const next = turns.shift()
+      if (next === undefined) walking--
+      else next()
+    }
+  }
+
+  /**
    * The bound of one walk: `left` names (`searchFiles`, less each name read so far) and `searchMs`. A name counts when
    * it is read, whatever it is (a file, a folder, a link, a name that `include` drops), except an excluded name, which
    * only the time bounds. So a tree with no match for the `include`, or one of folders only, ends too.
@@ -598,8 +628,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
   const runner = options.tasks !== undefined && options.tasks.names.length > 0 ? options.tasks : undefined
 
   const run: Partial<Record<WorkspaceToolName, (args: unknown, signal: AbortSignal) => Promise<unknown>>> = {
-    list: (args, signal) => list(parseListInput(args), signal),
-    search: (args, signal) => search(parseSearchInput(args), signal),
+    list: (args, signal) => slotted(signal, () => list(parseListInput(args), signal)),
+    search: (args, signal) => slotted(signal, () => search(parseSearchInput(args), signal)),
     read: args => read(parsePathInput(args)),
     stat: args => stat(parsePathInput(args)),
     diff: args => diff(parseDiffInput(args)),

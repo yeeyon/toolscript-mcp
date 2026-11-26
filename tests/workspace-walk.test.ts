@@ -189,3 +189,82 @@ describe('the prune by include', () => {
       }
   })
 })
+
+describe('the walk slots (issue #160)', () => {
+  /** A hook that holds each `readdir` (the first lookup of a walk) until `release`. `read` never does a `readdir`. */
+  const holding = () => {
+    let on = true
+    let held = 0
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    return {
+      hook: async (lookup: string) => {
+        if (on && lookup === 'readdir') {
+          held++
+          await gate
+        }
+      },
+      held: () => held,
+      release: () => {
+        on = false
+        release()
+      },
+    }
+  }
+  const until = async (ok: () => boolean): Promise<void> => {
+    for (let i = 0; i < 1000 && !ok(); i++) await new Promise(r => setTimeout(r, 5))
+    assert.ok(ok(), 'the condition did not come true')
+  }
+  const pause = (ms: number) => new Promise(r => setTimeout(r, ms))
+  const searchMs = 200
+
+  test('one walk runs, the next waits with no lookup, and its budget starts at its slot', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const h = holding()
+    const rig = await rigOf(t, root, { hook: h.hook, limits: { searchMs } })
+    if (rig === undefined) return
+    const walks = [1, 2].map(() => rig.call('search', { query: 'hit' }))
+    await until(() => h.held() === 1)
+    await pause(searchMs + 100)
+    assert.equal(h.held(), 1, 'the second walk made a lookup while the slot was held')
+    assert.equal(rig.bound.provider.inFlight(), 2)
+    assert.equal((await rig.call('read', { path: 'a.txt' })).content, 'hit\n')
+    assert.equal((await rig.call('stat', { path: 'a.txt' })).type, 'file')
+    h.release()
+    const [, second] = await Promise.all(walks)
+    assert.equal(second.truncated, false)
+    assert.equal(second.matches.length, 1)
+  })
+
+  test('a call that is cancelled while it waits fails at once, and a later call still runs', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const h = holding()
+    const rig = await rigOf(t, root, { hook: h.hook })
+    if (rig === undefined) return
+    const walks = [rig.call('list')]
+    await until(() => h.held() === 1)
+    const waiting = rig.call('search', { query: 'hit' })
+    const quit = new AbortController()
+    const cancelled = rig.call('list', {}, quit.signal)
+    await until(() => rig.bound.provider.inFlight() === 3)
+    quit.abort()
+    await assert.rejects(cancelled)
+    await until(() => rig.bound.provider.inFlight() === 2)
+    h.release()
+    await Promise.all(walks)
+    assert.equal((await waiting).matches.length, 1)
+    assert.equal((await rig.call('search', { query: 'hit' })).truncated, false)
+    await until(() => rig.bound.provider.inFlight() === 0)
+  })
+
+  test('a walk that fails gives its slot back', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    for (let i = 0; i < 5; i++) assert.match(await rig.fail('list', { path: 'missing' }), /./)
+    assert.equal((await rig.call('search', { query: 'hit' })).matches.length, 1)
+  })
+})
