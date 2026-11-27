@@ -4,7 +4,7 @@
 // string form of a router id), the request with an id that its link already holds (dropped with no answer), and the
 // initialize in each state. The property test plays initialize too: first, joined, answered, failed, cancelled and
 // detached waiters, the waiterless answer, notifications/initialized and a death with waiters. It counts the states
-// that the seeds reach, and fails for a state that fewer than 10 seeds reached.
+// that the seeds reach, and fails for a state that fewer than 10 distinct seeds reached.
 
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -549,7 +549,7 @@ const TOKENS: (string | number)[] = [1, 2, '1', 'p']
 /** A link that waits for the answer to the initialize of the child. */
 type Wait = { readonly link: string; readonly id: string | number; live: boolean }
 
-/** The states of initialize that the seeds must reach. A state that fewer than 10 seeds reached fails the test. */
+/** The states of initialize that the seeds must reach. A state that fewer than 10 distinct seeds reached fails the test. */
 const STATES = [
   'first',
   'joined',
@@ -608,9 +608,10 @@ const play = (seed: number, steps: number, counts: Record<State, number> = newCo
 
   /** Initialize: a request (first, joined, cached or dropped), the answer of the child, notifications/initialized. */
   const initStep = (op: number): void => {
-    if (attached.length === 0) return
-    const link = rnd.pick(attached)
+    // The answer of the child needs no link: only the request and notifications/initialized do.
+    const link = attached.length > 0 ? rnd.pick(attached) : undefined
     if (op < 115) {
+      if (link === undefined) return
       const id = rnd.pick(IDS)
       const payload = 'init|' + initNo++
       const meta = rnd.chance(0.5) ? { _meta: { progressToken: rnd.pick(TOKENS) } } : {}
@@ -667,6 +668,7 @@ const play = (seed: number, steps: number, counts: Record<State, number> = newCo
         cached = { result }
       }
     } else {
+      if (link === undefined) return
       const out = router.fromLink(link, initializedNote)
       if (cached !== undefined && !initializedSent) {
         check(
@@ -884,15 +886,21 @@ const play = (seed: number, steps: number, counts: Record<State, number> = newCo
 }
 
 describe('mux property', () => {
-  test('250 seeds of 200 steps: no message crosses a link, none follows a cancel, every count ends at 0, initialize in each state', () => {
-    const counts = newCounts()
+  test('250 seeds of 200 steps: no message crosses a link, none follows a cancel, every count ends at 0, initialize in each state', t => {
+    // The number of distinct seeds that reached each state, not of occurrences.
+    const seeds = newCounts()
     const started = performance.now()
-    for (let seed = 1; seed <= 250; seed++) play(seed, 200, counts)
+    for (let seed = 1; seed <= 250; seed++) {
+      const one = newCounts()
+      play(seed, 200, one)
+      for (const state of STATES) if (one[state] > 0) seeds[state]++
+    }
     assert.ok(performance.now() - started < 3000, 'under 3 s')
+    t.diagnostic('seeds that reached each state: ' + JSON.stringify(seeds))
     for (const state of STATES)
       assert.ok(
-        counts[state] >= 10,
-        'the seeds reached the state "' + state + '" ' + counts[state] + ' times, 10 needed',
+        seeds[state] >= 10,
+        'the seeds reached the state "' + state + '" in ' + seeds[state] + ' seeds, 10 needed',
       )
   })
 })
