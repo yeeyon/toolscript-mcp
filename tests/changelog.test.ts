@@ -4,6 +4,7 @@
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -131,7 +132,7 @@ describe('the refusals', () => {
   })
 
   test('a bad name, another extension and a folder in changes/', () => {
-    for (const name of ['Upper.md', 'notes.txt', '.hidden.md', '-dash.md']) {
+    for (const name of ['Upper.md', 'notes.txt', '-dash.md']) {
       const root = rig(HEAD + OLD, { 'good.md': '- good\n', [name]: '- one\n' })
       refused(run(root, '1.0.5', '--apply'), /the name must match/)
       assert.deepEqual(left(root).includes('good.md'), true)
@@ -156,32 +157,73 @@ describe('the refusals', () => {
   })
 })
 
+const sha = (text: string) => crypto.createHash('sha256').update(text).digest('hex')
+const MARKER = 'CHANGELOG.md.folded'
+const FOLDED = HEAD + '## 1.0.5\n\n- one\n- two\n  wrapped\n\n' + OLD
+
 describe('--apply is safe to stop', () => {
-  test('a fragment left after the rename is deleted and its lines are not added twice', () => {
-    const root = rig(HEAD + OLD, { 'a.md': '- one\n', 'b.md': '- two\n  wrapped\n' })
-    assert.equal(run(root, '1.0.5', '--apply').status, 0)
-    const folded = read(root)
-    // A stop after the rename and before the deletes leaves every fragment, and a new one may come in meanwhile.
-    fs.writeFileSync(path.join(root, 'changes', 'a.md'), '- one\n')
-    fs.writeFileSync(path.join(root, 'changes', 'b.md'), '- two\n  wrapped\n')
-    fs.writeFileSync(path.join(root, 'changes', 'c.md'), '- three\n')
+  test('a stop after the rename: the marker names what is folded, a run deletes it and folds only the new file', () => {
+    const root = rig(FOLDED, { 'a.md': '- one\n', 'b.md': '- two\n  wrapped\n', 'c.md': '- three\n' })
+    fs.writeFileSync(path.join(root, MARKER), JSON.stringify({ names: ['a.md', 'b.md'], sha256: sha(FOLDED) }))
+    const dry = run(root, '1.0.5')
+    assert.equal(dry.stdout, '## 1.0.5\n\n- one\n- two\n  wrapped\n- three\n')
+    assert.match(dry.stderr, /a\.md is folded already[^\n]*left out/)
+    assert.match(dry.stderr, /b\.md is folded already/)
+    assert.equal(read(root), FOLDED, 'the dry run changes nothing')
+    assert.deepEqual(left(root), ['a.md', 'b.md', 'c.md'])
     const again = run(root, '1.0.5', '--apply')
     assert.equal(again.status, 0, again.stderr)
-    assert.equal(read(root), folded.replace('  wrapped\n', '  wrapped\n- three\n'))
+    assert.match(again.stderr, /a\.md is folded already[^\n]*removed/)
+    assert.match(again.stderr, /folded c\.md into 1\.0\.5/)
+    assert.equal(read(root), FOLDED.replace('  wrapped\n', '  wrapped\n- three\n'))
     assert.deepEqual(left(root), [])
+    assert.equal(fs.existsSync(path.join(root, MARKER)), false, 'the marker goes last')
   })
 
-  test('only folded fragments left: CHANGELOG.md is not written, the files go', () => {
-    const root = rig(HEAD + OLD, { 'a.md': '- one\n' })
-    assert.equal(run(root, '1.0.5', '--apply').status, 0)
-    const folded = read(root)
+  test('a stop after the rename with nothing new: CHANGELOG.md is not written, the named files go', () => {
+    const root = rig(FOLDED, { 'a.md': '- one\n' })
+    fs.writeFileSync(path.join(root, MARKER), JSON.stringify({ names: ['a.md'], sha256: sha(FOLDED) }))
     const mtime = fs.statSync(path.join(root, 'CHANGELOG.md')).mtimeMs
-    fs.writeFileSync(path.join(root, 'changes', 'a.md'), '- one\n')
-    assert.equal(run(root, '1.0.5').stdout, '## 1.0.5\n\n- one\n', 'the dry run shows the section as it is')
-    assert.equal(run(root, '1.0.5', '--apply').status, 0)
-    assert.equal(read(root), folded)
+    const r = run(root, '1.0.5', '--apply')
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(read(root), FOLDED)
     assert.equal(fs.statSync(path.join(root, 'CHANGELOG.md')).mtimeMs, mtime)
     assert.deepEqual(left(root), [])
+    assert.equal(fs.existsSync(path.join(root, MARKER)), false)
+  })
+
+  test('a stop after the last delete and before the marker goes: the marker is removed', () => {
+    const root = rig(FOLDED)
+    fs.writeFileSync(path.join(root, MARKER), JSON.stringify({ names: ['a.md'], sha256: sha(FOLDED) }))
+    refused(run(root, '1.0.5', '--apply'), /no file in changes/)
+    assert.equal(fs.existsSync(path.join(root, MARKER)), false)
+  })
+
+  test('a stop before the rename: the marker does not match, it is removed and every fragment folds', () => {
+    const root = rig(HEAD + OLD, { 'a.md': '- one\n', 'b.md': '- two\n' })
+    fs.writeFileSync(path.join(root, MARKER), JSON.stringify({ names: ['a.md'], sha256: sha('the new text') }))
+    const dry = run(root, '1.0.5')
+    assert.equal(dry.stdout, '## 1.0.5\n\n- one\n- two\n')
+    assert.equal(fs.existsSync(path.join(root, MARKER)), true, 'a dry run removes nothing')
+    const r = run(root, '1.0.5', '--apply')
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(read(root), HEAD + '## 1.0.5\n\n- one\n- two\n\n' + OLD)
+    assert.deepEqual(left(root), [])
+    assert.equal(fs.existsSync(path.join(root, MARKER)), false)
+  })
+
+  test('a marker that is not JSON is ignored and removed', () => {
+    const root = rig(HEAD + OLD, { 'a.md': '- one\n' })
+    fs.writeFileSync(path.join(root, MARKER), '{ half')
+    assert.equal(run(root, '1.0.5', '--apply').status, 0)
+    assert.equal(read(root), HEAD + '## 1.0.5\n\n- one\n\n' + OLD)
+    assert.equal(fs.existsSync(path.join(root, MARKER)), false)
+  })
+
+  test('a full run leaves neither the marker nor the temp file', () => {
+    const root = rig(HEAD + OLD, { 'a.md': '- one\n' })
+    assert.equal(run(root, '1.0.5', '--apply').status, 0)
+    assert.deepEqual(fs.readdirSync(root).sort(), ['CHANGELOG.md', 'changes'])
   })
 
   test('a temp file left by a stopped run is replaced, not folded in', () => {
@@ -192,10 +234,49 @@ describe('--apply is safe to stop', () => {
     assert.equal(fs.existsSync(path.join(root, 'CHANGELOG.md.tmp')), false)
   })
 
-  test('a refusal writes nothing, not even the temp file', () => {
+  test('a refusal writes nothing, not even the temp file or the marker', () => {
     const root = rig(HEAD + OLD, { 'a.md': '- one\n', 'bad.md': 'x\n' })
     refused(run(root, '1.0.5', '--apply'), /bad\.md/)
-    assert.equal(fs.existsSync(path.join(root, 'CHANGELOG.md.tmp')), false)
+    assert.deepEqual(fs.readdirSync(root).sort(), ['CHANGELOG.md', 'changes'])
+  })
+})
+
+describe('what folds', () => {
+  test('a fragment that repeats a line of the section folds, and the run names it', () => {
+    const root = rig(HEAD + '## 1.0.5\n\n- old one\n\n' + OLD, { 'a.md': '- old one\n' })
+    const r = run(root, '1.0.5', '--apply')
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(read(root), HEAD + '## 1.0.5\n\n- old one\n- old one\n\n' + OLD)
+    assert.match(r.stderr, /folded a\.md into/)
+  })
+
+  test('two identical fragments both fold, and both are named', () => {
+    const root = rig(HEAD + OLD, { 'a.md': '- same\n', 'b.md': '- same\n' })
+    const dry = run(root, '1.0.5')
+    assert.match(dry.stderr, /would fold a\.md, b\.md into 1\.0\.5/)
+    const r = run(root, '1.0.5', '--apply')
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(read(root), HEAD + '## 1.0.5\n\n- same\n- same\n\n' + OLD)
+    assert.match(r.stderr, /folded a\.md, b\.md into 1\.0\.5/)
+  })
+
+  test('dotfiles and backups of an editor in changes/ are skipped and stay', () => {
+    const root = rig(HEAD + OLD, {
+      'good.md': '- good\n',
+      '.draft.md': 'x',
+      '.good.md.swp': 'x',
+      'good.md~': 'x',
+      '#auto#.md~': 'x',
+    })
+    assert.equal(run(root, '1.0.5', '--apply').status, 0)
+    assert.deepEqual(left(root), ['#auto#.md~', '.draft.md', '.good.md.swp', 'good.md~'])
+    assert.equal(read(root), HEAD + '## 1.0.5\n\n- good\n\n' + OLD)
+  })
+
+  test('a CHANGELOG.md with CR is refused', () => {
+    const root = rig(HEAD.replaceAll('\n', '\r\n') + OLD, { 'a.md': '- one\n' })
+    refused(run(root, '1.0.5', '--apply'), /LF line ends/)
+    assert.deepEqual(left(root), ['a.md'])
   })
 })
 

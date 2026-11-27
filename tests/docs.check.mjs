@@ -13,7 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bundledListOnDisk, bundledListText } from '../scripts/bundled-hints.mjs'
-import { FRAGMENT_NAME, fragmentProblems, lf } from '../scripts/changelog.mjs'
+import { FRAGMENT_NAME, fragmentProblems, ignoredName, lf } from '../scripts/changelog.mjs'
 import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -157,7 +157,7 @@ const changesProblems = root => {
   return fs
     .readdirSync(folder)
     .sort()
-    .filter(name => name !== 'README.md')
+    .filter(name => name !== 'README.md' && !ignoredName(name))
     .flatMap(name => {
       const file = path.join(folder, name)
       if (!FRAGMENT_NAME.test(name)) return [`changes/${name}: the name must match [a-z0-9][a-z0-9._-]*.md`]
@@ -209,6 +209,9 @@ const tests = {
     put('nonewline.md', '- one')
     put('Bad.md', '- one\n')
     put('notes.txt', '- one\n')
+    // A dotfile and an editor backup are skipped, with no error.
+    put('.draft.md.swp', 'x')
+    put('good.md~', 'x')
     fs.mkdirSync(path.join(dir, 'changes', 'dir.md'))
     const found = changesProblems(dir).join('\n')
     for (const message of [

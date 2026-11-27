@@ -5,13 +5,17 @@
 //
 // `--root <folder>` reads CHANGELOG.md and changes/ in that folder, for the tests. A refusal exits with 2, writes one
 // line to stderr and changes nothing. The write is safe to stop: CHANGELOG.md is written to a temp file and renamed
-// before any fragment is deleted, and a fragment whose lines are all in the section already is not folded again, so a
-// second run after a stop only deletes it. The script does not summarize: the person rewrites the section by hand.
+// before any fragment is deleted. The marker CHANGELOG.md.folded (the names and the SHA-256 of the new text) lives from
+// before the rename to after the last delete. A run that finds a marker that matches CHANGELOG.md only deletes the
+// fragments it names; a marker that does not match (a stop before the rename) is removed and ignored. The script does not summarize: the person rewrites the section by hand.
 
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+/** A dotfile or a backup of an editor (a name that ends with ~) is not a fragment, and is never an error. */
+export const ignoredName = name => name.startsWith('.') || name.endsWith('~')
 export const FRAGMENT_NAME = /^[a-z0-9][a-z0-9._-]*\.md$/
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const USAGE = 'usage: node scripts/changelog.mjs <N.N.N> [--apply] [--root <folder>]'
@@ -58,7 +62,7 @@ const readFragments = folder => {
   if (!fs.existsSync(folder)) return []
   const found = []
   for (const name of fs.readdirSync(folder).sort()) {
-    if (name === 'README.md') continue
+    if (name === 'README.md' || ignoredName(name)) continue
     const file = path.join(folder, name)
     if (!FRAGMENT_NAME.test(name)) refuse(`changes/${name}: the name must match [a-z0-9][a-z0-9._-]*.md`)
     if (!fs.lstatSync(file).isFile()) refuse(`changes/${name}: it is not a file`)
@@ -84,7 +88,8 @@ const sectionsOf = text => {
  */
 export const fold = (changelog, version, fragments) => {
   if (!SEMVER.test(version)) refuse(`${version}: the version must be N.N.N`)
-  if (!/^# Changelog(\r?\n|$)/.test(changelog)) refuse('CHANGELOG.md must start with the line "# Changelog"')
+  if (changelog.includes('\r')) refuse('CHANGELOG.md must have LF line ends')
+  if (!/^# Changelog(\n|$)/.test(changelog)) refuse('CHANGELOG.md must start with the line "# Changelog"')
   if (fragments.length === 0) refuse('no file in changes/ to fold')
   const sections = sectionsOf(changelog)
   const first = sections[0]
@@ -96,19 +101,12 @@ export const fold = (changelog, version, fragments) => {
       refuse(`${version} is lower than the first section ${first.title}`)
   }
   const existing = own === 0 ? changelog.slice(first.start, first.end).split('\n') : []
-  const seen = new Set(existing)
-  const pending = []
-  const done = []
-  for (const f of fragments) {
-    const lines = f.text
+  const added = fragments.flatMap(f =>
+    f.text
       .replace(/\n+$/, '')
       .split('\n')
-      .filter(l => l !== '')
-    if (own === 0 && lines.every(l => seen.has(l))) done.push(f)
-    else pending.push({ ...f, lines })
-  }
-  const added = pending.flatMap(f => f.lines)
-  if (added.length === 0) return { text: changelog, section: sectionText(existing), pending, done }
+      .filter(l => l !== ''),
+  )
   let text
   let section
   if (own === 0) {
@@ -128,13 +126,25 @@ export const fold = (changelog, version, fragments) => {
         `\n${changelog.slice(first.start)}`
     }
   }
-  return { text, section, pending, done }
+  return { text, section }
 }
 
-const sectionText = lines => {
-  const body = [...lines]
-  while (body.length > 0 && body[body.length - 1].trim() === '') body.pop()
-  return `${body.join('\n')}\n`
+/** The section of a version as it stands in the text, or an empty text. */
+const sectionOfVersion = (changelog, version) => {
+  const s = sectionsOf(changelog).find(x => x.title === version)
+  return s === undefined ? '' : `${changelog.slice(s.start, s.end).replace(/\n+$/, '')}\n`
+}
+
+const sha256 = text => crypto.createHash('sha256').update(text).digest('hex')
+
+/** The names that a stopped run folded, when its marker matches the CHANGELOG.md on disk; else an empty list. */
+const readMarker = (marker, changelog) => {
+  try {
+    const m = JSON.parse(fs.readFileSync(marker, 'utf8'))
+    if (m?.sha256 === sha256(changelog) && Array.isArray(m.names))
+      return { names: m.names.map(String), exists: true, matches: true }
+  } catch {}
+  return { names: [], exists: fs.existsSync(marker), matches: false }
 }
 
 const main = argv => {
@@ -155,24 +165,42 @@ const main = argv => {
   } catch {
     refuse('CHANGELOG.md cannot be read')
   }
-  const folder = path.join(root, 'changes')
-  const { text, section, pending, done } = fold(changelog, version, readFragments(folder))
-  if (!apply) return void process.stdout.write(section)
-  if (pending.length > 0) {
-    // The temp file and the rename come before any delete.
+  const marker = `${file}.folded`
+  const known = readMarker(marker, changelog)
+  const all = readFragments(path.join(root, 'changes'))
+  // The files that a stopped run folded: the marker matches the CHANGELOG.md on disk, so they are in it already.
+  const done = all.filter(f => known.names.includes(f.name))
+  const pending = all.filter(f => !known.names.includes(f.name))
+  if (pending.length === 0 && done.length === 0 && known.matches && apply) fs.rmSync(marker, { force: true })
+  let next
+  if (pending.length > 0 || done.length === 0) next = fold(changelog, version, pending)
+  else if (!SEMVER.test(version)) refuse(`${version}: the version must be N.N.N`)
+  for (const f of done)
+    process.stderr.write(
+      `changelog: changes/${f.name} is folded already by a stopped run, ${apply ? 'removed' : 'left out of the fold'}\n`,
+    )
+  if (!apply) {
+    if (pending.length > 0)
+      process.stderr.write(`changelog: would fold ${pending.map(f => f.name).join(', ')} into ${version}\n`)
+    return void process.stdout.write(next?.section ?? sectionOfVersion(changelog, version))
+  }
+  if (known.exists && !known.matches) fs.rmSync(marker, { force: true }) // a stop before the rename
+  if (next !== undefined) {
+    // The marker, the temp file and the rename come before any delete; the marker goes last.
     const temp = `${file}.tmp`
     try {
-      fs.writeFileSync(temp, text)
+      fs.writeFileSync(marker, JSON.stringify({ names: pending.map(f => f.name), sha256: sha256(next.text) }))
+      fs.writeFileSync(temp, next.text)
       fs.renameSync(temp, file)
     } catch (err) {
       fs.rmSync(temp, { force: true })
+      fs.rmSync(marker, { force: true })
       throw err
     }
   }
   for (const f of [...pending, ...done]) fs.unlinkSync(f.file)
-  process.stderr.write(
-    `changelog: folded ${pending.length} files into ${version}, removed ${done.length} that were folded already\n`,
-  )
+  fs.rmSync(marker, { force: true })
+  process.stderr.write(`changelog: folded ${pending.map(f => f.name).join(', ')} into ${version}\n`)
 }
 
 if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
