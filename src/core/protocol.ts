@@ -1699,10 +1699,16 @@ const joinedIn = (segs: readonly string[], word: string): boolean => {
 const COVERED_HIT = 2.75
 
 /** The positions of the query words that spell a covered value. `nextReal[j]` is the first non-filler position from `j`. */
-const coveredBy = (values: ToolEntry['values'], query: readonly string[], nextReal: readonly number[]) => {
+const coveredBy = (
+  values: ToolEntry['values'],
+  query: readonly string[],
+  nextReal: readonly number[],
+  queryWords: ReadonlySet<string>,
+) => {
   const covered = new Set<number>()
   for (const value of values ?? []) {
-    if (value.filter(w => !FILLER.has(w)).length < 2) continue
+    // A value with a word that the query lacks is not covered: no scan for it.
+    if (!value.every(w => queryWords.has(w)) || value.filter(w => !FILLER.has(w)).length < 2) continue
     for (let start = 0; start < query.length; start++) {
       if (query[start] !== value[0]) continue
       const at = [start]
@@ -1765,6 +1771,7 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     return { word, stem: stem(word), abbr: found }
   })
   const qwords = wanted.map(w => w.word)
+  const qset = new Set(qwords)
   const nextReal: number[] = Array(qwords.length + 1).fill(qwords.length)
   for (let i = qwords.length - 1; i >= 0; i--) nextReal[i] = FILLER.has(qwords[i]!) ? nextReal[i + 1]! : i
   const idents = q
@@ -1791,7 +1798,7 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     let segs: string[] | undefined
     let named = false
     let phrase = 0
-    const covered = tool.values === undefined ? undefined : coveredBy(tool.values, qwords, nextReal)
+    const covered = tool.values === undefined ? undefined : coveredBy(tool.values, qwords, nextReal, qset)
     for (const [at, { word, stem, abbr }] of wanted.entries()) {
       segs ??= nameWords(tool.name)
       let hit = 0

@@ -75,7 +75,7 @@ describe('rankTools on four sets of searches', () => {
   // value that agrees with its top-1 floor of 5, and the 0.01 margin of the large sets does not fit.
   // Then a whole action value that the query spells out ("update reviewers" and `update_reviewers`), with 4 new searches
   // in the tuning set and 4 in set C: tuning 73 of 88 (0.899) with and without the rule, A 116 -> 117 (0.952 -> 0.958),
-  // B 107 (0.961), C 9 -> 11 of 11 (0.909 -> 1.000). The floors of the tuning set, A and C rise by the rule above.
+  // B 107 (0.961), C 9 -> 11 of 11 (0.909 -> 1.000). The tuning search "update status of pr thread" is also in A: rank 1 with and without the rule. The floors of the tuning set, A and C rise by the rule above.
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 88 searches on 140 tools', catalog, tuning.queries, 71, 0.89],
     ['held-out set A: 126 searches on the same 140 tools', catalog, heldOutA.queries, 115, 0.95],
@@ -778,7 +778,8 @@ describe('rankTools with the action values of the input schema', () => {
       for (const query of ['update the reviewers get verb3 noun3', 'get '.repeat(250), 'get the '.repeat(120)]) {
         const start = performance.now()
         assert.ok(rankTools(tools, query, 5).length <= 5)
-        assert.ok(performance.now() - start < 5000, 'ranked in under 5 s')
+        // Measured: 23, 114 and 106 ms here, against 10, 86 and 89 ms with no values.
+        assert.ok(performance.now() - start < 2000, 'ranked in under 2 s')
       }
     })
   })
