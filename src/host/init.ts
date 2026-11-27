@@ -31,6 +31,7 @@ import {
   type ProjectFolders,
 } from '../core/init.ts'
 import { errorText } from '../core/protocol.ts'
+import { readCodexClient } from './codex.ts'
 import { writeConfig } from './configfile.ts'
 
 export const INIT_USAGE = [
@@ -77,7 +78,9 @@ const readRegular = async (file: string): Promise<FileRead> => {
   }
 }
 
-const readClient = async (file: ClientFile): Promise<ClientRead> => {
+/** A client file, read in the way of its client: Codex goes through its CLI first. `start`: the folder of the session. */
+const readClient = async (file: ClientFile, env: Env, home: string, start: string): Promise<ClientRead> => {
+  if (file.client === 'codex') return readCodexClient(file, env, home, start, readRegular)
   const at = { ...file, path: path.resolve(file.path) }
   return { ...at, ...(await readRegular(at.path)) }
 }
@@ -150,7 +153,9 @@ const pick = async (
   launch: Launch,
 ): Promise<number> => {
   const project = await projectFolders(path.resolve(options.project ?? process.cwd()))
-  const reads = await Promise.all(scopedFiles(env, platform, home, project).map(readClient))
+  const reads = await Promise.all(
+    scopedFiles(env, platform, home, project).map(f => readClient(f, env, home, project.start)),
+  )
   const settings = settingsFiles(env, home, project.start)
   const local = reads.find(r => r.scope === 'local')
   const approval = approvals(
@@ -258,7 +263,11 @@ export const runInit = async (
   }
   const file = path.resolve(configPath(options.config, env, platform, home))
   if (options.list || options.add) return pick(options, file, env, platform, home, print, launch)
-  const imported = importServers(await Promise.all(clientFiles(env, platform, home).map(readClient)), platform)
+  const start = path.resolve(process.cwd())
+  const imported = importServers(
+    await Promise.all(clientFiles(env, platform, home).map(f => readClient(f, env, home, start))),
+    platform,
+  )
   const report = initReport(imported, file, platform, launch)
   if (imported.servers.size === 0) {
     print(report)
@@ -273,7 +282,8 @@ export const runInit = async (
     print(`cannot read ${file}: ${errorText(err)}`)
     return 1
   }
-  const oldReport = old === undefined ? [] : oldConfigReport(old.toString('utf8'), imported.servers, bak)
+  const oldReport =
+    old === undefined ? [] : oldConfigReport(old.toString('utf8'), imported.servers, bak, imported.policy)
 
   if (options['dry-run']) {
     const existing =
@@ -288,7 +298,7 @@ export const runInit = async (
         ...existing,
         ...HIDDEN,
         '',
-        configText(imported.servers, true),
+        configText(imported.servers, true, imported.policy),
         report,
       ].join('\n'),
     )
@@ -298,7 +308,7 @@ export const runInit = async (
   try {
     await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
     if (old !== undefined) await writeConfig(bak, old, true)
-    await writeConfig(file, configText(imported.servers, false), options.force === true)
+    await writeConfig(file, configText(imported.servers, false, imported.policy), options.force === true)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       print(`${file} exists. init did not change it. To replace it, run init again with --force.`)

@@ -25,14 +25,16 @@ import {
   PLAIN_NAME,
   type CommandStart,
 } from './commands.ts'
+import { mapCodex, type CodexRaw, type CodexRule } from './codex.ts'
 import { printable, shownName } from './policy.ts'
 
-export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor'
+export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor' | 'codex'
 
 const CLIENT_NAME: Readonly<Record<ClientId, string>> = {
   'claude-code': 'Claude Code',
   'claude-desktop': 'Claude Desktop',
   cursor: 'Cursor',
+  codex: 'Codex',
 }
 
 /** The scope of a Claude Code server. The other clients have none. */
@@ -62,6 +64,7 @@ export const clientFiles = (env: Env, platform: string, home: string): ClientFil
     { client: 'claude-code', scope: 'user', path: claudeJson(env, home) },
     { client: 'claude-desktop', path: `${desktop}/claude_desktop_config.json` },
     { client: 'cursor', path: `${home}/.cursor/mcp.json` },
+    { client: 'codex', path: `${env.CODEX_HOME || `${home}/.codex`}/config.toml` },
   ]
 }
 
@@ -108,9 +111,13 @@ export const sameFolder = (key: string, project: string, platform: string): bool
 /** The value of `--from`: `claude-code:local`, or a client alone for the clients without a scope. */
 export const sourceName = (file: ClientFile): string => (file.scope ? `${file.client}:${file.scope}` : file.client)
 
-export type ClientRead = ClientFile &
-  (
+/**
+ * What the host read of a client file. `codex`: the servers that the host got from the Codex CLI or from its config.toml
+ * (`src/host/codex.ts`). `notes`: lines about the read itself, which the report prints under the file.
+ */
+export type ClientRead = ClientFile & { readonly notes?: readonly string[] } & (
     | { readonly kind: 'text'; readonly text: string }
+    | { readonly kind: 'codex'; readonly servers: readonly (readonly [string, CodexRaw])[] }
     | { readonly kind: 'missing' }
     | { readonly kind: 'unreadable'; readonly error: string }
   )
@@ -130,7 +137,13 @@ export type Entry =
 
 /** What init did with one server of a client file. */
 type Outcome =
-  | { readonly kind: 'imported'; readonly name: string; readonly key: ServerKey; readonly dropped: readonly string[] }
+  | {
+      readonly kind: 'imported'
+      readonly name: string
+      readonly key: ServerKey
+      readonly dropped: readonly string[]
+      readonly extra: Extra
+    }
   /** The same entry as in an earlier client: the config has it already. */
   | { readonly kind: 'same'; readonly name: string }
   | { readonly kind: 'conflict'; readonly name: string; readonly key: ServerKey; readonly keptFrom: ClientId }
@@ -138,14 +151,29 @@ type Outcome =
   | { readonly kind: 'self'; readonly name: string }
   | { readonly kind: 'skipped'; readonly name: string; readonly why: string }
 
+/** What a Codex server brings besides its entry: policy rules from its tool lists, notes, and an OAuth login. */
+type Extra = {
+  readonly policy: readonly CodexRule[]
+  readonly notes: readonly string[]
+  readonly login: boolean
+}
+
+const NO_EXTRA: Extra = { policy: [], notes: [], login: false }
+
 type ClientResult = {
   readonly file: ClientFile
   /** Why init read no server from the file. */
   readonly problem?: string
+  readonly notes: readonly string[]
   readonly outcomes: readonly Outcome[]
 }
 
-export type Import = { readonly servers: ReadonlyMap<ServerKey, Entry>; readonly clients: readonly ClientResult[] }
+export type Import = {
+  readonly servers: ReadonlyMap<ServerKey, Entry>
+  /** The rules of the imported servers, in the order of the servers: the first rule that matches decides. */
+  readonly policy: readonly CodexRule[]
+  readonly clients: readonly ClientResult[]
+}
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string')
@@ -232,6 +260,7 @@ const projectOf = (claudeJson: Record<string, unknown>, folder: string, platform
 const serversOf = (read: ClientRead, platform: string): { problem: string } | { servers: [string, unknown][] } => {
   if (read.kind === 'missing') return { problem: NO_FILE }
   if (read.kind === 'unreadable') return { problem: `cannot read it: ${read.error}` }
+  if (read.kind === 'codex') return { servers: read.servers.map(([name, raw]) => [name, raw]) }
   const json = parseJson(read.text)
   if (!json.ok) return { problem: `not valid JSON${json.where}` }
   if (!isObject(json.value)) return { problem: 'not a JSON object' }
@@ -250,7 +279,13 @@ const serversOf = (read: ClientRead, platform: string): { problem: string } | { 
 
 /** One server of a client file, as the toolscript-mcp config would hold it, or why it cannot. */
 type Parsed =
-  | { readonly kind: 'entry'; readonly key: ServerKey; readonly entry: Entry; readonly dropped: readonly string[] }
+  | {
+      readonly kind: 'entry'
+      readonly key: ServerKey
+      readonly entry: Entry
+      readonly dropped: readonly string[]
+      readonly extra?: Extra
+    }
   | { readonly kind: 'self' }
   | { readonly kind: 'skipped'; readonly why: string }
 
@@ -265,7 +300,22 @@ const startIn = (parsed: { entry: Entry; dropped: string[] }, start: string | un
   return { entry: { ...entry, cwd: start }, dropped: entry.cwd === undefined ? dropped : [...dropped, 'cwd'] }
 }
 
-const parseServer = (name: string, raw: unknown, start: string | undefined): Parsed => {
+/** A Codex server: its fields are mapped by `mapCodex`, and its tool lists become policy rules. */
+const parseCodex = (name: string, raw: CodexRaw): Parsed => {
+  if ('skip' in raw) return { kind: 'skipped', why: raw.skip }
+  const { fields } = raw
+  if (isSelf(name, { command: fields.command, args: fields.args })) return { kind: 'self' }
+  const key = keyOf(name)
+  if (key === undefined) return { kind: 'skipped', why: 'no letter or digit to make a server key of' }
+  const mapped = mapCodex(key, fields, raw.via, raw.authStatus)
+  if ('why' in mapped) return { kind: 'skipped', why: mapped.why }
+  const entry: Entry = namesAzureDevOps(key, mapped.entry) ? { ...mapped.entry, untrusted: true } : mapped.entry
+  const { policy, notes, login } = mapped
+  return { kind: 'entry', key, entry, dropped: mapped.dropped, extra: { policy, notes, login } }
+}
+
+const parseServer = (name: string, raw: unknown, start: string | undefined, client: ClientId): Parsed => {
+  if (client === 'codex') return parseCodex(name, raw as CodexRaw)
   if (isSelf(name, raw)) return { kind: 'self' }
   const parsed = toEntry(raw)
   if ('why' in parsed) return { kind: 'skipped', why: parsed.why }
@@ -367,6 +417,7 @@ export type Candidate = {
 export type FileServers = {
   readonly file: ClientFile
   readonly problem?: string
+  readonly notes: readonly string[]
   readonly candidates: readonly Candidate[]
 }
 
@@ -374,11 +425,12 @@ export type FileServers = {
 const fileServers = (read: ClientRead, platform: string, start?: string): FileServers => {
   const { client, path, scope, project } = read
   const file: ClientFile = { client, path, ...(scope && { scope }), ...(project !== undefined && { project }) }
+  const notes = read.notes ?? []
   const found = serversOf(read, platform)
-  if ('problem' in found) return { file, problem: found.problem, candidates: [] }
+  if ('problem' in found) return { file, problem: found.problem, notes, candidates: [] }
   const folder = scope === 'local' || scope === 'project' ? start : undefined
-  const parse = ([name, raw]: [string, unknown]) => ({ file, name, parsed: parseServer(name, raw, folder) })
-  return { file, candidates: found.servers.map(parse) }
+  const parse = ([name, raw]: [string, unknown]) => ({ file, name, parsed: parseServer(name, raw, folder, client) })
+  return { file, notes, candidates: found.servers.map(parse) }
 }
 
 /**
@@ -419,24 +471,30 @@ export const scopedServers = (
 
 /** The servers of every client file, merged by key: the first client wins, and a different entry with the same key is a conflict. */
 export const importServers = (reads: readonly ClientRead[], platform: string): Import => {
-  const kept = new Map<ServerKey, { entry: Entry; from: ClientId; json: string }>()
+  const kept = new Map<ServerKey, { entry: Entry; from: ClientId; json: string; extra: Extra }>()
   const clients = reads.map((read): ClientResult => {
-    const { file, problem, candidates } = fileServers(read, platform)
-    if (problem !== undefined) return { file, problem, outcomes: [] }
+    const { file, problem, notes, candidates } = fileServers(read, platform)
+    if (problem !== undefined) return { file, problem, notes, outcomes: [] }
     const outcomes = candidates.map(({ name, parsed }): Outcome => {
       if (parsed.kind !== 'entry') return { ...parsed, name }
       const { key, entry } = parsed
-      const json = JSON.stringify(entry)
+      // The keys of an entry can come in any order: two clients with the same server are the same entry.
+      const json = canonical(entry)
       const earlier = kept.get(key)
       if (earlier === undefined) {
-        kept.set(key, { entry, from: read.client, json })
-        return { kind: 'imported', name, key, dropped: parsed.dropped }
+        const extra = parsed.extra ?? NO_EXTRA
+        kept.set(key, { entry, from: read.client, json, extra })
+        return { kind: 'imported', name, key, dropped: parsed.dropped, extra }
       }
       return earlier.json === json ? { kind: 'same', name } : { kind: 'conflict', name, key, keptFrom: earlier.from }
     })
-    return { file, outcomes }
+    return { file, notes, outcomes }
   })
-  return { servers: new Map([...kept].map(([key, k]) => [key, k.entry])), clients }
+  return {
+    servers: new Map([...kept].map(([key, k]) => [key, k.entry])),
+    policy: [...kept.values()].flatMap(k => k.extra.policy),
+    clients,
+  }
 }
 
 const masked = (entry: Entry): Entry => {
@@ -454,24 +512,35 @@ const masked = (entry: Entry): Entry => {
   }
 }
 
-const configObject = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean) => ({
+const configObject = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean, policy: readonly CodexRule[]) => ({
   mcpServers: Object.fromEntries([...servers].map(([key, entry]) => [key, mask ? masked(entry) : entry])),
-  policy: [],
+  policy,
 })
 
-/** The toolscript-mcp config of the imported servers, with an empty policy. `mask` hides the secrets for the screen. */
-export const configText = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean): string =>
-  `${JSON.stringify(configObject(servers, mask), null, 2)}\n`
+/**
+ * The toolscript-mcp config of the imported servers, with `policy` (the rules of the Codex tool lists, else empty).
+ * `mask` hides the secrets for the screen.
+ */
+export const configText = (
+  servers: ReadonlyMap<ServerKey, Entry>,
+  mask: boolean,
+  policy: readonly CodexRule[] = [],
+): string => `${JSON.stringify(configObject(servers, mask, policy), null, 2)}\n`
 
 /**
  * The report lines on the old config in `oldText`, which `bak` keeps: the top-level keys and the servers that the
  * new config of `servers` leaves out or has with a different value. Names only, no value.
  */
-export const oldConfigReport = (oldText: string, servers: ReadonlyMap<ServerKey, Entry>, bak: string): string[] => {
+export const oldConfigReport = (
+  oldText: string,
+  servers: ReadonlyMap<ServerKey, Entry>,
+  bak: string,
+  policy: readonly CodexRule[] = [],
+): string[] => {
   const json = parseJson(oldText)
   if (!json.ok || !isObject(json.value))
     return ['The old config is not a JSON object, so init cannot list what the new config leaves out of it.']
-  const next = configObject(servers, false)
+  const next = configObject(servers, false, policy)
   const top: Record<string, unknown> = next
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   const left = Object.entries(json.value).flatMap(([key, value]): string[] => {
@@ -508,6 +577,11 @@ const placeLines = (file: ClientFile): string[] => [
 const removeStep = (file: ClientFile, name: string, platform: string): string[] => {
   const head = label(`${shownName(name)} (${sourceName(file)})`)
   const byHand = 'In an editor, remove its entry from "mcpServers" of this file.'
+  if (file.client === 'codex') {
+    const table = 'In an editor, remove its [mcp_servers] table, and the tables below it, from this file.'
+    if (!PLAIN_NAME.test(name)) return [head, `    ${NAME_CHANGES}. ${table}`, ...placeLines(file)]
+    return [head, `    codex mcp remove ${nameWords(name)}`]
+  }
   if (file.client !== 'claude-code') return [head, `    ${byHand}`, ...placeLines(file)]
   if (!PLAIN_NAME.test(name)) return [head, `    ${NAME_CHANGES}. ${byHand}`, ...placeLines(file)]
   const scope = file.scope ?? 'user'
@@ -553,6 +627,20 @@ const steps = (c: ClientResult, start: CommandStart, configFile: string, platfor
   }
   const client = CLIENT_NAME[c.file.client]
   const [command, ...args] = launchArgv(launch)
+  if (c.file.client === 'codex') {
+    const text = JSON.stringify
+    return [
+      `Codex.${remove.length > 0 ? ` ${REMOVE_HEAD}` : ''}`,
+      ...remove,
+      `  In an editor, add this entry to ${c.file.path}:`,
+      '    [mcp_servers.toolscript]',
+      `    command = ${text(command)}`,
+      `    args = [${[...args, '--config', configFile].map(a => text(a)).join(', ')}]`,
+      '    default_tools_approval_mode = "approve"',
+      '  With "approve", Codex passes every call to toolscript-mcp, which checks its own policy. Without it, codex exec refuses every MCP call.',
+      '  Then start a new Codex session.',
+    ]
+  }
   return [
     `${client}:`,
     ...remove,
@@ -563,7 +651,11 @@ const steps = (c: ClientResult, start: CommandStart, configFile: string, platfor
 }
 
 /** The notes on the servers that a config gets: the untrusted ones, and the HTTP ones that can need a login. */
-const serverNotes = (servers: ReadonlyMap<ServerKey, Entry>, start: CommandStart): string[] => {
+const serverNotes = (
+  servers: ReadonlyMap<ServerKey, Entry>,
+  start: CommandStart,
+  logins: ReadonlySet<string> = new Set(),
+): string[] => {
   const out: string[] = []
   const untrusted = [...servers].flatMap(([key, e]) => (e.untrusted ? [key] : []))
   if (untrusted.length > 0)
@@ -572,7 +664,9 @@ const serverNotes = (servers: ReadonlyMap<ServerKey, Entry>, start: CommandStart
       `The config sets "untrusted": true on the servers that name Azure DevOps: ${untrusted.join(', ')}. Each of their results reaches the model as untrusted text.`,
     )
   // The config gives each of them an OAuth login by default.
-  const bare = [...servers].flatMap(([key, e]) => ('type' in e && e.headers === undefined ? [key] : []))
+  const bare = [...servers].flatMap(([key, e]) =>
+    'type' in e && e.headers === undefined && !logins.has(key) ? [key] : [],
+  )
   if (bare.length > 0)
     out.push(
       '',
@@ -585,12 +679,45 @@ const serverNotes = (servers: ReadonlyMap<ServerKey, Entry>, start: CommandStart
   return out
 }
 
+/** The rules that init wrote for the Codex tool lists. */
+const ruleLines = (rules: readonly CodexRule[]): string[] =>
+  rules.length === 0
+    ? []
+    : [
+        '',
+        'Policy rules from the Codex tool lists, written first in "policy":',
+        ...rules.map(r => `- ${r.action} ${r.match}`),
+      ]
+
+/** The notes of the Codex servers, and the login command of each that has an OAuth login in Codex. */
+const codexLines = (items: readonly { key: ServerKey; extra: Extra }[], start: CommandStart): string[] => {
+  const notes = items.flatMap(i => i.extra.notes)
+  const logins = items.filter(i => i.extra.login)
+  return [
+    ...(notes.length > 0 ? ['', ...notes.map(n => `- ${n}`)] : []),
+    ...(logins.length > 0
+      ? [
+          '',
+          'Codex has an OAuth login for these servers. toolscript-mcp keeps its own: run the command of each.',
+          ...(start.ok
+            ? logins.map(i => `    ${start.run} login --config ${start.config} ${nameWords(i.key)}`)
+            : start.lines),
+        ]
+      : []),
+  ]
+}
+
+const loginKeys = (items: readonly { key: ServerKey; extra: Extra }[]): Set<string> =>
+  new Set(items.filter(i => i.extra.login).map(i => i.key))
+
 /** What init read, imported and left out, the starter policy, and the steps for each client. No secret. */
 export const initReport = (imp: Import, configFile: string, platform: string, launch: Launch): string => {
   const name = (c: ClientResult) => CLIENT_NAME[c.file.client]
   const out = ['Client files. init reads them and does not change them:']
-  for (const c of imp.clients)
+  for (const c of imp.clients) {
     out.push(`- ${sourceLabel(c.file)}, ${c.file.path}: ${c.problem ?? plural(c.outcomes.length, 'server')}`)
+    out.push(...c.notes.map(n => `    ${n}`))
+  }
   const imported: string[] = []
   const left: string[] = []
   for (const c of imp.clients)
@@ -608,12 +735,24 @@ export const initReport = (imp: Import, configFile: string, platform: string, la
   if (left.length > 0) out.push('', 'Not imported:', ...left)
   if (imp.servers.size === 0) return [...out, '', 'No server to import. init wrote nothing.'].map(printable).join('\n')
   const start = commandStart(configFile, platform, launch, 'init')
-  out.push('', `Imported ${plural(imp.servers.size, 'server')}:`, ...imported, ...serverNotes(imp.servers, start))
+  const extras = imp.clients.flatMap(c =>
+    c.outcomes.flatMap(o => (o.kind === 'imported' ? [{ key: o.key, extra: o.extra }] : [])),
+  )
+  out.push(
+    '',
+    `Imported ${plural(imp.servers.size, 'server')}:`,
+    ...imported,
+    ...serverNotes(imp.servers, start, loginKeys(extras)),
+    ...ruleLines(imp.policy),
+    ...codexLines(extras, start),
+  )
 
   const [first] = imp.servers.keys()
   out.push(
     '',
-    'The policy in the config is empty, so toolscript-mcp asks you before a program calls a tool.',
+    imp.policy.length === 0
+      ? 'The policy in the config is empty, so toolscript-mcp asks you before a program calls a tool.'
+      : 'Apart from the rules above, the policy in the config is empty, so toolscript-mcp asks you before a program calls a tool.',
     'If your client cannot ask, toolscript-mcp refuses the run, and the result names the rule to add.',
     `Add rules to "policy" in ${configFile}, for example {"match": "mcp__${first}__*", "action": "allow"}.`,
     'toolscript-mcp reads the policy again at each run. It asks you to approve a new allow rule before it applies.',
@@ -710,11 +849,12 @@ export const listReport = (files: readonly FileServers[], config: OldConfig, at:
       printable(c.file.project ?? '-'),
     ]),
   )
-  const problems = files.flatMap(f =>
-    f.problem === undefined || f.problem === NO_FILE
+  const problems = files.flatMap(f => [
+    ...(f.problem === undefined || f.problem === NO_FILE
       ? []
-      : [printable(`Cannot read ${sourceName(f.file)}, ${f.file.path}: ${f.problem}`)],
-  )
+      : [printable(`Cannot read ${sourceName(f.file)}, ${f.file.path}: ${f.problem}`)]),
+    ...f.notes.map(n => printable(`${sourceName(f.file)}: ${n}`)),
+  ])
   const list =
     rows.length > 0
       ? table([['name', 'client', 'scope', 'kind', 'status', 'key', 'folder'], ...rows])
@@ -739,6 +879,7 @@ export type Added = {
   readonly entry: Entry
   readonly from: readonly Candidate[]
   readonly hides: readonly Candidate[]
+  readonly extra: Extra
 }
 
 /**
@@ -790,7 +931,13 @@ export const planAdd = (
     else {
       const runs = usable.some(u => u.c.file.client === 'claude-code')
       const hides = runs ? found.filter(c => !picked.includes(c)) : []
-      added.push({ key: first.parsed.key, entry: first.parsed.entry, from: usable.map(u => u.c), hides })
+      added.push({
+        key: first.parsed.key,
+        entry: first.parsed.entry,
+        from: usable.map(u => u.c),
+        hides,
+        extra: first.parsed.extra ?? NO_EXTRA,
+      })
     }
   }
   return errors.length > 0 ? { ok: false, errors } : { ok: true, added }
@@ -887,8 +1034,16 @@ const addCommands = (files: readonly FileServers[], config: OldConfig, at: AddAt
 /** The config with the added servers: the old config with its other keys and policy, or a new one. */
 export const addedConfigText = (old: OldConfig | undefined, added: readonly Added[]): string => {
   const servers = new Map(added.map(a => [a.key, a.entry]))
-  if (old === undefined) return configText(servers, false)
-  return `${JSON.stringify({ ...old.json, mcpServers: { ...old.servers, ...Object.fromEntries(servers) } }, null, 2)}\n`
+  const rules = added.flatMap(a => a.extra.policy)
+  if (old === undefined) return configText(servers, false, rules)
+  // The new rules go before the old policy, and no old rule changes.
+  const policy = Array.isArray(old.json.policy) ? [...rules, ...(old.json.policy as unknown[])] : rules
+  const config = {
+    ...old.json,
+    mcpServers: { ...old.servers, ...Object.fromEntries(servers) },
+    ...(rules.length > 0 && { policy }),
+  }
+  return `${JSON.stringify(config, null, 2)}\n`
 }
 
 /**
@@ -909,8 +1064,11 @@ export const addReport = (added: readonly Added[], configFile: string, platform:
       )
     }
   }
+  const start = commandStart(configFile, platform, launch, 'init')
   out.push(
-    ...serverNotes(new Map(added.map(a => [a.key, a.entry])), commandStart(configFile, platform, launch, 'init')),
+    ...serverNotes(new Map(added.map(a => [a.key, a.entry])), start, loginKeys(added)),
+    ...ruleLines(added.flatMap(a => a.extra.policy)),
+    ...codexLines(added, start),
     '',
     `The clients keep their direct entries. After a run through toolscript-mcp works, remove them. ${REMOVE_HEAD}`,
     ...added.flatMap(a => a.from.flatMap(c => removeStep(c.file, c.name, platform))),

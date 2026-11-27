@@ -64,7 +64,7 @@ Run `node "${CLAUDE_SKILL_DIR}/config.mjs" "<config>"`.
 - If it reads the config, keep it and go to step 5.
 - If it cannot read the file, there is no config yet. Continue with this step.
 
-Tell the person that init reads the user-scope MCP servers of Claude Code, Claude Desktop and Cursor. It writes
+Tell the person that init reads the user-scope MCP servers of Claude Code, Claude Desktop, Cursor and Codex. It writes
 `<config>` and does not change the files of the clients. With approval, run:
 
 ```sh

@@ -30,7 +30,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   run and their text. `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
   checks, such as `hiddenBy` (one glob covers another).
   `guard.ts` holds the guard of the folders in `guardedDirs` at each nested call: the walk of the arguments, the
-  markers, the path candidates and the compare. It takes `realpath` as a parameter. `commands.ts` holds the commands
+  markers, the path candidates and the compare. It takes `realpath` as a parameter. `toml.ts` (the strict reader of the `[mcp_servers]` tables of a Codex `config.toml`, for `init`) and `codex.ts` (the map of a Codex server to an entry, policy rules and notes) hold the Codex import of `init`, which `src/host/codex.ts` reads for (the Codex CLI first, then `config.toml`, cwd the home folder). `commands.ts` holds the commands
   that the CLI prints for a person or an agent to run: the allowlist of names and paths (`PLAIN_NAME`, `PLAIN_PATH`),
   the label lines, and the plan and lines of `toolscript-mcp allow`. Imports between them use `.ts` extensions.
 - `src/host/` holds the host code, which runs in Node. `tsconfig.host.json` checks its types. `scripts/build.mjs`

@@ -6,7 +6,17 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loginCommand, NPX_LAUNCH, parseConfig, pathWord, shellWord, type Launch } from '../src/core/config.ts'
-import { clientFiles, configText, importServers, initReport, mainCheckoutOf, sameFolder } from '../src/core/init.ts'
+import { parseCodexGet, parseCodexList } from '../src/core/codex.ts'
+import {
+  clientFiles,
+  configText,
+  importServers,
+  initReport,
+  mainCheckoutOf,
+  sameFolder,
+  type ClientRead,
+} from '../src/core/init.ts'
+import { readCodexToml } from '../src/core/toml.ts'
 import { shownName } from '../src/core/policy.ts'
 import { runInit } from '../src/host/init.ts'
 import { detectLaunch } from '../src/host/start.ts'
@@ -851,6 +861,8 @@ describe('the printed commands in each shell', () => {
       HOME: home,
       USERPROFILE: home,
       NODE_OPTIONS: '--experimental-strip-types --no-warnings',
+      // Codex reads only the temp home: never the CODEX_HOME of the person who runs the test.
+      CODEX_HOME: path.join(home, '.codex'),
     }
     delete childEnv.CLAUDE_CONFIG_DIR
     return { dir, project, config: path.join(dir, 'config.json'), list, childEnv }
@@ -1128,16 +1140,20 @@ describe('the client files', () => {
       'claude-code': 'C:/u/.claude.json',
       'claude-desktop': 'C:/u/AppData/Roaming/Claude/claude_desktop_config.json',
       cursor: 'C:/u/.cursor/mcp.json',
+      codex: 'C:/u/.codex/config.toml',
     })
     assert.deepEqual(files({}, 'darwin', '/Users/u'), {
       'claude-code': '/Users/u/.claude.json',
       'claude-desktop': '/Users/u/Library/Application Support/Claude/claude_desktop_config.json',
       cursor: '/Users/u/.cursor/mcp.json',
+      codex: '/Users/u/.codex/config.toml',
     })
+    assert.equal(files({ CODEX_HOME: '/x/codex' }, 'linux', '/home/u').codex, '/x/codex/config.toml')
     assert.deepEqual(files({ CLAUDE_CONFIG_DIR: '/c' }, 'linux', '/home/u'), {
       'claude-code': '/c/.claude.json',
       'claude-desktop': '/home/u/.config/Claude/claude_desktop_config.json',
       cursor: '/home/u/.cursor/mcp.json',
+      codex: '/home/u/.codex/config.toml',
     })
   })
 
@@ -2080,5 +2096,311 @@ describe('init --list and --add', () => {
     }
     const { code } = await init(home, ['--project', project])
     assert.equal(code, 2)
+  })
+})
+
+describe('Codex', () => {
+  const CODEX_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'codex-0.172.0')
+  const TOML = fs.readFileSync(path.join(CODEX_DIR, 'config.toml'), 'utf8')
+  const LITERALS = ['literal-secret-value', 'literal-header-secret']
+  const CODEX_FILE = { client: 'codex', path: '/h/.codex/config.toml' } as const
+  const json = (name: string): unknown => JSON.parse(fs.readFileSync(path.join(CODEX_DIR, name), 'utf8'))
+  const noLiteral = (text: string) => {
+    for (const secret of LITERALS) assert.ok(!text.includes(secret), secret + ' is shown:\n' + text)
+  }
+
+  /** The read of path A, from the JSON that the real Codex 0.172.0 printed for a fake CODEX_HOME. */
+  const fromCli = (auth: Record<string, string> = {}): ClientRead => ({
+    ...CODEX_FILE,
+    kind: 'codex',
+    servers: parseCodexList(json('list.json'))!.map(({ name, authStatus }) => [
+      name,
+      parseCodexGet(json('get-' + name.replaceAll(' ', '-') + '.json'), auth[name] ?? authStatus)!,
+    ]),
+  })
+
+  /** The read of path B, from the text of a config.toml. */
+  const fromToml = (text: string = TOML): ClientRead => {
+    const read = readCodexToml(text)
+    assert.ok(read.ok, read.ok ? '' : read.why)
+    return {
+      ...CODEX_FILE,
+      kind: 'codex',
+      servers: read.servers.map(s => [
+        s.name,
+        'skip' in s ? { skip: s.skip } : { via: 'config.toml', fields: s.fields },
+      ]),
+    }
+  }
+
+  const EXPECTED = {
+    docs: { type: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${DOCS_TOKEN}' } },
+    files: {
+      command: 'npx',
+      args: ['-y', '@example/files-server', '--root', '/tmp/x'],
+      env: { MODE: 'fast', API_KEY: 'literal-secret-value', HOME_TOKEN: '${HOME_TOKEN}' },
+      cwd: '/tmp',
+    },
+    hdr: {
+      type: 'http',
+      url: 'https://example.com/hdr',
+      headers: { 'X-Api-Key': 'literal-header-secret', 'X-Org': '${ORG_VAR}' },
+    },
+    oauthy: { type: 'http', url: 'https://example.com/oauth' },
+    'with-space': { command: 'node' },
+  }
+  const RULES = [
+    { match: 'mcp__docs__a', action: 'ask' },
+    { match: 'mcp__docs__b', action: 'ask' },
+    { match: 'mcp__docs__*', action: 'deny' },
+    { match: 'mcp__hdr__danger', action: 'deny' },
+  ]
+
+  test('the map of every field, from the JSON of codex mcp get and from config.toml: the same entries and rules', () => {
+    for (const read of [fromCli(), fromToml()]) {
+      const imp = importServers([read], 'linux')
+      assert.deepEqual(Object.fromEntries(imp.servers), EXPECTED)
+      assert.deepEqual(imp.policy, RULES)
+      const outcomes = imp.clients[0]!.outcomes
+      assert.deepEqual(
+        outcomes.find(o => o.name === 'off'),
+        { kind: 'skipped', name: 'off', why: 'disabled in Codex' },
+      )
+      const docs = outcomes.find(o => o.name === 'docs')
+      assert.ok(docs?.kind === 'imported')
+      assert.deepEqual(docs.dropped, [
+        'startup_timeout_sec (toolscript-mcp has no time limit for the start of one server)',
+        'tool_timeout_sec (toolscript-mcp has one time limit for every call, set in the config)',
+      ])
+    }
+  })
+
+  test('the report names the Codex client, the rules, what it left out, and the steps; no literal value', () => {
+    const report = initReport(importServers([fromCli()], 'linux'), '/c/config.json', 'linux', NPX_LAUNCH)
+    noLiteral(report)
+    assert.match(report, /^- Codex, \/h\/\.codex\/config\.toml: 6 servers$/m)
+    assert.match(report, /- docs, from Codex\. Left out: startup_timeout_sec \(.*\), tool_timeout_sec \(.*\)$/m)
+    assert.match(report, /- with-space, from Codex "with space"$/m)
+    assert.match(report, /- Codex "off": disabled in Codex$/m)
+    assert.match(report, /Policy rules from the Codex tool lists, written first in "policy":/)
+    for (const r of RULES) assert.ok(report.includes('- ' + r.action + ' ' + r.match), r.match)
+    assert.ok(report.includes('Apart from the rules above, the policy in the config is empty'))
+    // The steps: a command for a plain name, the hand edit for a name that a shell can change, and the entry of toolscript.
+    assert.match(report, /^Codex\. Run the command lines of a step in order, in one shell\.$/m)
+    for (const name of ['docs', 'files', 'hdr', 'oauthy'])
+      assert.ok(report.includes('    codex mcp remove "' + name + '"'), name)
+    assert.match(
+      report,
+      /- "with space" \(codex\)\n    no command: the name holds a character that a shell can change\. /,
+    )
+    assert.ok(!report.includes('codex mcp remove "with space"'))
+    assert.ok(!report.includes('codex mcp remove "off"'))
+    assert.match(
+      report,
+      /  In an editor, add this entry to \/h\/\.codex\/config\.toml:\n    \[mcp_servers\.toolscript\]\n    command = "npx"\n    args = \["-y", "toolscript-mcp", "--config", "\/c\/config\.json"\]\n    default_tools_approval_mode = "approve"\n/,
+    )
+    assert.match(report, /Then start a new Codex session\./)
+    // The masked config for the screen keeps the names and hides the values.
+    const imp = importServers([fromCli()], 'linux')
+    const shown = configText(imp.servers, true, imp.policy)
+    noLiteral(shown)
+    assert.ok(shown.includes('"API_KEY": "***"'))
+    assert.ok(shown.includes('"match": "mcp__docs__*"'))
+  })
+
+  test('an OAuth login in Codex gives the login step of the server, once; config.toml says it cannot see the state', () => {
+    const cli = initReport(
+      importServers([fromCli({ oauthy: 'o_auth' })], 'linux'),
+      '/c/config.json',
+      'linux',
+      NPX_LAUNCH,
+    )
+    assert.match(cli, /Codex has an OAuth login for these servers/)
+    assert.equal(cli.split('login --config').length - 1, 1, cli)
+    assert.ok(cli.includes('login --config "/c/config.json" "oauthy"'))
+    const plain = initReport(importServers([fromCli()], 'linux'), '/c/config.json', 'linux', NPX_LAUNCH)
+    assert.ok(!plain.includes('Codex has an OAuth login'))
+    const toml = initReport(importServers([fromToml()], 'linux'), '/c/config.json', 'linux', NPX_LAUNCH)
+    assert.match(
+      toml,
+      /- oauthy: init read config\.toml only, so it could not see the login state of this HTTP server\./,
+    )
+    assert.ok(!toml.includes('- docs: init read config.toml only'))
+  })
+
+  const only = (table: string) => importServers([fromToml('[mcp_servers.s]\n' + table)], 'linux')
+  const skipWhy = (table: string) => {
+    const o = only(table).clients[0]!.outcomes[0]!
+    assert.equal(o.kind, 'skipped', JSON.stringify(o))
+    return o.kind === 'skipped' ? o.why : ''
+  }
+
+  test('a server that init cannot map is skipped with a reason, and a reason holds no value', () => {
+    const cases: [string, RegExp][] = [
+      ['enabled = "yes"\ncommand = "c"', /"enabled" is not true or false/],
+      ['command = "c"\nurl = "https://example.com"', /has a command and a url/],
+      ['enabled_tools = ["a"]', /no command and no url/],
+      ['command = "c"\nenv_vars = ["fake secret=1"]', /an entry of "env_vars" is not a variable name/],
+      ['command = "c"\nenv_vars = ["1A"]', /not a variable name/],
+      ['url = "https://example.com"\nbearer_token_env_var = "a b"', /"bearer_token_env_var" is not a variable name/],
+      [
+        'url = "https://example.com"\nenv_http_headers = { H = "x y" }',
+        /a value of "env_http_headers" is not a variable name/,
+      ],
+      ['url = "ftp://example.com"', /no http:\/\/ or https:\/\/ url/],
+      ['command = "c"\nargs = "x"', /"args" is not a list of strings/],
+      ['command = "c"\nenabled_tools = ["a b"]', /holds a character that a rule cannot name/],
+      ['command = "c"\ndisabled_tools = ["a;b"]', /holds a character that a rule cannot name/],
+      [
+        'command = "c"\nenabled_tools = [' + Array.from({ length: 201 }, (_, i) => '"t' + i + '"').join(',') + ']',
+        /more than 200 tool names/,
+      ],
+      ['command = """x"""', /^init cannot read this entry$/],
+    ]
+    for (const [table, why] of cases) assert.match(skipWhy(table), why, table)
+    assert.ok(!skipWhy('command = "c"\nenv_vars = ["fake secret=1"]').includes('fake secret'))
+  })
+
+  test('policy rules never loosen the Codex lists: disabled first, then each enabled tool asked, then the rest denied', () => {
+    const rules = (table: string) => only('command = "c"\n' + table).policy
+    assert.deepEqual(rules('enabled_tools = []'), [{ match: 'mcp__s__*', action: 'deny' }])
+    assert.deepEqual(rules('disabled_tools = ["x", "y"]'), [
+      { match: 'mcp__s__x', action: 'deny' },
+      { match: 'mcp__s__y', action: 'deny' },
+    ])
+    assert.deepEqual(rules('enabled_tools = ["x", "y"]\ndisabled_tools = ["y"]'), [
+      { match: 'mcp__s__y', action: 'deny' },
+      { match: 'mcp__s__x', action: 'ask' },
+      { match: 'mcp__s__y', action: 'ask' },
+      { match: 'mcp__s__*', action: 'deny' },
+    ])
+    assert.deepEqual(rules(''), [])
+    // A key such as my-notes comes from the name "my notes".
+    const imp = importServers([fromToml('[mcp_servers."my notes"]\ncommand = "c"\ndisabled_tools = ["x"]\n')], 'linux')
+    assert.deepEqual(imp.policy, [{ match: 'mcp__my-notes__x', action: 'deny' }])
+  })
+
+  test('a key that the map does not name is listed by name, and so is a key of the other kind of server', () => {
+    const dropped = (table: string) => {
+      const o = only(table).clients[0]!.outcomes[0]!
+      assert.ok(o.kind === 'imported', JSON.stringify(o))
+      return o.dropped
+    }
+    assert.deepEqual(dropped('command = "c"\nfoo = 1\ndefault_tools_approval_mode = "approve"'), [
+      'foo (init does not know this key)',
+      'default_tools_approval_mode (init does not know this key)',
+    ])
+    assert.deepEqual(dropped('command = "c"\nbearer_token_env_var = "T"\nhttp_headers = { A = "b" }'), [
+      'bearer_token_env_var (not used by this kind of server)',
+      'http_headers (not used by this kind of server)',
+    ])
+    assert.deepEqual(dropped('url = "https://example.com"\nenv = { A = "b" }\ncwd = "/x"'), [
+      'env (not used by this kind of server)',
+      'cwd (not used by this kind of server)',
+    ])
+    assert.deepEqual(dropped('command = "c"\n[mcp_servers.s.tools_extra]\nk = "v"\n'), [
+      'tools_extra (init does not know this key)',
+    ])
+  })
+
+  test('a server whose only header came from http_headers_helper is imported with a note', () => {
+    const imp = only('url = "https://example.com"\nhttp_headers_helper = "get-token"')
+    const o = imp.clients[0]!.outcomes[0]!
+    assert.ok(o.kind === 'imported')
+    assert.deepEqual(o.dropped, ['http_headers_helper (init does not run the helper command of Codex)'])
+    assert.deepEqual(o.extra.notes.slice(0, 1), [
+      's: Codex took its header from http_headers_helper only. The server has no header now.',
+    ])
+    const report = initReport(imp, '/c/config.json', 'linux', NPX_LAUNCH)
+    assert.ok(report.includes('The server has no header now.'))
+    assert.ok(!report.includes('get-token'))
+  })
+
+  test('toolscript is the self entry, the same server in two clients is same or conflict, and a Codex problem stops nothing', () => {
+    const claude: ClientRead = {
+      client: 'claude-code',
+      scope: 'user',
+      path: '/h/.claude.json',
+      kind: 'text',
+      text: JSON.stringify({
+        mcpServers: {
+          files: EXPECTED.files,
+          docs: { type: 'http', url: 'https://example.com/other' },
+          extra: { command: 'node', args: ['x.js'] },
+        },
+      }),
+    }
+    const self = fromToml(
+      '[mcp_servers.toolscript]\ncommand = "npx"\nargs = ["-y", "toolscript-mcp"]\n[mcp_servers.t2]\ncommand = "node"\nargs = ["/x/toolscript-mcp/dist/host/main.js"]\n',
+    )
+    const alone = importServers([self], 'linux').clients[0]!.outcomes
+    assert.deepEqual(
+      alone.map(o => o.kind),
+      ['self', 'self'],
+    )
+    const imp = importServers([claude, fromCli()], 'linux')
+    const kinds = Object.fromEntries(imp.clients[1]!.outcomes.map(o => [o.name, o.kind]))
+    assert.equal(kinds.files, 'same')
+    assert.equal(kinds.docs, 'conflict')
+    assert.equal(imp.servers.get('extra' as never)?.constructor, Object)
+    // A Codex file that cannot be read is a problem line, and the other client is imported.
+    const broken: ClientRead = { ...CODEX_FILE, kind: 'unreadable', error: 'init cannot read it as TOML (x)' }
+    const both = importServers([claude, broken], 'linux')
+    assert.equal(both.servers.size, 3)
+    assert.equal(both.clients[1]!.problem, 'cannot read it: init cannot read it as TOML (x)')
+    const report = initReport(both, '/c/config.json', 'linux', NPX_LAUNCH)
+    assert.ok(report.includes('- Codex, /h/.codex/config.toml: cannot read it: init cannot read it as TOML (x)'))
+    assert.ok(!report.includes('Then start a new Codex session.'))
+  })
+
+  const CODEX_HOME_FILES = (extra: Record<string, unknown> = {}) => ({ '.codex/config.toml': TOML, ...extra })
+  const env = (home: string) => ({ XDG_CONFIG_HOME: path.join(home, '.config'), APPDATA: path.join(home, '.config') })
+
+  test('init writes the Codex servers and rules to a config that toolscript-mcp reads, and prints no literal value', async () => {
+    const home = homeWith(CODEX_HOME_FILES())
+    const { code, out, file } = await init(home)
+    assert.equal(code, 0, out)
+    noLiteral(out)
+    const text = fs.readFileSync(file, 'utf8')
+    const parsed = parseConfig(text, { DOCS_TOKEN: 't', HOME_TOKEN: 'h', ORG_VAR: 'o' }, '/usr/bin/node', 'linux')
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('\n'))
+    assert.deepEqual(JSON.parse(text).policy, RULES)
+    assert.deepEqual(JSON.parse(text).mcpServers.files.env.API_KEY, 'literal-secret-value')
+    assert.deepEqual([...parsed.config.servers.keys()].sort(), ['docs', 'files', 'hdr', 'oauthy', 'with-space'])
+    // The dry run shows the config with the values hidden.
+    const dry = await init(homeWith(CODEX_HOME_FILES()), ['--dry-run'])
+    noLiteral(dry.out)
+    assert.ok(dry.out.includes('"X-Api-Key": "***"'), dry.out)
+    assert.equal(fs.existsSync(dry.file), false)
+  })
+
+  test('--list shows the Codex servers, and --add copies one with its rules before the old policy', async () => {
+    const home = homeWith(CODEX_HOME_FILES())
+    const project = path.join(home, 'proj')
+    fs.mkdirSync(path.join(project, '.codex'), { recursive: true })
+    fs.writeFileSync(path.join(project, '.codex', 'config.toml'), '[mcp_servers.projectonly]\ncommand = "x"\n')
+    const config = path.join(home, 'cfg', 'config.json')
+    fs.mkdirSync(path.dirname(config), { recursive: true })
+    fs.writeFileSync(config, JSON.stringify({ mcpServers: {}, policy: [{ match: 'mcp__old__*', action: 'allow' }] }))
+    const list = await init(home, ['--list', '--project', project, '--config', config])
+    assert.equal(list.code, 0, list.out)
+    noLiteral(list.out)
+    assert.match(list.out, /^docs\s+codex\s+-\s+http https:\/\/example\.com\s+not in config\s+docs\s+-$/m)
+    assert.match(list.out, /^files\s+codex\s+-\s+stdio npx\s+not in config\s+files\s+-$/m)
+    assert.match(list.out, /^off\s+codex\s+-\s+-\s+skipped: disabled in Codex\s+-\s+-$/m)
+    assert.ok(!list.out.includes('projectonly'))
+    assert.match(
+      list.out,
+      /codex: init did not read .*proj.*config\.toml: Codex loads it only for a project that it trusts/,
+    )
+    const add = await init(home, ['--add=docs,files', '--project', project, '--config', config])
+    assert.equal(add.code, 0, add.out)
+    noLiteral(add.out)
+    const written = JSON.parse(fs.readFileSync(config, 'utf8'))
+    assert.deepEqual(written.policy, [...RULES.slice(0, 3), { match: 'mcp__old__*', action: 'allow' }])
+    assert.deepEqual(Object.keys(written.mcpServers).sort(), ['docs', 'files'])
+    assert.match(add.out, /Policy rules from the Codex tool lists, written first in "policy":\n- ask mcp__docs__a/)
+    assert.ok(add.out.includes('codex mcp remove "docs"'))
+    void env
   })
 })

@@ -176,9 +176,9 @@ by itself. It never opens a browser while it runs as a server. See [OAuth login]
 | Claude Code | User scope | Local and project scopes of the `--project` folder |
 | Claude Desktop | The servers of its config file | Same |
 | Cursor | The servers of its config file | Same |
-| Codex | Nothing | Nothing |
+| Codex | The servers of the Codex CLI, or of its `config.toml` | Same. It does not read the `.codex/config.toml` of a project |
 
-- If two clients have a server with the same name, `init` keeps the first. The order is Claude Code, Claude Desktop, Cursor.
+- If two clients have a server with the same name, `init` keeps the first. The order is Claude Code, Claude Desktop, Cursor, Codex.
 - `init` skips SSE servers, disabled servers and toolscript-mcp itself.
 - `init --list` prints one line for each server, and a ready command for each server that is not in the config yet.
 - The config from `init` has no `allow` rule, so each tool is `ask`.

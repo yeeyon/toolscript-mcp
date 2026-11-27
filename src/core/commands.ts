@@ -2,7 +2,7 @@
 // remove a server, and the tools commands that allow a tool. A name or a path in them comes from a client file, a
 // repo or a server, so each one goes in only when an allowlist says that every shell passes it as it is. No quoting
 // rule makes a hostile word safe: two rounds of such rules each failed a review. Each command is alone on its line,
-// indented by 4 spaces, and starts with node, npx, claude or pushd. Each label line starts with `- `.
+// indented by 4 spaces, and starts with node, npx, claude, codex or pushd. Each label line starts with `- `.
 
 import type { ToolLine } from './catalog.ts'
 import type { Launch } from './config.ts'
