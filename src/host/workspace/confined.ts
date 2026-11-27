@@ -196,13 +196,20 @@ const lstatOrNothing = async (file: string): Promise<fs.Stats | undefined> => {
   }
 }
 
+/** `err` with the real `parts` of the entry that it is about, for the exclusion check of the provider. */
+const spelling = (err: WorkspaceError, parts: readonly string[] | undefined): WorkspaceError => {
+  if (parts !== undefined) err.spelled = parts
+  return err
+}
+
 /** The checks of a file after its open: a plain file with one name. */
 const checkedFile = async (handle: FileHandle, parts: readonly string[]): Promise<Opened> => {
   try {
     const st = await handle.stat({ bigint: true })
-    if (!st.isFile()) throw new WorkspaceError('not-file', 'the path is not a file')
+    if (!st.isFile()) throw spelling(new WorkspaceError('not-file', 'the path is not a file'), parts)
     if (st.ino === 0n) throw unavailable('the volume gives no file identity')
-    if (st.nlink > 1n) throw new WorkspaceError('hard-link', 'the file has more than one name (a hard link)')
+    if (st.nlink > 1n)
+      throw spelling(new WorkspaceError('hard-link', 'the file has more than one name (a hard link)'), parts)
     return { handle, size: Number(st.size), parts, mode: Number(st.mode & 0o7777n) }
   } catch (err) {
     await handle.close().catch(() => {})
@@ -428,13 +435,22 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
       throw mapError(err)
     }
   }
-  /** An open that failed on `name`: a link when `name` is one, else the error. */
-  const refused = async (err: unknown, name: string): Promise<WorkspaceError> => {
+  /**
+   * An open that failed on `name`: a link when `name` is one, else the error. `not-folder` carries the listed spelling
+   * of `name` (`spell`: it came from a path text), so the provider can answer `excluded` for an alias of an excluded file.
+   */
+  const refused = async (err: unknown, name: string, spell = false): Promise<WorkspaceError> => {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ELOOP' || code === 'ENOTDIR' || code === 'EMLINK') {
-      const st = await lstatOrNothing(at(name)).catch(() => undefined)
+      const st = await lstatBig(at(name)).catch(() => undefined)
       if (st?.isSymbolicLink()) return linkError()
-      if (st !== undefined && code === 'ENOTDIR') return new WorkspaceError('not-folder', 'the path is not a folder')
+      if (st !== undefined && code === 'ENOTDIR') {
+        const listed = spell ? await spellOf(name, idOf(st)).catch(() => undefined) : name
+        return spelling(
+          new WorkspaceError('not-folder', 'the path is not a folder'),
+          listed === undefined ? undefined : [...parts, listed],
+        )
+      }
     }
     return mapError(err)
   }
@@ -469,7 +485,7 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
     openDir: async (name, spell = false) => {
       await hook('open')
       const opened = await fs.promises.open(at(name), O_RDONLY | O_DIRECTORY | O_NOFOLLOW).catch(async err => {
-        throw await refused(err, name)
+        throw await refused(err, name, spell)
       })
       return procDir(opened, [...parts, spell ? await spelled(opened, name) : name], true, hook)
     },
@@ -614,6 +630,19 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
     return seen
   }
 
+  /**
+   * The real parts of `parts` after an open of it failed on its kind, or undefined when there are none. Only the answer
+   * `excluded` uses them, so a failed or raced lookup keeps the plain code of the failure.
+   */
+  const spellAfter = async (parts: readonly string[]): Promise<string[] | undefined> => {
+    try {
+      await hook('realpath')
+      return below(await realpathNative(full(parts)), root, platform)
+    } catch {
+      return undefined
+    }
+  }
+
   // `how`: for reading, for a change in place, or to make a new file (which fails with `exists` when a name is there).
   const OPEN = {
     read: { windows: 'r', mac: O_RDONLY },
@@ -631,13 +660,17 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
         ? fs.promises.open(full(parts), OPEN[how].windows)
         : fs.promises.open(full(parts), OPEN[how].mac | O_NOFOLLOW_ANY | (folder ? O_DIRECTORY : O_NONBLOCK), 0o666)
     ).catch(async err => {
+      const code = (err as NodeJS.ErrnoException).code
       // macOS: `O_DIRECTORY` on a file gives ENOTDIR, as a file in a middle part does. Only a last part that exists and is
       // no folder is `not-folder`. A middle part that is a file, or a link, is the same as on the other systems.
-      if (!windows && folder && (err as NodeJS.ErrnoException).code === 'ENOTDIR') {
+      if (!windows && folder && code === 'ENOTDIR') {
         const st = await lstatOrNothing(full(parts)).catch(() => undefined)
         if (st?.isSymbolicLink()) throw linkError()
-        if (st !== undefined && !st.isDirectory()) throw new WorkspaceError('not-folder', 'the path is not a folder')
+        if (st !== undefined && !st.isDirectory())
+          throw spelling(new WorkspaceError('not-folder', 'the path is not a folder'), await spellAfter(parts))
       }
+      // A change opens for writing, and a folder refuses that (Windows and macOS give EISDIR): its spelling is the same.
+      if (code === 'EISDIR') throw spelling(mapError(err), await spellAfter(parts))
       throw mapError(err)
     })
     try {
@@ -741,7 +774,7 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
     const { handle, real } = await opened(parts, true)
     try {
       const st = await handle.stat({ bigint: true })
-      if (!st.isDirectory()) throw new WorkspaceError('not-folder', 'the path is not a folder')
+      if (!st.isDirectory()) throw spelling(new WorkspaceError('not-folder', 'the path is not a folder'), real)
       return makeDir(real, idOf(st))
     } finally {
       await handle.close().catch(() => {})

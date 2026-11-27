@@ -158,6 +158,20 @@ describe('non-ASCII names on a folder that does not fold (Linux)', () => {
   })
 })
 
+/** Every tool, with the options that change what it does, on each of `paths`: the kind of the path decides nothing. */
+const everyTool = (paths: readonly string[], hash: string): [string, Record<string, unknown>][] =>
+  paths.flatMap((p): [string, Record<string, unknown>][] => [
+    ['stat', { path: p }],
+    ['list', { path: p }],
+    ['search', { query: 'SECRET', path: p }],
+    ['read', { path: p }],
+    ['diff', { path: p, content: 'x' }],
+    ['diff', { path: p, expectedHash: hash, content: 'x' }],
+    ['write', { path: p, content: 'x' }],
+    ['write', { path: p, expectedHash: hash, content: 'x' }],
+    ['edit', { path: p, expectedHash: hash, edits: [{ old: 'SECRET', new: 'x' }] }],
+  ])
+
 // A casefolded folder (ext4 with `chattr +F`, as on Android or a share for SMB clients) opens `.ſſh` as `.ssh`. CI makes
 // an ext4 image with casefold and names a folder on it in the variable.
 const foldBase = process.env.TOOLSCRIPT_TEST_CASEFOLD_DIR
@@ -184,26 +198,19 @@ describe('a casefolded folder opens a name that it does not list (Linux)', () =>
     const rig = await rigOf(t, root, { write: true })
     if (rig === undefined) return
     const hash = sha(Buffer.from(secret))
-    // Split by kind, as the vfat test does: a tool that needs the other kind fails before the exclusion check.
-    const folderCalls = ['.ſſh', '.awſ'].flatMap((p): [string, object][] => [
-      ['stat', { path: p }],
-      ['list', { path: p }],
-      ['search', { query: 'SECRET', path: p }],
-    ])
-    const fileCalls = ['.ſſh/known_hosts', '.awſ/credentials', 'id_rſa'].flatMap((p): [string, object][] => [
-      ['read', { path: p }],
-      ['stat', { path: p }],
-      ['diff', { path: p, content: 'x' }],
-      ['write', { path: p, content: 'x' }],
-      ['edit', { path: p, expectedHash: hash, edits: [{ old: 'SECRET', new: 'x' }] }],
-    ])
-    const calls = [...folderCalls, ...fileCalls]
+    // Every tool on every alias, of either kind, and an alias of a file in the middle of a path.
+    const calls = everyTool(
+      ['.ſſh', '.awſ', '.ſſh/known_hosts', '.awſ/credentials', 'id_rſa', 'id_rſa/x', 'id_rſa/new.txt'],
+      hash,
+    )
     for (const [tool, args] of calls) {
-      const message = await rig.fail(tool, args as Record<string, unknown>)
+      const message = await rig.fail(tool, args)
       assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
       assert.ok(!message.includes(secret), `${tool} shows the bytes`)
     }
-    assert.equal(fs.readFileSync(path.join(root, '.ssh/known_hosts'), 'utf8'), secret)
+    for (const file of ['.ssh/known_hosts', '.aws/credentials', '.env', 'id_rsa'])
+      assert.equal(fs.readFileSync(path.join(root, file), 'utf8'), secret, file)
+    assert.deepEqual(fs.readdirSync(root).sort(), ['.aws', '.env', '.ssh', 'id_rsa'])
   })
 })
 
@@ -1354,6 +1361,7 @@ describe('names that the volume opens but does not list (Linux)', () => {
       '.ssh/known_hosts': secret,
       'a long file name.txt': 'long file bytes\n',
       'README.md': 'readme bytes\n',
+      'my docs folder/inner.txt': 'inner bytes\n',
     })
     const opens = (name: string) => {
       try {
@@ -1363,7 +1371,9 @@ describe('names that the volume opens but does not list (Linux)', () => {
         return false
       }
     }
-    const missing = ['GIT~1/config', 'ENV~1', 'SSH~1/known_hosts', 'ALONGF~1.TXT'].filter(n => !opens(n))
+    const missing = ['GIT~1/config', 'ENV~1', 'SSH~1/known_hosts', 'ALONGF~1.TXT', 'MYDOCS~1/inner.txt'].filter(
+      n => !opens(n),
+    )
     if (missing.length > 0) {
       // CI mounts the vfat image and sets CI: a volume that gives no alias there is a failed step, not a skip.
       assert.ok(!process.env.CI, `the alias volume gives no short name for ${missing.join(', ')}`)
@@ -1378,20 +1388,13 @@ describe('names that the volume opens but does not list (Linux)', () => {
     if (fx === undefined) return
     const rig = await rigOf(t, fx.root, { write: true })
     if (rig === undefined) return
-    const calls: [string, Record<string, unknown>][] = [
-      ['read', { path: 'GIT~1/config' }],
-      ['list', { path: 'GIT~1' }],
-      ['stat', { path: 'GIT~1' }],
-      ['search', { query: 'SECRET', path: 'GIT~1' }],
-      ['read', { path: 'ENV~1' }],
-      ['stat', { path: 'ENV~1' }],
-      ['diff', { path: 'ENV~1', content: 'x' }],
-      ['diff', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), content: 'x' }],
-      ['read', { path: 'SSH~1/known_hosts' }],
-      ['write', { path: 'GIT~1/new.txt', content: 'x' }],
-      ['write', { path: 'ENV~1', content: 'x' }],
-      ['edit', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), edits: [{ old: 'SECRET', new: 'x' }] }],
-    ]
+    // Every tool on every alias, of either kind (a folder, a file, a file in a folder, a file in the middle of a path).
+    const calls = everyTool(
+      ['GIT~1', 'git~1', 'SSH~1', 'GIT~1/config', 'SSH~1/known_hosts', 'ENV~1', 'ENV~1/x', 'ENV~1/new.txt'],
+      sha(Buffer.from(fx.secret)),
+    )
+    // A new file below an alias of an excluded folder: the two tools that make one.
+    calls.push(['write', { path: 'GIT~1/new.txt', content: 'x' }], ['diff', { path: 'GIT~1/new.txt', content: 'x' }])
     for (const [tool, args] of calls) {
       const message = await rig.fail(tool, args)
       assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
@@ -1399,6 +1402,29 @@ describe('names that the volume opens but does not list (Linux)', () => {
     }
     assert.equal(fs.readFileSync(path.join(fx.root, '.env'), 'utf8'), fx.secret)
     assert.deepEqual(fs.readdirSync(path.join(fx.root, '.git')), ['config'])
+    assert.deepEqual(fs.readdirSync(path.join(fx.root, '.ssh')), ['known_hosts'])
+  })
+
+  test('a name that is not excluded keeps the code of its kind', { skip: skipWhy }, async t => {
+    const fx = fixture(t)
+    if (fx === undefined) return
+    const rig = await rigOf(t, fx.root, { write: true })
+    if (rig === undefined) return
+    const kind = async (tool: string, args: Record<string, unknown>) => codeOf(await rig.fail(tool, args))
+    // A file alias as a folder, a folder alias as a file, and a write over a folder.
+    assert.equal(await kind('list', { path: 'ALONGF~1.TXT' }), 'not-folder')
+    assert.equal(await kind('search', { query: 'x', path: 'ALONGF~1.TXT' }), 'not-folder')
+    assert.equal(await kind('read', { path: 'MYDOCS~1' }), 'not-file')
+    assert.equal(
+      await kind('edit', { path: 'MYDOCS~1', expectedHash: sha(Buffer.from('x')), edits: [{ old: 'x', new: 'y' }] }),
+      'not-file',
+    )
+    assert.equal(await kind('write', { path: 'MYDOCS~1', content: 'x' }), 'exists')
+    assert.equal(await kind('diff', { path: 'MYDOCS~1', content: 'x' }), 'exists')
+    assert.equal(await kind('read', { path: 'NOSUCH~1' }), 'not-found')
+    assert.equal(await kind('list', { path: 'NOSUCH~1' }), 'not-found')
+    // The listed name shows in a result.
+    assert.equal((await rig.call('read', { path: 'ALONGF~1.TXT' })).path, 'a long file name.txt')
   })
 
   test(
@@ -1413,6 +1439,46 @@ describe('names that the volume opens but does not list (Linux)', () => {
       assert.equal(read.path, 'a long file name.txt')
       assert.match(read.content, /long file bytes/)
       assert.deepEqual(await rig.call('stat', { path: 'readme.md' }), { path: 'README.md', type: 'file', size: 13 })
+    },
+  )
+})
+
+// NTFS gives `.git` and `.env` the short names `GIT~1` and `ENV~1` when the volume makes 8.3 names. The names are the first
+// of their kind in a new folder. `realpath.native` shows whether the volume opens them, and the test skips when it does not.
+describe('NTFS short names of excluded entries (Windows)', () => {
+  test(
+    'an 8.3 name of an excluded folder or file is excluded in every tool',
+    { skip: !win && 'Windows only' },
+    async t => {
+      const root = fs.realpathSync.native(tempDir())
+      t.after(() => rm(root))
+      const secret = marker()
+      write(root, { '.git/config': secret, '.env': secret })
+      const real = (name: string) => {
+        try {
+          return path.basename(fs.realpathSync.native(path.join(root, name)))
+        } catch {
+          return undefined
+        }
+      }
+      if (real('GIT~1') !== '.git' || real('ENV~1') !== '.env')
+        return void t.skip('this volume gives no 8.3 name to .git and .env')
+      const rig = await rigOf(t, root, { write: true })
+      if (rig === undefined) return
+      const hash = sha(Buffer.from(secret))
+      for (const [tool, args] of everyTool(['GIT~1', 'GIT~1/config', 'ENV~1'], hash)) {
+        const message = await rig.fail(tool, args)
+        assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
+        assert.ok(!message.includes(secret), `${tool} shows the bytes`)
+      }
+      // Windows gives ENOENT for a path below a file, so a read below `ENV~1` is `not-found`, as below a name that is
+      // not there: no code of another kind tells that the file exists. A new file below it is refused as `excluded`.
+      for (const [tool, args] of everyTool(['ENV~1/x', 'ENV~1/new.txt'], hash)) {
+        const code = codeOf(await rig.fail(tool, args))
+        assert.ok(['excluded', 'not-found'].includes(code), `${tool} ${JSON.stringify(args)} gave ${code}`)
+      }
+      assert.equal(fs.readFileSync(path.join(root, '.env'), 'utf8'), secret)
+      assert.deepEqual(fs.readdirSync(path.join(root, '.git')), ['config'])
     },
   )
 })

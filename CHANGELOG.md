@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- Workspace answers `excluded` for a name that an alias reaches, with every tool (issue #176). A short name such as `GIT~1` or a casefold spelling such as `.ſſh` of an excluded file or folder, used with a tool of the other kind (`list` of a file, `read`, `edit`, `write` or `diff` of a folder, or a file alias in the middle of a path), no longer gets `not-folder`, `not-file` or `exists`, which told that the excluded entry is there. A name that is not excluded keeps those codes.
+
 ## 1.0.4
 
 - A tool name held in a plain string, such as `const g = "mcp__s__t"; await call(g, {})`, is now asked in the prompt before the run, like a name written inside `call("…")`, when the client can ask. A call refused at call time for a name nobody asked about now says that the person was not asked, and tells the model to write the name as a string in the program and run again, so a model no longer reports it as declined.
