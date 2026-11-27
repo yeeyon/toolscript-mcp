@@ -92,11 +92,11 @@ const alive = pid => {
     return false
   }
 }
-const until = async (what, check, ms = 15_000) => {
+const until = async (what, check, ms = 15_000, step = 50) => {
   const end = Date.now() + ms
   while (!(await check())) {
     assert.ok(Date.now() < end, `timed out: ${what}`)
-    await new Promise(r => setTimeout(r, 50))
+    await new Promise(r => setTimeout(r, step))
   }
 }
 const pidOf = async host => {
@@ -215,7 +215,12 @@ describe('a hard kill of the host while a lazy child starts', () => {
       const pids = [second.transport.pid, ...fs.readFileSync(started, 'utf8').trim().split(' ').map(Number)]
       assert.equal(pids.length, 3)
       // Also the other direct children of the host, such as the sandbox runner of the call: all must end with it.
-      const rows = (await readTable()).filter(p => pids.includes(p.pid) || p.ppid === pids[0])
+      // A child is never older than its parent: an older row only holds the stale ppid of a dead parent.
+      const table = await readTable()
+      const host = table.find(p => p.pid === pids[0])
+      const rows = table.filter(
+        p => pids.includes(p.pid) || (host !== undefined && p.ppid === host.pid && p.t >= host.t),
+      )
       for (const p of rows) ids.add(idOf(p))
       assert.ok(
         pids.every(pid => rows.some(p => p.pid === pid)),
@@ -227,6 +232,7 @@ describe('a hard kill of the host while a lazy child starts', () => {
         'the end of the host, the child and its wrapper',
         async () => !(await readTable()).some(p => ids.has(idOf(p))),
         10_000,
+        250,
       )
     } finally {
       // Only a row that still has a recorded pid and creation time: a pid that was reused is not ours.
