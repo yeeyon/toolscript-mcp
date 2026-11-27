@@ -355,6 +355,9 @@ test('a hard kill of the bench leaves no host and no fake server, and the next s
 // end of their stdin. The fake servers here ignore that EOF
 // (BENCH_IGNORE_EOF, as a real server can), so only the child guard ends them: a /bin/sh watchdog outside Windows, and on
 // Windows the Job Object program, which TOOLSCRIPT_CHILD_GUARD=1 turns on in this case. A leftover is a failure.
+// The case that ignores EOF needs the guard. On Windows the guard compiles a program, which raises a Defender audit event for
+// each new program, so a laptop runs the case without it (servers that end on EOF) and CI sets TOOLSCRIPT_TEST_CHILD_GUARD=1.
+const guardCase = process.platform !== 'win32' || process.env.TOOLSCRIPT_TEST_CHILD_GUARD === '1'
 const matches = (cmd, key) => new RegExp(String.raw`fake-server\.mjs"? ${key}\b`).test(cmd.replaceAll('\\', '/'))
 
 for (const [label, base, limit] of [
@@ -372,7 +375,7 @@ for (const [label, base, limit] of [
       },
     )
     const child = spawn(process.execPath, [BENCH, ...FAST, '--counts', '2', '--idle', '1', '--after-run', '60'], {
-      env: { ...base, BENCH_WRAP: '1', BENCH_IGNORE_EOF: '1', TOOLSCRIPT_CHILD_GUARD: '1' },
+      env: { ...base, BENCH_WRAP: '1', ...(guardCase ? { BENCH_IGNORE_EOF: '1', TOOLSCRIPT_CHILD_GUARD: '1' } : {}) },
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
     })

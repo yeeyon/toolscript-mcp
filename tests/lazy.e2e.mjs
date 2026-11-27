@@ -339,7 +339,12 @@ describe('a hard kill of the host while a lazy child starts', () => {
 // woken lazy server, each behind a wrapper (`cmd /c node` or `sh -c`) and each ignoring EOF, gets SIGKILL: within 3 s no
 // process of either tree is left, nor the watchdog or the guard program, matched by pid and creation time. The guard is on
 // outside Windows, and on Windows with TOOLSCRIPT_CHILD_GUARD=1 (set here, with a temp HOME for the compiled program).
-describe('the child guard', () => {
+// On Windows these cases compile the guard program, which raises a Defender audit event for each new program: CI only.
+const GUARD_SKIP =
+  process.platform === 'win32' && process.env.TOOLSCRIPT_TEST_CHILD_GUARD !== '1'
+    ? 'set TOOLSCRIPT_TEST_CHILD_GUARD=1: these cases compile the guard program'
+    : false
+describe('the child guard', { skip: GUARD_SKIP }, () => {
   const GONE_MS = 3000
   const guardConfig = path.join(dir, 'guard-config.json')
   const wrap = () =>

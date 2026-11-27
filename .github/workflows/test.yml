@@ -30,6 +30,12 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
+      # The Windows cases that compile the child guard program raise a Defender audit event for each new program, so a
+      # laptop skips them. CI runs them: tests/childguard.test.ts, tests/lazy.e2e.mjs and tests/memory.e2e.mjs.
+      - name: Turn on the Windows child guard cases
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "TOOLSCRIPT_TEST_CHILD_GUARD=1" >> "$GITHUB_ENV"
       # A vfat volume has short names such as GIT~1: the alias test of tests/workspace-fs.test.ts runs on it.
       - name: Mount a vfat image for the alias test
         if: runner.os == 'Linux'

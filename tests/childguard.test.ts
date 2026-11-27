@@ -210,38 +210,47 @@ describe('the Windows program', { skip: process.platform !== 'win32' }, () => {
     assert.deepEqual(fs.existsSync(folder) ? fs.readdirSync(folder) : [], [])
   })
 
-  test('a process that the host did not start is not adopted, and one that it started is', async () => {
-    lines.length = 0
-    const guard = make()
-    guard.start()
-    assert.equal((await guard.settled()).state, 'on', lines.join('\n'))
-    // A child of this process: adopted.
-    const mine = await sleeper()
-    // A process whose parent is not this process: a node starts a sleeper and leaves, so its ppid names a dead process.
-    const maker = spawn(
-      process.execPath,
-      [
-        '-e',
-        "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true, windowsHide: true }); c.unref(); console.log(c.pid)",
-      ],
-      { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
-    )
-    let text = ''
-    maker.stdout.on('data', d => (text += d))
-    await new Promise(resolve => maker.on('close', resolve))
-    const orphan = Number(text.trim())
-    assert.ok(orphan > 0 && alive(orphan))
-    await remember(orphan)
-    guard.add(mine)
-    guard.add(orphan)
-    await new Promise(r => setTimeout(r, 1500))
-    guard.close()
-    assert.ok(await until(() => !alive(mine), 5000), 'the process of the host was in the job')
-    started.delete(mine)
-    assert.ok(alive(orphan), 'a process that the host did not start was left alone')
-    process.kill(orphan, 'SIGKILL')
-    started.delete(orphan)
-  })
+  // It compiles and runs the guard program, which raises a Defender audit event for each new program: CI only.
+  const compiles =
+    process.env.TOOLSCRIPT_TEST_CHILD_GUARD === '1' ||
+    'set TOOLSCRIPT_TEST_CHILD_GUARD=1: this case compiles the guard program'
+  // It proves the check of the `guard <pid>` line (a child of the host only). The creation time compare of the sweep needs
+  // a reused pid, which a test cannot make, so that part rests on the code.
+  test(
+    'a process that the host did not start is not adopted, and one that it started is',
+    { skip: compiles === true ? false : compiles },
+    async () => {
+      lines.length = 0
+      const guard = make()
+      guard.start()
+      assert.equal((await guard.settled()).state, 'on', lines.join('\n'))
+      // A child of this process: adopted.
+      const mine = await sleeper()
+      // A process whose parent is not this process: a node starts a sleeper and leaves, so its ppid names a dead process.
+      const maker = spawn(
+        process.execPath,
+        [
+          '-e',
+          "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true, windowsHide: true }); c.unref(); console.log(c.pid)",
+        ],
+        { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
+      )
+      let text = ''
+      maker.stdout.on('data', d => (text += d))
+      await new Promise(resolve => maker.on('close', resolve))
+      const orphan = Number(text.trim())
+      assert.ok(orphan > 0 && alive(orphan))
+      await remember(orphan)
+      guard.add(mine)
+      guard.add(orphan)
+      await new Promise(r => setTimeout(r, 1500))
+      guard.close()
+      assert.ok(await until(() => !alive(mine), 5000), 'the process of the host was in the job')
+      started.delete(mine)
+      // The orphan stays in `started`: the cleanup of the file ends it by pid and creation time.
+      assert.ok(alive(orphan), 'a process that the host did not start was left alone')
+    },
+  )
 
   test('a missing source is a failure with its reason', async () => {
     lines.length = 0
