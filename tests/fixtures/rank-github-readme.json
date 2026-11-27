@@ -139,6 +139,10 @@
     ["list workflow run artifacts", "mcp__github__actions_list"],
     ["workflow run logs url", "mcp__github__actions_get"],
     ["download workflow run artifact", "mcp__github__actions_get"],
-    ["get pr check runs", "mcp__github__pull_request_read"]
+    ["get pr check runs", "mcp__github__pull_request_read"],
+    ["submit pending review", "mcp__github__pull_request_review_write"],
+    ["resolve thread", "mcp__github__pull_request_review_write"],
+    ["get review comments", "mcp__github__pull_request_read"],
+    ["get workflow run usage", "mcp__github__actions_get"]
   ]
 }

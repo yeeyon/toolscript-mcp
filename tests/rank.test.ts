@@ -2,11 +2,11 @@ import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { actionWords } from '../src/core/catalog.ts'
+import { actionValues, actionWords } from '../src/core/catalog.ts'
 import { listsAll, rankTools, type ToolEntry } from '../src/core/protocol.ts'
 
 // A fixture tool is [name, description] or [name, description, inputSchema]: the schema is the real one of the server
-// (#130), cut where it says so, and gives `actions` as `search_tools` does.
+// (#130), cut where it says so, and gives `actions` and `values` as `search_tools` does.
 type Servers = Record<string, ([string, string] | [string, string, unknown])[]>
 type Queries = [string, string][]
 
@@ -17,7 +17,7 @@ const toCatalog = (servers: Servers): ToolEntry[] =>
     tools.map(([tool, description, schema]) => ({
       name: `mcp__${server}__${tool}`,
       description,
-      ...(schema === undefined ? {} : { actions: actionWords(schema) }),
+      ...(schema === undefined ? {} : { actions: actionWords(schema), values: actionValues(schema) }),
     })),
   )
 const schemaOf = (servers: Servers, tool: string): unknown =>
@@ -73,11 +73,16 @@ describe('rankTools on four sets of searches', () => {
   // of 7 (0.714 -> 1.000). A's MRR now sits 0.002 over its floor (0.952 vs 0.95), so a drop there is a real signal.
   // Set C has 7 searches: one miss at rank 2 costs about 0.07 MRR, so its MRR floor is 0.85 = (5 + 2 x 0.5) / 7, the
   // value that agrees with its top-1 floor of 5, and the 0.01 margin of the large sets does not fit.
+  // Then a whole action value that the query spells out ("update reviewers" and `update_reviewers`), with 4 new searches
+  // in the tuning set and 4 in set C: tuning 73 of 88 (0.899) with and without the rule, A 116 -> 117 (0.952 -> 0.958),
+  // B 107 (0.961), C 9 -> 11 of 11 (0.909 -> 1.000). The tuning search "update status of pr thread" is also in A: rank 1 with and without the rule.
+  // Set C then has 11 searches, and its floors are 9 and 0.9 = (9 + 2 x 0.5) / 11 by the same rule. The floors of the
+  // tuning set and A rise by the rule above too.
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
-    ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
-    ['held-out set A: 126 searches on the same 140 tools', catalog, heldOutA.queries, 114, 0.95],
+    ['tuning set: 88 searches on 140 tools', catalog, tuning.queries, 71, 0.89],
+    ['held-out set A: 126 searches on the same 140 tools', catalog, heldOutA.queries, 115, 0.95],
     ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 105, 0.95],
-    ['held-out set C: 7 searches on 36 GitHub tools', catalogH, heldOutC.queries, 5, 0.85],
+    ['held-out set C: 11 searches on 36 GitHub tools', catalogH, heldOutC.queries, 9, 0.9],
   ]
   for (const [label, tools, queries, top1Floor, mrrFloor] of sets)
     test(label, () => {
@@ -559,7 +564,7 @@ describe('rankTools on four sets of searches', () => {
 
 // Each server of the tuning set twice, as `<key>` and `<key>-b` with the same tools (#104). A copy ranks like its
 // original, so a query counts as top-1 when rank 1 is the wanted tool or its copy, and the MRR uses the rank among
-// different tools. Measured: top-1 69 of 84, MRR 0.894, as with one copy.
+// different tools. Measured: top-1 73 of 88, MRR 0.899, as with one copy.
 describe('rankTools with each server of the tuning set twice', () => {
   const twice = toCatalog(
     Object.fromEntries(
@@ -584,7 +589,7 @@ describe('rankTools with each server of the tuning set twice', () => {
     })
     const top1 = ranks.filter(r => r === 1).length
     const mrr = ranks.reduce((sum, r) => sum + 1 / r, 0) / ranks.length
-    assert.ok(top1 >= 67 && mrr >= 0.88, `top-1 ${top1} of ${ranks.length}, MRR ${mrr.toFixed(3)}, floors 67 and 0.88`)
+    assert.ok(top1 >= 71 && mrr >= 0.89, `top-1 ${top1} of ${ranks.length}, MRR ${mrr.toFixed(3)}, floors 71 and 0.89`)
   })
 })
 
@@ -675,6 +680,119 @@ describe('rankTools with the action values of the input schema', () => {
     assert.equal(first('pr review'), 'mcp__github__pull_request_review_write')
     assert.equal(first('reply to pr comment'), 'mcp__github__add_reply_to_pull_request_comment')
     assert.ok(catalogH.find(t => t.name.endsWith('__pull_request_read'))!.actions!.has('comments'))
+  })
+
+  describe('a whole action value that the query spells out', () => {
+    const W = 'mcp__azure-devops__repo_pull_request_write'
+    const bare: ToolEntry[] = catalog.map(({ values: _values, ...t }) => t)
+    const top = (tools: readonly ToolEntry[], query: string, limit = 10) =>
+      rankTools(tools, query, limit).map(t => t.name)
+
+    test('"update reviewers" ranks the write tool first, with and without the server name and a filler word', () => {
+      for (const query of ['update reviewers', 'azure devops update reviewers', 'update the reviewers'])
+        assert.equal(rankOf(catalog, query, W), 1, query)
+      assert.equal(rankOf(catalog, 'update reviewers pull request', W), 1)
+      // Without the values it ranks below the tools that hold "update" in their name, as on main.
+      assert.ok(rankOf(bare, 'update reviewers', W) > 1)
+    })
+
+    test('the new searches of the sets rank first', () => {
+      const added: [readonly ToolEntry[], Queries][] = [
+        [catalog, tuning.queries.slice(-4)],
+        [catalogH, heldOutC.queries.slice(-4)],
+      ]
+      for (const [tools, queries] of added)
+        for (const [query, wanted] of queries) assert.equal(rankOf(tools, query, wanted), 1, query)
+    })
+
+    test('a name hit of both words beats a covered value', () => {
+      assert.equal(top(catalog, 'update file', 1)[0], 'mcp__github__create_or_update_file')
+      assert.ok(top(catalog, 'update issue', 2).every(n => n.endsWith('__update_issue')))
+    })
+
+    test('the words in another order, or with a real word between, are not covered: the rank is as on main', () => {
+      for (const query of ['reviewers update', 'update pull request reviewers', 'update the pull request reviewers'])
+        assert.deepEqual(top(catalog, query, 40), top(bare, query, 40), query)
+    })
+
+    test('a value of one word, a value of one real word and a tool with no schema rank as on main', () => {
+      // "list_by_commits" has one word that is not in FILLER.
+      for (const query of ['list by commits', 'vote', 'create', 'update pull request'])
+        assert.deepEqual(top(catalog, query, 40), top(bare, query, 40), query)
+      const plain: ToolEntry[] = [
+        { name: 'mcp__s__update_page', description: 'Update a page' },
+        { name: 'mcp__s__pr_write', description: 'Write a pull request' },
+      ]
+      assert.deepEqual(
+        top(plain, 'update reviewers'),
+        top(
+          plain.map(t => ({ ...t, values: [] })),
+          'update reviewers',
+        ),
+      )
+    })
+
+    test('a value with a filler word inside needs that word in the query, as the bar says: all its words in order', () => {
+      const tools: ToolEntry[] = [
+        { name: 'mcp__s__review_comments_x', description: 'c' },
+        { name: 'mcp__s__t', description: 'y', values: [['get', 'the', 'review', 'comments']] },
+      ]
+      assert.deepEqual(top(tools, 'get the review comments'), ['mcp__s__t', 'mcp__s__review_comments_x'])
+      assert.deepEqual(top(tools, 'get review comments'), ['mcp__s__review_comments_x'])
+    })
+
+    test('two tools that cover the same value rank by the shorter name', () => {
+      const value = [['update', 'reviewers']]
+      const long = { name: 'mcp__s__pr_write_extra', description: 'Write', values: value }
+      const short = { name: 'mcp__s__pr_write', description: 'Write', values: value }
+      for (const tools of [
+        [long, short],
+        [short, long],
+      ])
+        assert.deepEqual(top(tools, 'update reviewers'), [short.name, long.name])
+    })
+
+    test('a covered value of 2 words scores between a name hit with a description hit and 2 name hits', () => {
+      const tools: ToolEntry[] = [
+        { name: 'mcp__s__update_x', description: 'Change reviewers of it' },
+        { name: 'mcp__s__write', description: 'Write', values: [['update', 'reviewers']] },
+        { name: 'mcp__s__update_reviewers', description: 'Name hits' },
+      ]
+      assert.deepEqual(top(tools, 'update reviewers'), [
+        'mcp__s__update_reviewers',
+        'mcp__s__write',
+        'mcp__s__update_x',
+      ])
+    })
+
+    test('search_tools keeps the caps: values of 2 or more words, MAX_ENUM values, 50 words, 40 characters', () => {
+      const many = Array.from({ length: 10_000 }, (_, i) => 'verb' + i + '_x')
+      assert.equal(actionValues(act(...many)).length, 25)
+      assert.equal(actionValues(act('a_'.repeat(2500) + 'b')).length, 0)
+      assert.equal(actionValues(act(...Array.from({ length: 25 }, (_, i) => 'a' + i + '_b' + i + '_c' + i))).length, 16)
+      assert.deepEqual(actionValues(act('Create Draft', 'update_reviewers', 'vote', 1, null)), [
+        ['create', 'draft'],
+        ['update', 'reviewers'],
+      ])
+      assert.deepEqual(actionValues(act('_x_', 'one')), [])
+      for (const bad of [undefined, null, 1, [], { properties: [] }, { properties: { action: { const: 'a_b' } } }])
+        assert.deepEqual(actionValues(bad), [])
+    })
+
+    test('5,000 tools with 25 values each, and a hostile query, rank with no hang', () => {
+      const values = Array.from({ length: 25 }, (_, i) => ['get', 'verb' + i, 'noun' + i])
+      const tools: ToolEntry[] = Array.from({ length: 5000 }, (_, i) => ({
+        name: 'mcp__s__tool_' + i,
+        description: 'Tool ' + i,
+        values,
+      }))
+      for (const query of ['update the reviewers get verb3 noun3', 'get '.repeat(250), 'get the '.repeat(120)]) {
+        const start = performance.now()
+        assert.ok(rankTools(tools, query, 5).length <= 5)
+        // Measured: 23, 114 and 106 ms here, against 10, 86 and 89 ms with no values.
+        assert.ok(performance.now() - start < 2000, 'ranked in under 2 s')
+      }
+    })
   })
 
   test('only the own top-level action, method and operation enums count', () => {
