@@ -730,6 +730,15 @@ describe('rankTools with the action values of the input schema', () => {
       )
     })
 
+    test('a value with a filler word inside needs that word in the query, as the bar says: all its words in order', () => {
+      const tools: ToolEntry[] = [
+        { name: 'mcp__s__review_comments_x', description: 'c' },
+        { name: 'mcp__s__t', description: 'y', values: [['get', 'the', 'review', 'comments']] },
+      ]
+      assert.deepEqual(top(tools, 'get the review comments'), ['mcp__s__t', 'mcp__s__review_comments_x'])
+      assert.deepEqual(top(tools, 'get review comments'), ['mcp__s__review_comments_x'])
+    })
+
     test('two tools that cover the same value rank by the shorter name', () => {
       const value = [['update', 'reviewers']]
       const long = { name: 'mcp__s__pr_write_extra', description: 'Write', values: value }
