@@ -2404,3 +2404,25 @@ describe('Codex', () => {
     void env
   })
 })
+
+describe('two clients with the same server', () => {
+  const read = (client: 'claude-code' | 'cursor', text: string): ClientRead => ({
+    client,
+    path: '/h/' + client + '.json',
+    ...(client === 'claude-code' && { scope: 'user' as const }),
+    kind: 'text',
+    text,
+  })
+
+  test('the same entry with its keys in another order is the same, and another value is a conflict', () => {
+    const a = '{"mcpServers":{"s":{"command":"npx","args":["-y","x"],"env":{"A":"1","B":"2"},"cwd":"/w"}}}'
+    const b = '{"mcpServers":{"s":{"cwd":"/w","env":{"B":"2","A":"1"},"args":["-y","x"],"command":"npx"}}}'
+    const other = '{"mcpServers":{"s":{"command":"npx","args":["-y","x"],"env":{"A":"1","B":"3"},"cwd":"/w"}}}'
+    const kind = (second: string) =>
+      importServers([read('claude-code', a), read('cursor', second)], 'linux').clients[1]!.outcomes[0]!.kind
+    assert.equal(kind(b), 'same')
+    assert.equal(kind(other), 'conflict')
+    // The args keep their order: a different order is a different command.
+    assert.equal(kind(b.replace('["-y","x"]', '["x","-y"]')), 'conflict')
+  })
+})
