@@ -190,6 +190,113 @@ describe('the prune by include', () => {
   })
 })
 
+// Several files of one \`search\` walk are read at the same time (the option `searchInFlight` of the limits). Each visit
+// proves its own open as before, and the matches are taken in the order of the walk, so the answer is the same for any N.
+describe('search with several files in flight', () => {
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  /** A tree with matches, a binary file, an excluded file and a folder in a folder, so the order and the counts matter. */
+  const mixed = (t: TestContext) => {
+    const root = tree(t)
+    const text = (i: number) => Array.from({ length: 6 }, (_, k) => `line ${k} hit ${i}`).join('\n') + '\n'
+    write(root, {
+      ...Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`a/f${String(i).padStart(2, '0')}.txt`, text(i)])),
+      ...Object.fromEntries(
+        Array.from({ length: 12 }, (_, i) => [`a/b/g${String(i).padStart(2, '0')}.txt`, text(100 + i)]),
+      ),
+      'a/bin.dat': 'hit\u0000hit',
+      'a/skip.sqlite': 'hit\n',
+      'c.txt': 'hit\n',
+    })
+    return root
+  }
+
+  test('the answer is the same for 1, 2, 4 and 8 files in flight, also when it is cut at maxMatches', async t => {
+    const root = mixed(t)
+    for (const args of [
+      { query: 'hit' },
+      { query: 'hit', maxMatches: 7 },
+      { query: ['hit', 'line 3'], maxMatches: 11 },
+    ]) {
+      const answers: string[] = []
+      for (const searchInFlight of [1, 2, 4, 8]) {
+        const rig = await rigOf(t, root, { exclude: ['*.sqlite'], limits: { searchInFlight } })
+        if (rig === undefined) return
+        answers.push(JSON.stringify(await rig.call('search', args)))
+      }
+      assert.equal(
+        new Set(answers).size,
+        1,
+        JSON.stringify(args) + ' differs: ' + answers.map(a => a.slice(0, 120)).join(' | '),
+      )
+    }
+  })
+
+  test('up to N opens are at the same time, never more, and one at a time for N = 1', async t => {
+    const root = mixed(t)
+    for (const [searchInFlight, most] of [
+      [1, 1],
+      [4, 4],
+    ] as const) {
+      let now = 0
+      let top = 0
+      const rig = await rigOf(t, root, {
+        limits: { searchInFlight },
+        hook: async lookup => {
+          if (lookup !== 'open') return
+          top = Math.max(top, ++now)
+          await sleep(15)
+          now--
+        },
+      })
+      if (rig === undefined) return
+      const r = await rig.call('search', { query: 'hit', maxMatches: 2000 })
+      assert.equal(r.filesScanned, 44)
+      // The first call of a rig can pay a one-time open, so the bound is checked on the counted peak.
+      assert.ok(top <= most, `N = ${searchInFlight}: ${top} opens at the same time`)
+      if (searchInFlight > 1) assert.ok(top >= 2, `N = ${searchInFlight}: no overlap, peak ${top}`)
+    }
+  })
+
+  test('a cancel while the opens are held ends the call, and the slot and the handles are free for the next call', async t => {
+    const root = tree(t)
+    write(root, files('h', 12))
+    let hold = true
+    let listed = false
+    let held = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => (release = resolve))
+    const rig = await rigOf(t, root, {
+      limits: { searchInFlight: 4 },
+      hook: async lookup => {
+        // The opens after the first listing are the files of the walk: they are held.
+        if (lookup === 'readdir') listed = true
+        if (lookup === 'open' && hold && listed) {
+          held++
+          await gate
+        }
+      },
+    })
+    if (rig === undefined) return
+    const quit = new AbortController()
+    const call = rig.call('search', { query: 'hit' }, quit.signal)
+    const outcome = call.then(
+      () => 'done',
+      () => 'cancelled',
+    )
+    for (let i = 0; i < 400 && held < 2; i++) await sleep(5)
+    assert.ok(held >= 2, 'at least 2 opens were in flight')
+    quit.abort()
+    hold = false
+    release()
+    assert.equal(await outcome, 'cancelled')
+    for (let i = 0; i < 400 && rig.bound.provider.inFlight() > 0; i++) await sleep(5)
+    assert.equal(rig.bound.provider.inFlight(), 0)
+    const again = await rig.call('search', { query: 'hit' })
+    assert.equal(again.filesScanned, 12)
+  })
+})
+
 describe('the walk slots (issue #160)', () => {
   /** A hook that holds each `readdir` (the first lookup of a walk) until `release`. `read` never does a `readdir`. */
   const holding = () => {

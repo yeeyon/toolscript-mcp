@@ -1,0 +1,1 @@
+- Workspace `search` reads up to 4 files of one walk at the same time (issue #151). On the 1,500-file fixture of the bench on Windows, one search took about 20% less in the bench and about a third less alone, with the same matches, the same counts and the same cut. Each file is still proven by its own open.

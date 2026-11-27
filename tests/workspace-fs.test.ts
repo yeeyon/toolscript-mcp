@@ -1285,6 +1285,51 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     swap.reset()
     t.diagnostic(`${reads} reads: ${JSON.stringify(Object.fromEntries(outcomes))}`)
   })
+
+  // A search reads up to 4 files at a time (limits.searchInFlight), and each open is proven as one. The loop swaps the folder
+  // of the tree while searches run: no line of the outside file may come back, except the Windows read family that the ADR
+  // names (a swap that is out at one open and then in and out in turn).
+  test('a loop that swaps the folder for at most 2 s while at most 100 searches run shows no outside line outside the Windows family', async t => {
+    const { root, outside, secret, swap } = (() => {
+      const dirs = folders(t)
+      const root = dirs()
+      const outside = dirs()
+      const secret = marker()
+      write(root, Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`b/f${i}.txt`, 'inside file ' + i])))
+      write(outside, Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`f${i}.txt`, `outside ${secret}`])))
+      return { root, outside, secret, swap: swapper(root, outside) }
+    })()
+    void outside
+    const rig = await rigOf(t, root, { limits: { searchInFlight: 4 } })
+    if (rig === undefined) return
+    const end = Date.now() + 2000
+    let stop = false
+    const flipper = (async () => {
+      while (!stop && Date.now() < end) {
+        try {
+          swap.set(true)
+          await new Promise(resolve => setImmediate(resolve))
+          swap.set(false)
+        } catch {
+          // Windows can refuse a swap while a file is open.
+        }
+        await new Promise(resolve => setImmediate(resolve))
+      }
+    })()
+    let searches = 0
+    let leaks = 0
+    while (searches < 100 && Date.now() < end) {
+      const r = await rig.client.callTool({ name: 'search', arguments: { query: 'outside', path: 'b' } })
+      if (r.isError !== true && (r.structuredContent as any).matches.length > 0) leaks++
+      else if (r.isError === true && JSON.stringify(r).includes(secret)) leaks++
+      searches++
+    }
+    stop = true
+    await flipper
+    swap.reset()
+    t.diagnostic(`${searches} searches, ${leaks} that showed the outside file`)
+    if (!win) assert.equal(leaks, 0, 'a search showed a line of the outside file')
+  })
 })
 
 describe('the root and the session', () => {
@@ -1630,7 +1675,8 @@ describe('search with several terms', () => {
     // With a slow open, a walk is cut at the budget: the array call pays one budget for all the terms.
     const budget = 300
     const slow = await rigOf(t, root, {
-      limits: { searchMs: budget },
+      // One file at a time: this test counts on each slow open being paid in turn, so a budget cuts the walk.
+      limits: { searchMs: budget, searchInFlight: 1 },
       hook: lookup => (lookup === 'open' ? sleep(20) : undefined),
     })
     if (slow === undefined) return

@@ -240,6 +240,13 @@ slot. A call cancelled while it waits fails at once. The other tools never wait.
 
 Two slots were cut with no `include` (2 of 8 in one run). The container does not reproduce the Windows sighting.
 
+Inside one `search` walk, up to `LIMITS.searchInFlight` files (4) are opened, proven and read at the same time, because a file costs
+about 13 awaited file system calls on Windows and one file at a time left the threads idle. Each file is proven by its own
+open as before. The answers are taken in the order of the walk, so the matches, the counts and the cut do not depend on the
+timing, and the walk slot is still one walk. A visit that is running ends before its folder closes, and a cancel waits for
+the running visits to close their files. The walk itself (the names, the `lstat` of each entry and its brackets) is still one
+entry at a time. Numbers in `bench/RESULTS-workspace-search.md`.
+
 ## Confinement
 
 Rule: no result holds a byte or a name that did not come through a proven handle.

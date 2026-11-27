@@ -70,7 +70,12 @@ export type ProviderOptions = {
   /** The stderr log. Never holds a path, a name or file content. */
   readonly log: (line: string) => void
   /** Tests only: smaller limits, so a test needs fewer files. */
-  readonly limits?: { readonly searchFiles?: number; readonly listEntries?: number; readonly searchMs?: number }
+  readonly limits?: {
+    readonly searchFiles?: number
+    readonly listEntries?: number
+    readonly searchMs?: number
+    readonly searchInFlight?: number
+  }
   /** Tests only: shorter lock times. */
   readonly locks?: LockerOptions
 }
@@ -138,6 +143,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     searchFiles: LIMITS.searchFiles,
     listEntries: LIMITS.listEntries,
     searchMs: LIMITS.searchMs,
+    searchInFlight: LIMITS.searchInFlight,
     ...options.limits,
   }
   const skip = new Set(options.skip.map(fold))
@@ -216,6 +222,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     within: ReturnType<typeof budget>,
     hides?: Hides,
     reach?: (folder: readonly string[]) => boolean,
+    idle?: () => Promise<void>,
   ): Promise<boolean> => {
     const read = await dir.names({
       keep: name => !excluded([...dir.parts, name]),
@@ -247,9 +254,14 @@ export const createProvider = (options: ProviderOptions): Provider => {
       })
       if (child === undefined) continue
       try {
-        if (!(await walk(child, levels - 1, visit, signal, within, hides, reach))) return false
+        if (!(await walk(child, levels - 1, visit, signal, within, hides, reach, idle))) return false
       } finally {
-        await child.close()
+        // A visit that is still running must end before its folder closes: its open goes through that folder.
+        try {
+          await idle?.()
+        } finally {
+          await child.close()
+        }
       }
     }
     return true
@@ -337,66 +349,97 @@ export const createProvider = (options: ProviderOptions): Provider => {
     const dir = await folder(start)
     try {
       const hides = await hidesFor(dir.parts)
-      const complete = await walk(
-        dir,
-        Infinity,
-        async ({ parts, kind }, parent, name) => {
-          if (kind !== 'file' || !inList(parts)) return true
-          const opened = await parent.openFile(name).catch((err: unknown) => {
-            if (err instanceof WorkspaceError && err.code !== 'cancelled' && err.code !== 'root-changed')
-              return undefined
-            throw err
-          })
-          if (opened === undefined) {
-            skipped++
-            return true
-          }
-          try {
-            if (excluded(opened.parts)) return true
-            const bytes =
-              opened.size > LIMITS.searchFileBytes ? undefined : await readCapped(opened.handle, LIMITS.searchFileBytes)
-            const text = bytes === undefined ? 'binary' : decoded(bytes)
-            if (typeof text === 'string') {
-              skipped++
-              return true
-            }
-            scanned++
-            const path = showPath(opened.parts)
-            const lines = text.text.split('\n')
-            for (let i = 0; i < lines.length; i++) {
-              const raw = lines[i]!.endsWith('\r') ? lines[i]!.slice(0, -1) : lines[i]!
-              const line = input.ignoreCase ? lowered(raw) : raw
-              for (let t = 0; t < needles.length; t++) {
-                const needle = needles[t]!
-                if (over[t]) continue
-                for (let at = line.indexOf(needle); at >= 0; at = line.indexOf(needle, at + needle.length)) {
-                  if (taken[t]! >= input.maxMatches) {
-                    over[t] = true
-                    truncated = true
-                    break
-                  }
-                  taken[t]!++
-                  const shown = raw.slice(0, LIMITS.lineChars)
-                  matches.push(
-                    typeof input.query === 'string'
-                      ? { path, line: i + 1, column: at + 1, text: shown, term: t }
-                      : { path, line: i + 1, column: at + 1, text: shown, query: written[t]!, term: t },
-                  )
-                }
+      // The open, the proof and the read of a file run with up to `searchInFlight` others (no match is taken there). The
+      // answers are taken in the order of the walk, so the matches, the counts and the cut do not depend on the timing.
+      type Seen = 'skip' | 'none' | { readonly parts: readonly string[]; readonly text: string }
+      const load = async (parent: Dir, name: string): Promise<Seen> => {
+        const opened = await parent.openFile(name).catch((err: unknown) => {
+          if (err instanceof WorkspaceError && err.code !== 'cancelled' && err.code !== 'root-changed') return undefined
+          throw err
+        })
+        if (opened === undefined) return 'skip'
+        try {
+          if (excluded(opened.parts)) return 'none'
+          const bytes =
+            opened.size > LIMITS.searchFileBytes ? undefined : await readCapped(opened.handle, LIMITS.searchFileBytes)
+          const text = bytes === undefined ? 'binary' : decoded(bytes)
+          return typeof text === 'string' ? 'skip' : { parts: opened.parts, text: text.text }
+        } finally {
+          await opened.handle.close().catch(() => {})
+        }
+      }
+      const pending: Promise<{ seen: Seen } | { error: unknown }>[] = []
+      let stopped = false
+      const drain = async (keep: number): Promise<void> => {
+        while (pending.length > keep) {
+          const done = await pending.shift()!
+          if (stopped) continue
+          if ('error' in done) throw done.error
+          if (!consume(done.seen)) stopped = true
+        }
+      }
+      const consume = (seen: Seen): boolean => {
+        if (seen === 'none') return true
+        if (seen === 'skip') {
+          skipped++
+          return true
+        }
+        scanned++
+        const path = showPath(seen.parts)
+        const lines = seen.text.split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          const raw = lines[i]!.endsWith('\r') ? lines[i]!.slice(0, -1) : lines[i]!
+          const line = input.ignoreCase ? lowered(raw) : raw
+          for (let t = 0; t < needles.length; t++) {
+            const needle = needles[t]!
+            if (over[t]) continue
+            for (let at = line.indexOf(needle); at >= 0; at = line.indexOf(needle, at + needle.length)) {
+              if (taken[t]! >= input.maxMatches) {
+                over[t] = true
+                truncated = true
+                break
               }
-              if (over.every(Boolean)) return false
+              taken[t]!++
+              const shown = raw.slice(0, LIMITS.lineChars)
+              matches.push(
+                typeof input.query === 'string'
+                  ? { path, line: i + 1, column: at + 1, text: shown, term: t }
+                  : { path, line: i + 1, column: at + 1, text: shown, query: written[t]!, term: t },
+              )
             }
-            return true
-          } finally {
-            await opened.handle.close().catch(() => {})
           }
-        },
-        signal,
-        within,
-        hides,
-        reachOf(input.include),
-      )
-      if (!complete || within.cut) truncated = true
+          if (over.every(Boolean)) return false
+        }
+        return true
+      }
+      try {
+        const complete = await walk(
+          dir,
+          Infinity,
+          async ({ parts, kind }, parent, name) => {
+            if (kind !== 'file' || !inList(parts)) return true
+            // A load never rejects here: its error is taken in the order of the walk, as the sequential walk met it.
+            pending.push(
+              load(parent, name).then(
+                seen => ({ seen }),
+                (error: unknown) => ({ error }),
+              ),
+            )
+            await drain(limits.searchInFlight - 1)
+            return !stopped
+          },
+          signal,
+          within,
+          hides,
+          reachOf(input.include),
+          () => drain(0),
+        )
+        await drain(0)
+        if (!complete || within.cut) truncated = true
+      } finally {
+        // Visits that a cancel or an error left running end before the folder closes: each closes its own file.
+        await Promise.all(pending.splice(0))
+      }
     } finally {
       await dir.close()
     }
