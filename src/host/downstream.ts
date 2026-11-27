@@ -33,6 +33,7 @@ import type { Bridges } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
+import type { Guard } from './childguard.ts'
 import { ChildTransport } from './childtransport.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 import { AwsCredentialsError, sigv4Fetch, stopCredentialReads } from './sigv4.ts'
@@ -378,6 +379,7 @@ const transportOf = (
   auth: Auth | undefined,
   stderr: (chunk: Buffer) => void,
   share: ShareOptions | undefined,
+  guard: Guard | undefined,
 ): { transport: Transport; lastError: () => string; child?: ChildTransport } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   // With sharing on, a shared or per-folder server has one child in the broker and never a child of this process.
@@ -405,6 +407,7 @@ const transportOf = (
     args: server.args,
     env: childEnv(server),
     ...(server.cwd !== undefined && { cwd: server.cwd }),
+    ...(guard !== undefined && { guard }),
   })
   let tail = ''
   transport.stderr.on('data', (chunk: Buffer) => {
@@ -485,6 +488,8 @@ export type ConnectOptions = {
   readonly lazy?: LazyOptions
   /** The built-in Workspace (issue #144): the link of the entry of kind `workspace`. Absent: that entry fails to connect. */
   readonly workspace?: WorkspaceLink | Promise<WorkspaceLink>
+  /** The child guard: each direct stdio child is listed in it, so a host killed with no cleanup does not leave it. Absent: none. */
+  readonly guard?: Guard
 }
 
 /** The tool lists of lazy servers on disk. The host reads and writes the file; a test gives a fake. */
@@ -530,6 +535,7 @@ export const connectAll = (
     share,
     lazy,
     workspace,
+    guard,
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -651,7 +657,7 @@ export const connectAll = (
               unbound = true
               throw err
             })
-          : transportOf(key, server, sessionEnded, auth, childStderr, share)
+          : transportOf(key, server, sessionEnded, auth, childStderr, share, guard)
       lastError = made.lastError
       if (made.transport instanceof HttpTransport && !auth) secrets = made.transport.secrets
       if (made.child !== undefined) {

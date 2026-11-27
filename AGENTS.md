@@ -82,6 +82,13 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `~/.toolscript-mcp/learned/tools.json` (`toolsFile` in `paths.ts`; `parseToolsCache` and `isLazy` in `src/core/lazy.ts`).
     `downstream.ts` holds the `asleep` state, the wake and the idle clock. `TOOLSCRIPT_LAZY=0` turns every lazy start off, and
     `TOOLSCRIPT_LAZY_IDLE_MS` (at least 1000) shortens the idle time for tests and the bench.
+  - `childguard.ts`: the child guard, so a stdio child never outlives a host or a broker that was killed with no cleanup:
+    `createGuard` (outside Windows one `/bin/sh` watchdog that reads `+<pgid>` and `-<pgid>` lines and, at EOF, ends the groups
+    still listed; on Windows, only with `TOOLSCRIPT_CHILD_GUARD=1`, `runtime/child-guard.cs` compiled one time with the
+    csc.exe of .NET Framework 4 into `~/.toolscript-mcp/guard`, a Job Object that Windows closes with the host). `ChildTransport`
+    and the broker list each child in it. A guard that cannot start logs one line and never fails a server. The pure parts
+    (switch, lines, watchdog text, texts) are in `src/core/childguard.ts`. Tests: `tests/childguard.test.ts` and the guard
+    case of `tests/lazy.e2e.mjs`.
   - `doctor.ts`: `toolscript-mcp doctor`, one pass over the whole setup. Its checks are a table of small async
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.
@@ -110,8 +117,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only. `runtime/task-job.ps1` is the warm Windows PowerShell 5.1
-  job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS (issue #149). They are shipped files that
-  `scripts/pack-check.mjs` requires, and the build does not bundle them.
+  job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS (issue #149). `runtime/child-guard.cs` is the source of the
+  Windows child guard. They are shipped files that `scripts/pack-check.mjs` requires, and the build does not bundle them.
 - `hints/` holds the bundled hints and `hints/sha256.json`.
 - `.claude-plugin/marketplace.json` makes the repo a Claude Code plugin marketplace with one plugin, `plugin/`. Its
   skill `setup` installs toolscript-mcp from npm, and `config.mjs` beside it changes the

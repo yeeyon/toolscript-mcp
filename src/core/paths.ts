@@ -10,6 +10,7 @@ const LEARNED = 'learned'
 const OAUTH = 'oauth'
 const BROKER = 'broker'
 const LOCKS = 'locks'
+const CHILD_GUARD = 'guard'
 
 /**
  * An absolute path with empty, `.` and `..` parts resolved. A Windows path
@@ -82,11 +83,17 @@ export const brokerFolder = (home: string): string => appPath(home, BROKER)
 export const locksFolder = (home: string): string => appPath(home, LOCKS)
 
 /**
+ * The folder of the compiled Windows child guard under HOME (`runtime/child-guard.cs`): one program for each hash of its
+ * source. A program that a nested call could replace would run with the rights of the person, so the guard covers it.
+ */
+export const childGuardFolder = (home: string): string => appPath(home, CHILD_GUARD)
+
+/**
  * The text that names a guarded folder in any root: `.toolscript-mcp/hints` and the four others, never the bare
  * `.toolscript-mcp`, which also holds `files/`, the run log and the config. `src/core/guard.ts` looks for them in
  * the text of a call, where `~`, `$HOME` or a relative path hides the root.
  */
-export const GUARD_MARKERS: readonly string[] = [HINTS, FUNCTIONS, LEARNED, OAUTH, BROKER, LOCKS].map(
+export const GUARD_MARKERS: readonly string[] = [HINTS, FUNCTIONS, LEARNED, OAUTH, BROKER, LOCKS, CHILD_GUARD].map(
   name => `${APP}/${name}`,
 )
 
@@ -112,6 +119,7 @@ export const guardedDirs = (home: string, project: string, pluginRoot = ''): str
           oauthFolder(home),
           brokerFolder(home),
           locksFolder(home),
+          childGuardFolder(home),
         ]
       : []),
     ...(project ? [hintsFolder(project)] : []),
