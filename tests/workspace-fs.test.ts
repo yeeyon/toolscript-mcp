@@ -1209,11 +1209,13 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
       // The text of a failure names the tool and the shape of the result, with the secret masked.
       const why = (what: string) => `${what}: tool ${probe.tool}, ${shown.slice(0, 300).replaceAll(secret, '<secret>')}`
       const sc = r.structuredContent as any
-      if (r.isError === true) assert.ok(!shown.includes(secret), why('an outside byte in an error'))
-      else if (probe.tool === 'read') {
+      if (r.isError === true) {
+        if (shown.includes(secret)) assert.fail(why('an outside byte in an error'))
+      } else if (probe.tool === 'read') {
         // Windows: a swap that is out at the open of one proof shows the outside file at the same path (ADR 0144).
         const ok = win ? sc.content === 'inside file' || sc.content === `outside ${secret}` : probe.safe(sc)
-        assert.ok(ok && (win || !shown.includes(secret)), why('a read shows more than the documented Windows family'))
+        if (!(ok && (win || !shown.includes(secret))))
+          assert.fail(why('a read shows more than the documented Windows family'))
       } else if (probe.tool === 'list') {
         // Windows and macOS: a swap that alternates can show an outside entry, which is the same name with the size of the outside file, or the file that is named by the secret.
         const family = [
@@ -1222,7 +1224,8 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
           JSON.stringify({ path: `b/${secret}.txt`, type: 'file', size: 777 }),
         ]
         const ok = win || mac ? sc.entries.every((e: unknown) => family.includes(JSON.stringify(e))) : probe.safe(sc)
-        assert.ok(ok && (win || mac || !shown.includes(secret)), why('a list shows more than the documented family'))
+        if (!(ok && (win || mac || !shown.includes(secret))))
+          assert.fail(why('a list shows more than the documented family'))
       } else {
         // stat: no secret in any case. Windows can show the size of the outside file at the same path, never its text.
         const ok = win
@@ -1231,7 +1234,7 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
               sc.type === 'file' &&
               [inside.size, `outside ${secret}`.length].includes(sc.size))
           : probe.safe(sc)
-        assert.ok(ok && !shown.includes(secret), why('a stat shows more than the documented family'))
+        if (!(ok && !shown.includes(secret))) assert.fail(why('a stat shows more than the documented family'))
       }
       const key = r.isError === true ? codeOf((r.content as { text: string }[])[0]!.text) : probe.tool
       outcomes.set(key, (outcomes.get(key) ?? 0) + 1)
