@@ -14,7 +14,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
   text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
   proof of the key, the entry, `PATH` resolve), `lock.ts` (the content of the OAuth refresh lock file, its parse and
-  the stale decision), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
+  the stale decision, and the reason text of a silent token endpoint), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
   note on `Promise.all`), `workspace.ts` (the built-in Workspace, issue #144: the tool table with a class for each
   tool, the limits, the check of a path text, globs, exclusions, the refusal of a root, the binding of a session to its
   root, the input of each tool, the application of edits and the unified diff) and `task.ts` (its named tasks: the
@@ -77,7 +77,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `saveShapes` merges a run's shapes in with the same temp file and rename. `shownShapes` in `catalog.ts` shows a
     stored shape only when the hash of the tool's `inputSchema` matches. `run.ts` saves after a run that read no
     untrusted content.
-  - `childtransport.ts`: the stdio transport of a lazy server: it counts open requests, tells the host of each message, and
+  - `childtransport.ts`: the stdio transport of every direct stdio server, lazy or not: it counts open requests, tells the host of each message, and
     stops the child as the broker does (end stdin, wait 2 s, end the tree). `toolscache.ts`: the display-only tool lists in
     `~/.toolscript-mcp/learned/tools.json` (`toolsFile` in `paths.ts`; `parseToolsCache` and `isLazy` in `src/core/lazy.ts`).
     `downstream.ts` holds the `asleep` state, the wake and the idle clock. `TOOLSCRIPT_LAZY=0` turns every lazy start off, and

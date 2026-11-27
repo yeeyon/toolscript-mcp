@@ -51,6 +51,35 @@ describe('search_tools with no match', () => {
   })
 })
 
+describe('search_tools and a query that spells a whole action value', () => {
+  const tools: DownstreamTool[] = [
+    { name: 'update_issue', description: 'Change an issue.' },
+    { name: 'update_page', description: 'Change a page.' },
+    {
+      name: 'pull_request_write',
+      description: 'Write operations for pull requests.',
+      inputSchema: {
+        type: 'object',
+        properties: { action: { enum: ['create', 'update', 'update_reviewers', 'vote'] } },
+      },
+    },
+  ]
+  const hits = (list: DownstreamTool[]) =>
+    searchResult(server(list), 'update reviewers', 15)
+      .split('\n### ')
+      .slice(1)
+      .map(b => b.split('\n')[0])
+
+  test('"update reviewers" shows the write tool as hit 1, above the tools with "update" in their name', () => {
+    assert.equal(hits(tools)[0], 'mcp__x__pull_request_write')
+  })
+
+  test('without the action enum the tools with "update" in their name rank first, as before', () => {
+    const bare = tools.map(({ inputSchema: _schema, ...t }) => t)
+    assert.notEqual(hits(bare)[0], 'mcp__x__pull_request_write')
+  })
+})
+
 describe('search_tools and a tool whose server requires a person', () => {
   const MARK = { 'anthropic/requiresUserInteraction': true }
   const NOTE = 'A person approves each run that calls it. Write its name as a string in call("…").'
