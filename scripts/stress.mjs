@@ -549,6 +549,7 @@ const NODES = { flakes: ['22.13', '24'], one: ['24'], cpu1: ['24'], load: ['24']
 const PROFILES = ['flakes', 'load', 'cpu1', 'bench', 'baseline', 'one']
 const SAFE_TARGET = /^[A-Za-z0-9_][A-Za-z0-9_./*-]*$/
 const COUNT_MAX = 5000
+const SAFE_REF = /^[A-Za-z0-9._/-]+$/
 
 /**
  * The jobs of one run. `event` is the name of the GitHub event, `inputs` the inputs of a dispatch (profile, target, pattern,
@@ -587,9 +588,13 @@ export const planOf = ({ event, inputs = {}, branch = {} }) => {
         } else stress.push({ ...job, target: '', pattern: '', count: '' })
       }
   }
+  // The base goes to $GITHUB_OUTPUT: a ref has no newline, no leading dash and no `..`, so no line of output can be forged.
+  const ref = String(source.base || 'main')
+  if (!SAFE_REF.test(ref) || ref.startsWith('-') || ref.includes('..'))
+    throw new Error('base is a ref: letters, digits and . _ / -')
   const mac = [...stress, ...baseline].filter(j => j.os === 'macos-latest').length
   if (mac > 4) throw new Error('more than 4 macOS jobs: ' + mac)
-  return { stress, baseline, base: String(source.base || 'main') }
+  return { stress, baseline, base: ref }
 }
 
 /** The lines for $GITHUB_OUTPUT of a plan. */

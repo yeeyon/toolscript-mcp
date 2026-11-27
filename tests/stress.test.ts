@@ -468,6 +468,17 @@ describe('the plan of a run', () => {
     bad({ profile: 'one', target: 'tests/x.ts', count: '0' }, /count is a whole number/)
     bad({ profile: 'one', target: 'tests/x.ts', count: '99999' }, /count is a whole number/)
     bad({ profile: 'one', target: 'tests/x.ts', count: '1.5' }, /count is a whole number/)
+    // The base reaches $GITHUB_OUTPUT: a newline must not forge a line of output.
+    for (const base of ['main\nstress={"include":[]}', 'main\r\nx=1', '-x', '../x', 'a b', 'a;b', 'v1\n'])
+      bad({ profile: 'baseline', base }, /base is a ref/)
+    assert.equal(
+      planOf({ event: 'workflow_dispatch', inputs: { profile: 'baseline', base: 'release/v1.0.5' } }).base,
+      'release/v1.0.5',
+    )
+    assert.throws(
+      () => planOf({ event: 'push', branch: { profile: 'baseline', base: 'x\nstress=1' } }),
+      /base is a ref/,
+    )
   })
 
   test('the outputs are one line each, as $GITHUB_OUTPUT wants, with no newline inside a value', () => {
