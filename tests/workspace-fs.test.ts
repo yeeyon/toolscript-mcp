@@ -1523,6 +1523,9 @@ describe('search with several terms', () => {
     let opens = 0
     const counting = await rigOf(t, root, { hook: lookup => void (lookup === 'open' && opens++) })
     if (counting === undefined) return
+    // The first call of a rig can pay a one-time open (65 against 66 on Linux and macOS), so a call warms it up first.
+    await counting.call('search', { query: 'warm' })
+    opens = 0
     const one = await counting.call('search', { query: 'alpha' })
     const forOne = opens
     opens = 0
