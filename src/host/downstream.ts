@@ -483,6 +483,8 @@ export type ConnectOptions = {
   readonly firstWaitMs?: number
   /** The longest time in ms of the whole connect of one server: CONNECT_TIMEOUT_MS unless a test sets it. */
   readonly connectTimeoutMs?: number
+  /** The longest wait in ms of a caller for a connect that is not a wake: RETRY_WAIT_MS unless a test sets it. */
+  readonly retryWaitMs?: number
   /**
    * Gets what each stdio child writes to stderr. The running server passes it on to its own stderr, the log of the
    * client. `toolscript-mcp tools` drops it, so it prints only its own lines. No reason holds that text: `redact` hides
@@ -537,6 +539,7 @@ export const connectAll = (
     listFloorMs = LIST_FLOOR_MS,
     firstWaitMs = FIRST_WAIT_MS,
     connectTimeoutMs = CONNECT_TIMEOUT_MS,
+    retryWaitMs = RETRY_WAIT_MS,
     childStderr = chunk => void process.stderr.write(chunk),
     unshown = UNSHOWN,
     share,
@@ -790,6 +793,9 @@ export const connectAll = (
     if (closing || server === undefined || server.kind === 'invalid') return undefined
     const link = links.get(key)
     if (link?.status !== 'failed' || link.final || capWait(key) > 0) return undefined
+    // A lazy server that failed starts again as a wake: a failed link has no child, because `connect` closes its client
+    // before it fails the link, so nothing is left to wait for.
+    if (lazyServer(key, server)) return attempt(key, server, Promise.resolve())
     log(`${key}: connecting again`)
     return attempt(key, server)
   }
@@ -822,7 +828,19 @@ export const connectAll = (
   }
 
   /** A wake waits for the start of a child: up to CONNECT_TIMEOUT_MS, not RETRY_WAIT_MS. */
-  const longWait = (key: ServerKey): boolean => links.get(key)?.status === 'asleep' || waking.has(key)
+  const longWait = (key: ServerKey): boolean => {
+    const link = links.get(key)
+    const server = servers.get(key)
+    return (
+      link?.status === 'asleep' ||
+      waking.has(key) ||
+      (link?.status === 'failed' &&
+        !link.final &&
+        server !== undefined &&
+        server.kind !== 'invalid' &&
+        lazyServer(key, server))
+    )
+  }
 
   const stateOf = (key: ServerKey, link: Link): ServerState => {
     if (link.status === 'connecting')
@@ -887,7 +905,7 @@ export const connectAll = (
       // Each key has its own deadline: a wake waits longer than a reconnect, and must not give the others its time.
       await Promise.all(
         keys.map(key => {
-          const end = deadline(signal, longWait(key) ? CONNECT_TIMEOUT_MS : RETRY_WAIT_MS)
+          const end = deadline(signal, longWait(key) ? connectTimeoutMs : retryWaitMs)
           return within(settle(key, end), end)
         }),
       )
@@ -895,7 +913,7 @@ export const connectAll = (
     client: async (key, signal) => {
       if (closing) return { ok: false, reason: 'toolscript-mcp is shutting down' }
       if (!links.has(key)) return { ok: false, reason: `no MCP server "${key}" is connected` }
-      const end = deadline(signal, longWait(key) ? CONNECT_TIMEOUT_MS : RETRY_WAIT_MS)
+      const end = deadline(signal, longWait(key) ? connectTimeoutMs : retryWaitMs)
       await settle(key, end)
       const link = links.get(key)!
       if (link.status !== 'connected') return { ok: false, reason: notConnected(stateOf(key, link))! }

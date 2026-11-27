@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- A lazy server whose wake failed now starts again as a wake on the next call that names it (issue #119): the call waits up to 30 s for the start, not 5 s, and the log says `started on first use` instead of `connecting again` and `connected`. The same holds for a lazy server whose first connect at the start failed. The cap of 3 attempts in 60 s counts the failed wake, and a search still starts no lazy server.
+
 ## 1.0.4
 
 - A tool name held in a plain string, such as `const g = "mcp__s__t"; await call(g, {})`, is now asked in the prompt before the run, like a name written inside `call("…")`, when the client can ask. A call refused at call time for a name nobody asked about now says that the person was not asked, and tells the model to write the name as a string in the program and run again, so a model no longer reports it as declined.

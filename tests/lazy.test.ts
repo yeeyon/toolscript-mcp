@@ -22,7 +22,7 @@ import {
   toolsKeyText,
   type CachedList,
 } from '../src/core/lazy.ts'
-import { connectAll, type Downstream, type ToolsStore } from '../src/host/downstream.ts'
+import { connectAll, type ConnectOptions, type Downstream, type ToolsStore } from '../src/host/downstream.ts'
 import { loadToolsCache, saveToolsEntry, toolsKey } from '../src/host/toolscache.ts'
 
 const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
@@ -84,7 +84,14 @@ const rig = (
     idleMs = IDLE_MS,
     server,
     mode,
-  }: { warm?: boolean; idleMs?: number; server?: Partial<StdioServer>; mode?: string } = {},
+    connect,
+  }: {
+    warm?: boolean
+    idleMs?: number
+    server?: Partial<StdioServer>
+    mode?: string
+    connect?: ConnectOptions
+  } = {},
   list: readonly DownstreamTool[] = [PROBE_TOOL],
 ): Rig => {
   const file = path.join(DIR, `${randomUUID()}.json`)
@@ -100,6 +107,7 @@ const rig = (
   const logs: string[] = []
   const downstream = connectAll(new Map<ServerKey, ServerConfig>([[KEY, config]]), '0', line => logs.push(line), {
     lazy: { bridges: new Set([KEY]), idleMs, cache: store },
+    ...connect,
   })
   opened.push(downstream)
   const starts = () =>
@@ -511,6 +519,103 @@ describe('a lazy server', () => {
     const [state] = shownStates(downstream.states())
     assert.equal(state?.status, 'failed')
     assert.ok(saved.has(id), 'the cache entry stays')
+  })
+
+  describe('a wake that failed comes back as a wake (issue #119)', () => {
+    // The first start of the probe exits at once. Each later start answers initialize after 800 ms: longer than the
+    // 300 ms that a retry waits here, and shorter than the 5 s that a wake waits.
+    const flaky = { mode: '--flaky-start:800', connect: { retryWaitMs: 300, connectTimeoutMs: 5000 } }
+    const lines = (logs: string[]) => logs.join(String.fromCharCode(10))
+
+    test('a wake that failed: the next call wakes it again with the long wait, and the log says started on first use', async () => {
+      const { downstream, starts, logs } = rig({ warm: true, ...flaky })
+      await downstream.settled
+      assert.equal((await downstream.client(KEY)).ok, false, 'the first wake fails')
+      assert.equal(downstream.states()[0]?.status, 'failed')
+      const began = Date.now()
+      assert.ok((await downstream.client(KEY)).ok, lines(logs))
+      assert.ok(Date.now() - began >= 700, 'the call waited for the slow start')
+      assert.equal(starts(), 2)
+      assert.equal(
+        logs.filter(l => /^claude-code: started on first use, \d+ ms, 1 tools$/.test(l)).length,
+        1,
+        lines(logs),
+      )
+      assert.ok(!logs.some(l => l.includes('connected') || l.includes('connecting again')), lines(logs))
+    })
+
+    test('a run that names it waits as long, through retry', async () => {
+      const { downstream, starts, logs } = rig({ warm: true, ...flaky })
+      await downstream.settled
+      await downstream.retry([KEY])
+      assert.equal(downstream.states()[0]?.status, 'failed')
+      await downstream.retry([KEY])
+      assert.equal(downstream.states()[0]?.status, 'connected', lines(logs))
+      assert.equal(starts(), 2)
+    })
+
+    test('the cap counts the failed wake: after 3 failed starts the next call returns at once with the note', async () => {
+      const { downstream, logs } = rig({
+        warm: true,
+        server: { command: 'toolscript-no-such-command' },
+        connect: { connectTimeoutMs: 5000 },
+      })
+      await downstream.settled
+      for (let i = 0; i < 3; i++) assert.equal((await downstream.client(KEY)).ok, false)
+      const began = Date.now()
+      const link = await downstream.client(KEY)
+      assert.ok(Date.now() - began < 500, 'no wait for nothing')
+      assert.ok(!link.ok && /tries again on next use after \d+ s/.test(link.reason), link.ok ? '' : link.reason)
+      assert.equal(logs.filter(l => l.startsWith(`${KEY}: failed`)).length, 3, lines(logs))
+    })
+
+    test('3 callers after a failed wake start one child, and a search starts none', async () => {
+      const { downstream, starts, logs } = rig({ warm: true, ...flaky })
+      await downstream.settled
+      assert.equal((await downstream.client(KEY)).ok, false)
+      await downstream.retry()
+      await sleep(100)
+      assert.equal(starts(), 1, 'a search started no child')
+      assert.equal(downstream.states()[0]?.status, 'failed')
+      const calls = [1, 2, 3].map(() => downstream.client(KEY))
+      await sleep(50)
+      assert.equal(downstream.states()[0]?.status, 'connecting')
+      assert.deepEqual(
+        (await Promise.all(calls)).map(l => l.ok),
+        [true, true, true],
+        lines(logs),
+      )
+      assert.equal(starts(), 2)
+      assert.equal(logs.filter(l => l.includes('started on first use')).length, 1, lines(logs))
+    })
+
+    test('no cache entry and a failed first connect: the call that names it starts it as a wake', async () => {
+      const { downstream, starts, logs } = rig(flaky)
+      await downstream.settled
+      assert.equal(downstream.states()[0]?.status, 'failed')
+      assert.ok((await downstream.client(KEY)).ok, lines(logs))
+      assert.equal(starts(), 2)
+      assert.equal(logs.filter(l => l.includes('started on first use')).length, 1, lines(logs))
+      assert.ok(!logs.some(l => l.includes('connected') || l.includes('connecting again')), lines(logs))
+    })
+
+    test('a server that is not lazy keeps its short wait and its two log lines', async () => {
+      const slow = rig({ server: { lazy: false }, ...flaky })
+      await slow.downstream.settled
+      assert.equal((await slow.downstream.client(KEY)).ok, false, 'a start of 800 ms is past the wait of 300 ms')
+      const fast = rig({ server: { lazy: false }, mode: '--flaky-start:100', connect: { retryWaitMs: 2000 } })
+      await fast.downstream.settled
+      assert.ok((await fast.downstream.client(KEY)).ok, lines(fast.logs))
+      assert.ok(
+        fast.logs.some(l => l.includes('connecting again')),
+        lines(fast.logs),
+      )
+      assert.ok(
+        fast.logs.some(l => /^claude-code: connected, 1 tools$/.test(l)),
+        lines(fast.logs),
+      )
+      assert.ok(!fast.logs.some(l => l.includes('started on first use')), lines(fast.logs))
+    })
   })
 
   test('a search never starts it again: after a crash it is asleep with its last list, after a failed wake it stays failed', async () => {
