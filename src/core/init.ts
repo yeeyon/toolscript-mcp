@@ -25,7 +25,7 @@ import {
   PLAIN_NAME,
   type CommandStart,
 } from './commands.ts'
-import { hasControl, mapCodex, type CodexRaw, type CodexRule } from './codex.ts'
+import { combineRules, hasControl, mapCodex, mergePolicy, type CodexRaw, type CodexRule } from './codex.ts'
 import { printable, shownName } from './policy.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor' | 'codex'
@@ -160,6 +160,13 @@ type Extra = {
 
 const NO_EXTRA: Extra = { policy: [], notes: [], login: false }
 
+/** The extras of one server that two clients define with the same entry. */
+const mergeExtra = (key: string, a: Extra, b: Extra): Extra => ({
+  policy: combineRules(key, a.policy, b.policy),
+  notes: [...new Set([...a.notes, ...b.notes])],
+  login: a.login || b.login,
+})
+
 type ClientResult = {
   readonly file: ClientFile
   /** Why init read no server from the file. */
@@ -172,6 +179,8 @@ export type Import = {
   readonly servers: ReadonlyMap<ServerKey, Entry>
   /** The rules of the imported servers, in the order of the servers: the first rule that matches decides. */
   readonly policy: readonly CodexRule[]
+  /** What each imported server brings: the rules of all clients that define it, notes, and a login. */
+  readonly extras: readonly { readonly key: ServerKey; readonly extra: Extra }[]
   readonly clients: readonly ClientResult[]
 }
 
@@ -487,13 +496,17 @@ export const importServers = (reads: readonly ClientRead[], platform: string): I
         kept.set(key, { entry, from: read.client, json, extra })
         return { kind: 'imported', name, key, dropped: parsed.dropped, extra }
       }
-      return earlier.json === json ? { kind: 'same', name } : { kind: 'conflict', name, key, keptFrom: earlier.from }
+      if (earlier.json !== json) return { kind: 'conflict', name, key, keptFrom: earlier.from }
+      // The same entry in another client: its rules and notes count too, or a restriction of Codex would be lost.
+      earlier.extra = mergeExtra(key, earlier.extra, parsed.extra ?? NO_EXTRA)
+      return { kind: 'same', name }
     })
     return { file, notes, outcomes }
   })
   return {
     servers: new Map([...kept].map(([key, k]) => [key, k.entry])),
-    policy: [...kept.values()].flatMap(k => k.extra.policy),
+    policy: mergePolicy([...kept.values()].flatMap(k => k.extra.policy)) as CodexRule[],
+    extras: [...kept].map(([key, k]) => ({ key, extra: k.extra })),
     clients,
   }
 }
@@ -515,7 +528,7 @@ const masked = (entry: Entry): Entry => {
 
 const configObject = (servers: ReadonlyMap<ServerKey, Entry>, mask: boolean, policy: readonly CodexRule[]) => ({
   mcpServers: Object.fromEntries([...servers].map(([key, entry]) => [key, mask ? masked(entry) : entry])),
-  policy,
+  policy: mergePolicy(policy),
 })
 
 /**
@@ -686,7 +699,7 @@ const ruleLines = (rules: readonly CodexRule[]): string[] =>
     ? []
     : [
         '',
-        'Policy rules from the Codex tool lists, written first in "policy":',
+        'Policy rules from the Codex tool lists, ordered so that no deny rule is weakened:',
         ...rules.map(r => `- ${r.action} ${r.match}`),
       ]
 
@@ -736,9 +749,7 @@ export const initReport = (imp: Import, configFile: string, platform: string, la
   if (left.length > 0) out.push('', 'Not imported:', ...left)
   if (imp.servers.size === 0) return [...out, '', 'No server to import. init wrote nothing.'].map(printable).join('\n')
   const start = commandStart(configFile, platform, launch, 'init')
-  const extras = imp.clients.flatMap(c =>
-    c.outcomes.flatMap(o => (o.kind === 'imported' ? [{ key: o.key, extra: o.extra }] : [])),
-  )
+  const { extras } = imp
   out.push(
     '',
     `Imported ${plural(imp.servers.size, 'server')}:`,
@@ -937,7 +948,7 @@ export const planAdd = (
         entry: first.parsed.entry,
         from: usable.map(u => u.c),
         hides,
-        extra: first.parsed.extra ?? NO_EXTRA,
+        extra: usable.reduce((extra, u) => mergeExtra(first.parsed.key, extra, u.parsed.extra ?? NO_EXTRA), NO_EXTRA),
       })
     }
   }
@@ -1037,8 +1048,9 @@ export const addedConfigText = (old: OldConfig | undefined, added: readonly Adde
   const servers = new Map(added.map(a => [a.key, a.entry]))
   const rules = added.flatMap(a => a.extra.policy)
   if (old === undefined) return configText(servers, false, rules)
-  // The new rules go before the old policy, and no old rule changes.
-  const policy = Array.isArray(old.json.policy) ? [...rules, ...(old.json.policy as unknown[])] : rules
+  // No old rule changes, and none is weakened: a generated ask never goes before an old deny, and an old allow never
+  // goes before a generated ask or the deny of the unlisted tools (`mergePolicy`).
+  const policy = mergePolicy(rules, Array.isArray(old.json.policy) ? (old.json.policy as unknown[]) : [])
   const config = {
     ...old.json,
     mcpServers: { ...old.servers, ...Object.fromEntries(servers) },
@@ -1068,7 +1080,7 @@ export const addReport = (added: readonly Added[], configFile: string, platform:
   const start = commandStart(configFile, platform, launch, 'init')
   out.push(
     ...serverNotes(new Map(added.map(a => [a.key, a.entry])), start, loginKeys(added)),
-    ...ruleLines(added.flatMap(a => a.extra.policy)),
+    ...ruleLines(mergePolicy(added.flatMap(a => a.extra.policy)) as CodexRule[]),
     ...codexLines(added, start),
     '',
     `The clients keep their direct entries. After a run through toolscript-mcp works, remove them. ${REMOVE_HEAD}`,

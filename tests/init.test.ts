@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loginCommand, NPX_LAUNCH, parseConfig, pathWord, shellWord, type Launch } from '../src/core/config.ts'
-import { parseCodexGet, parseCodexList } from '../src/core/codex.ts'
+import { combineRules, parseCodexGet, parseCodexList } from '../src/core/codex.ts'
 import {
   clientFiles,
   configText,
@@ -17,7 +17,7 @@ import {
   type ClientRead,
 } from '../src/core/init.ts'
 import { readCodexToml } from '../src/core/toml.ts'
-import { shownName } from '../src/core/policy.ts'
+import { decide, NO_GUARDS, shownName } from '../src/core/policy.ts'
 import { runInit } from '../src/host/init.ts'
 import { detectLaunch } from '../src/host/start.ts'
 
@@ -2149,11 +2149,12 @@ describe('Codex', () => {
     oauthy: { type: 'http', url: 'https://example.com/oauth' },
     'with-space': { command: 'node' },
   }
+  // The order of mergePolicy: the denies of a tool, the asks, then the deny of the rest of each server.
   const RULES = [
+    { match: 'mcp__hdr__danger', action: 'deny' },
     { match: 'mcp__docs__a', action: 'ask' },
     { match: 'mcp__docs__b', action: 'ask' },
     { match: 'mcp__docs__*', action: 'deny' },
-    { match: 'mcp__hdr__danger', action: 'deny' },
   ]
 
   test('the map of every field, from the JSON of codex mcp get and from config.toml: the same entries and rules', () => {
@@ -2182,7 +2183,7 @@ describe('Codex', () => {
     assert.match(report, /- docs, from Codex\. Left out: startup_timeout_sec \(.*\), tool_timeout_sec \(.*\)$/m)
     assert.match(report, /- with-space, from Codex "with space"$/m)
     assert.match(report, /- Codex "off": disabled in Codex$/m)
-    assert.match(report, /Policy rules from the Codex tool lists, written first in "policy":/)
+    assert.match(report, /Policy rules from the Codex tool lists, ordered so that no deny rule is weakened:/)
     for (const r of RULES) assert.ok(report.includes('- ' + r.action + ' ' + r.match), r.match)
     assert.ok(report.includes('Apart from the rules above, the policy in the config is empty'))
     // The steps: a command for a plain name, the hand edit for a name that a shell can change, and the entry of toolscript.
@@ -2278,6 +2279,105 @@ describe('Codex', () => {
     // A key such as my-notes comes from the name "my notes".
     const imp = importServers([fromToml('[mcp_servers."my notes"]\ncommand = "c"\ndisabled_tools = ["x"]\n')], 'linux')
     assert.deepEqual(imp.policy, [{ match: 'mcp__my-notes__x', action: 'deny' }])
+  })
+
+  test('the same entry in two clients keeps the rules of Codex, in init and in --add', async () => {
+    const cursor = '{"mcpServers":{"s":{"command":"fake"}}}'
+    const toml = '[mcp_servers.s]\ncommand = "fake"\ndisabled_tools = ["delete"]\nenabled_tools = ["read", "delete"]\n'
+    const files = () => homeWith({ '.cursor/mcp.json': cursor, '.codex/config.toml': toml })
+    const expected = [
+      { match: 'mcp__s__delete', action: 'deny' },
+      { match: 'mcp__s__read', action: 'ask' },
+      { match: 'mcp__s__delete', action: 'ask' },
+      { match: 'mcp__s__*', action: 'deny' },
+    ]
+    const imp = importServers(
+      [{ client: 'cursor', path: '/h/.cursor/mcp.json', kind: 'text', text: cursor }, fromToml(toml)],
+      'linux',
+    )
+    assert.deepEqual(imp.policy, expected)
+    assert.deepEqual(
+      imp.clients[1]!.outcomes.map(o => o.kind),
+      ['same'],
+    )
+    const { code, out, file } = await init(files())
+    assert.equal(code, 0, out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).policy, expected)
+    assert.match(out, /- deny mcp__s__delete/)
+    const home = files()
+    const config = path.join(home, 'cfg', 'config.json')
+    const add = await init(home, ['--add=s', '--project', home, '--config', config])
+    assert.equal(add.code, 0, add.out)
+    assert.deepEqual(JSON.parse(fs.readFileSync(config, 'utf8')).policy, expected)
+  })
+
+  test('two clients that restrict one server differently keep every restriction of both', () => {
+    const rules = (...r: [string, 'deny' | 'ask'][]) =>
+      r.map(([t, action]) => ({ match: t === '*' ? 'mcp__s__*' : 'mcp__s__' + t, action }))
+    // One disables x, the other lists a and b: x stays denied and only a and b are asked.
+    assert.deepEqual(
+      combineRules('s', rules(['x', 'deny']), rules(['a', 'ask'], ['b', 'ask'], ['*', 'deny'])),
+      rules(['x', 'deny'], ['a', 'ask'], ['b', 'ask'], ['*', 'deny']),
+    )
+    // Two lists: only the tools in both are asked.
+    assert.deepEqual(
+      combineRules(
+        's',
+        rules(['a', 'ask'], ['b', 'ask'], ['*', 'deny']),
+        rules(['b', 'ask'], ['c', 'ask'], ['*', 'deny']),
+      ),
+      rules(['b', 'ask'], ['*', 'deny']),
+    )
+    // No rule on either side: none.
+    assert.deepEqual(combineRules('s', [], []), [])
+  })
+
+  test('--add orders the rules so that no old deny is weakened and no restriction is loosened', async () => {
+    const toml =
+      '[mcp_servers.s]\ncommand = "fake"\nenabled_tools = ["read"]\n[mcp_servers.t]\ncommand = "fake"\ndisabled_tools = ["write"]\n'
+    const run = async (old: unknown[]) => {
+      const home = homeWith({ '.codex/config.toml': toml })
+      const config = path.join(home, 'cfg', 'config.json')
+      fs.mkdirSync(path.dirname(config), { recursive: true })
+      fs.writeFileSync(config, JSON.stringify({ mcpServers: {}, policy: old }))
+      const add = await init(home, ['--add=s,t', '--project', home, '--config', config])
+      assert.equal(add.code, 0, add.out)
+      const policy = JSON.parse(fs.readFileSync(config, 'utf8')).policy as {
+        match: string
+        action: 'allow' | 'ask' | 'deny'
+      }[]
+      const verdict = (tool: string) =>
+        decide(
+          policy.map((r, index) => ({ ...r, index })),
+          NO_GUARDS,
+          tool,
+        ).action
+      return { policy, verdict }
+    }
+    // An old deny stays a deny of a tool that Codex lists.
+    const denied = await run([{ match: 'mcp__*__read', action: 'deny' }])
+    assert.equal(denied.verdict('mcp__s__read'), 'deny')
+    assert.deepEqual(denied.policy.slice(0, 2), [
+      { match: 'mcp__t__write', action: 'deny' },
+      { match: 'mcp__*__read', action: 'deny' },
+    ])
+    // An old allow loosens neither the ask of a listed tool nor the deny of an unlisted one.
+    const allowed = await run([
+      { match: 'mcp__*__read', action: 'allow' },
+      { match: 'mcp__s__*', action: 'allow' },
+      { match: 'mcp__t__*', action: 'allow' },
+    ])
+    assert.equal(allowed.verdict('mcp__s__read'), 'ask')
+    assert.equal(allowed.verdict('mcp__s__other'), 'deny')
+    assert.equal(allowed.verdict('mcp__t__write'), 'deny')
+    assert.equal(allowed.verdict('mcp__t__read'), 'allow')
+    // The old rules keep their own order, and none is dropped.
+    assert.deepEqual(allowed.policy.slice(-3), [
+      { match: 'mcp__*__read', action: 'allow' },
+      { match: 'mcp__s__*', action: 'allow' },
+      { match: 'mcp__t__*', action: 'allow' },
+    ])
+    assert.equal(allowed.policy.length, 3 + 3)
   })
 
   test('a key that the map does not name is listed by name, and so is a key of the other kind of server', () => {
@@ -2491,9 +2591,17 @@ describe('Codex', () => {
     assert.equal(add.code, 0, add.out)
     noLiteral(add.out)
     const written = JSON.parse(fs.readFileSync(config, 'utf8'))
-    assert.deepEqual(written.policy, [...RULES.slice(0, 3), { match: 'mcp__old__*', action: 'allow' }])
+    assert.deepEqual(written.policy, [
+      { match: 'mcp__docs__a', action: 'ask' },
+      { match: 'mcp__docs__b', action: 'ask' },
+      { match: 'mcp__docs__*', action: 'deny' },
+      { match: 'mcp__old__*', action: 'allow' },
+    ])
     assert.deepEqual(Object.keys(written.mcpServers).sort(), ['docs', 'files'])
-    assert.match(add.out, /Policy rules from the Codex tool lists, written first in "policy":\n- ask mcp__docs__a/)
+    assert.match(
+      add.out,
+      /Policy rules from the Codex tool lists, ordered so that no deny rule is weakened:\n- ask mcp__docs__a/,
+    )
     assert.ok(add.out.includes('codex mcp remove "docs"'))
     void env
   })

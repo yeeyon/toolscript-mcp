@@ -92,6 +92,69 @@ export const HIDDEN_KEYS = [
 const present = (fields: Readonly<Record<string, unknown>>, key: string) =>
   fields[key] !== undefined && fields[key] !== null
 
+/**
+ * The rules of the tool lists of one server, in the order in which the first match decides: a disabled tool is denied
+ * before an enabled one is asked, and the tools that Codex does not list are denied last: never looser than Codex.
+ * `enabled` undefined means that Codex lists no `enabled_tools`, so no tool is held back.
+ */
+const buildRules = (
+  prefix: string,
+  disabled: readonly string[],
+  enabled: readonly string[] | undefined,
+): CodexRule[] => [
+  ...disabled.map((t): CodexRule => ({ match: prefix + t, action: 'deny' })),
+  ...(enabled === undefined
+    ? []
+    : [
+        ...enabled.map((t): CodexRule => ({ match: prefix + t, action: 'ask' })),
+        { match: `${prefix}*`, action: 'deny' } as CodexRule,
+      ]),
+]
+
+/** The deny rule of a tool, the ask rule of a tool, and the deny rule of the rest of a server: the three kinds of rule. */
+const isRest = (r: CodexRule) => r.action === 'deny' && r.match.endsWith('*')
+const isToolDeny = (r: CodexRule) => r.action === 'deny' && !r.match.endsWith('*')
+
+/**
+ * The rules of one server from two clients that define the same entry: every tool that one of them disables stays
+ * disabled, and a tool stays asked only when each client that lists `enabled_tools` lists it. Never looser than either.
+ */
+export const combineRules = (key: string, a: readonly CodexRule[], b: readonly CodexRule[]): CodexRule[] => {
+  const prefix = `mcp__${key}__`
+  const lists = (rules: readonly CodexRule[]) => ({
+    disabled: rules.filter(isToolDeny).map(r => r.match.slice(prefix.length)),
+    enabled: rules.some(isRest)
+      ? rules.filter(r => r.action === 'ask').map(r => r.match.slice(prefix.length))
+      : undefined,
+  })
+  const x = lists(a)
+  const y = lists(b)
+  const enabled =
+    x.enabled === undefined
+      ? y.enabled
+      : y.enabled === undefined
+        ? x.enabled
+        : x.enabled.filter(t => y.enabled!.includes(t))
+  return buildRules(prefix, [...new Set([...x.disabled, ...y.disabled])], enabled)
+}
+
+/**
+ * The rules of every imported server as the config holds them. `decide` (policy.ts) takes the first rule that matches,
+ * so the order keeps every restriction: the generated denies of a tool, then each deny rule of `existing` (none is
+ * weakened by an ask that goes after it), then the generated asks, then the generated deny of the rest of each server
+ * (before any other old rule, such as an allow, so an unlisted tool stays denied), then the other old rules.
+ */
+export const mergePolicy = (generated: readonly CodexRule[], existing: readonly unknown[] = []): unknown[] => {
+  const denied = (r: unknown) => typeof r === 'object' && r !== null && (r as { action?: unknown }).action === 'deny'
+  return [
+    ...generated.filter(isToolDeny),
+    ...existing.filter(denied),
+    ...generated.filter(r => r.action === 'ask'),
+    ...generated.filter(isRest),
+    ...existing.filter(r => !denied(r)),
+  ]
+}
+
 /** The server with the fields `fields` as a toolscript-mcp entry, or why init skips it. `key` is the key of the server in the config. */
 export const mapCodex = (
   key: string,
@@ -189,18 +252,7 @@ export const mapCodex = (
     return { why: `more than ${TOOL_NAMES_MAX} tool names in enabled_tools and disabled_tools` }
   if (names.some(n => !PLAIN_NAME.test(n)))
     return { why: 'a tool name in enabled_tools or disabled_tools holds a character that a rule cannot name' }
-  const prefix = `mcp__${key}__`
-  // The first rule that matches decides. A disabled tool is denied before an enabled one is asked, and the tools that
-  // Codex does not list are denied last: never looser than Codex.
-  const policy: CodexRule[] = [
-    ...(disabledTools ?? []).map((t): CodexRule => ({ match: prefix + t, action: 'deny' })),
-    ...(enabledTools === undefined
-      ? []
-      : [
-          ...enabledTools.map((t): CodexRule => ({ match: prefix + t, action: 'ask' })),
-          { match: `${prefix}*`, action: 'deny' } as CodexRule,
-        ]),
-  ]
+  const policy = buildRules(`mcp__${key}__`, disabledTools ?? [], enabledTools)
   // McpAuthStatus of Codex is serialized in snake_case: unknown, unsupported, not_logged_in, bearer_token, o_auth
   // (codex-rs/protocol/src/protocol.rs, printed by codex-rs/cli/src/mcp_cmd.rs). A login needs the last two states.
   const oauth = authStatus === 'o_auth' || authStatus === 'not_logged_in'
