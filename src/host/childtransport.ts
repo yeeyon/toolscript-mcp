@@ -22,6 +22,9 @@ import { endTree } from './broker.ts'
  */
 export const HURRY_WAIT_MS = process.platform === 'win32' ? 100 : 300
 
+/** Outside Windows, the wait between the SIGTERM to the group of a child and the end of its tree. */
+export const TERM_WAIT_MS = 200
+
 export type ChildParams = {
   readonly command: string
   readonly args: readonly string[]
@@ -51,6 +54,7 @@ export class ChildTransport implements Transport {
   #grace = STOP_WAIT_MS
   #timer: NodeJS.Timeout | undefined
   #kill: (() => void) | undefined
+  #term: NodeJS.Timeout | undefined
 
   constructor(params: ChildParams) {
     this.#params = params
@@ -153,14 +157,24 @@ export class ChildTransport implements Transport {
         endTree(proc)
         return resolve()
       }
-      this.#kill = () => {
+      const end = () => {
         endTree(proc)
         // The close event follows the kill. Do not wait for it longer than a second.
         setTimeout(resolve, 1000).unref()
       }
+      // Outside Windows a child that ignores EOF first gets SIGTERM for its group, so it can clean up (a server that
+      // removes a temp file or a lock). Windows has no such signal: its tree ends at once.
+      this.#kill = () => {
+        if (process.platform === 'win32' || proc.pid === undefined) return end()
+        try {
+          process.kill(-proc.pid, 'SIGTERM')
+        } catch {}
+        this.#term = setTimeout(end, TERM_WAIT_MS)
+      }
       this.#timer = setTimeout(this.#kill, this.#grace)
       proc.once('close', () => {
         clearTimeout(this.#timer)
+        clearTimeout(this.#term)
         resolve()
       })
       try {
