@@ -4,7 +4,7 @@
 // PKCE verifier and refreshes, and an MCP endpoint that answers 401 without a
 // valid Bearer token. `runLogin` gets a browser that follows the redirect.
 
-import { after, describe, mock, test } from 'node:test'
+import { after, afterEach, describe, mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -25,6 +25,16 @@ after(async () => {
   await Promise.all(opened.map(d => d.close()))
   for (const s of servers) (s.closeAllConnections(), s.close())
   fs.rmSync(DIR, { recursive: true, force: true, maxRetries: 5 })
+})
+
+/** The store folders of the test that runs: `setup` adds one, and the hook below checks it at the end of each test. */
+const stores: string[] = []
+/** Every name in a store folder that is not a store file: a lock, a claim or a temp file. A folder that is not made has none. */
+const leftovers = (storeDir: string): string[] =>
+  fs.existsSync(storeDir) ? fs.readdirSync(storeDir).filter(name => !name.endsWith('.json')) : []
+afterEach(() => {
+  const left = stores.splice(0).flatMap(leftovers)
+  assert.deepEqual(left, [], 'a lock, claim or temp file stayed in the store folder')
 })
 
 /** A browser that follows the authorization redirect to the callback, with the state `change` makes. */
@@ -113,7 +123,8 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
     return r instanceof Error ? r.message : JSON.stringify(r.content)
   }
   const storeDir = path.join(home, '.toolscript-mcp', 'oauth')
-  // The store files. A refresh makes its `.lock` file beside them for a moment.
+  stores.push(storeDir)
+  // The store files. The hook above lists the other names: a refresh makes its `.lock` file beside them for a moment.
   const store = () =>
     fs
       .readdirSync(storeDir)
