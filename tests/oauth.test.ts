@@ -124,7 +124,7 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
   }
   const storeDir = path.join(home, '.toolscript-mcp', 'oauth')
   stores.push(storeDir)
-  // The store files. `leftovers` lists the other names: a refresh makes its `.lock` file beside them for a moment.
+  // The store files. The hook above lists the other names: a refresh makes its `.lock` file beside them for a moment.
   const store = () =>
     fs
       .readdirSync(storeDir)
@@ -136,7 +136,7 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
       .join('\n')
   /** The lines printed and logged so far that hold a token, code, verifier or client secret. */
   const leaks = () => lines.filter(line => [...fake.secrets].some(s => line.includes(s)))
-  return { home, lines, login, connect, run, ping, store, storeText, leaks, leftovers: () => leftovers(storeDir) }
+  return { home, lines, login, connect, run, ping, store, storeText, leaks }
 }
 
 const PONG = JSON.stringify([{ type: 'text', text: 'pong' }])

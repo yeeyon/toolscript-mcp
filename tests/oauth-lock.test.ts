@@ -101,14 +101,10 @@ describe('processes that share one store', { timeout: 180_000 }, () => {
     fake.change.stallRefreshes = true
     const failed = await round(s, children)
     assert.equal(failed.lines.length, 6)
-    // Each reason gives a time that is not more than the refresh time (2 s): no waiter had more time than that, and
-    // none waited for the age of a lock. A waiter that waited for the lock names the wait and the time that was left.
-    for (const l of failed.lines) {
+    // `requests(fake) <= 2` below proves that the waiters did not send one request after another. The bound of the time
+    // that each waiter had is proven in tests/oauthlock.test.ts.
+    for (const l of failed.lines)
       assert.match(l.text, /could not refresh the OAuth token: .*No login is needed/, l.text)
-      const time = /did not (?:answer|finish) in (\d+(?:\.\d)?) s/.exec(l.text)
-      assert.ok(time, l.text)
-      assert.ok(Number(time[1]) <= 2, l.text)
-    }
     assert.ok(requests(fake) <= 2, `${requests(fake)} requests`)
     assert.deepEqual(s.leftovers(), [])
     fake.change.stallRefreshes = false

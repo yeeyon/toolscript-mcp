@@ -180,32 +180,32 @@ describe('one refresh in one process', () => {
   })
 
   test('the timeout reason gives the time the request had, and names the wait for another process', async () => {
-    const h = harness(
-      signal =>
-        new Promise<Response>((_, reject) => {
-          const alive = setInterval(() => {}, 50)
-          signal?.addEventListener('abort', () => (clearInterval(alive), reject(new Error('aborted'))))
-        }),
-      undefined,
-      2400,
-    )
-    // Another process holds the lock for 600 ms, past the naming limit, and saves nothing. Its wait ends at 0.6 to 0.8 s,
-    // far from the half of 2.4 s, so the waiter sends its own request.
-    fs.writeFileSync(h.lock, lockText({ pid: process.pid, id: ID, at: Date.now() }))
-    setTimeout(() => fs.rmSync(h.lock), 600)
-    const message = ((await h.refresh()) as Error).message
-    const m =
-      /did not answer in (\d+(?:\.\d)?) s, after (\d+(?:\.\d)?) s of waiting for another toolscript-mcp process\./.exec(
-        message,
+    // The clock is a frozen Date that the test moves by 800 ms when the other process lets go, so the wait is exactly
+    // 0.8 s on any runner. The abort of the request stays on the real clock: it ends 1.6 s later.
+    mock.timers.enable({ apis: ['Date'], now: Date.now() })
+    try {
+      const h = harness(
+        signal =>
+          new Promise<Response>((_, reject) => {
+            const alive = setInterval(() => {}, 50)
+            signal?.addEventListener('abort', () => (clearInterval(alive), reject(new Error('aborted'))))
+          }),
+        undefined,
+        2400,
       )
-    assert.ok(m, message)
-    const [had, waited] = [Number(m[1]), Number(m[2])]
-    assert.ok(had < 2.4, `the request had ${had} s of 2.4 s`)
-    assert.ok(waited >= 0.5, `the wait was ${waited} s`)
-    // The read of the store before the lock is in neither number, and each is rounded.
-    assert.ok(had + waited <= 2.4 + 0.1, `${had} s and ${waited} s`)
-    assert.equal(h.sent(), 1)
-    assert.equal(fs.existsSync(h.lock), false)
+      // Another process holds the lock and saves nothing. The half of 2.4 s is far from the end of the wait.
+      fs.writeFileSync(h.lock, lockText({ pid: process.pid, id: ID, at: Date.now() }))
+      setTimeout(() => {
+        mock.timers.tick(800)
+        fs.rmSync(h.lock)
+      }, 600)
+      const message = ((await h.refresh()) as Error).message
+      assert.match(message, /did not answer in 1\.6 s, after 0\.8 s of waiting for another toolscript-mcp process\./)
+      assert.equal(h.sent(), 1)
+      assert.equal(fs.existsSync(h.lock), false)
+    } finally {
+      mock.timers.reset()
+    }
   })
 
   test('the lock is removed when the save of the tokens fails, and the tokens work in memory', async () => {

@@ -74,6 +74,9 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
           `${name}: ${l.text}`,
         )
       assert.equal(requests(fake) - before, 0, name)
+      // The proof by order: a waiter that took the lock over would have removed this file, so the same text is still
+      // there only when no waiter took it over before its refresh time ended. The text above does not prove it.
+      assert.equal(fs.readFileSync(`${s.files[0]}.lock`, 'utf8'), text, `${name}: no waiter took the young lock over`)
       // The old phase: one process takes over and refreshes while the others wait for it, and on a slow machine
       // that takes more than the 1 s that the young phase gives a waiter. So these waiters wait longer.
       putLock(s, text, 600)
@@ -94,8 +97,8 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
     fs.utimesSync(lock, aged, aged)
     const folder = await round(s, children)
     assert.equal(folder.lines.length, 6, 'a folder')
-    for (const l of folder.lines)
-      assert.match(l.text, /another toolscript-mcp process is refreshing.*did not finish in 1 s/, l.text)
+    // No crash is all that this case proves. The deadline of a waiter is proven in tests/oauthlock.test.ts.
+    for (const l of folder.lines) assert.match(l.text, /another toolscript-mcp process is refreshing/, l.text)
     assert.ok(
       children.every(c => c.proc.exitCode === null),
       'a process died',
