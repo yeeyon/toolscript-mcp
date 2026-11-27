@@ -22,6 +22,7 @@
 //   --changes-before   declares tools.listChanged and sends notifications/tools/list_changed before each list reply
 //   --changes-after    the same, after each list reply
 //   --image            a call answers a text block and an image block of the bytes in IMAGE_BASE64
+//   --flaky-start:<ms>  the first start of a file exits with code 1 at once. Each later start answers `initialize` after <ms>
 //   --untrusted        a call answers {"pid":<pid>} in the untrusted wrapper of the Azure DevOps MCP server
 //
 //   node tests/probe-server.mjs /tmp/probe.json [mode]
@@ -39,6 +40,14 @@ const event = e =>
   fs.appendFileSync(`${file}.log`, `${JSON.stringify({ ...e, pid: process.pid, ppid: process.ppid })}\n`)
 fs.writeFileSync(file, JSON.stringify({ pid: process.pid, cwd: process.cwd(), env: process.env }))
 event({ event: 'start' })
+const flaky = mode?.startsWith('--flaky-start:') ? Number(mode.slice('--flaky-start:'.length)) : undefined
+if (flaky !== undefined) {
+  const starts = fs
+    .readFileSync(`${file}.log`, 'utf8')
+    .split('\n')
+    .filter(l => l.includes('"event":"start"')).length
+  if (starts === 1) process.exit(1)
+}
 
 const changesFile = `${file}.changes`
 const changes = () => (fs.existsSync(changesFile) ? Number(fs.readFileSync(changesFile, 'utf8')) : 0)
@@ -68,12 +77,15 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     }, 20)
     return
   }
-  if (msg.method === 'initialize')
-    return reply({
-      protocolVersion: msg.params.protocolVersion,
-      capabilities: { tools: announces ? { listChanged: true } : {} },
-      serverInfo: { name: 'probe', version: '1.0.0' },
-    })
+  if (msg.method === 'initialize') {
+    const answer = () =>
+      reply({
+        protocolVersion: msg.params.protocolVersion,
+        capabilities: { tools: announces ? { listChanged: true } : {} },
+        serverInfo: { name: 'probe', version: '1.0.0' },
+      })
+    return flaky === undefined ? answer() : void setTimeout(answer, flaky)
+  }
   if (msg.method === 'tools/list') {
     event({ event: 'list' })
     if (failList) {
