@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { main } from '../scripts/changelog.mjs'
 
 const SCRIPT = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'scripts', 'changelog.mjs')
 const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-changelog-test-')))
@@ -192,11 +193,51 @@ describe('--apply is safe to stop', () => {
     assert.equal(fs.existsSync(path.join(root, MARKER)), false)
   })
 
-  test('a stop after the last delete and before the marker goes: the marker is removed', () => {
+  test('a stop after the last delete and before the marker goes: a run says so and removes it, exit 0', () => {
     const root = rig(FOLDED)
     fs.writeFileSync(path.join(root, MARKER), JSON.stringify({ names: ['a.md'], sha256: sha(FOLDED) }))
-    refused(run(root, '1.0.5', '--apply'), /no file in changes/)
+    const dry = run(root, '1.0.5')
+    assert.equal(dry.status, 0, dry.stderr)
+    assert.match(dry.stderr, /would remove its marker/)
+    assert.equal(fs.existsSync(path.join(root, MARKER)), true, 'a dry run removes nothing')
+    const r = run(root, '1.0.5', '--apply')
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stderr, /had finished its fold; removed its marker/)
     assert.equal(fs.existsSync(path.join(root, MARKER)), false)
+    assert.equal(read(root), FOLDED)
+  })
+
+  test('two stops at the same delete: the second run keeps the names of the first, so nothing folds twice', () => {
+    const root = rig(HEAD + OLD, { 'a.md': '- A line.\n', 'b.md': '- B line.\n' })
+    const args = ['1.0.5', '--apply', '--root', root]
+    // The delete of b.md fails, as a stop there would.
+    const stuck = (file: string) => {
+      if (file.endsWith('b.md')) throw new Error('stop')
+      fs.unlinkSync(file)
+    }
+    assert.throws(() => main(args, stuck), /stop/)
+    assert.deepEqual(left(root), ['b.md'])
+    fs.writeFileSync(path.join(root, 'changes', 'c.md'), '- C line.\n')
+    assert.throws(() => main(args, stuck), /stop/)
+    assert.deepEqual(left(root), ['b.md'])
+    const marker = JSON.parse(fs.readFileSync(path.join(root, MARKER), 'utf8'))
+    assert.deepEqual(marker.names, ['a.md', 'b.md', 'c.md'])
+    main(args)
+    assert.deepEqual(left(root), [])
+    assert.equal(fs.existsSync(path.join(root, MARKER)), false)
+    assert.equal(read(root), HEAD + '## 1.0.5\n\n- A line.\n- B line.\n- C line.\n\n' + OLD)
+  })
+
+  test('a failed write keeps the marker of the stopped run as it was', () => {
+    const root = rig(FOLDED, { 'b.md': '- two\n  wrapped\n', 'c.md': '- three\n' })
+    const before = JSON.stringify({ names: ['b.md'], sha256: sha(FOLDED) })
+    fs.writeFileSync(path.join(root, MARKER), before)
+    // A folder in the place of the temp file makes the write fail before the rename.
+    fs.mkdirSync(path.join(root, 'CHANGELOG.md.tmp'))
+    assert.throws(() => main(['1.0.5', '--apply', '--root', root]))
+    assert.equal(fs.readFileSync(path.join(root, MARKER), 'utf8'), before)
+    assert.equal(read(root), FOLDED)
+    assert.deepEqual(left(root), ['b.md', 'c.md'])
   })
 
   test('a stop before the rename: the marker does not match, it is removed and every fragment folds', () => {

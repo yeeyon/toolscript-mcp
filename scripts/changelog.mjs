@@ -147,7 +147,7 @@ const readMarker = (marker, changelog) => {
   return { names: [], exists: fs.existsSync(marker), matches: false }
 }
 
-const main = argv => {
+export const main = (argv, unlink = fs.unlinkSync) => {
   let root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
   let apply = false
   let version
@@ -171,7 +171,15 @@ const main = argv => {
   // The files that a stopped run folded: the marker matches the CHANGELOG.md on disk, so they are in it already.
   const done = all.filter(f => known.names.includes(f.name))
   const pending = all.filter(f => !known.names.includes(f.name))
-  if (pending.length === 0 && done.length === 0 && known.matches && apply) fs.rmSync(marker, { force: true })
+  if (pending.length === 0 && done.length === 0 && known.matches) {
+    // A stopped run had deleted every fragment: only its marker is left.
+    if (!apply) {
+      process.stderr.write('changelog: a stopped run had finished its fold; --apply would remove its marker\n')
+      return void process.stdout.write(sectionOfVersion(changelog, version))
+    }
+    fs.rmSync(marker, { force: true })
+    return void process.stderr.write('changelog: a stopped run had finished its fold; removed its marker\n')
+  }
   let next
   if (pending.length > 0 || done.length === 0) next = fold(changelog, version, pending)
   else if (!SEMVER.test(version)) refuse(`${version}: the version must be N.N.N`)
@@ -189,16 +197,22 @@ const main = argv => {
     // The marker, the temp file and the rename come before any delete; the marker goes last.
     const temp = `${file}.tmp`
     try {
-      fs.writeFileSync(marker, JSON.stringify({ names: pending.map(f => f.name), sha256: sha256(next.text) }))
+      // The names of the stopped run stay in it: a second stop must not fold them again.
+      const names = [...known.names, ...pending.map(f => f.name)]
+      fs.writeFileSync(marker, JSON.stringify({ names, sha256: sha256(next.text) }))
       fs.writeFileSync(temp, next.text)
       fs.renameSync(temp, file)
     } catch (err) {
-      fs.rmSync(temp, { force: true })
-      fs.rmSync(marker, { force: true })
+      try {
+        fs.rmSync(temp, { force: true })
+      } catch {} // a folder in its place is not ours to remove
+      // Nothing was renamed: the marker of the stopped run, if it matched, must say what it said.
+      if (known.matches) fs.writeFileSync(marker, JSON.stringify({ names: known.names, sha256: sha256(changelog) }))
+      else fs.rmSync(marker, { force: true })
       throw err
     }
   }
-  for (const f of [...pending, ...done]) fs.unlinkSync(f.file)
+  for (const f of [...pending, ...done]) unlink(f.file)
   fs.rmSync(marker, { force: true })
   process.stderr.write(`changelog: folded ${pending.map(f => f.name).join(', ')} into ${version}\n`)
 }
