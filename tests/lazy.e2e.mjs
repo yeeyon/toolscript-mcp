@@ -146,5 +146,7 @@ describe('lazy start', () => {
     const pid = await pidOf(host)
     assert.ok(alive(pid))
     await host.client.close()
+    // A server that is not lazy also ends with its wrapper's whole tree: the SDK transport would end only the wrapper.
+    await until('the end of the server at close', () => !alive(pid))
   })
 })

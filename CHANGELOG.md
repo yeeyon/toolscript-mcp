@@ -2,6 +2,8 @@
 
 ## 1.0.5
 
+- A stdio server that is not lazy now ends like a lazy one when toolscript-mcp closes it: stdin ends, and after 2 s the whole process tree ends. Before, the SDK transport ended only the first process, so on Windows a server behind a `cmd /c` wrapper that ignores EOF kept running after the host left. Every direct stdio server now has the stop of `childtransport.ts`, and a shutdown hurries it to 300 ms.
+
 - An HTTP entry with `sigv4` takes an optional `"metadata"` object (issue #137): its pairs go into `params._meta` of each request to the server, as `mcp-proxy-for-aws --metadata` does, before the signature. A pair that the request already holds stays as it is, and with no `metadata` the bytes sent do not change. It sets `AWS_REGION` for an AWS MCP Server host in a region other than the one of the calls.
 - A CLI that has no `aws configure export-credentials` (AWS CLI version 1, or an older version 2) now gets the reason "this AWS CLI has no `configure export-credentials`: update to a current AWS CLI version 2", in place of "needs AWS CLI version 2".
 - When the host closes, each `aws configure export-credentials` child that is still running ends with its process tree, so a hung AWS CLI in its own process group no longer outlives the host on Linux and macOS.

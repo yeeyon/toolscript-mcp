@@ -1,4 +1,5 @@
-// The stdio transport of a lazy server (issue #63, slice 5). Like the SDK's, with three differences: it counts the
+// The stdio transport of every stdio server (issue #63, slice 5; for direct children too since the fix of the wrapper
+// that ignores EOF). Like the SDK's, with three differences: it counts the
 // requests that wait for an answer (the idle clock runs only with none open), it tells the host at each message (a call
 // sets the clock back), and it stops the child as the broker does: end stdin, wait STOP_WAIT_MS, then end the whole
 // tree (`taskkill /T /F` on Windows, the process group elsewhere), so a wrapper or a grandchild never stays.
