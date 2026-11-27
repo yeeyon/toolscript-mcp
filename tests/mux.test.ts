@@ -1,8 +1,14 @@
 // The router of a shared child process (src/core/mux.ts): one test for each case of the table, then a property test
 // with a seeded generator. The router is pure, so the tests call it with messages and read the effects.
+// The table holds the progress notices that the router drops (the router id of a request that sent no token, and the
+// string form of a router id), the request with an id that its link already holds (dropped with no answer), and the
+// initialize in each state. The property test plays initialize too: first, joined, answered, failed, cancelled and
+// detached waiters, the waiterless answer, notifications/initialized and a death with waiters. It counts the states
+// that the seeds reach, and fails for a state that fewer than 10 seeds reached.
 
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { isDeepStrictEqual } from 'node:util'
 import { DIED_CODE, createRouter, type Effect, type Router } from '../src/core/mux.ts'
 
 /** A frozen copy: a router that changes an input message throws in strict mode. */
@@ -152,6 +158,48 @@ describe('mux table', () => {
     assert.deepEqual(router.fromChild(late), [], 'after the response')
   })
 
+  test('(d) progress with the router id of a request that sent no token: dropped', () => {
+    const none: unknown[] = [
+      {},
+      { _meta: {} },
+      { _meta: { other: 1 } },
+      { _meta: 5 },
+      { _meta: { progressToken: {} } },
+      { _meta: { progressToken: null } },
+      { _meta: { progressToken: true } },
+      { _meta: { progressToken: [1] } },
+    ]
+    for (const params of none) {
+      const router = rig('a', 'b')
+      const rid = send(router, 'a', 1, params)
+      const progress = note('notifications/progress', { progressToken: rid, progress: 1 })
+      assert.deepEqual(router.fromChild(progress), [], JSON.stringify(params))
+      assert.equal(router.open(), 1, 'the request is still open')
+      const out = router.fromChild(reply(rid))
+      assert.equal(toLink(out, 'a')[0]!.id, 1, 'and it still gets its response')
+    }
+    const router = rig('a')
+    const [bare] = toChild(router.fromLink('a', frozen({ jsonrpc: '2.0', id: 1, method: 'tools/call' })))
+    const progress = note('notifications/progress', { progressToken: bare!.id })
+    assert.deepEqual(router.fromChild(progress), [], 'no params at all')
+    assert.equal(router.fromChild(reply(bare!.id)).length, 1)
+  })
+
+  test('(d) progress with the string form of a router id: dropped', () => {
+    const router = rig('a')
+    const rid = send(router, 'a', 1, { _meta: { progressToken: 'mine' } })
+    const progress = (progressToken: unknown) => note('notifications/progress', { progressToken, progress: 1 })
+    assert.deepEqual(router.fromChild(progress(String(rid))), [], 'the string form')
+    const live = router.fromChild(progress(rid))
+    assert.equal(live.length, 1, 'the number: the request is open')
+    assert.equal(live[0]!.to, 'link')
+    assert.equal((live[0] as { link: string }).link, 'a')
+    assert.equal(toLink(live, 'a')[0]!.params.progressToken, 'mine', 'with the original token')
+    for (const token of [rid + 0.5, -rid, 0, null, true, false, [rid], { rid }, ' ' + rid, rid + 'e0'])
+      assert.deepEqual(router.fromChild(progress(token)), [], JSON.stringify(token))
+    assert.equal(router.open(), 1)
+  })
+
   test('(d) progress after a cancel is dropped', () => {
     const router = rig('a')
     const [forwarded] = toChild(router.fromLink('a', call(1, { _meta: { progressToken: 'p' } })))
@@ -163,6 +211,43 @@ describe('mux table', () => {
   const init = (id: unknown = 1) =>
     frozen({ jsonrpc: '2.0', id, method: 'initialize', params: { protocolVersion: 'v', capabilities: { roots: {} } } })
   const initialized = note('notifications/initialized')
+
+  test('(c) a request with an id that its link already holds is dropped: no answer, nothing to the child, the first request still gets its response', () => {
+    // A call over a call.
+    let router = rig('a', 'b')
+    let rid = send(router, 'a', 7)
+    assert.deepEqual(router.fromLink('a', call(7)), [])
+    assert.equal(router.open(), 1)
+    assert.deepEqual(toLink(router.fromChild(reply(rid, { v: 1 })), 'a'), [{ jsonrpc: '2.0', id: 7, result: { v: 1 } }])
+    assert.equal(router.open(), 0)
+
+    // An initialize over a call, before the cache. It opens no initialize.
+    router = rig('a', 'b')
+    rid = send(router, 'a', 5)
+    assert.deepEqual(router.fromLink('a', init(5)), [])
+    assert.equal(router.open(), 1)
+    assert.equal(toChild(router.fromLink('b', init(1))).length, 1, 'no initialize was open: this one goes to the child')
+    assert.equal(toLink(router.fromChild(reply(rid)), 'a')[0]!.id, 5)
+
+    // An initialize over a call, after the cache: no answer from the cache either.
+    router = rig('a', 'b')
+    const [first] = toChild(router.fromLink('b', init(1)))
+    router.fromChild(reply(first!.id, { v: 1 }))
+    rid = send(router, 'a', 5)
+    assert.deepEqual(router.fromLink('a', init(5)), [])
+    assert.equal(router.open(), 1)
+    assert.deepEqual(toLink(router.fromChild(reply(rid, { v: 2 })), 'a'), [{ jsonrpc: '2.0', id: 5, result: { v: 2 } }])
+
+    // A call over an open initialize, and an initialize over the same open initialize.
+    router = rig('a')
+    const [opened] = toChild(router.fromLink('a', init(3)))
+    assert.deepEqual(router.fromLink('a', call(3)), [])
+    assert.deepEqual(router.fromLink('a', init(3)), [])
+    assert.equal(router.open(), 1)
+    const out = router.fromChild(reply(opened!.id, { v: 3 }))
+    assert.deepEqual(out, [{ to: 'link', link: 'a', msg: { jsonrpc: '2.0', id: 3, result: { v: 3 } } }])
+    assert.equal(router.open(), 0)
+  })
 
   test('(e) the first initialize goes to the child with no capabilities, a waiting one gets the same answer', () => {
     const router = rig('a', 'b', 'c')
@@ -380,6 +465,18 @@ describe('mux table', () => {
     assert.deepEqual(router.fromChild(reply(rid)), [])
   })
 
+  test('(n) 10 000 progress notes for a closed id and an initialize with a 1 MB params throw nothing and name no other link', () => {
+    const router = rig('a', 'b')
+    const rid = send(router, 'a', 1, { _meta: { progressToken: 't' } })
+    router.fromChild(reply(rid))
+    for (let i = 0; i < 10_000; i++)
+      assert.deepEqual(router.fromChild(note('notifications/progress', { progressToken: rid, progress: i })), [])
+    const big = frozen({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { blob: 'x'.repeat(1_000_000) } })
+    const out = router.fromLink('a', big)
+    assert.equal(toChild(out).length, 1)
+    for (const e of out) assert.ok(e.to === 'child' || e.link === 'a', 'no effect on another link')
+  })
+
   test('(n) a message that is not a message throws nothing and reaches no other link', () => {
     const router = rig('a', 'b')
     const junk: unknown[] = [
@@ -449,8 +546,31 @@ type Req = {
 const IDS: (string | number)[] = [1, 2, 3, '1', '2', 'a', '1:2', '2:1']
 const TOKENS: (string | number)[] = [1, 2, '1', 'p']
 
+/** A link that waits for the answer to the initialize of the child. */
+type Wait = { readonly link: string; readonly id: string | number; live: boolean }
+
+/** The states of initialize that the seeds must reach. A state that fewer than 10 seeds reached fails the test. */
+const STATES = [
+  'first',
+  'joined',
+  'cached',
+  'failed',
+  'cancelled waiter',
+  'detached waiter',
+  'waiterless answer',
+  'initialized forwarded',
+  'death with waiters',
+  'reused id dropped',
+] as const
+type State = (typeof STATES)[number]
+const newCounts = (): Record<State, number> => Object.fromEntries(STATES.map(s => [s, 0])) as Record<State, number>
+
+const initRequest = (id: string | number, params: unknown) =>
+  frozen({ jsonrpc: '2.0', id, method: 'initialize', params })
+const initializedNote = note('notifications/initialized')
+
 /** One run of the property test. Throws with the seed in the message. */
-const play = (seed: number, steps: number): void => {
+const play = (seed: number, steps: number, counts: Record<State, number> = newCounts()): void => {
   const rnd = generator(seed)
   const router = createRouter()
   const reqs: Req[] = []
@@ -458,6 +578,13 @@ const play = (seed: number, steps: number): void => {
   const used = new Set<number>()
   let links = 0
   let dead = false
+  // The model of initialize: the links that wait, the open initialize (the child owes its answer, also when no link
+  // waits any more), the cached result, and whether notifications/initialized went to the child.
+  const waits: Wait[] = []
+  let opening: { readonly rid: number } | undefined
+  let cached: { readonly result: unknown } | undefined
+  let initializedSent = false
+  let initNo = 0
   const fresh = () => {
     const name = `L${links++}`
     attached.push(name)
@@ -466,6 +593,12 @@ const play = (seed: number, steps: number): void => {
   const fail = (what: string): never => assert.fail(`seed ${seed}: ${what}`)
   const check = (cond: unknown, what: string) => cond || fail(what)
   const liveOf = (link: string) => reqs.filter(r => r.live && r.link === link)
+  const same = (a: string | number, b: string | number) => a === b && typeof a === typeof b
+  const waitsOf = (link: string) => waits.filter(w => w.live && w.link === link)
+  /** The link holds the id: a call or a waiting initialize that it sent under it is not answered yet. */
+  const holds = (link: string, id: string | number) =>
+    liveOf(link).some(r => same(r.id, id)) || waitsOf(link).some(w => same(w.id, id))
+  const openCount = () => reqs.filter(r => r.live).length + waits.filter(w => w.live).length
   const noLinkEffects = (effects: readonly Effect[], what: string) =>
     check(
       effects.every(e => e.to === 'child'),
@@ -473,7 +606,82 @@ const play = (seed: number, steps: number): void => {
     )
   for (let i = 0, n = 2 + rnd.below(5); i < n; i++) fresh()
 
-  const step = (): void => {
+  /** Initialize: a request (first, joined, cached or dropped), the answer of the child, notifications/initialized. */
+  const initStep = (op: number): void => {
+    if (attached.length === 0) return
+    const link = rnd.pick(attached)
+    if (op < 115) {
+      const id = rnd.pick(IDS)
+      const payload = 'init|' + initNo++
+      const meta = rnd.chance(0.5) ? { _meta: { progressToken: rnd.pick(TOKENS) } } : {}
+      const out = router.fromLink(link, initRequest(id, { payload, capabilities: { roots: {} }, ...meta }))
+      if (holds(link, id)) {
+        counts['reused id dropped']++
+        return void check(out.length === 0, 'an initialize with an id that its link holds is dropped')
+      }
+      if (cached !== undefined) {
+        const want = { jsonrpc: '2.0', id, result: cached.result }
+        check(
+          out.length === 1 && out[0]!.to === 'link' && out[0]!.link === link && isDeepStrictEqual(out[0]!.msg, want),
+          'a cached initialize is answered at once to its link only, with no message to the child',
+        )
+        counts.cached++
+        return
+      }
+      if (opening !== undefined) {
+        check(out.length === 0, 'a joined initialize has no effect')
+        waits.push({ link, id, live: true })
+        counts.joined++
+        return
+      }
+      check(out.length === 1 && out[0]!.to === 'child', 'the first initialize gives exactly one message to the child')
+      const sent = out[0]!.msg as { method: unknown; id: unknown; params: unknown }
+      check(sent.method === 'initialize', 'the child gets an initialize')
+      check(typeof sent.id === 'number' && !used.has(sent.id), 'the initialize has a fresh router id')
+      used.add(sent.id as number)
+      check(isDeepStrictEqual(sent.params, { payload, capabilities: {} }), 'capabilities {} and no _meta')
+      opening = { rid: sent.id as number }
+      waits.push({ link, id, live: true })
+      counts.first++
+    } else if (op < 125) {
+      if (opening === undefined) return
+      const rid = opening.rid
+      const live = waits.filter(w => w.live)
+      const bad = rnd.chance(0.35)
+      const error = { code: -1, message: 'no' + initNo }
+      const result = { echo: 'init' + initNo }
+      const out = router.fromChild(bad ? frozen({ jsonrpc: '2.0', id: rid, error }) : reply(rid, result))
+      check(out.length === live.length, 'each live waiter gets the answer once, and nothing else')
+      for (const [i, w] of live.entries()) {
+        const e = out[i]!
+        const want = bad ? { jsonrpc: '2.0', id: w.id, error } : { jsonrpc: '2.0', id: w.id, result }
+        check(e.to === 'link' && e.link === w.link, 'the answer goes to its waiter')
+        check(isDeepStrictEqual(e.msg, want), 'the answer has the id of its waiter')
+      }
+      for (const w of waits) w.live = false
+      opening = undefined
+      if (live.length === 0) counts['waiterless answer']++
+      if (bad) {
+        if (live.length > 0) counts.failed++
+      } else {
+        cached = { result }
+      }
+    } else {
+      const out = router.fromLink(link, initializedNote)
+      if (cached !== undefined && !initializedSent) {
+        check(
+          out.length === 1 && out[0]!.to === 'child' && out[0]!.msg === initializedNote,
+          'notifications/initialized goes to the child once, after a result',
+        )
+        initializedSent = true
+        counts['initialized forwarded']++
+      } else {
+        check(out.length === 0, 'notifications/initialized goes to the child once, and only after a result')
+      }
+    }
+  }
+
+  const act = (): void => {
     if (dead) {
       const link = rnd.pick(attached.length > 0 ? attached : ['L0'])
       const quiet = [
@@ -481,18 +689,28 @@ const play = (seed: number, steps: number): void => {
         router.fromChild(reply(1)),
         router.fromChild(note('notifications/tools/list_changed')),
         router.detach(link),
+        router.fromLink(link, initRequest(1, {})),
+        router.fromLink(link, initializedNote),
       ]
       return void check(
         quiet.every(o => o.length === 0),
         'after a death every input gives no effect',
       )
     }
-    const op = rnd.below(100)
+    const op = rnd.below(135)
     if (op < 35) {
       if (attached.length === 0) return
       const link = rnd.pick(attached)
       const id = rnd.pick(IDS)
-      if (liveOf(link).some(r => r.id === id && typeof r.id === typeof id)) return
+      if (holds(link, id)) {
+        // The link broke JSON-RPC: its request is dropped with no answer, and the first one is not touched.
+        if (rnd.chance(0.5)) {
+          counts['reused id dropped']++
+          const again = router.fromLink(link, call(id, { payload: 'again' }))
+          check(again.length === 0, 'a request with an id that its link holds is dropped')
+        }
+        return
+      }
       const payload = `${link}|${typeof id}|${String(id)}|${reqs.length}`
       const token = rnd.chance(0.4) ? rnd.pick(TOKENS) : undefined
       const params = { payload, ...(token !== undefined && { _meta: { progressToken: token } }) }
@@ -528,6 +746,15 @@ const play = (seed: number, steps: number): void => {
       check(msg.result.echo === r.payload, '(1) the answer has its own payload')
       r.live = false
     } else if (op < 65) {
+      if (rnd.chance(0.3)) {
+        const pending = reqs.filter(r => r.pending)
+        if (pending.length === 0) return
+        const r = rnd.pick(pending)
+        // No token was sent: the router id is not a token. A token was sent: the string form of the router id is none.
+        const sent = r.token === undefined ? r.rid : String(r.rid)
+        const out = router.fromChild(note('notifications/progress', { progressToken: sent, progress: 1 }))
+        return void check(out.length === 0, 'progress with the router id and no token, or its string form, is dropped')
+      }
       const withToken = reqs.filter(r => r.pending && r.token !== undefined)
       if (withToken.length === 0) return
       const r = rnd.pick(withToken)
@@ -540,11 +767,19 @@ const play = (seed: number, steps: number): void => {
       if (attached.length === 0) return
       const link = rnd.pick(attached)
       const mine = liveOf(link)
-      const id = mine.length > 0 && rnd.chance(0.7) ? rnd.pick(mine).id : rnd.pick(IDS)
+      const held = [...mine.map(r => r.id), ...waitsOf(link).map(w => w.id)]
+      const id = held.length > 0 && rnd.chance(0.7) ? rnd.pick(held) : rnd.pick(IDS)
       const r = mine.find(x => x.id === id && typeof x.id === typeof id)
       const out = router.fromLink(link, note('notifications/cancelled', { requestId: id }))
       noLinkEffects(out, 'a cancel')
-      if (r === undefined) return
+      if (r === undefined) {
+        const w = waitsOf(link).find(x => same(x.id, id))
+        if (w === undefined) return
+        // An initialize is never cancelled at the child: the waiter leaves, the open initialize stays.
+        w.live = false
+        counts['cancelled waiter']++
+        return void check(out.length === 0, 'a cancel of a waiting initialize sends nothing to the child')
+      }
       r.live = false
       check(out.length === 1, 'a cancel of an open request goes to the child once')
       check(
@@ -555,10 +790,17 @@ const play = (seed: number, steps: number): void => {
       if (attached.length === 0) return
       const link = rnd.pick(attached)
       const mine = liveOf(link)
+      const theirs = waitsOf(link)
       const out = router.detach(link)
       noLinkEffects(out, 'a detach')
-      check(out.length === mine.length, 'a detach cancels each open request of the link')
+      check(out.length === mine.length, 'a detach cancels each open request of the link, and no initialize')
+      check(
+        out.every(e => (e.msg as { params: { requestId: unknown } }).params.requestId !== opening?.rid),
+        'a detach sends no cancel for the initialize',
+      )
       for (const r of mine) r.live = false
+      for (const w of theirs) w.live = false
+      if (theirs.length > 0) counts['detached waiter']++
       attached.splice(attached.indexOf(link), 1)
     } else if (op < 85) {
       fresh()
@@ -584,11 +826,17 @@ const play = (seed: number, steps: number): void => {
         { method: 'notifications/message', params: {} },
         JSON.parse('{"__proto__": {"id": 1, "result": {}}}'),
         ...(reqs.length > 0 ? [{ id: String(rnd.pick(reqs).rid), result: {} }] : []),
+        ...(opening !== undefined
+          ? [{ method: 'notifications/progress', params: { progressToken: opening.rid } }]
+          : []),
       ]
       check(router.fromChild(rnd.pick(junk)).length === 0, 'a junk message of the child has no effect')
+    } else if (op >= 100) {
+      initStep(op)
     } else if (!dead && rnd.chance(0.15)) {
       dead = true
-      const open = reqs.filter(r => r.live)
+      const open: { link: string; id: string | number }[] = [...reqs.filter(r => r.live), ...waits.filter(w => w.live)]
+      const waiting = waits.filter(w => w.live).length
       const out = router.died()
       check(out.length === open.length, '(5) one error for each open request')
       const seen = new Set<string>()
@@ -603,11 +851,26 @@ const play = (seed: number, steps: number): void => {
         )
       }
       for (const r of reqs) r.live = false
+      for (const w of waits) w.live = false
+      opening = undefined
+      if (waiting > 0) counts['death with waiters']++
     }
-    check(router.open() === reqs.filter(r => r.live).length, 'the open count matches the model')
+  }
+
+  // The count is checked after each step, also after a step that ends early.
+  const step = (): void => {
+    act()
+    check(router.open() === openCount(), 'the open count matches the model')
   }
 
   for (let i = 0; i < steps; i++) step()
+  // The initialize that the child still owes: its answer goes to each live waiter, also when none waits any more.
+  if (opening !== undefined) {
+    const out = router.fromChild(reply(opening.rid, { echo: 'last' }))
+    check(out.length === waits.filter(w => w.live).length, 'the last answer of the initialize')
+    for (const w of waits) w.live = false
+    opening = undefined
+  }
   // Answer what the child still owes, then the count must be 0.
   for (const r of reqs.filter(x => x.pending)) {
     r.pending = false
@@ -621,9 +884,15 @@ const play = (seed: number, steps: number): void => {
 }
 
 describe('mux property', () => {
-  test('250 seeds of 200 steps: no message crosses a link, none follows a cancel, every count ends at 0', () => {
+  test('250 seeds of 200 steps: no message crosses a link, none follows a cancel, every count ends at 0, initialize in each state', () => {
+    const counts = newCounts()
     const started = performance.now()
-    for (let seed = 1; seed <= 250; seed++) play(seed, 200)
+    for (let seed = 1; seed <= 250; seed++) play(seed, 200, counts)
     assert.ok(performance.now() - started < 3000, 'under 3 s')
+    for (const state of STATES)
+      assert.ok(
+        counts[state] >= 10,
+        'the seeds reached the state "' + state + '" ' + counts[state] + ' times, 10 needed',
+      )
   })
 })

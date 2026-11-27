@@ -116,6 +116,8 @@ export const createRouter = (): Router => {
   const request = (link: LinkId, id: Id, msg: Obj, held: Held): Effect[] => {
     const method = own(msg, 'method')
     if (method === 'ping') return [{ to: 'link', link, msg: answer(id, {}) }]
+    // A request with an id that its link already holds gets no answer: an error would be a second response for an id
+    // whose first response is still to come. The link broke JSON-RPC, and no other link is touched.
     if (holder(held, id) !== undefined) return []
     if (method === 'initialize') {
       if (cached !== undefined) return [{ to: 'link', link, msg: answer(id, cached.result) }]
