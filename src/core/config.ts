@@ -56,6 +56,8 @@ export type SigV4 = {
   readonly profile: string
   readonly region: string
   readonly service: string
+  /** Pairs that go into `params._meta` of each JSON-RPC request, as `mcp-proxy-for-aws --metadata` does. */
+  readonly metadata?: Readonly<Record<string, string>>
 }
 
 export type HttpServer = Trust & {
@@ -282,7 +284,43 @@ const nonEmpty = (v: unknown, path: string, errors: string[]): string => {
 }
 
 const OAUTH_KEYS = ['clientId', 'clientSecret', 'scopes', 'callbackPort']
-const SIGV4_KEYS = ['profile', 'region', 'service']
+const SIGV4_KEYS = ['profile', 'region', 'service', 'metadata']
+const METADATA_KEY = /^[A-Za-z0-9_.-]{1,64}$/
+const METADATA_MAX_PAIRS = 16
+const METADATA_MAX_VALUE = 256
+
+/** The `sigv4.metadata` pairs: a plain key, a string of 1 to 256 characters after `${VAR}` expansion, 16 pairs at most. */
+const parseMetadata = (raw: unknown, path: string, env: Env, errors: string[]): Record<string, string> | undefined => {
+  if (raw === undefined) return undefined
+  if (!isObject(raw)) {
+    errors.push(`${path}: must be an object of strings`)
+    return undefined
+  }
+  const keys = Object.keys(raw)
+  if (keys.length > METADATA_MAX_PAIRS) {
+    errors.push(`${path}: has ${keys.length} pairs, at most ${METADATA_MAX_PAIRS}`)
+    return undefined
+  }
+  const found = errors.length
+  const out: Record<string, string> = {}
+  for (const key of keys) {
+    const where = at(path, key)
+    if (!METADATA_KEY.test(key)) {
+      errors.push(`${path}: a key must be 1 to 64 characters of letters, digits, "_", "." and "-"`)
+      continue
+    }
+    const value = raw[key]
+    if (typeof value !== 'string' || value === '') {
+      errors.push(`${where}: must be a non-empty string`)
+      continue
+    }
+    const text = expand(value, env, where, errors)
+    if (text.length > METADATA_MAX_VALUE) errors.push(`${where}: is longer than ${METADATA_MAX_VALUE} characters`)
+    else if (text === '') errors.push(`${where}: is empty after the expansion`)
+    else Object.defineProperty(out, key, { value: text, enumerable: true, writable: true, configurable: true })
+  }
+  return errors.length === found && keys.length > 0 ? out : undefined
+}
 
 /** A profile name of the AWS CLI. It goes to `aws --profile` as one argument, so a plain name only. */
 const AWS_PROFILE = /^[A-Za-z0-9][A-Za-z0-9_.+=@-]{0,127}$/
@@ -339,8 +377,9 @@ const parseSigV4 = (
   const profile = raw.profile === undefined ? undefined : field('profile', AWS_PROFILE, undefined)
   const region = field('region', AWS_REGION, endpoint?.region)
   const service = field('service', AWS_SERVICE, endpoint?.service)
+  const metadata = parseMetadata(raw.metadata, `${path}.metadata`, env, errors)
   if (errors.length !== found || !profile || !region || !service) return undefined
-  return { profile, region, service }
+  return { profile, region, service, ...(metadata && { metadata }) }
 }
 
 /**
