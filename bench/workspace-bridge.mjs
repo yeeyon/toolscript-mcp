@@ -35,6 +35,9 @@ const median = list => {
   const m = s.length >> 1
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
 }
+/** A time of a list of timings, or n/a when no call of it got an answer. */
+const maxOf = list => Math.max(...list)
+const ms = (fn, list) => (list.length === 0 ? 'n/a' : fn(list).toFixed(0))
 const mb = n => (n === null || n === undefined ? 'n/a' : (n / MB).toFixed(0))
 
 // The fixture: 1,500 files in 120 folders under src/ (.ts) and docs/ (.md), from a fixed seed, so a run repeats.
@@ -103,6 +106,20 @@ const findClaude = () => {
   return undefined
 }
 
+/** The outcome of one `tools/call` answer `r`, which took `ms`. An `error` or a `result` with no content list is a failed call. */
+export const outcomeOf = (r, ms) => {
+  const result = r?.result
+  if (r?.error != null || result === null || typeof result !== 'object' || !Array.isArray(result.content))
+    return { ms, chars: 0, ok: false, answered: false }
+  const text = result.content.map(c => (typeof c?.text === 'string' ? c.text : '')).join('')
+  return {
+    ms,
+    chars: text.length,
+    ok: result.isError !== true && !/^(error|refused|could not)/i.test(text),
+    answered: true,
+  }
+}
+
 // One host over stdio and the MCP client of this script.
 class Session {
   constructor(n, args, env, cwd) {
@@ -151,13 +168,14 @@ class Session {
     this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
     return r
   }
-  /** One run_code: the time, the characters of the text that the model would get, and whether the program was an error. */
+  /**
+   * One run_code: the time, the characters of the text that the model would get, whether the program was an error, and
+   * whether the host answered with a result (`answered`: a JSON-RPC error is no answer, and has no timing).
+   */
   async run(code) {
     const start = performance.now()
     const r = await this.request('tools/call', { name: 'run_code', arguments: { code } })
-    const ms = performance.now() - start
-    const text = (r.result?.content ?? []).map(c => c.text ?? '').join('')
-    return { ms, chars: text.length, ok: r.result?.isError !== true && !/^(error|refused|could not)/i.test(text) }
+    return outcomeOf(r, performance.now() - start)
   }
   async close() {
     this.child.stdin.end()
@@ -176,6 +194,12 @@ const treeOf = (table, roots) => {
   }
   return [...mine.values()]
 }
+/**
+ * The rows of `table` that are an observed process: the same pid and the same creation time. No host is needed in the
+ * table, so a bridge or a grandchild that stays after its host ended is found, and a reused pid is not.
+ */
+export const survivors = (table, seen) => table.filter(e => seen.has(e.pid + ':' + e.t))
+
 const sample = async (hostsByPid, label) => {
   const procs = treeOf(await readTable(), hostsByPid)
   const sumOf = field =>
@@ -247,10 +271,11 @@ const runArm = async (arm, count, reps, ctx) => {
     await sleep(SETTLE_MS)
     const rootsW = new Map([[w.pid, { t: (await readTable()).find(e => e.pid === w.pid)?.t }]])
     const s = await sample(rootsW, 'first start')
+    const seenW = new Set(s.pids.map(p => p.pid + ':' + p.t))
     firstStart = { ms, processes: s.processes, pb: s.pb, ws: s.ws }
     await w.close()
     await sleep(2000)
-    for (const e of treeOf(await readTable(), rootsW)) await killTree(e.pid)
+    for (const e of survivors(await readTable(), seenW)) await killTree(e.pid)
   }
   const sessions = []
   const startedAt = Date.now()
@@ -282,6 +307,7 @@ const runArm = async (arm, count, reps, ctx) => {
       const r = await s.run(programs[c])
       calls++
       if (!r.ok) bad++
+      if (!r.answered) continue
       cold[c].push(r.ms)
       chars[c] ??= r.chars
     }
@@ -292,17 +318,21 @@ const runArm = async (arm, count, reps, ctx) => {
         const r = await s.run(programs[c])
         calls++
         if (!r.ok) bad++
+        if (!r.answered) continue
         warm[c].push(r.ms)
-        if (r.chars !== chars[c]) chars[c] = Math.max(chars[c], r.chars)
+        chars[c] = Math.max(chars[c] ?? 0, r.chars)
       }
   await sleep(SETTLE_MS)
   const used = await sample(roots, 'after the calls, idle')
+  // Every process that the round saw, by pid and creation time, and the hosts. One more look just before the hosts end.
   const seen = new Set([...idle.pids, ...used.pids].map(p => p.pid + ':' + p.t))
+  for (const e of treeOf(await readTable(), roots)) seen.add(e.pid + ':' + e.t)
+  for (const [pid, root] of roots) if (root.t !== undefined) seen.add(pid + ':' + root.t)
   for (const s of sessions) await s.close()
-  // Only what this round started and the table still shows is ended, by pid and creation time.
+  // What the table still shows of them is a leftover, whether or not its host is still there: it is counted and ended.
   await sleep(2000)
-  const left = treeOf(await readTable(), roots).filter(e => seen.has(e.pid + ':' + e.t) || roots.has(e.pid))
-  for (const e of left) if (roots.has(e.pid) || seen.has(e.pid + ':' + e.t)) await killTree(e.pid)
+  const left = survivors(await readTable(), seen)
+  for (const e of left) await killTree(e.pid)
   return { arm, count, firstStart, starts, idle, used, cold, warm, chars, calls, bad, leftovers: left.length }
 }
 
@@ -335,11 +365,11 @@ const render = (data, opts) => {
             r.arm,
             r.count,
             c,
-            r.chars[c],
-            median(r.cold[c]).toFixed(0),
-            Math.max(...r.cold[c]).toFixed(0),
-            median(r.warm[c]).toFixed(0),
-            Math.max(...r.warm[c]).toFixed(0),
+            r.chars[c] ?? 'n/a',
+            ms(median, r.cold[c]),
+            ms(maxOf, r.cold[c]),
+            ms(median, r.warm[c]),
+            ms(maxOf, r.warm[c]),
           ].join(' | ') +
           ' |',
       )
@@ -354,7 +384,7 @@ const render = (data, opts) => {
         [
           r.arm,
           r.count,
-          median(r.starts).toFixed(0),
+          ms(median, r.starts),
           r.calls,
           r.bad,
           r.idle.processes,
@@ -442,4 +472,5 @@ const main = async () => {
   if (values.json) fs.writeFileSync(values.json, JSON.stringify(data))
 }
 
-await main()
+// The tests load this file for its helpers: only a run from the command line starts the bench.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main()
