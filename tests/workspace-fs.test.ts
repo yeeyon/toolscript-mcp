@@ -1430,6 +1430,16 @@ describe('names that the volume opens but does not list (Linux)', () => {
     assert.deepEqual(fs.readdirSync(path.join(fx.root, '.ssh')), ['known_hosts'])
   })
 
+  test('a name that the capped read of names cannot spell is not there', { skip: skipWhy }, async t => {
+    const fx = fixture(t)
+    if (fx === undefined) return
+    const c = await openConfined(fx.root, { aliasLooks: 0 })
+    t.after(() => c.close())
+    // `ENV~1` opens, but no listed name can be held for it: the answer is the one of a name that is not there.
+    await assert.rejects(c.dir(['ENV~1']), (err: unknown) => (err as { code?: string }).code === 'not-found')
+    await assert.rejects(c.file(['ENV~1/x']), (err: unknown) => (err as { code?: string }).code === 'not-found')
+  })
+
   test('a name that is not excluded keeps the code of its kind', { skip: skipWhy }, async t => {
     const fx = fixture(t)
     if (fx === undefined) return
@@ -1562,6 +1572,22 @@ describe('NTFS short names of excluded entries (Windows)', () => {
         ['diff', { path: 'GIT~1/new.txt', content: 'x' }],
       ] as const)
         assert.equal(codeOf(await junction.fail(tool, args)), 'excluded', `junction: ${tool}`)
+
+      // The folder lists the junction under its real name, and a read of the names that is cut to nothing gives no name: the
+      // entry is then missing, as a name that is not there (no `link` for a name that the volume cannot spell).
+      for (const [looks, want] of [
+        [undefined, '.git'],
+        [0, undefined],
+      ] as const) {
+        const c = await openConfined(junctionRoot, looks === undefined ? {} : { aliasLooks: looks })
+        try {
+          const top = await c.root()
+          assert.equal((await top.lstat('GIT~1', true))?.real, want, `aliasLooks ${looks}`)
+          await top.close()
+        } finally {
+          await c.close()
+        }
+      }
     },
   )
 })
