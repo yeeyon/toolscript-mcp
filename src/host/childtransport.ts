@@ -20,7 +20,7 @@ import { endTree } from './broker.ts'
  * the shutdown (the start of `taskkill`, the exit of the tree, the exit of the host) took 0.5 to 0.8 s on Windows, and
  * with 300 ms here the stop of a direct child took 1.2 to 1.6 s: too near. Children stop in parallel.
  */
-export const HURRY_WAIT_MS = 100
+export const HURRY_WAIT_MS = process.platform === 'win32' ? 100 : 300
 
 export type ChildParams = {
   readonly command: string

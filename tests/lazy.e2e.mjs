@@ -9,6 +9,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { spawn } from 'node:child_process'
+import { readTable } from '../bench/memory.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -105,7 +106,8 @@ const pidOf = async host => {
 
 /**
  * The host as a client that only ends its stdin: the real clients wait 2 s after that, then end the host at once (the SDK
- * does, with TerminateProcess on Windows), so a host that needs longer leaves its children behind.
+ * does, with TerminateProcess on Windows), so a host that needs longer leaves its children behind. The bound is 1500 ms.
+ * Measured on Windows, in ms, with a busy laptop: 1200 to 1600 with 300 ms before the tree ends, 390 to 690 with 100 ms.
  */
 const SHUTDOWN_BOUND_MS = 1500
 const endStdin = async lazy => {
@@ -152,17 +154,27 @@ const endStdin = async lazy => {
     },
   })
   let pid
+  let created
+  let left
   try {
     pid = Number(/PID=(\d+)/.exec((await reply(2)).result.content[0].text)?.[1])
     assert.ok(alive(pid))
+    // The start time tells this child from a later process that got the same pid.
+    created = (await readTable()).find(p => p.pid === pid)?.t
     const began = Date.now()
     proc.stdin.end()
     await Promise.race([exited, until('the host exit', () => false, SHUTDOWN_BOUND_MS * 4)])
-    return { pid, ms: Date.now() - began }
+    const ms = Date.now() - began
+    // Looked at before any cleanup: a child that is still here is a leak, and the test must say so.
+    left = alive(pid)
+    return { pid, ms, left }
   } finally {
-    // A failed test must leave neither the host nor its child.
+    // A failed test must leave neither the host nor its child: end only the process that was recorded.
     if (proc.exitCode === null) proc.kill()
-    if (pid !== undefined && alive(pid)) process.kill(pid)
+    if (pid !== undefined && (left ?? alive(pid))) {
+      const same = (await readTable()).find(p => p.pid === pid && p.t === created)
+      if (same !== undefined) process.kill(pid)
+    }
   }
 }
 
@@ -221,9 +233,9 @@ describe('lazy start', () => {
 
   for (const lazy of [false, true])
     test(`a host whose stdin ends exits within ${SHUTDOWN_BOUND_MS} ms and leaves no child (lazy ${lazy})`, async () => {
-      const { pid, ms } = await endStdin(lazy)
+      const { ms, left } = await endStdin(lazy)
       console.error(`shutdown ms (lazy ${lazy}): ${ms}`)
+      assert.ok(!left, 'the child is gone when the host has left')
       assert.ok(ms < SHUTDOWN_BOUND_MS, `the host needed ${ms} ms`)
-      assert.ok(!alive(pid), 'the child is gone when the host has left')
     })
 })

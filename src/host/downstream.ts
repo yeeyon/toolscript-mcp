@@ -625,6 +625,7 @@ export const connectAll = (
       lists === undefined ? void (early = true) : lists.changed(),
     )
     let lastError = () => ''
+    let started: ChildTransport | undefined
     try {
       // Inside the try: a transport that cannot be made fails this server only.
       const reason = loginReason(login(key))
@@ -655,6 +656,7 @@ export const connectAll = (
       if (made.transport instanceof HttpTransport && !auth) secrets = made.transport.secrets
       if (made.child !== undefined) {
         children.add(made.child)
+        started = made.child
         // A shutdown that began before this child started hurries it at once.
         if (closing) made.child.hurry()
       }
@@ -727,6 +729,8 @@ export const connectAll = (
       // After an await: a failure that comes at once must not come before `attempt` marks the link connecting.
       await client.close().catch(() => {})
       opened.delete(client)
+      // A closed transport of a failed connect is no child to hurry at the shutdown.
+      if (started !== undefined) children.delete(started)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
       // An AwsCredentialsError holds the text of the AWS CLI, not of the server, so an untrusted entry shows it too.
       if (
