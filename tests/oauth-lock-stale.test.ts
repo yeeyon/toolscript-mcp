@@ -76,7 +76,12 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
       assert.equal(requests(fake) - before, 0, name)
       // The proof by order: a waiter that took the lock over would have removed this file, so the same text is still
       // there only when no waiter took it over before its refresh time ended. The text above does not prove it.
-      assert.equal(fs.readFileSync(`${s.files[0]}.lock`, 'utf8'), text, `${name}: no waiter took the young lock over`)
+      const lock = `${s.files[0]}.lock`
+      assert.equal(
+        fs.existsSync(lock) ? fs.readFileSync(lock, 'utf8') : '(removed)',
+        text,
+        `${name}: no waiter took the young lock over`,
+      )
       // The old phase: one process takes over and refreshes while the others wait for it, and on a slow machine
       // that takes more than the 1 s that the young phase gives a waiter. So these waiters wait longer.
       putLock(s, text, 600)
