@@ -2,7 +2,8 @@
 // `claude-code` (tests/pid-server.mjs, which ignores EOF) and a temp HOME. The first session has no cache: it connects,
 // writes the cache and stops the child after the idle time. The next session starts with no child, lists the same tools
 // in a search, starts the child for a call, and after the idle time the child is gone. A call after that works.
-// With TOOLSCRIPT_LAZY=0 the child starts at once. Run `npm run build` first.
+// With TOOLSCRIPT_LAZY=0 the child starts at once. A SIGKILL of the host while a lazy child is still starting leaves
+// neither the child nor its wrapper. Run `npm run build` first.
 //
 //   node tests/lazy.e2e.mjs
 
@@ -146,5 +147,81 @@ describe('lazy start', () => {
     const pid = await pidOf(host)
     assert.ok(alive(pid))
     await host.client.close()
+  })
+})
+
+// A hard kill of the host while a lazy child is still starting (#120). The server (tests/slow-start-server.mjs) never
+// answers `initialize` once the file `slow` exists, so the child is mid-start when the host gets SIGKILL: no `close()`
+// runs, and the child and its wrapper can only learn of it from the end of their stdin. Both must be gone in 10 s.
+describe('a hard kill of the host while a lazy child starts', () => {
+  test('leaves neither the child nor its wrapper', async () => {
+    const own = path.join(dir, 'slow')
+    const flags = path.join(own, 'flags')
+    const home = path.join(own, 'home')
+    fs.mkdirSync(flags, { recursive: true })
+    fs.mkdirSync(home)
+    const slowConfig = path.join(own, 'config.json')
+    const SLOW = path.join(ROOT, 'tests', 'slow-start-server.mjs')
+    fs.writeFileSync(
+      slowConfig,
+      JSON.stringify({
+        sandbox: { timeoutSeconds: 20, callTimeoutSeconds: 15 },
+        policy: [{ match: 'mcp__claude-code__pid', action: 'allow' }],
+        mcpServers: {
+          'claude-code': {
+            ...(process.platform === 'win32'
+              ? { command: 'cmd', args: ['/c', 'node', SLOW] }
+              : { command: 'sh', args: ['-c', 'node "$0"; true', SLOW] }),
+            env: { SLOW_START_DIR: flags },
+          },
+        },
+      }),
+    )
+    const open = async () => {
+      const client = new Client({ name: 'lazy-e2e', version: '0' }, { capabilities: {} })
+      const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [MAIN, '--config', slowConfig],
+        env: { ...envOf(true), HOME: home, USERPROFILE: home },
+        stderr: 'pipe',
+      })
+      transport.stderr.on('data', () => {})
+      await client.connect(transport)
+      return { client, transport }
+    }
+    // Phase 1, no `slow` file: a normal session writes the cache that makes the server lazy.
+    const first = await open()
+    await first.client.callTool({ name: 'search_tools', arguments: { query: '' } })
+    await until('the cache file', () => fs.existsSync(path.join(home, '.toolscript-mcp', 'learned', 'tools.json')))
+    await first.client.close()
+    // Phase 2: a session with no child; one call starts it, and the child never finishes starting.
+    fs.writeFileSync(path.join(flags, 'slow'), '')
+    const second = await open()
+    const started = path.join(flags, 'started')
+    const pids = []
+    try {
+      await second.client.callTool({ name: 'search_tools', arguments: { query: '' } })
+      await new Promise(r => setTimeout(r, 300))
+      assert.ok(!fs.existsSync(started), 'no child before a call')
+      second.client
+        .callTool({ name: 'run_code', arguments: { code: 'return await call("mcp__claude-code__pid", {})' } })
+        .catch(() => {})
+      await until('the child is starting', () => fs.existsSync(started))
+      pids.push(...fs.readFileSync(started, 'utf8').trim().split(' ').map(Number))
+      assert.equal(pids.length, 2)
+      assert.ok(pids.every(alive), 'the child and its wrapper run')
+      await new Promise(r => setTimeout(r, 50))
+      process.kill(second.transport.pid, 'SIGKILL')
+      await until('the end of the child and its wrapper', () => !pids.some(alive), 10_000)
+    } finally {
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {}
+      }
+      try {
+        process.kill(second.transport.pid, 'SIGKILL')
+      } catch {}
+    }
   })
 })
