@@ -5,9 +5,10 @@
 //
 // `--root <folder>` reads CHANGELOG.md and changes/ in that folder, for the tests. A refusal exits with 2, writes one
 // line to stderr and changes nothing. The write is safe to stop: CHANGELOG.md is written to a temp file and renamed
-// before any fragment is deleted. The marker CHANGELOG.md.folded (the names and the SHA-256 of the new text) lives from
-// before the rename to after the last delete. A run that finds a marker that matches CHANGELOG.md only deletes the
-// fragments it names; a marker that does not match (a stop before the rename) is removed and ignored. The script does not summarize: the person rewrites the section by hand.
+// before any fragment is deleted. The marker CHANGELOG.md.folded (the names and the SHA-256 of the new text, and in a
+// recovery run the record that it replaces) lives from before the rename to after the last delete. A run that finds a
+// marker with a record that matches CHANGELOG.md only deletes the fragments it names; a marker with none (a stop before
+// the rename of a first run) is removed and ignored. The script does not summarize: the person rewrites the section by hand.
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -145,12 +146,18 @@ const sectionOfVersion = (changelog, version) => {
 
 const sha256 = text => crypto.createHash('sha256').update(text).digest('hex')
 
-/** The names that a stopped run folded, when its marker matches the CHANGELOG.md on disk; else an empty list. */
+/**
+ * The names that a stopped run folded, when a record of its marker matches the CHANGELOG.md on disk; else an empty list.
+ * The marker holds the record of the new text, and in a recovery run the record that it replaces in `previous`: a stop
+ * between the marker write and the rename leaves the old text, and then the old record is the one that matches.
+ */
 const readMarker = (marker, changelog) => {
   try {
     const m = JSON.parse(fs.readFileSync(marker, 'utf8'))
-    if (m?.sha256 === sha256(changelog) && Array.isArray(m.names))
-      return { names: m.names.map(String), exists: true, matches: true }
+    const sha = sha256(changelog)
+    const records = [m, ...(Array.isArray(m?.previous) ? m.previous : [])]
+    const hit = records.find(r => r?.sha256 === sha && Array.isArray(r.names))
+    if (hit !== undefined) return { names: hit.names.map(String), exists: true, matches: true }
   } catch {}
   return { names: [], exists: fs.existsSync(marker), matches: false }
 }
@@ -205,9 +212,11 @@ export const main = (argv, unlink = fs.unlinkSync) => {
     // The marker, the temp file and the rename come before any delete; the marker goes last.
     const temp = `${file}.tmp`
     try {
-      // The names of the stopped run stay in it: a second stop must not fold them again.
-      const names = [...known.names, ...pending.map(f => f.name)]
-      fs.writeFileSync(marker, JSON.stringify({ names, sha256: sha256(next.text) }))
+      // The names of the stopped run stay in it: a second stop must not fold them again. Its record stays too, in
+      // `previous`, until the rename: a kill before it leaves the old text, and that record is the one that matches.
+      const record = { names: [...known.names, ...pending.map(f => f.name)], sha256: sha256(next.text) }
+      const previous = known.matches ? [{ names: known.names, sha256: sha256(changelog) }] : undefined
+      fs.writeFileSync(marker, JSON.stringify(previous === undefined ? record : { ...record, previous }))
       fs.writeFileSync(temp, next.text)
       fs.renameSync(temp, file)
     } catch (err) {

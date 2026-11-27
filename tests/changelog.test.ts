@@ -8,7 +8,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { main } from '../scripts/changelog.mjs'
 
 const SCRIPT = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'scripts', 'changelog.mjs')
@@ -226,6 +226,31 @@ describe('--apply is safe to stop', () => {
     assert.deepEqual(left(root), [])
     assert.equal(fs.existsSync(path.join(root, MARKER)), false)
     assert.equal(read(root), HEAD + '## 1.0.5\n\n- A line.\n- B line.\n- C line.\n\n' + OLD)
+  })
+
+  test('a kill between the marker write and the rename of a recovery run: each line folds once', () => {
+    // A preload that kills the process at its first rename: nothing after the marker write runs, no catch helps.
+    const hook = path.join(base, 'kill-at-rename.mjs')
+    fs.writeFileSync(
+      hook,
+      "import fs from 'node:fs'\nfs.renameSync = () => process.kill(process.pid, 'SIGKILL')\nsetTimeout(() => process.exit(9), 5000)\n",
+    )
+    const root = rig(FOLDED, { 'a.md': '- one\n', 'b.md': '- two\n  wrapped\n', 'c.md': '- three\n' })
+    fs.writeFileSync(path.join(root, MARKER), JSON.stringify({ names: ['a.md', 'b.md'], sha256: sha(FOLDED) }))
+    const killed = spawnSync(
+      process.execPath,
+      ['--import', pathToFileURL(hook).href, SCRIPT, '1.0.5', '--apply', '--root', root],
+      { encoding: 'utf8', timeout: 30_000 },
+    )
+    assert.notEqual(killed.status, 0, 'the child was killed')
+    assert.equal(read(root), FOLDED, 'CHANGELOG.md was not renamed')
+    assert.deepEqual(left(root), ['a.md', 'b.md', 'c.md'])
+    const again = run(root, '1.0.5', '--apply')
+    assert.equal(again.status, 0, again.stderr)
+    assert.match(again.stderr, /a\.md is folded already/)
+    assert.equal(read(root), FOLDED.replace('  wrapped\n', '  wrapped\n- three\n'), 'one, two and three once each')
+    assert.deepEqual(left(root), [])
+    assert.equal(fs.existsSync(path.join(root, MARKER)), false)
   })
 
   test('a failed write keeps the marker of the stopped run as it was', () => {
