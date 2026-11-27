@@ -48,41 +48,73 @@ const hit = (args: unknown, f = fake(), cwd = PROJECT, windows = false) =>
 const MARK = '.toolscript-mcp/hints'
 
 describe('guardFind: the key path of the string that hit', () => {
-  const find = (args: unknown) =>
+  const find = (args: unknown, schema?: unknown) =>
     guardFind(args, {
       home: HOME,
       cwd: PROJECT,
       list: LIST,
       forms: () => resolveGuarded(LIST, fake().realpath),
       realpath: fake().realpath,
+      schema,
       windows: false,
     })
+  // The input schema of a tool that holds an edit list, a deep object and nested arrays.
+  const SCHEMA = {
+    type: 'object',
+    properties: {
+      path: { type: 'string' },
+      content: { type: 'string' },
+      edits: { type: 'array', items: { type: 'object', properties: { old: {}, new: {} } } },
+      a: { properties: { b: { properties: { c: { properties: { d: {} } } } } } },
+      items: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+    },
+  }
 
-  test('names a nested edit, a deep object, an array and the arguments as a whole', async () => {
+  test('names a nested edit, a deep object, an array and the arguments as a whole, by the keys of the schema', async () => {
     const text = 'see ~/' + MARK + ' now'
-    assert.deepEqual(await find({ path: 'a.md', edits: [{ old: 'x', new: text }] }), {
+    assert.deepEqual(await find({ path: 'a.md', edits: [{ old: 'x', new: text }] }, SCHEMA), {
       label: '~/' + MARK,
       at: 'edits[0].new',
     })
-    assert.equal((await find({ a: { b: { c: { d: text } } } }))?.at, 'a.b.c.d')
-    assert.equal((await find({ items: ['ok', ['ok', text]] }))?.at, 'items[1][1]')
-    assert.equal((await find({ content: text }))?.at, 'content')
-    assert.equal((await find(text))?.at, '')
-    assert.equal((await find([text]))?.at, '[0]')
+    assert.equal((await find({ a: { b: { c: { d: text } } } }, SCHEMA))?.at, 'a.b.c.d')
+    assert.equal((await find({ items: ['ok', ['ok', text]] }, SCHEMA))?.at, 'items[1][1]')
+    assert.equal((await find({ content: text }, SCHEMA))?.at, 'content')
+    assert.equal((await find(text, SCHEMA))?.at, '')
+    assert.equal((await find([text], SCHEMA))?.at, '[0]')
+  })
+
+  test('a key that the schema does not name shows as a dots mark: a data key, a token, a key id, no schema', async () => {
+    const text = 'x ' + MARK
+    const token = 'ghp_' + 'a1B2'.repeat(9)
+    const keyId = 'AKIAIOSFODNN7EXAMPLE'
+    const files = { properties: { files: { type: 'object', additionalProperties: { type: 'string' } } } }
+    assert.equal((await find({ files: { [token]: text } }, files))?.at, 'files.…')
+    assert.equal((await find({ files: { [keyId]: text } }, files))?.at, 'files.…')
+    for (const schema of [undefined, {}, 'x', { properties: 5 }]) {
+      const at = (await find({ files: { [token]: text } }, schema))?.at
+      assert.equal(at, '….…', JSON.stringify(schema))
+    }
+    // An index stays, and a key of the schema that is not a plain word still shows as a dots mark.
+    assert.equal((await find({ list: [text] }))?.at, '…[0]')
+    assert.equal((await find({ ['bad key']: text }, { properties: { 'bad key': {} } }))?.at, '…')
+    assert.equal((await find({ toString: text }, { properties: {} }))?.at, '…')
+    assert.equal((await find({ ['k'.repeat(41)]: text }, { properties: { ['k'.repeat(41)]: {} } }))?.at, '…')
   })
 
   test('names the argument of a path hit too, and keeps `guardHit` the same', async () => {
-    assert.deepEqual(await find({ file: '/home/u/' + MARK + '/x.md' }), { label: '~/' + MARK, at: 'file' })
+    const schema = { properties: { file: { type: 'string' } } }
+    assert.deepEqual(await find({ file: '/home/u/' + MARK + '/x.md' }, schema), { label: '~/' + MARK, at: 'file' })
     assert.equal(await hit({ file: '/home/u/' + MARK + '/x.md' }), '~/' + MARK)
   })
 
-  test('the path carries no argument text: an odd key shows as a dots mark, and a long path is cut', async () => {
+  test('the path carries no argument text: a key with the marker shows as a dots mark, and a long path is cut', async () => {
     const text = 'x ' + MARK
-    assert.equal((await find({ ['bad key/' + MARK]: text }))?.at, '…')
-    assert.equal((await find({ ['k'.repeat(41)]: text }))?.at, '…')
-    const deep = [...Array(14).keys()].reduce<unknown>(acc => ({ ['k'.repeat(30)]: acc }), text)
-    const at = (await find(deep))?.at ?? ''
-    assert.ok(at.length <= 101 && at.endsWith('…'), at)
+    assert.equal((await find({ ['bad key/' + MARK]: text }, { properties: { ['bad key/' + MARK]: {} } }))?.at, '…')
+    const key = 'k'.repeat(30)
+    const deep = [...Array(14).keys()].reduce<unknown>(acc => ({ [key]: acc }), text)
+    const schema = [...Array(14).keys()].reduce<unknown>(acc => ({ properties: { [key]: acc } }), {})
+    const at = (await find(deep, schema))?.at ?? ''
+    assert.ok(at.length <= 101 && at.endsWith('…') && at.startsWith(key), at)
     assert.ok(!at.includes(MARK) && !at.includes('x '), at)
   })
 })

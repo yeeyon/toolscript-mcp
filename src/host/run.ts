@@ -540,8 +540,13 @@ const execute = async (
     // it runs before the link and the policy check: no wait sits between that check and the call, and a mark that a
     // server adds during the wait is in the list that the check reads. The log keeps what the policy says of the tool.
     const entry = config.servers.get(server)
+    // The schema of the tool, if its server listed it: it decides which keys of the key path a refusal shows.
+    const known = downstream.states().find(s => s.key === server)
+    const schema =
+      known !== undefined && 'tools' in known ? known.tools.find(t => t.name === target.name)?.inputSchema : undefined
     const folder = await guardFind(args, {
       home: ctx.home,
+      schema,
       cwd:
         entry?.kind === 'stdio' && entry.cwd !== undefined
           ? entry.cwd

@@ -41,22 +41,29 @@ export const guardedList = (home: string, project: string): GuardedDir[] => {
 }
 
 // Each string of the arguments with its key path (`edits[0].new`), in order, to GUARD_DEPTH. Object keys are never read as
-// text. A key that is not a plain word shows as `…`, and a long path is cut, so the path of a refusal carries no argument text.
+// text. A key shows only when it is a property name of the input schema at that place (the schema walks with the
+// arguments: `properties`, then `items`). Any other key shows as `…`, so a key that holds data (a token) never reaches the
+// refusal. A long path is cut.
 const PLAIN_KEY = /^[A-Za-z0-9_$-]{1,40}$/
 const KEY_PATH_CHARS = 100
-function* stringsOf(value: unknown, level: number, at = ''): Generator<[string, string]> {
+const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const own = (o: Record<string, unknown>, key: string): unknown => (Object.hasOwn(o, key) ? o[key] : undefined)
+function* stringsOf(value: unknown, level: number, at = '', schema: unknown = undefined): Generator<[string, string]> {
   if (typeof value === 'string') {
     yield [at.length > KEY_PATH_CHARS ? `${at.slice(0, KEY_PATH_CHARS)}…` : at, value]
     return
   }
   if (level >= GUARD_DEPTH || typeof value !== 'object' || value === null) return
   if (Array.isArray(value)) {
-    for (const [i, item] of value.entries()) yield* stringsOf(item, level + 1, `${at}[${i}]`)
+    const items = isRec(schema) ? own(schema, 'items') : undefined
+    for (const [i, item] of value.entries()) yield* stringsOf(item, level + 1, `${at}[${i}]`, items)
     return
   }
+  const properties = isRec(schema) ? own(schema, 'properties') : undefined
   for (const [key, item] of Object.entries(value)) {
-    const name = PLAIN_KEY.test(key) ? key : '…'
-    yield* stringsOf(item, level + 1, at === '' ? name : `${at}.${name}`)
+    const known = isRec(properties) && Object.hasOwn(properties, key) && PLAIN_KEY.test(key)
+    const name = known ? key : '…'
+    yield* stringsOf(item, level + 1, at === '' ? name : `${at}.${name}`, known ? properties[key] : undefined)
   }
 }
 
@@ -237,6 +244,8 @@ export type GuardSetup = {
   /** The guarded folders with their real paths. Called only when a call has a path candidate. */
   readonly forms: () => Promise<readonly GuardForm[]>
   readonly realpath: Realpath
+  /** The input schema of the tool, for the key path of a refusal: a key shows only when the schema names it. */
+  readonly schema?: unknown
   /** True on Windows, where `//host/share` and `\\host\share` are UNC paths that a real path would connect to. */
   readonly windows: boolean
 }
@@ -258,7 +267,7 @@ export const guardFind = async (args: unknown, setup: GuardSetup): Promise<Guard
   const lexical = setup.list.map(({ label, dir }) => ({ label, dirs: [dir] }))
   const paths: { abs: string; raw: string; remote: boolean; at: string }[] = []
   const names: { name: string; at: string }[] = []
-  for (const [at, original] of stringsOf(args, 0)) {
+  for (const [at, original] of stringsOf(args, 0, '', setup.schema)) {
     const marker = markerIn(original)
     if (marker !== undefined) return { label: `~/${marker}`, at }
     const url = fileUrlPath(original)
