@@ -2383,6 +2383,41 @@ describe('Codex', () => {
     assert.equal(allowed.policy.length, 3 + 3)
   })
 
+  test('an old exception for the imported server itself keeps the ask, and a deny alone makes the tool a deny', async () => {
+    const toml = '[mcp_servers.s]\ncommand = "fake"\nenabled_tools = ["read", "list"]\n'
+    const verdictsAfter = async (old: { match: string; action: string }[]) => {
+      const home = homeWith({ '.codex/config.toml': toml })
+      const config = path.join(home, 'cfg', 'config.json')
+      fs.mkdirSync(path.dirname(config), { recursive: true })
+      fs.writeFileSync(config, JSON.stringify({ mcpServers: {}, policy: old }))
+      const add = await init(home, ['--add=s', '--project', home, '--config', config])
+      assert.equal(add.code, 0, add.out)
+      const policy = JSON.parse(fs.readFileSync(config, 'utf8')).policy as {
+        match: string
+        action: 'allow' | 'ask' | 'deny'
+      }[]
+      assert.deepEqual(policy.slice(-old.length), old)
+      return (tool: string) =>
+        decide(
+          policy.map((r, index) => ({ ...r, index })),
+          NO_GUARDS,
+          tool,
+        ).action
+    }
+    const exception = await verdictsAfter([
+      { match: 'mcp__s__read', action: 'allow' },
+      { match: 'mcp__*__read', action: 'deny' },
+    ])
+    assert.equal(exception('mcp__s__read'), 'ask')
+    assert.equal(exception('mcp__s__list'), 'ask')
+    assert.equal(exception('mcp__s__other'), 'deny')
+    const alone = await verdictsAfter([{ match: 'mcp__*__read', action: 'deny' }])
+    assert.equal(alone('mcp__s__read'), 'deny')
+    assert.equal(alone('mcp__s__list'), 'ask')
+    const none = await verdictsAfter([{ match: 'mcp__x__*', action: 'ask' }])
+    assert.equal(none('mcp__s__read'), 'ask')
+  })
+
   test('--add leaves the old rules in their order, so the policy of another server is the same as before', async () => {
     const toml = '[mcp_servers.s]\ncommand = "fake"\nenabled_tools = ["read"]\n'
     const old = [

@@ -4,7 +4,7 @@
 // literal env or header value never goes into a reason, a note or a rule.
 
 import { PLAIN_NAME } from './commands.ts'
-import { matches, shownName } from './policy.ts'
+import { decide, NO_GUARDS, shownName, type Rule } from './policy.ts'
 import { UNREADABLE_ENTRY } from './toml.ts'
 
 export type CodexRaw =
@@ -143,19 +143,27 @@ export const combineRules = (key: string, a: readonly CodexRule[], b: readonly C
  * as they are: a rule of the old policy is never moved, so the policy of a server that init does not import is the
  * same as before. `decide` (policy.ts) takes the first rule that matches, so the generated rules go in this order: the
  * denies of a tool, then the asks, then the deny of the rest of each server. A generated rule only matches the tools
- * `mcp__<key>__...` of an imported server. An old deny rule that matches a tool that Codex lists and asks about
- * would lose to that ask, so the tool gets a generated deny instead of the ask: no old deny gets weaker. An old allow
- * rule goes after the generated rules, so it loosens neither an ask nor the deny of an unlisted tool.
+ * `mcp__<key>__...` of an imported server. For a tool that Codex lists, `decide` on the old rules says what the owner's
+ * policy does with it today: a deny becomes a generated deny, so the ask does not weaken it. An allow, an ask or no rule
+ * keeps the generated ask, which is stricter than an allow and never looser than Codex. So an old exception such as
+ * `allow mcp__s__read` before `deny mcp__*__read` gives an ask, and `deny mcp__*__read` alone gives a deny. An old
+ * allow rule goes after the generated rules, so it loosens neither an ask nor the deny of an unlisted tool.
  */
 export const mergePolicy = (generated: readonly CodexRule[], existing: readonly unknown[] = []): unknown[] => {
-  const denies = existing.flatMap(r => {
+  const rules = existing.flatMap((r): Omit<Rule, 'index'>[] => {
     const rule = r as { action?: unknown; match?: unknown } | null
-    return typeof rule === 'object' && rule !== null && rule.action === 'deny' && typeof rule.match === 'string'
-      ? [rule.match]
+    return typeof rule === 'object' &&
+      rule !== null &&
+      typeof rule.match === 'string' &&
+      (rule.action === 'allow' || rule.action === 'ask' || rule.action === 'deny')
+      ? [{ match: rule.match, action: rule.action }]
       : []
   })
+  const old = rules.map((rule, index) => ({ ...rule, index }))
   const asks = generated.filter(r => r.action === 'ask')
-  const held = asks.filter(r => denies.some(d => matches(d, r.match))).map((r): CodexRule => ({ ...r, action: 'deny' }))
+  const held = asks
+    .filter(r => decide(old, NO_GUARDS, r.match).action === 'deny')
+    .map((r): CodexRule => ({ ...r, action: 'deny' }))
   return [
     ...generated.filter(isToolDeny),
     ...held,
