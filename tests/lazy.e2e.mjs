@@ -146,10 +146,5 @@ describe('lazy start', () => {
     const pid = await pidOf(host)
     assert.ok(alive(pid))
     await host.client.close()
-    // A server that is not lazy is closed by the SDK transport, which ends only the wrapper: on Windows the server of
-    // `cmd /c node` stays. That is the path of every server before lazy start, so the test ends it and leaves nothing.
-    try {
-      process.kill(pid)
-    } catch {}
   })
 })
