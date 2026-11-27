@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- Six sessions that start at once can no longer end with two brokers (issue #133): a starting broker now removes a socket file that refuses a connect only after the same file has refused for 1 s, because a broker between its bind and its listen refuses too. A host that starts after a killed broker can wait up to 1 s longer. A broker that finds its file gone right after its listen leaves.
+
 ## 1.0.4
 
 - A tool name held in a plain string, such as `const g = "mcp__s__t"; await call(g, {})`, is now asked in the prompt before the run, like a name written inside `call("…")`, when the client can ask. A call refused at call time for a name nobody asked about now says that the person was not asked, and tells the model to write the name as a string in the program and run again, so a model no longer reports it as declined.
