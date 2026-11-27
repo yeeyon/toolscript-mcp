@@ -258,7 +258,7 @@ describe('search with several files in flight', () => {
     }
   })
 
-  test('the lstat of up to N entries of a folder are at the same time for a search, and one at a time for N = 1 and for a list', async t => {
+  test('with no kind from the listing, the lstat of up to N entries of a folder are at the same time for a search, and one at a time for N = 1 and for a list', async t => {
     // No file matches the include, so no file is opened: the lookups of `lstat` are those of the entries and of their brackets.
     const root = tree(t)
     write(root, files('e', 24))
@@ -271,6 +271,7 @@ describe('search with several files in flight', () => {
       let top = 0
       const rig = await rigOf(t, root, {
         limits: { searchInFlight },
+        listedKinds: false,
         hook: async lookup => {
           if (lookup !== 'lstat') return
           top = Math.max(top, ++now)
@@ -285,6 +286,77 @@ describe('search with several files in flight', () => {
       assert.ok(top <= most, `${tool} N = ${searchInFlight}: ${top} lstat at the same time`)
       assert.ok(top >= least, `${tool} N = ${searchInFlight}: peak ${top}`)
     }
+  })
+
+  test('a search takes the kind of each entry from the listing: no lstat of an entry, the same answer, and a list still looks at each', async t => {
+    const root = mixed(t)
+    const counted = async (listedKinds: boolean, tool: string, args: Record<string, unknown>) => {
+      let lstats = 0
+      const rig = await rigOf(t, root, {
+        listedKinds,
+        hook: lookup => void (lookup === 'lstat' && lstats++),
+      })
+      if (rig === undefined) return undefined
+      await rig.call(tool, args) // the first call of a rig can pay a one-time lookup
+      lstats = 0
+      const answer = await rig.call(tool, args)
+      return { lstats, answer: JSON.stringify(answer) }
+    }
+    const withKinds = await counted(true, 'search', { query: 'hit', maxMatches: 2000 })
+    const without = await counted(false, 'search', { query: 'hit', maxMatches: 2000 })
+    if (withKinds === undefined || without === undefined) return
+    assert.equal(withKinds.answer, without.answer)
+    // The tree has 46 names: each had one lstat without the kind, with the proofs of the folder around it on Windows and macOS.
+    assert.ok(
+      without.lstats - withKinds.lstats >= 46,
+      `lstat: ${without.lstats} without the kind, ${withKinds.lstats} with it`,
+    )
+    const listA = await counted(true, 'list', { depth: 3 })
+    const listB = await counted(false, 'list', { depth: 3 })
+    if (listA === undefined || listB === undefined) return
+    assert.equal(listA.lstats, listB.lstats, 'a list does not use the kinds of the listing')
+    assert.ok(listA.lstats >= 46)
+  })
+
+  test('an error of one visit ends the call after every running visit has ended: none opens a name later', async t => {
+    const root = tree(t)
+    write(root, { 'd/a0': 'hit\n', 'd/a1': 'hit\n', 'd/a2': 'hit\n', 'd/a3': 'hit\n', 'd/a4': 'hit\n' })
+    let listed = false
+    let opens = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => (release = resolve))
+    let afterReturn = 0
+    let returned = false
+    const rig = await rigOf(t, root, {
+      limits: { searchInFlight: 4 },
+      hook: async lookup => {
+        if (returned && lookup !== 'readdir') afterReturn++
+        if (lookup === 'readdir' && /d$/.test('d')) listed = true
+        if (lookup !== 'open' || !listed) return
+        const n = ++opens
+        // The first open of a file of d fails, the second fails too, the third is held, the others go on.
+        if (n === 2 || n === 3) throw new Error('stop ' + n)
+        if (n === 4) await gate
+      },
+    })
+    if (rig === undefined) return
+    const call = rig.client.callTool({ name: 'search', arguments: { query: 'hit' } }).then(r => {
+      returned = true
+      return r
+    })
+    for (let i = 0; i < 200 && opens < 4; i++) await sleep(5)
+    assert.ok(opens >= 4, 'the 4 opens of the files are in flight')
+    await sleep(60)
+    assert.equal(returned, false, 'the call waits for the held visit before it ends')
+    release()
+    const r = await call
+    assert.equal(r.isError, true)
+    await sleep(80)
+    assert.equal(afterReturn, 0, 'a lookup ran after the call ended')
+    assert.equal(rig.bound.provider.inFlight(), 0)
+    // The next call works: no handle or folder is left half closed.
+    opens = 100
+    assert.equal((await rig.call('search', { query: 'hit' })).filesScanned, 5)
   })
 
   test('a cancel while the opens are held ends the call, and the slot and the handles are free for the next call', async t => {

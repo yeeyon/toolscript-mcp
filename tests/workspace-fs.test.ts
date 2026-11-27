@@ -1286,36 +1286,43 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     t.diagnostic(`${reads} reads: ${JSON.stringify(Object.fromEntries(outcomes))}`)
   })
 
-  // The brackets of 4 entries of a folder overlap in a search (limits.searchInFlight). A swap that stays out from the Nth
-  // lookup of `lstat` on must be refused or end with no outside line, whichever entry or proof the Nth lookup is.
-  test('a swap that stays at the Nth lstat of a search with 4 entries in flight shows no outside line', async t => {
-    let leaks = 0
-    let runs = 0
-    for (let n = 1; n <= 40; n++) {
-      const dirs = folders(t)
-      const root = dirs()
-      const outside = dirs()
-      const secret = marker()
-      write(root, Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`b/f${i}.txt`, 'inside ' + i])))
-      write(outside, Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`f${i}.txt`, `outside ${secret}`])))
-      const swap = swapper(root, outside)
-      let seen = 0
-      const rig = await rigOf(t, root, {
-        limits: { searchInFlight: 4 },
-        hook: lookup => {
-          if (lookup === 'lstat' && ++seen === n) swap.set(true)
-        },
+  // A search takes the kind of an entry from the listing (`listedKinds`), or looks at it with `lstat` and the proofs of the folder
+  // for up to 4 entries at once, and it opens up to 4 files at once (limits.searchInFlight). Each way gets the same
+  // swaps: out from the Nth lookup of the file system on and staying out, and out at the Nth lookup and back in at the next.
+  // The folder is a link to the outside folder in between, so no line of the outside file may come back, on any system.
+  for (const listedKinds of [true, false])
+    for (const mode of ['stays out', 'alternates'] as const)
+      test(`a swap that ${mode} from the Nth lookup of a search with 4 files and entries in flight shows no outside line (kinds from ${listedKinds ? 'the listing' : 'lstat'})`, async t => {
+        let leaks = 0
+        let runs = 0
+        for (let n = 1; n <= 30; n++) {
+          const dirs = folders(t)
+          const root = dirs()
+          const outside = dirs()
+          const secret = marker()
+          write(root, Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`b/f${i}.txt`, 'inside ' + i])))
+          write(outside, Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`f${i}.txt`, `outside ${secret}`])))
+          const swap = swapper(root, outside)
+          let seen = 0
+          const rig = await rigOf(t, root, {
+            limits: { searchInFlight: 4 },
+            listedKinds,
+            hook: () => {
+              seen++
+              if (seen === n) swap.set(true)
+              else if (mode === 'alternates' && seen === n + 1) swap.set(false)
+            },
+          })
+          if (rig === undefined) return
+          const r = await rig.client.callTool({ name: 'search', arguments: { query: 'outside', path: 'b' } })
+          runs++
+          if (r.isError !== true && (r.structuredContent as any).matches.length > 0) leaks++
+          else if (r.isError === true && JSON.stringify(r).includes(secret)) leaks++
+          swap.reset()
+        }
+        t.diagnostic(`${runs} runs, ${leaks} that showed the outside file`)
+        assert.equal(leaks, 0, 'a search showed a line of the outside file')
       })
-      if (rig === undefined) return
-      const r = await rig.client.callTool({ name: 'search', arguments: { query: 'outside', path: 'b' } })
-      runs++
-      if (r.isError !== true && (r.structuredContent as any).matches.length > 0) leaks++
-      else if (r.isError === true && JSON.stringify(r).includes(secret)) leaks++
-      swap.reset()
-    }
-    t.diagnostic(`${runs} runs, ${leaks} that showed the outside file`)
-    assert.equal(leaks, 0, 'a search showed a line of the outside file')
-  })
 
   // A search reads up to 4 files at a time (limits.searchInFlight), and each open is proven as one. The loop swaps the folder
   // of the tree while searches run: no line of the outside file may come back, except the Windows read family that the ADR

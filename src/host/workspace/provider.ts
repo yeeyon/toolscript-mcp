@@ -66,6 +66,8 @@ export type ProviderOptions = {
   readonly gitignore?: boolean
   /** Tests only: `false` opens each folder, as the walk did before the prune. */
   readonly prune?: boolean
+  /** Tests only: `false` makes `search` take no kind from the listing, so it looks at each entry with `lstat`. */
+  readonly listedKinds?: boolean
   readonly windows: boolean
   /** The stderr log. Never holds a path, a name or file content. */
   readonly log: (line: string) => void
@@ -214,6 +216,19 @@ export const createProvider = (options: ProviderOptions): Provider => {
    * that vanished or became a link while the walk ran is left out. Returns false when a visit or the time stopped the
    * walk. A read that the budget or the time cut sets `within.cut`, and the walk goes on with the names it holds.
    */
+  /**
+   * What a `search` walk adds to `walk`. `take` takes the answers of the visits that ran, in the order of the walk, and
+   * throws the first error. `settle` waits for every running visit and never throws: it runs before a folder closes, so
+   * no visit is left that opens a name through that folder. `ahead`: the entries of one folder whose `lstat` run at the
+   * same time. `kinds`: take the kind of an entry from the listing.
+   */
+  type Pool = {
+    readonly take: () => Promise<void>
+    readonly settle: () => Promise<void>
+    readonly ahead: number
+    readonly kinds: boolean
+  }
+
   const walk = async (
     dir: Dir,
     levels: number,
@@ -222,35 +237,53 @@ export const createProvider = (options: ProviderOptions): Provider => {
     within: ReturnType<typeof budget>,
     hides?: Hides,
     reach?: (folder: readonly string[]) => boolean,
-    idle?: () => Promise<void>,
-    ahead = 1,
+    pool?: Pool,
   ): Promise<boolean> => {
     const read = await dir.names({
       keep: name => !excluded([...dir.parts, name]),
       room: within.left,
       alive: () => (cancelled(signal), within.timely()),
+      ...(pool?.kinds === true && { kinds: true }),
     })
     within.left -= read.names.length
     if (read.more) within.cut = true
     const names = read.names.sort(byText)
-    // The `lstat` of an entry, with the proof of the folder right before and right after it, is made for up to `ahead`
-    // entries at the same time. Each entry has its own bracket, and the answers are taken in the order of the listing.
-    const looked: Promise<{ entry: Awaited<ReturnType<Dir['lstat']>> } | { error: unknown }>[] = []
+    // `search` only (`pool.kinds`), and only the kind of an entry: the listing of the folder names it, with no `lstat` and no
+    // proof of the folder around one. The kind decides what the walk does next and nothing else: a file is opened and a
+    // folder is entered (`openDir`), and each open proves its own name, so a kind that is wrong (the entry changed, or the
+    // listing was made in a folder that a swap had changed) ends in a refusal of that open (`not-file`, `not-folder`, a
+    // link) and the name is skipped. No size, no metadata and no name that did not come through a proven handle can come
+    // back: a match shows the path and the text of an opened and proven file. `list` and `stat` show the kind and the size
+    // of an entry, so they keep the proof of the folder right before and right after each `lstat`. A name whose kind the
+    // listing does not give has its `lstat` with both proofs, for up to `ahead` entries of the folder at the same time,
+    // each with its own bracket, and the answers are taken in the order of the listing.
+    const listed = read.kinds
+    const looked = new Map<string, Promise<{ entry: Awaited<ReturnType<Dir['lstat']>> } | { error: unknown }>>()
     let started = 0
     try {
       for (const name of names) {
         cancelled(signal)
         if (!within.timely()) return false
-        for (; started < names.length && looked.length < ahead; started++)
-          looked.push(
-            dir.lstat(names[started]!).then(
-              entry => ({ entry }),
-              (error: unknown) => ({ error }),
-            ),
-          )
-        const got = await looked.shift()!
-        if ('error' in got) throw got.error
-        const entry = got.entry
+        let entry: { kind: Kind; size: number } | undefined
+        const kind = listed?.get(name)
+        if (kind !== undefined) entry = { kind, size: 0 }
+        else {
+          for (; started < names.length && looked.size < (pool?.ahead ?? 1); started++) {
+            const next = names[started]!
+            if (listed?.has(next) !== true && !looked.has(next))
+              looked.set(
+                next,
+                dir.lstat(next).then(
+                  seen => ({ entry: seen }),
+                  (error: unknown) => ({ error }),
+                ),
+              )
+          }
+          const got = await looked.get(name)!
+          looked.delete(name)
+          if ('error' in got) throw got.error
+          entry = got.entry
+        }
         const parts = [...dir.parts, name]
         if (entry === undefined) continue
         // An ignored name still counted as a visited one above. An ignored folder is never entered.
@@ -269,11 +302,14 @@ export const createProvider = (options: ProviderOptions): Provider => {
         })
         if (child === undefined) continue
         try {
-          if (!(await walk(child, levels - 1, visit, signal, within, hides, reach, idle, ahead))) return false
+          const complete = await walk(child, levels - 1, visit, signal, within, hides, reach, pool)
+          // The visits that ran in this folder count, also when the walk ended here.
+          await pool?.take()
+          if (!complete) return false
         } finally {
           // A visit that is still running must end before its folder closes: its open goes through that folder.
           try {
-            await idle?.()
+            await pool?.settle()
           } finally {
             await child.close()
           }
@@ -282,7 +318,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
       return true
     } finally {
       // The `lstat` that a stop left running ends before the caller closes this folder: it goes through that folder.
-      await Promise.all(looked)
+      await Promise.all(looked.values())
     }
   }
 
@@ -393,7 +429,12 @@ export const createProvider = (options: ProviderOptions): Provider => {
         while (pending.length > keep) {
           const done = await pending.shift()!
           if (stopped) continue
-          if ('error' in done) throw done.error
+          if ('error' in done) {
+            // The first error ends the call, and the visits behind it end first: none is left to open a name later.
+            stopped = true
+            await Promise.all(pending.splice(0))
+            throw done.error
+          }
           if (!consume(done.seen)) stopped = true
         }
       }
@@ -451,8 +492,12 @@ export const createProvider = (options: ProviderOptions): Provider => {
           within,
           hides,
           reachOf(input.include),
-          () => drain(0),
-          limits.searchInFlight,
+          {
+            take: () => drain(0),
+            settle: async () => void (await Promise.all(pending)),
+            ahead: limits.searchInFlight,
+            kinds: options.listedKinds !== false,
+          },
         )
         await drain(0)
         if (!complete || within.cut) truncated = true

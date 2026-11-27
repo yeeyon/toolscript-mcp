@@ -68,7 +68,26 @@ and on one CPU more in flight cannot help. The bridge's `Grep` still takes 0.2 t
 
 Not measured here: one CPU (Docker with `--cpus 1`), and Linux and macOS.
 
-## Note on the next step (not built)
+## With the kind taken from the listing (A, `search` only)
+
+`search` takes the kind of an entry (file or folder) from the directory listing, with no `lstat` and no proof of the folder around
+one (a reviewer judged it safe for `search`: the kind only decides what the walk does next, each open proves its own name, and
+`search` shows no size or metadata). `list` and `stat` keep both proofs. The calls of one search of the 1,500 files, counted with
+every file system call timed, 4 in flight: `lstat` 8,351 with the kind from `lstat` and 3,488 with the kind from the listing, and
+about 19.8 thousand calls in all against 15.0 thousand (24% fewer). The wall time of that instrumented search did not show the
+gain (1.6 s and 1.8 s: the calls are cheap, 0.18 ms for an `lstat`, and the reads and the scan are what is left).
+
+The provider test, 4 rounds of 7 searches, median of each round, 4 in flight, `lstat` kinds against listing kinds: 1053, 1226, 1713 and
+1872 ms against 847, 1370, 1945 and 1509 ms. The laptop was at 57 to 72% CPU from other work and rose during the run, so this does not
+resolve a difference: A is not shown to be faster in wall time here, only to make fewer calls.
+
+The #151 bench, `search` warm, median of 6 calls, 1 in flight against 4, both with A, back to back (the load was high and the 6-session
+run with 1 in flight was cut by the time budget in part, so its figure is the least reliable): 1 session 2498 ms against 1589 ms, 6
+sessions 3271 ms against 1697 ms.
+
+Not measured: one CPU (Docker with `--cpus 1`, held), Linux and macOS.
+
+## Note on the reasoning for A
 
 The 3 `lstat` of a walk entry (the folder is proven right before and right after the `lstat` of the entry) are the brackets of
 the swap family of the ADR: they make sure that the names and the sizes that `list` and `stat` show come from the folder that

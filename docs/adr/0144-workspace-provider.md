@@ -244,8 +244,15 @@ Inside one `search` walk, up to `LIMITS.searchInFlight` files (4) are opened, pr
 about 13 awaited file system calls on Windows and one file at a time left the threads idle. Each file is proven by its own
 open as before. The answers are taken in the order of the walk, so the matches, the counts and the cut do not depend on the
 timing, and the walk slot is still one walk. A visit that is running ends before its folder closes, and a cancel waits for
-the running visits to close their files. The `lstat` of an entry with its two proofs of the folder is made for up to the same number of entries of one folder at the
-same time, each with its own bracket, and the entries are taken in the order of the listing. A `list` walks one entry at a time. Numbers in `bench/RESULTS-workspace-search.md`.
+the running visits to close their files, and a visit that fails ends the call only after the visits behind it have ended, so none
+opens a name through a folder that was closed. `search` takes the kind of an entry (file or folder) from the directory listing,
+with no `lstat` and no proof of the folder around one. The kind only decides what the walk does next: a file is opened and a
+folder is entered, and each open proves its own name, so a kind that is wrong ends in the refusal of that open and the name is
+skipped. `search` shows no size and no metadata of an entry: a match shows the path and the text of a file that was opened and
+proven. `list` and `stat` show the kind and the size, so they keep the proof of the folder right before and right after each
+`lstat`. A name whose kind the listing does not give has its `lstat` with both proofs, for up to the same number of entries of
+one folder at the same time, each with its own bracket, and the entries are taken in the order of the listing. Numbers in
+`bench/RESULTS-workspace-search.md`.
 
 ## Confinement
 

@@ -68,16 +68,30 @@ export type NameRead = {
   readonly keep: (name: string) => boolean
   readonly room: number
   readonly alive: () => boolean
+  /** True: also give the kind that the listing itself names for each name that it names one for (`Names.kinds`). */
+  readonly kinds?: boolean
+}
+
+export type Names = {
+  readonly names: string[]
+  readonly more: boolean
+  /**
+   * The kind of a name as the directory listing gives it, with no `lstat`: only for a name whose entry type the listing
+   * knows (a file system can leave it unknown), and only when `NameRead.kinds` is true. It is a hint, not a proof.
+   */
+  readonly kinds?: ReadonlyMap<string, Kind>
 }
 
 /** One stream over the folder at `at`, closed on every path. Errors are mapped, so no path is in their text. */
-const readNames = async (at: string, { keep, room, alive }: NameRead): Promise<{ names: string[]; more: boolean }> => {
+const readNames = async (at: string, { keep, room, alive, kinds: wantKinds }: NameRead): Promise<Names> => {
   const stream = await fs.promises.opendir(at, { bufferSize: 512 }).catch(err => Promise.reject(mapError(err)))
   const names: string[] = []
+  const kinds = new Map<string, Kind>()
   let more = false
   let read = 0
   try {
-    for await (const { name } of stream) {
+    for await (const entry of stream) {
+      const { name } = entry
       if (++read % 1024 === 0 && !alive()) {
         more = true
         break
@@ -88,13 +102,25 @@ const readNames = async (at: string, { keep, room, alive }: NameRead): Promise<{
         break
       }
       names.push(name)
+      if (wantKinds === true) {
+        const kind = entry.isSymbolicLink()
+          ? 'link'
+          : entry.isFile()
+            ? 'file'
+            : entry.isDirectory()
+              ? 'folder'
+              : entry.isFIFO() || entry.isSocket() || entry.isBlockDevice() || entry.isCharacterDevice()
+                ? 'other'
+                : undefined
+        if (kind !== undefined) kinds.set(name, kind)
+      }
     }
   } catch (err) {
     throw mapError(err)
   } finally {
     await stream.close().catch(() => {})
   }
-  return { names, more }
+  return wantKinds === true ? { names, more, kinds } : { names, more }
 }
 
 /** A proven folder. `parts`: its path from the root as the volume spells it. */
@@ -106,7 +132,7 @@ export type Dir = {
    * (it throws to cancel, and false ends the read with `more`). They are candidates: open or look at each one before it
    * is returned.
    */
-  names(read: NameRead): Promise<{ names: string[]; more: boolean }>
+  names(read: NameRead): Promise<Names>
   /** What `name` is, or undefined when it is gone. `spell`: also the name as the volume spells it. */
   lstat(name: string, spell?: boolean): Promise<Entry | undefined>
   /** `spell` on the three opens: `name` comes from the text of a path, so on Linux the real name is looked up (`spellOf`). */
