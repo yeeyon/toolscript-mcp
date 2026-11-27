@@ -113,6 +113,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS (issue #149). They are shipped files that
   `scripts/pack-check.mjs` requires, and the build does not bundle them.
 - `hints/` holds the bundled hints and `hints/sha256.json`.
+- `changes/` holds one file for each pull request with a user-visible change (`changes/README.md` says how), and
+  `scripts/changelog.mjs <version> [--apply]` folds them into `CHANGELOG.md` at the release (Node built-ins only; a
+  dry run by default; `tests/changelog.test.ts`). The npm package does not hold `changes/`.
 - `.claude-plugin/marketplace.json` makes the repo a Claude Code plugin marketplace with one plugin, `plugin/`. Its
   skill `setup` installs toolscript-mcp from npm, and `config.mjs` beside it changes the
   config without printing secrets. `roots.mjs` beside it is a pure copy of the root rules of `src/core/workspace.ts`
@@ -147,5 +150,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - Read `CODING_STANDARDS.md` before a change to code, tests or model-facing text.
 - Never weaken a sandbox layer to make a test pass.
 - stdout carries only MCP JSON-RPC. Log to stderr.
+- A user-visible change adds a file in `changes/`, and never edits `CHANGELOG.md`. The version-bump PR runs
+  `node scripts/changelog.mjs <version> --apply`, then rewrites the section by hand as a summary.
 - After a change in `plugin/`, raise `version` in `plugin/.claude-plugin/plugin.json`. Users get a new copy of the
   plugin only when the version changes.
