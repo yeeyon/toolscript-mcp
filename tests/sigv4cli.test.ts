@@ -3,6 +3,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { connectAll } from '../src/host/downstream.ts'
+import type { ServerKey } from '../src/core/config.ts'
 import {
   AwsCredentialsError,
   exportCredentials,
@@ -154,4 +158,41 @@ test('a hung CLI in flight gets its tree ended when the host closes, inside 3 s'
   assert.ok(await until(() => !alive(pid), 3000), 'the CLI process is gone')
   assert.match(await read, /could not get AWS credentials for the profile "dev"/)
   await stopCredentialReads()
+})
+
+test('connectAll().close ends a hung AWS CLI that a sigv4 entry started, inside 3 s', async () => {
+  // A shim named aws, first on PATH: the entry starts it through the real exportCredentials.
+  const bin = fs.mkdtempSync(path.join(dir, 'bin-'))
+  const pidFile = path.join(bin, 'aws.pid')
+  const script = path.join(bin, 'aws.mjs')
+  fs.writeFileSync(
+    script,
+    `import fs from 'node:fs'\nfs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))\nsetTimeout(() => {}, 12_000)\n`,
+  )
+  if (process.platform === 'win32')
+    fs.writeFileSync(path.join(bin, 'aws.cmd'), `@"${process.execPath}" "${script}" %*\r\n`)
+  else fs.writeFileSync(path.join(bin, 'aws'), `#!/bin/sh\n"${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 })
+  const server = http.createServer((_req, res) => res.end('{}'))
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`
+  const realPath = process.env.PATH
+  process.env.PATH = `${bin}${path.delimiter}${realPath}`
+  const entry = {
+    kind: 'http',
+    url,
+    headers: {},
+    sigv4: { profile: 'dev', region: 'us-east-1', service: 'aws-mcp' },
+  } as const
+  const downstream = connectAll(new Map([['aws' as ServerKey, entry]]), '0', () => {})
+  try {
+    assert.ok(await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8') !== '', 8000), 'it started')
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+    assert.ok(alive(pid))
+    await downstream.close()
+    assert.ok(await until(() => !alive(pid), 3000), 'the CLI process is gone after close')
+  } finally {
+    process.env.PATH = realPath
+    await downstream.close()
+    await new Promise<void>(r => server.close(() => r()))
+  }
 })

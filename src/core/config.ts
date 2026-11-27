@@ -306,7 +306,7 @@ const parseMetadata = (raw: unknown, path: string, env: Env, errors: string[]): 
   for (const key of keys) {
     const where = at(path, key)
     if (!METADATA_KEY.test(key)) {
-      errors.push(`${path}: a key must be 1 to 64 characters of letters, digits, "_", "." and "-"`)
+      errors.push(`${where}: a key must be 1 to 64 characters of letters, digits, "_", "." and "-"`)
       continue
     }
     const value = raw[key]
@@ -1276,7 +1276,10 @@ export const redact = (text: string, server: ServerConfig, more: readonly string
   const client = server.kind === 'http' ? server.oauth?.client : undefined
   const values = [
     ...(server.kind === 'stdio' ? hideArgSecrets(server.args) : hideUrlSecrets(server.url)).secrets,
-    ...Object.entries(server.kind === 'stdio' ? server.env : server.headers).flatMap(([key, value]) => [
+    ...[
+      ...Object.entries(server.kind === 'stdio' ? server.env : server.headers),
+      ...(server.kind === 'http' ? Object.entries(server.sigv4?.metadata ?? {}) : []),
+    ].flatMap(([key, value]) => [
       ...(SECRET_NAME.test(key) || isSecretWord(value) || value.length >= LONG ? [value] : []),
       ...hideArgSecrets([value]).secrets,
     ]),

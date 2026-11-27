@@ -270,6 +270,8 @@ export const sigv4Fetch = (
     }
   }
   const signed: FetchLike = async (url, init) => {
+    // After the close the transport aborts its requests: the base fetch fails them, and no new CLI child starts.
+    if (init?.signal?.aborted) return base(url, init)
     const target = new URL(url)
     if (target.origin !== origin) return base(url, init)
     const headers = new Headers(init?.headers)

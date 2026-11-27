@@ -354,8 +354,8 @@ test('item 7: each bad sigv4.metadata is a config error that names the path and 
   assert.match(bad(pairs(17)), /sigv4\.metadata: has 17 pairs, at most 16/)
   assert.match(bad({ AWS_REGION: 5 }), /sigv4\.metadata\.AWS_REGION: must be a non-empty string/)
   assert.match(bad({ AWS_REGION: '' }), /sigv4\.metadata\.AWS_REGION: must be a non-empty string/)
-  assert.match(bad({ 'bad key': 'v' }), /sigv4\.metadata: a key must be 1 to 64 characters/)
-  assert.match(bad({ ['k'.repeat(65)]: 'v' }), /sigv4\.metadata: a key must be 1 to 64 characters/)
+  assert.match(bad({ 'bad key': 'v' }), /sigv4\.metadata\[\\"bad key\\"\]: a key must be 1 to 64 characters/)
+  assert.match(bad({ ['k'.repeat(65)]: 'v' }), new RegExp(`sigv4\\.metadata\\.k{65}: a key must be 1 to 64 characters`))
   assert.match(bad({ K: 'v'.repeat(257) }), /sigv4\.metadata\.K: is longer than 256 characters/)
   assert.match(bad({ K: '${FAKE_MISSING}' }), /sigv4\.metadata\.K: the environment variable FAKE_MISSING is not set/)
   assert.match(bad({ K: '${FAKE_EMPTY}' }, { FAKE_EMPTY: '' }), /sigv4\.metadata\.K: is empty after the expansion/)
@@ -473,6 +473,19 @@ test('item 7: a request to another origin gets no pairs and no signature', async
     await fake.close()
     await other.close()
   }
+})
+
+test('a request whose signal is aborted (after the close) starts no credential read', async () => {
+  let loads = 0
+  let sent = 0
+  const signed = sigv4Fetch(
+    { url: AWS_URL, sigv4: { profile: 'dev', region: 'us-east-1', service: 'aws-mcp' } },
+    async () => (sent++, new Response('{}')),
+    async () => (loads++, EXAMPLE),
+  )
+  await signed(AWS_URL, { method: 'POST', body: '{}', signal: AbortSignal.abort() })
+  assert.equal(loads, 0)
+  assert.equal(sent, 1, 'the base fetch gets it, and fails it as it does for any aborted request')
 })
 
 test('item 1: long-lived keys (no expiry) are read one time and never again', async () => {
