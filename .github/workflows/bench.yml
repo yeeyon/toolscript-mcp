@@ -1,0 +1,47 @@
+# Measures the walk slots of the Workspace (issue #180): bench/walks.mjs with 1 and then 2 slots, with and without an
+# include, on the 4 CPUs of a runner. It starts by hand or by a push to a branch `bench/**`, never on main or a pull request.
+# The slot count is changed in a copy of the source in the job: nothing here is committed back.
+name: bench
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['bench/**']
+
+permissions:
+  contents: read
+
+jobs:
+  walks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Walks with 1 slot and with 2 slots
+        run: |
+          {
+            echo "commit $GITHUB_SHA"
+            echo "nproc $(nproc)"
+            node --version
+          } | tee results.txt
+          # The copy, so the sed changes no file of the checkout.
+          cp -a . "$RUNNER_TEMP/app"
+          cd "$RUNNER_TEMP/app"
+          for slots in 1 2; do
+            sed -i "s/walkSlots: [0-9]*,/walkSlots: $slots,/" src/core/workspace.ts
+            grep -n "walkSlots" src/core/workspace.ts
+            {
+              echo
+              echo "== walkSlots $slots"
+              node --experimental-strip-types bench/walks.mjs --files 2500 --runs 3 --tree "$RUNNER_TEMP/walks-tree"
+            } 2>&1 | tee -a "$GITHUB_WORKSPACE/results.txt"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: walks-results
+          path: results.txt
