@@ -13,7 +13,13 @@ permissions:
 
 jobs:
   walks:
-    runs-on: ubuntu-latest
+    # The first sighting (issue #160) was on a multi-core Windows laptop, so both systems run.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    name: walks ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -22,9 +28,12 @@ jobs:
           node-version: '22'
       - run: npm ci
       - name: Walks with 1 slot and with 2 slots
+        # bash on both: Git Bash on Windows has cp, sed, grep, tee and nproc.
+        shell: bash
         run: |
           mkdir results
           {
+            echo "os $RUNNER_OS"
             echo "commit $GITHUB_SHA"
             echo "nproc $(nproc)"
             node --version
@@ -49,11 +58,11 @@ jobs:
           done
           {
             echo
-            echo "== summary (median of every run of every pass of a slot count)"
+            echo "== summary on $RUNNER_OS (median of every run of every pass of a slot count)"
             node bench/walks-summary.mjs "$GITHUB_WORKSPACE/results"
           } 2>&1 | tee -a "$GITHUB_WORKSPACE/results/results.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: walks-results
+          name: walks-results-${{ matrix.os }}
           path: results/
