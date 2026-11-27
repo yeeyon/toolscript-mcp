@@ -70,12 +70,14 @@ describe('rankTools on four sets of searches', () => {
   // The fixtures hold the real action and method enums, and the sets rank with `actions` as `search_tools` does
   // (#130). Without them: tuning 69 (0.894), A 114 (0.942), B 107 (0.961). With them, and 4 azure and 7 github
   // searches whose verb sits only in an enum: 69 (0.894), A 114 -> 116 (0.942 -> 0.952), B 107 (0.961), GitHub 3 -> 7
-  // of 7 (0.714 -> 1.000).
+  // of 7 (0.714 -> 1.000). A's MRR now sits 0.002 over its floor (0.952 vs 0.95), so a drop there is a real signal.
+  // Set C has 7 searches: one miss at rank 2 costs about 0.07 MRR, so its MRR floor is 0.85 = (5 + 2 x 0.5) / 7, the
+  // value that agrees with its top-1 floor of 5, and the 0.01 margin of the large sets does not fit.
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
     ['held-out set A: 126 searches on the same 140 tools', catalog, heldOutA.queries, 114, 0.95],
     ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 105, 0.95],
-    ['held-out set C: 7 searches on 36 GitHub tools', catalogH, heldOutC.queries, 5, 0.99],
+    ['held-out set C: 7 searches on 36 GitHub tools', catalogH, heldOutC.queries, 5, 0.85],
   ]
   for (const [label, tools, queries, top1Floor, mrrFloor] of sets)
     test(label, () => {
