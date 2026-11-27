@@ -142,6 +142,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     judges an answer of another agent.
   - `data.mjs` holds the tasks and their checks, `fake-server.mjs` the fake MCP server, and `forget.mjs` removes the
     Claude Code project folder of a run.
+- `.github/workflows/stress.yml` runs repeats, flakes, load, one-CPU, bench and baseline runs on the free runners (Linux, macOS,
+  Windows), from the Actions tab, from a push to `stress/**`, and every Sunday on main (flakes and baseline). Its profiles are
+  `tests/stress.json`. `scripts/stress.mjs` (Node built-ins only; `tests/stress.test.ts`) repeats one target with the junit
+  reporter and writes the summary of each test that failed (runs, fails, rate, first failing run and seed), the budgets of
+  `baseline`, and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
+  `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake
   servers. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
 
@@ -159,5 +165,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - stdout carries only MCP JSON-RPC. Log to stderr.
 - A user-visible change adds a file in `changes/`, and never edits `CHANGELOG.md`. The version-bump PR runs
   `node scripts/changelog.mjs <version> --apply`, then rewrites the section by hand as a summary.
+- Before the release button, a `flakes` run and a `baseline` run of `stress.yml` on main must be green (the weekly run counts when
+  main has not changed since): `gh run list --workflow stress.yml --branch main`. A flake is fixed, never accepted: there is no
+  allow list. A red weekly run is read at the start of the next session and taken before other work.
 - After a change in `plugin/`, raise `version` in `plugin/.claude-plugin/plugin.json`. Users get a new copy of the
   plugin only when the version changes.

@@ -174,6 +174,9 @@ quotes and the `^` of cmd dropped, hold the
   - `node tests/server.e2e.mjs`: the built server over stdio, with the bench fake server and a probe server. Run
     `npm run build` first.
   - `sh scripts/format.sh --check .`: the format of code, JSON and YAML.
+- Repeats, flakes, one-CPU runs and the baseline budgets run in `.github/workflows/stress.yml`, not in PR CI, and not on the laptop:
+  start a run with `gh workflow run stress.yml`, or push a copy of the branch to `stress/<name>`. A timing assert that fails only
+  under load is rewritten as a proof by order, never given a longer timeout.
 - CI (`.github/workflows/test.yml`) runs the sandbox test and the server test on Linux, macOS and Windows. Linux and macOS each have
   a network block (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail
   where neither works. On Windows the test checks that the network block is absent. The Linux legs of the job `test` mount a
