@@ -2698,7 +2698,7 @@ describe('a lazy server in a run', () => {
 describe('the guarded folders', () => {
   const OWN = '~/.toolscript-mcp/'
   // The refusal of any guarded folder: the home ones have `~/`, a link into the project hints does not.
-  const REFUSAL = String.raw`^refused: an argument of mcp__f__put names (~/)?\.toolscript-mcp/(hints|functions|learned|oauth), a folder that toolscript-mcp guards\. `
+  const REFUSAL = String.raw`^refused: an argument of mcp__f__put names (~/)?\.toolscript-mcp/(hints|functions|learned|oauth), a folder that toolscript-mcp guards( \(in [^)]*\))?\. `
   const dir = (prefix: string) => fs.mkdtempSync(path.join(ROOT, prefix))
   const fwd = (p: string) => p.replaceAll('\\', '/')
   // A program that sends each of `argList` to echo, and returns one word for each: `refused`, `sent` or the text.
@@ -2905,12 +2905,47 @@ describe('the guarded folders', () => {
       `try { await call("mcp__f__put", { path: ${JSON.stringify(`${fwd(home)}/.toolscript-mcp/hints/zz-secret-name.md`)} }) } catch (e) { return e.message }`,
     )
     const text = JSON.parse(/^("[^"]*")/.exec(r.text)![1]!) as string
-    assert.equal(text, guardedText('mcp__f__put', '~/.toolscript-mcp/hints'))
-    assert.ok(text.length <= 300, String(text.length))
-    assert.match(text, /No allow rule or approval lifts this/)
+    // The fake tool lists no property `path`, so its key shows as a dots mark.
+    assert.equal(text, guardedText('mcp__f__put', '~/.toolscript-mcp/hints', '…'))
+    assert.ok(text.length <= 320, String(text.length))
+    assert.match(text, /\(in …\)\. A mention in text counts too\. No allow rule or approval lifts this/)
     assert.ok(!r.text.includes('zz-secret-name') && !r.text.includes('UNTRUSTED'), r.text)
     assert.equal(fs.readFileSync(runLogFile(home), 'utf8').includes('zz-secret-name'), false)
     assert.equal(fs.readFileSync(runLogFile(home), 'utf8').includes(fwd(home)), false)
+  })
+
+  test('a mention in text is refused with the key path of the argument, and never with its value', async () => {
+    const mark = '.toolscript-mcp/hints'
+    const home = dir('home-')
+    // The server lists the schema of its tool: its property names show in the key path, and a data key does not.
+    const put = {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          items: { type: 'object', properties: { edits: { type: 'array', items: { properties: { new: {} } } } } },
+        },
+        files: { type: 'object', additionalProperties: { type: 'string' } },
+      },
+    }
+    const s = setup({
+      home,
+      others: [{ key: 'g' as ServerKey, status: 'connected', tools: [{ name: 'put', inputSchema: put }] }],
+    })
+    const value = `zz-note about ~/${mark} here`
+    const token = 'ghp_zzTokenKey0123456789abcdefghijklmnop'
+    const refusal = async (args: unknown) => {
+      const r = await s.run(`try { await call("mcp__g__put", ${JSON.stringify(args)}) } catch (e) { return e.message }`)
+      assert.ok(!r.text.includes('zz-note') && !r.text.includes('here') && !r.text.includes('zzTokenKey'), r.text)
+      return JSON.parse(/^("[^"]*")/.exec(r.text)![1]!) as string
+    }
+    const nested = await refusal({ items: [{}, { edits: [{ new: value }] }] })
+    assert.equal(nested, guardedText('mcp__g__put', `~/${mark}`, 'items[1].edits[0].new'))
+    assert.match(nested, /\(in items\[1\]\.edits\[0\]\.new\)\. A mention in text counts too\./)
+    const keyed = await refusal({ files: { [token]: value } })
+    assert.equal(keyed, guardedText('mcp__g__put', `~/${mark}`, 'files.…'))
+    assert.equal(fs.readFileSync(runLogFile(home), 'utf8').includes('zz-note'), false)
+    assert.deepEqual(s.called, [])
   })
 
   test('a program that catches the refusal ends done, and one that does not ends error', async () => {
