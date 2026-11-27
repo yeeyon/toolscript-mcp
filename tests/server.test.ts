@@ -485,6 +485,13 @@ describe('redact', () => {
     const http = { kind: 'http', url: 'https://x', headers: { Authorization: 'Bearer fake-token-456' } } as const
     assert.equal(redact('bad token fake-token-456', http), 'bad token ***')
     assert.equal(redact('got Bearer fake-token-456', http), 'got ***')
+    const meta = {
+      kind: 'http',
+      url: 'https://x',
+      headers: {},
+      sigv4: { profile: 'p', region: 'us-east-1', service: 's', metadata: { X_TOKEN: 'fake-meta-789' } },
+    } as const
+    assert.equal(redact('echo fake-meta-789 refused', meta), 'echo *** refused')
   })
 
   test('hides the secrets in the args and the URL of a server, and keeps the other args', () => {
