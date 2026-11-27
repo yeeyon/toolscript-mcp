@@ -15,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { readTable } from '../bench/memory.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = path.join(ROOT, 'dist', 'host', 'main.js')
@@ -169,9 +170,11 @@ describe('a hard kill of the host while a lazy child starts', () => {
         policy: [{ match: 'mcp__claude-code__pid', action: 'allow' }],
         mcpServers: {
           'claude-code': {
+            // The node that runs this test, not the one on PATH. On Windows cmd cannot be given a quoted path through
+            // the arguments, so cmd starts in the folder of node.exe and finds it there.
             ...(process.platform === 'win32'
-              ? { command: 'cmd', args: ['/c', 'node', SLOW] }
-              : { command: 'sh', args: ['-c', 'node "$0"; true', SLOW] }),
+              ? { command: 'cmd', args: ['/c', 'node.exe', SLOW], cwd: path.dirname(process.execPath) }
+              : { command: 'sh', args: ['-c', '"$0" "$1"; true', process.execPath, SLOW] }),
             env: { SLOW_START_DIR: flags },
           },
         },
@@ -198,7 +201,9 @@ describe('a hard kill of the host while a lazy child starts', () => {
     fs.writeFileSync(path.join(flags, 'slow'), '')
     const second = await open()
     const started = path.join(flags, 'started')
-    const pids = []
+    const idOf = p => `${p.pid}:${p.t}`
+    // The ids (pid and creation time) of the host, the wrapper and the child, recorded once the child runs.
+    const ids = new Set()
     try {
       await second.client.callTool({ name: 'search_tools', arguments: { query: '' } })
       await new Promise(r => setTimeout(r, 300))
@@ -207,21 +212,29 @@ describe('a hard kill of the host while a lazy child starts', () => {
         .callTool({ name: 'run_code', arguments: { code: 'return await call("mcp__claude-code__pid", {})' } })
         .catch(() => {})
       await until('the child is starting', () => fs.existsSync(started))
-      pids.push(...fs.readFileSync(started, 'utf8').trim().split(' ').map(Number))
-      assert.equal(pids.length, 2)
-      assert.ok(pids.every(alive), 'the child and its wrapper run')
+      const pids = [second.transport.pid, ...fs.readFileSync(started, 'utf8').trim().split(' ').map(Number)]
+      assert.equal(pids.length, 3)
+      // Also the other direct children of the host, such as the sandbox runner of the call: all must end with it.
+      const rows = (await readTable()).filter(p => pids.includes(p.pid) || p.ppid === pids[0])
+      for (const p of rows) ids.add(idOf(p))
+      assert.ok(
+        pids.every(pid => rows.some(p => p.pid === pid)),
+        'the host, the wrapper and the child run',
+      )
       await new Promise(r => setTimeout(r, 50))
       process.kill(second.transport.pid, 'SIGKILL')
-      await until('the end of the child and its wrapper', () => !pids.some(alive), 10_000)
+      await until(
+        'the end of the host, the child and its wrapper',
+        async () => !(await readTable()).some(p => ids.has(idOf(p))),
+        10_000,
+      )
     } finally {
-      for (const pid of pids) {
+      // Only a row that still has a recorded pid and creation time: a pid that was reused is not ours.
+      for (const p of (await readTable().catch(() => [])).filter(p => ids.has(idOf(p)))) {
         try {
-          process.kill(pid, 'SIGKILL')
+          process.kill(p.pid, 'SIGKILL')
         } catch {}
       }
-      try {
-        process.kill(second.transport.pid, 'SIGKILL')
-      } catch {}
     }
   })
 })
