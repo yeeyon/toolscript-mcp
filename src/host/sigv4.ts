@@ -138,7 +138,8 @@ export const timeoutReason = (limitMs: number): string =>
 /**
  * The reason that the first line of stderr gives (an expired SSO token, an unknown profile), or undefined for no line.
  * A credential_process helper can print a secret in its error, so the line goes through the redaction of the config
- * rules before it is cut. The usage text of AWS CLI version 1, which has no `export-credentials`, becomes a short hint.
+ * rules before it is cut. The usage text of a CLI that has no `export-credentials` (version 1, or a version 2 from
+ * before the command) becomes a short hint that names the missing command and no version number.
  */
 export const stderrReason = (stderr: string): string | undefined => {
   const line = stderr
@@ -146,9 +147,17 @@ export const stderrReason = (stderr: string): string | undefined => {
     .find(l => l.trim() !== '')
     ?.trim()
   if (line === undefined) return undefined
-  if (/^usage:/i.test(line)) return 'needs AWS CLI version 2'
+  if (/^usage:/i.test(line))
+    return 'this AWS CLI has no `configure export-credentials`: update to a current AWS CLI version 2'
   return hideArgSecrets([line]).args[0]!.slice(0, 300)
 }
+
+/** The `export-credentials` children in flight, so a shutdown can end each tree (a hung CLI is in its own group). */
+const inFlight = new Set<ReturnType<typeof crossSpawn>>()
+
+/** Ends the tree of each `export-credentials` child in flight. The host calls it when it closes. */
+export const stopCredentialReads = (): Promise<void> =>
+  Promise.all([...inFlight].map(child => endTree(child))).then(() => {})
 
 /** Runs `aws configure export-credentials` for a profile. `command` and `limitMs` are for tests. */
 export const exportCredentials = (
@@ -169,12 +178,14 @@ export const exportCredentials = (
       reject(failure(profile, 'the AWS CLI did not start'))
       return
     }
+    inFlight.add(child)
     let out = ''
     let err = ''
     let settled = false
     const settle = (end: () => void): void => {
       if (settled) return
       settled = true
+      inFlight.delete(child)
       clearTimeout(timer)
       end()
     }
@@ -212,6 +223,26 @@ export const exportCredentials = (
   })
 
 /**
+ * The body with the pairs in `params._meta`, as `mcp-proxy-for-aws` injects them (its `_inject_metadata_hook`): only
+ * a JSON-RPC object that has `params`, a pair that `_meta` already holds stays as it is, and a `_meta` that is not an
+ * object is replaced. Any other body comes back as it is, byte for byte.
+ */
+export const injectMetadata = (body: string, metadata: Readonly<Record<string, string>>): string => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return body
+  }
+  const isObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v)
+  if (!isObject(parsed) || !('jsonrpc' in parsed) || !isObject(parsed.params)) return body
+  const existing = parsed.params._meta
+  parsed.params._meta = isObject(existing) ? { ...metadata, ...existing } : { ...metadata }
+  return JSON.stringify(parsed)
+}
+
+/**
  * A fetch that signs each request to the origin of the server with the credentials of the profile. The credentials
  * stay in memory until 5 minutes before they expire, then the next request reads them again. A failed read is not
  * kept: the next request tries again, so a new `aws sso login` works without a restart. When the read fails before
@@ -239,6 +270,8 @@ export const sigv4Fetch = (
     }
   }
   const signed: FetchLike = async (url, init) => {
+    // After the close the transport aborts its requests: the base fetch fails them, and no new CLI child starts.
+    if (init?.signal?.aborted) return base(url, init)
     const target = new URL(url)
     if (target.origin !== origin) return base(url, init)
     const headers = new Headers(init?.headers)
@@ -247,8 +280,10 @@ export const sigv4Fetch = (
     const body = init?.body
     if (body !== undefined && body !== null && typeof body !== 'string' && !(body instanceof Uint8Array))
       throw new Error('a SigV4 request body must be a string or bytes')
+    // The pairs go in before the signature, so it covers the body as sent. No pairs: the body is not touched.
+    const sent = typeof body === 'string' && server.sigv4.metadata ? injectMetadata(body, server.sigv4.metadata) : body
     const added = signRequest(
-      { method: init?.method ?? 'GET', url: target.href, headers, body: body ?? '' },
+      { method: init?.method ?? 'GET', url: target.href, headers, body: sent ?? '' },
       await credentials(),
       server.sigv4,
       new Date(clock()),
@@ -256,7 +291,7 @@ export const sigv4Fetch = (
     for (const [name, value] of Object.entries(added)) headers.set(name, value)
     // fetch would follow a redirect with the session token in x-amz-security-token, also to another origin. The 3xx
     // goes back to the SDK as an error instead.
-    return base(url, { ...init, headers, redirect: 'manual' })
+    return base(url, { ...init, ...(sent !== body && { body: sent }), headers, redirect: 'manual' })
   }
   // A server can echo a header of a refused request in its error body, and that text reaches the model and the log.
   const secrets = (): readonly string[] =>
