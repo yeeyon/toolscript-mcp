@@ -120,7 +120,7 @@ describe('guardFind: the key path of the string that hit', () => {
 })
 
 describe('the markers', () => {
-  test('are the six folders, never the bare state folder', () => {
+  test('are the seven folders, never the bare state folder', () => {
     assert.deepEqual(GUARD_MARKERS, [
       '.toolscript-mcp/hints',
       '.toolscript-mcp/functions',
@@ -128,6 +128,7 @@ describe('the markers', () => {
       '.toolscript-mcp/oauth',
       '.toolscript-mcp/broker',
       '.toolscript-mcp/locks',
+      '.toolscript-mcp/guard',
     ])
   })
 
@@ -208,7 +209,7 @@ describe('a path candidate', () => {
 })
 
 describe('the folders', () => {
-  test('are the six of the home and the project hints, each with the name that a refusal gives', () => {
+  test('are the seven of the home and the project hints, each with the name that a refusal gives', () => {
     assert.deepEqual(
       LIST.map(l => l.label),
       [
@@ -218,6 +219,7 @@ describe('the folders', () => {
         '~/.toolscript-mcp/oauth',
         '~/.toolscript-mcp/broker',
         '~/.toolscript-mcp/locks',
+        '~/.toolscript-mcp/guard',
         '.toolscript-mcp/hints',
       ],
     )

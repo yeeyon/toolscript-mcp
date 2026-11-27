@@ -13,6 +13,7 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import crossSpawn from 'cross-spawn'
 import { STOP_WAIT_MS } from '../core/broker.ts'
 import { endTree } from './broker.ts'
+import type { Guard } from './childguard.ts'
 
 /**
  * The same time at the shutdown of the host: the client of the host waits about 2 s after it ends our stdin, then kills
@@ -31,6 +32,8 @@ export type ChildParams = {
   /** The env of the config. The SDK's short list of safe variables is added under it, as the SDK transport does. */
   readonly env: Readonly<Record<string, string>>
   readonly cwd?: string
+  /** The child guard: it ends the tree of this child if the host dies with no cleanup. Absent: none. */
+  readonly guard?: Guard
 }
 
 /** The env that the child gets. The cache key of a launch does not hash it: it holds the inherited PATH. */
@@ -87,12 +90,17 @@ export class ChildTransport implements Transport {
         reject(error)
         this.onerror?.(error)
       })
-      proc.on('spawn', () => resolve())
+      proc.on('spawn', () => {
+        this.#params.guard?.add(proc.pid)
+        resolve()
+      })
       proc.on('close', () => {
         this.#proc = undefined
         this.#open.clear()
         // A wrapper that left on EOF must not leave a grandchild that ignores it.
         endTree(proc)
+        // After the group is ended, and before its id can be reused.
+        this.#params.guard?.remove(proc.pid)
         this.onclose?.()
       })
       proc.stdin?.on('error', error => this.onerror?.(error))
@@ -155,10 +163,13 @@ export class ChildTransport implements Transport {
     this.#stopping = new Promise<void>(resolve => {
       if (proc.exitCode !== null || proc.signalCode !== null) {
         endTree(proc)
+        // The 'close' event may never come on this path: the group must not stay listed.
+        this.#params.guard?.remove(proc.pid)
         return resolve()
       }
       const end = () => {
         endTree(proc)
+        this.#params.guard?.remove(proc.pid)
         // The close event follows the kill. Do not wait for it longer than a second.
         setTimeout(resolve, 1000).unref()
       }

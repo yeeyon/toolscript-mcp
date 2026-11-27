@@ -23,6 +23,7 @@ const REQUIRED = [
   'dist/third-party-licenses.txt',
   'runtime/runner.mjs',
   'runtime/task-job.ps1',
+  'runtime/child-guard.cs',
   'runtime/task-reap.pl',
   'demo/server.mjs',
   'demo/data.mjs',

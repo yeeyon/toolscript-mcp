@@ -962,12 +962,19 @@ export const render = data => {
  */
 const serverCommand = k => {
   const note = `--note=${MARKER}`
+  const extra = fakeFlags()
   if (process.env.BENCH_WRAP !== '1' || k !== 'bench4')
-    return { command: process.execPath, args: [FAKE_SERVER, k, note] }
+    return { command: process.execPath, args: [FAKE_SERVER, k, note, ...extra] }
   return process.platform === 'win32'
-    ? { command: 'cmd', args: ['/c', 'node', FAKE_SERVER, k, note] }
-    : { command: 'sh', args: ['-c', '"$0" "$@"; exit $?', process.execPath, FAKE_SERVER, k, note] }
+    ? { command: 'cmd', args: ['/c', 'node', FAKE_SERVER, k, note, ...extra] }
+    : { command: 'sh', args: ['-c', '"$0" "$@"; exit $?', process.execPath, FAKE_SERVER, k, note, ...extra] }
 }
+
+/**
+ * With BENCH_IGNORE_EOF=1 in the environment of the bench, every fake server keeps running when its stdin ends, as a
+ * server that ignores EOF does, so only the child guard can end it after a hard kill of the host (tests/memory.e2e.mjs).
+ */
+const fakeFlags = () => (process.env.BENCH_IGNORE_EOF === '1' ? ['--ignore-eof'] : [])
 
 const fixtureConfig = cwd => {
   const extra = { bench1: { share: true }, bench2: { cwd }, bench3: {}, bench4: { share: false, lazy: true } }
@@ -983,7 +990,7 @@ const fixtureConfig = cwd => {
   )
   servers[BRIDGE_KEY] = {
     command: process.execPath,
-    args: [FAKE_SERVER, BRIDGE_KEY, `--note=${MARKER}`],
+    args: [FAKE_SERVER, BRIDGE_KEY, `--note=${MARKER}`, ...fakeFlags()],
     env: { BENCH_NOTE: MARKER },
   }
   // An HTTP entry that nothing answers: it costs no process, and holds a header and a URL for the secrets test.

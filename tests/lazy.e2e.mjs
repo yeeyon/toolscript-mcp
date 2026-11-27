@@ -334,3 +334,200 @@ describe('a hard kill of the host while a lazy child starts', () => {
     }
   })
 })
+
+// The child guard (decision: a stdio child never outlives a host that was killed). A host with a direct server and a
+// woken lazy server, each behind a wrapper (`cmd /c node` or `sh -c`) and each ignoring EOF, gets SIGKILL: within 3 s no
+// process of either tree is left, nor the watchdog or the guard program, matched by pid and creation time. The guard is on
+// outside Windows, and on Windows with TOOLSCRIPT_CHILD_GUARD=1 (set here, with a temp HOME for the compiled program).
+// On Windows these cases compile the guard program, which raises a Defender audit event for each new program: CI only.
+const GUARD_SKIP =
+  process.platform === 'win32' && process.env.TOOLSCRIPT_TEST_CHILD_GUARD !== '1'
+    ? 'set TOOLSCRIPT_TEST_CHILD_GUARD=1: these cases compile the guard program'
+    : false
+describe('the child guard', { skip: GUARD_SKIP }, () => {
+  const GONE_MS = 3000
+  const guardConfig = path.join(dir, 'guard-config.json')
+  const wrap = () =>
+    process.platform === 'win32'
+      ? { command: 'cmd', args: ['/c', 'node', SERVER, '--ignore-eof'] }
+      : { command: 'sh', args: ['-c', 'node "$0" --ignore-eof; true', SERVER] }
+  fs.writeFileSync(
+    guardConfig,
+    JSON.stringify({
+      sandbox: { timeoutSeconds: 20, callTimeoutSeconds: 15 },
+      policy: [
+        { match: 'mcp__claude-code__pid', action: 'allow' },
+        { match: 'mcp__direct__pid', action: 'allow' },
+      ],
+      mcpServers: { direct: wrap(), 'claude-code': wrap() },
+    }),
+  )
+  const home = path.join(dir, 'guard-home')
+  fs.mkdirSync(home)
+  const open = async (config = guardConfig, extra = {}) => {
+    const log = []
+    const client = new Client({ name: 'guard-e2e', version: '0' }, { capabilities: {} })
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [MAIN, '--config', config],
+      env: { ...envOf(true), HOME: home, USERPROFILE: home, TOOLSCRIPT_CHILD_GUARD: '1', ...extra },
+      stderr: 'pipe',
+    })
+    transport.stderr.on('data', chunk => log.push(chunk.toString('utf8')))
+    await client.connect(transport)
+    const host = { client, transport, log: () => log.join('') }
+    opened.push(host)
+    return host
+  }
+  // A failed test must leave neither a host nor its servers: end each recorded tree by pid and creation time.
+  const opened = []
+  after(async () => {
+    const table = await readTable().catch(() => [])
+    for (const host of opened) {
+      const ids = treeOf(table, host.transport.pid)
+      for (const p of table.filter(p => ids.has(idOf(p))))
+        try {
+          process.kill(p.pid, 'SIGKILL')
+        } catch {}
+    }
+  })
+  const idOf = p => `${p.pid}:${p.t}`
+  // The host and every process below it: a child is never older than its parent.
+  const treeOf = (table, hostPid) => {
+    const tree = new Map(table.filter(p => p.pid === hostPid).map(p => [p.pid, p.t]))
+    for (let grew = true; grew; ) {
+      grew = false
+      for (const p of table) {
+        if (tree.has(p.pid) || !tree.has(p.ppid) || tree.get(p.ppid) > p.t) continue
+        tree.set(p.pid, p.t)
+        grew = true
+      }
+    }
+    return new Set(table.filter(p => tree.has(p.pid)).map(idOf))
+  }
+  // A host with both servers awake and the guard on, and the ids of its whole tree.
+  const awake = async () => {
+    // Phase 1 has no cache: both servers connect, the cache is written, and the bridge becomes lazy for the next host.
+    const first = await open()
+    await first.client.callTool({ name: 'search_tools', arguments: { query: '' } })
+    await until('the cache file', () => fs.existsSync(path.join(home, '.toolscript-mcp', 'learned', 'tools.json')))
+    await first.client.close()
+    const host = await open()
+    const pids = await host.client.callTool({
+      name: 'run_code',
+      arguments: {
+        code: 'return JSON.stringify([await call("mcp__direct__pid", {}), await call("mcp__claude-code__pid", {})])',
+      },
+    })
+    const found = /\[\s*"?(\d+)"?\s*,\s*"?(\d+)"?\s*\]/.exec(pids.content[0].text)
+    assert.ok(found, pids.content[0].text)
+    const servers = [Number(found[1]), Number(found[2])]
+    await until('the guard is on', () => /child guard: (on|off)/.test(host.log()), 30_000)
+    assert.match(host.log(), /child guard: on/, host.log())
+    const table = await readTable()
+    const ids = treeOf(table, host.transport.pid)
+    for (const pid of servers) assert.ok(ids.has(idOf(table.find(p => p.pid === pid))), 'a server is below the host')
+    assert.ok(ids.size >= 5, 'the host, two servers and the guard: ' + ids.size)
+    return { host, ids }
+  }
+  const goneIn = async ids => {
+    const began = Date.now()
+    let left = []
+    do {
+      left = (await readTable()).filter(p => ids.has(idOf(p)))
+      if (left.length === 0) break
+      await new Promise(r => setTimeout(r, 250))
+    } while (Date.now() - began < GONE_MS)
+    return left
+  }
+  const endLeft = async ids => {
+    for (const p of (await readTable().catch(() => [])).filter(p => ids.has(idOf(p))))
+      try {
+        process.kill(p.pid, 'SIGKILL')
+      } catch {}
+  }
+
+  test('a SIGKILL of the host leaves neither server, nor its wrapper, nor the guard', async () => {
+    let ids = new Set()
+    try {
+      const made = await awake()
+      ids = made.ids
+      process.kill(made.host.transport.pid, 'SIGKILL')
+      const left = await goneIn(ids)
+      assert.deepEqual(
+        left.map(p => `${p.name} ${p.pid}`),
+        [],
+      )
+    } finally {
+      await endLeft(ids)
+    }
+  })
+
+  test('a clean close leaves no process and no watchdog either', async () => {
+    let ids = new Set()
+    try {
+      const made = await awake()
+      ids = made.ids
+      await made.host.client.close()
+      const left = await goneIn(ids)
+      assert.deepEqual(
+        left.map(p => `${p.name} ${p.pid}`),
+        [],
+      )
+    } finally {
+      await endLeft(ids)
+    }
+  })
+
+  test('a SIGKILL of the broker leaves none of its shared servers, nor the guard of the broker', async () => {
+    const brokerConfig = path.join(dir, 'guard-broker-config.json')
+    fs.writeFileSync(
+      brokerConfig,
+      JSON.stringify({
+        sandbox: { timeoutSeconds: 20, callTimeoutSeconds: 15 },
+        policy: [{ match: 'mcp__shared__pid', action: 'allow' }],
+        mcpServers: { shared: { ...wrap(), share: true } },
+      }),
+    )
+    let ids = new Set()
+    try {
+      const host = await open(brokerConfig, { TOOLSCRIPT_SHARE: '1', TOOLSCRIPT_LAZY: '0' })
+      const reply = await host.client.callTool({
+        name: 'run_code',
+        arguments: { code: 'return "PID=" + String(await call("mcp__shared__pid", {}))' },
+      })
+      const server = Number(/PID=(\d+)/.exec(reply.content[0].text)?.[1])
+      assert.ok(server > 0, reply.content[0].text)
+      // The broker is detached, and its ppid still names the host that started it.
+      const table = await readTable()
+      const hostRow = table.find(p => p.pid === host.transport.pid)
+      const broker = table.find(
+        p =>
+          p.ppid === host.transport.pid &&
+          p.t >= hostRow.t &&
+          p.cmd.replaceAll('\\', '/').includes('dist/host/broker.js'),
+      )
+      assert.ok(broker, 'the broker runs')
+      // Wait for the guard of the broker: its program or its watchdog is below it, with the wrapper and the server.
+      let below = new Set()
+      await until(
+        'the broker has its guard, its wrapper and its server below it',
+        async () => {
+          const now = await readTable()
+          below = treeOf(now, broker.pid)
+          return below.size >= 4 && below.has(idOf(now.find(p => p.pid === server)))
+        },
+        30_000,
+      )
+      ids = below
+      process.kill(broker.pid, 'SIGKILL')
+      const left = await goneIn(ids)
+      assert.deepEqual(
+        left.map(p => `${p.name} ${p.pid}`),
+        [],
+      )
+    } finally {
+      await endLeft(ids)
+    }
+  })
+})
