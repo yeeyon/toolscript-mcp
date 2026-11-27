@@ -28,7 +28,13 @@ const O_NOFOLLOW_ANY = 0x20000000
 export type Kind = 'file' | 'folder' | 'link' | 'other'
 
 /** What a name in a folder is, without following it. `real`: the name as the volume spells it. */
-export type Entry = { readonly kind: Kind; readonly size: number; readonly real: string }
+/** `alike`: the other names of the same file in the folder (a hard link), when the lookup of `real` found more than one. */
+export type Entry = {
+  readonly kind: Kind
+  readonly size: number
+  readonly real: string
+  readonly alike?: readonly string[]
+}
 
 /** Runs before each lookup of a name. A test swaps a folder in it. */
 export type Hook = (lookup: 'open' | 'realpath' | 'lstat' | 'readdir') => void | Promise<void>
@@ -137,6 +143,8 @@ export type ConfinedOptions = {
   /** `process.platform` unless a test says another one. */
   readonly platform?: string
   readonly hook?: Hook
+  /** The names that a spelling lookup holds and looks at (default 20,000). A test makes it small. */
+  readonly aliasLooks?: number
 }
 
 const unavailable = (why: string): WorkspaceError =>
@@ -196,13 +204,31 @@ const lstatOrNothing = async (file: string): Promise<fs.Stats | undefined> => {
   }
 }
 
-/** The checks of a file after its open: a plain file with one name. */
-const checkedFile = async (handle: FileHandle, parts: readonly string[]): Promise<Opened> => {
+/**
+ * `err` with the real `parts` of the entry that it is about, for the exclusion check of the provider. `others`: the parts
+ * of the other names of the same file, which the provider checks too.
+ */
+const spelling = (
+  err: WorkspaceError,
+  parts: readonly string[] | undefined,
+  others: readonly (readonly string[])[] = [],
+): WorkspaceError => {
+  if (parts !== undefined) err.spelled = [parts, ...others]
+  return err
+}
+
+/** The checks of a file after its open: a plain file with one name. `others`: more spellings of it, for a refusal. */
+const checkedFile = async (
+  handle: FileHandle,
+  parts: readonly string[],
+  others: readonly (readonly string[])[] = [],
+): Promise<Opened> => {
   try {
     const st = await handle.stat({ bigint: true })
-    if (!st.isFile()) throw new WorkspaceError('not-file', 'the path is not a file')
+    if (!st.isFile()) throw spelling(new WorkspaceError('not-file', 'the path is not a file'), parts, others)
     if (st.ino === 0n) throw unavailable('the volume gives no file identity')
-    if (st.nlink > 1n) throw new WorkspaceError('hard-link', 'the file has more than one name (a hard link)')
+    if (st.nlink > 1n)
+      throw spelling(new WorkspaceError('hard-link', 'the file has more than one name (a hard link)'), parts, others)
     return { handle, size: Number(st.size), parts, mode: Number(st.mode & 0o7777n) }
   } catch (err) {
     await handle.close().catch(() => {})
@@ -381,7 +407,52 @@ const lstatBig = async (file: string): Promise<fs.BigIntStats | undefined> => {
   }
 }
 
-const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, hook: Hook): Dir => {
+/**
+ * The names that the folder at `folder` lists for the entry with the identity `id`, which a path text reached as `name`
+ * (an alias: a short name, another case). A listed `name` stands alone. Else the listed names that fold to `name` come
+ * first, then the rest, and a name whose `lstat` (through `pathOf`) has `id` is one. A file with more than one name
+ * (`siblings`: a hard link) has several, and no one of them can be told from the alias, so all are returned. Else the
+ * first stands. At most `looks` names are held and looked at, so a folder of any size costs a bounded read. Empty when none
+ * matches. Reading the names is no lookup of a name, so it calls no hook. A failed read of the names throws.
+ */
+const listedName = async (
+  folder: string,
+  name: string,
+  id: FileId,
+  looks: number,
+  pathOf: (listed: string) => string,
+  siblings: boolean,
+): Promise<string[]> => {
+  const stream = await fs.promises.opendir(folder, { bufferSize: 512 }).catch(err => Promise.reject(mapError(err)))
+  const near: string[] = []
+  const rest: string[] = []
+  const folded = fold(name)
+  try {
+    for await (const { name: listed } of stream) {
+      if (listed === name) return [name]
+      if (near.length + rest.length < looks) (fold(listed) === folded ? near : rest).push(listed)
+    }
+  } catch (err) {
+    throw mapError(err)
+  } finally {
+    await stream.close().catch(() => {})
+  }
+  const found: string[] = []
+  for (const listed of [...near, ...rest]) {
+    const st = await lstatBig(pathOf(listed)).catch(() => undefined)
+    if (st === undefined || !sameId(idOf(st), id)) continue
+    found.push(listed)
+    if (!siblings) break
+  }
+  return found
+}
+
+/** True when the entry can have a second name in its folder: a file, not a folder, with more than one link. */
+const hasSiblings = (st: fs.BigIntStats): boolean => !st.isDirectory() && st.nlink > 1n
+
+const nothing = (): WorkspaceError => new WorkspaceError('not-found', 'there is nothing at this path')
+
+const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, hook: Hook, looks: number): Dir => {
   const at = (name: string) => `/proc/self/fd/${handle.fd}/${name}`
   let aliasing: Promise<boolean> | undefined
   const canAlias = () =>
@@ -390,51 +461,50 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
       () => true,
     ))
   /**
-   * The name that this folder lists for what `name` opened (`id`). A volume can open a file under a name that it does not
-   * list (a short name, another case): the exclusion checks need the listed one. A listed `name` stands. Else the
-   * listed name with the identity `id` is it, the names that fold to `name` first. No match fails with `not-found`.
-   * Reading the names is no lookup of a name, so it calls no hook. A folder on another file system keeps `name`.
+   * The names that this folder lists for what `name` opened (`st`). A volume can open a file under a name that it does not
+   * list (a short name, another case): the exclusion checks need the listed ones. One name, unless the file has several
+   * (a hard link): then all of them (`listedName`). No match fails with `not-found`. A folder on another file system
+   * keeps `name`.
    */
-  const spellOf = async (name: string, id: FileId): Promise<string> => {
-    if (!readsNames(await canAlias(), name)) return name
-    const stream = await fs.promises
-      .opendir(`/proc/self/fd/${handle.fd}`, { bufferSize: 512 })
-      .catch(err => Promise.reject(mapError(err)))
-    const near: string[] = []
-    const rest: string[] = []
-    const folded = fold(name)
-    try {
-      for await (const { name: listed } of stream) {
-        if (listed === name) return name
-        if (near.length + rest.length < ALIAS_LOOKS) (fold(listed) === folded ? near : rest).push(listed)
-      }
-    } catch (err) {
-      throw mapError(err)
-    } finally {
-      await stream.close().catch(() => {})
-    }
-    for (const listed of [...near, ...rest]) {
-      const st = await lstatBig(at(listed)).catch(() => undefined)
-      if (st !== undefined && st.ino === id.ino && st.dev === id.dev) return listed
-    }
-    throw new WorkspaceError('not-found', 'there is nothing at this path')
+  const spellOf = async (name: string, st: fs.BigIntStats): Promise<string[]> => {
+    if (!readsNames(await canAlias(), name)) return [name]
+    const listed = await listedName(`/proc/self/fd/${handle.fd}`, name, idOf(st), looks, at, hasSiblings(st))
+    if (listed.length === 0) throw nothing()
+    return listed
   }
   /** `spellOf` for an open handle. A failure closes the handle. */
-  const spelled = async (opened: FileHandle, name: string): Promise<string> => {
+  const spelled = async (opened: FileHandle, name: string): Promise<string[]> => {
     try {
-      return await spellOf(name, idOf(await opened.stat({ bigint: true })))
+      return await spellOf(name, await opened.stat({ bigint: true }))
     } catch (err) {
       await opened.close().catch(() => {})
       throw mapError(err)
     }
   }
-  /** An open that failed on `name`: a link when `name` is one, else the error. */
-  const refused = async (err: unknown, name: string): Promise<WorkspaceError> => {
+  /**
+   * An open that failed on `name`: a link when `name` is one, else the error. `not-folder` carries the listed spelling
+   * of `name` (`spell`: it came from a path text), so the provider can answer `excluded` for an alias of an excluded file.
+   */
+  const refused = async (err: unknown, name: string, spell = false): Promise<WorkspaceError> => {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ELOOP' || code === 'ENOTDIR' || code === 'EMLINK') {
-      const st = await lstatOrNothing(at(name)).catch(() => undefined)
-      if (st?.isSymbolicLink()) return linkError()
-      if (st !== undefined && code === 'ENOTDIR') return new WorkspaceError('not-folder', 'the path is not a folder')
+      const st = await lstatBig(at(name)).catch(() => undefined)
+      // `name` came from a path text (`spell`): the listed spelling of a link or a file that it reaches under an alias.
+      const listed = async (): Promise<string[][] | undefined> => {
+        if (st === undefined) return undefined
+        const names = spell ? await spellOf(name, st).catch(() => undefined) : [name]
+        return names?.map(n => [...parts, n])
+      }
+      // No listed spelling (the read of the names failed or hit its cap): the answer of a name that is not there.
+      if (st?.isSymbolicLink()) {
+        const [first, ...others] = (await listed()) ?? []
+        return spell && first === undefined ? nothing() : spelling(linkError(), first, others)
+      }
+      if (st !== undefined && code === 'ENOTDIR') {
+        const [first, ...others] = (await listed()) ?? []
+        if (first === undefined) return nothing()
+        return spelling(new WorkspaceError('not-folder', 'the path is not a folder'), first, others)
+      }
     }
     return mapError(err)
   }
@@ -448,30 +518,36 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
       await hook('lstat')
       const st = await lstatBig(at(name))
       if (st === undefined) return undefined
-      let real = name
+      let names = [name]
       if (spell) {
-        const listed = await spellOf(name, idOf(st)).catch(err => {
+        const listed = await spellOf(name, st).catch(err => {
           if (err instanceof WorkspaceError && err.code === 'not-found') return undefined
           throw err
         })
         if (listed === undefined) return undefined
-        real = listed
+        names = listed
       }
-      return { kind: kindOf(st), size: Number(st.size), real }
+      const [real, ...alike] = names as [string, ...string[]]
+      return { kind: kindOf(st), size: Number(st.size), real, ...(alike.length > 0 && { alike }) }
     },
     openFile: async (name, spell = false) => {
       await hook('open')
       const opened = await fs.promises.open(at(name), O_RDONLY | O_NOFOLLOW | O_NONBLOCK).catch(async err => {
-        throw await refused(err, name)
+        throw await refused(err, name, spell)
       })
-      return checkedFile(opened, [...parts, spell ? await spelled(opened, name) : name])
+      const [first, ...others] = spell ? await spelled(opened, name) : [name]
+      return checkedFile(
+        opened,
+        [...parts, first!],
+        others.map(n => [...parts, n]),
+      )
     },
     openDir: async (name, spell = false) => {
       await hook('open')
       const opened = await fs.promises.open(at(name), O_RDONLY | O_DIRECTORY | O_NOFOLLOW).catch(async err => {
-        throw await refused(err, name)
+        throw await refused(err, name, spell)
       })
-      return procDir(opened, [...parts, spell ? await spelled(opened, name) : name], true, hook)
+      return procDir(opened, [...parts, spell ? (await spelled(opened, name))[0]! : name], true, hook, looks)
     },
     openUpdate: async (name, spell = false) => {
       const opened = await dir.openFile(name, spell)
@@ -560,7 +636,7 @@ const below = (real: string, root: string, platform: string): string[] | undefin
 const sameParts = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((part, i) => fold(part) === fold(b[i]!))
 
-const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook): Confined => {
+const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook, looks: number): Confined => {
   // On Windows `rootId` comes from a handle of the root, so its `dev` is the volume serial on every Node.
   const rootDev = rootId.dev
   const windows = platform === 'win32'
@@ -614,6 +690,51 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
     return seen
   }
 
+  /**
+   * The name that the folder `dirParts` (real parts) lists for the entry that `name` reaches, matched by file id: the
+   * link itself and not what it points to. The caps of `listedName`. Undefined when there is none or a read failed.
+   */
+  const listedAs = async (dirParts: readonly string[], name: string): Promise<string | undefined> => {
+    try {
+      const id = idOf(await fs.promises.lstat(full([...dirParts, name]), { bigint: true }))
+      return (await listedName(full(dirParts), name, id, looks, listed => full([...dirParts, listed]), false))[0]
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * The parts of `parts` with the listed spelling of the first link on the way (a junction or a symlink: the one that a
+   * refusal named), and the rest as it was. Undefined when no part gives one.
+   */
+  const linkSpell = async (parts: readonly string[]): Promise<string[] | undefined> => {
+    let seen: string[] = []
+    try {
+      for (let i = 0; i < parts.length; i++) {
+        const listed = await listedAs(seen, parts[i]!)
+        if (listed === undefined) return undefined
+        seen = [...seen, listed]
+        if ((await fs.promises.lstat(full(seen))).isSymbolicLink()) return [...seen, ...parts.slice(i + 1)]
+      }
+    } catch {
+      // No spelling: the refusal keeps its plain code.
+    }
+    return undefined
+  }
+
+  /**
+   * The real parts of `parts` after an open of it failed on its kind, or undefined when there are none. Only the answer
+   * `excluded` uses them, so a failed or raced lookup keeps the plain code of the failure.
+   */
+  const spellAfter = async (parts: readonly string[]): Promise<string[] | undefined> => {
+    try {
+      await hook('realpath')
+      return below(await realpathNative(full(parts)), root, platform)
+    } catch {
+      return undefined
+    }
+  }
+
   // `how`: for reading, for a change in place, or to make a new file (which fails with `exists` when a name is there).
   const OPEN = {
     read: { windows: 'r', mac: O_RDONLY },
@@ -631,20 +752,29 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
         ? fs.promises.open(full(parts), OPEN[how].windows)
         : fs.promises.open(full(parts), OPEN[how].mac | O_NOFOLLOW_ANY | (folder ? O_DIRECTORY : O_NONBLOCK), 0o666)
     ).catch(async err => {
+      const code = (err as NodeJS.ErrnoException).code
       // macOS: `O_DIRECTORY` on a file gives ENOTDIR, as a file in a middle part does. Only a last part that exists and is
       // no folder is `not-folder`. A middle part that is a file, or a link, is the same as on the other systems.
-      if (!windows && folder && (err as NodeJS.ErrnoException).code === 'ENOTDIR') {
+      if (!windows && folder && code === 'ENOTDIR') {
         const st = await lstatOrNothing(full(parts)).catch(() => undefined)
         if (st?.isSymbolicLink()) throw linkError()
-        if (st !== undefined && !st.isDirectory()) throw new WorkspaceError('not-folder', 'the path is not a folder')
+        if (st !== undefined && !st.isDirectory())
+          throw spelling(new WorkspaceError('not-folder', 'the path is not a folder'), await spellAfter(parts))
       }
+      // A change opens for writing, and a folder refuses that (Windows and macOS give EISDIR): its spelling is the same.
+      if (code === 'EISDIR') throw spelling(mapError(err), await spellAfter(parts))
+      if (code === 'ELOOP') throw spelling(mapError(err), await linkSpell(parts))
       throw mapError(err)
     })
     try {
       return { handle, real: windows ? await proveWindows(parts, handle) : await spellMac(parts) }
     } catch (err) {
       await handle.close().catch(() => {})
-      throw mapError(err)
+      const refusal = mapError(err)
+      // A link on the way (a junction, a symlink) under an alias of an excluded name: the same refusal as the plain name.
+      throw refusal.code === 'link' && refusal.spelled === undefined
+        ? spelling(refusal, await linkSpell(parts))
+        : refusal
     }
   }
 
@@ -712,7 +842,9 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
             const spelled = await realpathNative(full([...parts, name])).catch(err => Promise.reject(mapError(err)))
             real = insideParts(spelled).at(-1) ?? name
           }
-          seen = { kind, size: st.size, real }
+          // A link has no real path to ask for: the folder lists its name. No name is the answer of a name that is not there.
+          const listed = spell && kind === 'link' ? await listedAs(parts, name) : name
+          if (listed !== undefined) seen = { kind, size: st.size, real: kind === 'link' ? listed : real }
         }
         await proven()
         return seen
@@ -741,7 +873,7 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
     const { handle, real } = await opened(parts, true)
     try {
       const st = await handle.stat({ bigint: true })
-      if (!st.isDirectory()) throw new WorkspaceError('not-folder', 'the path is not a folder')
+      if (!st.isDirectory()) throw spelling(new WorkspaceError('not-folder', 'the path is not a folder'), real)
       return makeDir(real, idOf(st))
     } finally {
       await handle.close().catch(() => {})
@@ -850,7 +982,7 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
  */
 export const openConfined = async (
   root: string,
-  { platform = process.platform, hook = () => {} }: ConfinedOptions = {},
+  { platform = process.platform, hook = () => {}, aliasLooks = ALIAS_LOOKS }: ConfinedOptions = {},
 ): Promise<Confined> => {
   await ensureMethod(platform)
   if (platform !== 'linux') {
@@ -864,7 +996,7 @@ export const openConfined = async (
         : await fs.promises.stat(root, { bigint: true }).catch(err => Promise.reject(mapError(err)))
     if (!rootStat.isDirectory()) throw new WorkspaceError('not-folder', 'the workspace root is not a folder')
     if (rootStat.ino === 0n) throw unavailable('the volume gives no file identity')
-    return pathConfined(root, idOf(rootStat), platform, hook)
+    return pathConfined(root, idOf(rootStat), platform, hook, aliasLooks)
   }
 
   // Linux holds the root from now on, so the open comes first and then the proof that the held folder is the folder
@@ -903,7 +1035,7 @@ export const openConfined = async (
         'root-changed',
         'the workspace root is not the folder that toolscript-mcp opened at its start',
       )
-    let current = procDir(held, [], false, hook)
+    let current = procDir(held, [], false, hook, aliasLooks)
     for (const name of parts) {
       const next = await current.openDir(name, true).catch(async err => {
         await current.close()

@@ -98,6 +98,12 @@ export type WorkspaceCode =
 /** A failed call. The message starts with the code and holds no byte or name from outside the root. */
 export class WorkspaceError extends Error {
   readonly code: WorkspaceCode
+  /**
+   * For a refusal of the kind of an entry (`not-file`, `not-folder`, `hard-link`, `link`): the real parts of the entry that
+   * the request named, when the volume opened it under an alias. A file with several names has one spelling for each.
+   * The provider answers `excluded` when any of them is excluded. Never part of the text.
+   */
+  spelled?: readonly (readonly string[])[]
   constructor(code: WorkspaceCode, text: string) {
     super(`${code}: ${text}`)
     this.code = code
