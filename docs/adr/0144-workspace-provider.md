@@ -244,8 +244,8 @@ Inside one `search` walk, up to `LIMITS.searchInFlight` files (4) are opened, pr
 about 13 awaited file system calls on Windows and one file at a time left the threads idle. Each file is proven by its own
 open as before. The answers are taken in the order of the walk, so the matches, the counts and the cut do not depend on the
 timing, and the walk slot is still one walk. A visit that is running ends before its folder closes, and a cancel waits for
-the running visits to close their files. The walk itself (the names, the `lstat` of each entry and its brackets) is still one
-entry at a time. Numbers in `bench/RESULTS-workspace-search.md`.
+the running visits to close their files. The `lstat` of an entry with its two proofs of the folder is made for up to the same number of entries of one folder at the
+same time, each with its own bracket, and the entries are taken in the order of the listing. A `list` walks one entry at a time. Numbers in `bench/RESULTS-workspace-search.md`.
 
 ## Confinement
 

@@ -258,6 +258,35 @@ describe('search with several files in flight', () => {
     }
   })
 
+  test('the lstat of up to N entries of a folder are at the same time for a search, and one at a time for N = 1 and for a list', async t => {
+    // No file matches the include, so no file is opened: the lookups of `lstat` are those of the entries and of their brackets.
+    const root = tree(t)
+    write(root, files('e', 24))
+    for (const [tool, searchInFlight, most, least] of [
+      ['search', 1, 1, 1],
+      ['search', 4, 4, 2],
+      ['list', 4, 1, 1],
+    ] as const) {
+      let now = 0
+      let top = 0
+      const rig = await rigOf(t, root, {
+        limits: { searchInFlight },
+        hook: async lookup => {
+          if (lookup !== 'lstat') return
+          top = Math.max(top, ++now)
+          await sleep(10)
+          now--
+        },
+      })
+      if (rig === undefined) return
+      const args = tool === 'search' ? { query: 'hit', include: ['**/*.nomatch'] } : { include: ['**/*.nomatch'] }
+      const r = await rig.call(tool, args)
+      assert.equal(r.truncated, false)
+      assert.ok(top <= most, `${tool} N = ${searchInFlight}: ${top} lstat at the same time`)
+      assert.ok(top >= least, `${tool} N = ${searchInFlight}: peak ${top}`)
+    }
+  })
+
   test('a cancel while the opens are held ends the call, and the slot and the handles are free for the next call', async t => {
     const root = tree(t)
     write(root, files('h', 12))

@@ -1,22 +1,29 @@
 # Workspace search with several files in flight (issue #151 follow-up)
 
-\`search\` of the built-in Workspace took 2 to 6 s for a tree of 1,500 files on Windows, against 0.2 s for the Claude Code
-bridge (\`bench/RESULTS-workspace-bridge.md\` of issue #151). This file holds the diagnosis, the change and its numbers.
+`search` of the built-in Workspace took 2 to 6 s for a tree of 1,500 files on Windows, against 0.2 s for the Claude Code
+bridge (`bench/RESULTS-workspace-bridge.md` of issue #151). This file holds the diagnosis, the change and its numbers.
 
 ## Where the time went
 
 Profiled with every file system call timed, on the fixture of the #151 bench (1,500 files in 120 folders, 1 to 6 KB, 8 needle lines).
-A file cost 12.9 awaited calls: \`lstat\` 5.1, handle \`stat\` 2.0, \`realpath.native\` 2.0, handle read 1.8, open 1.0, close 1.0.
-Of the 10.0 s of the instrumented run, \`lstat\` took 3.5 s (35%), reads 1.3 s, handle \`stat\` 1.2 s, open 0.8 s, close 0.5 s and
-\`realpath\` 0.2 s. The walk visited one file at a time, so each call was a round trip that nothing overlapped. The laptop was at
+A file cost 12.9 awaited calls: `lstat` 5.1, handle `stat` 2.0, `realpath.native` 2.0, handle read 1.8, open 1.0, close 1.0.
+Of the 10.0 s of the instrumented run, `lstat` took 3.5 s (35%), reads 1.3 s, handle `stat` 1.2 s, open 0.8 s, close 0.5 s and
+`realpath` 0.2 s. The walk visited one file at a time, so each call was a round trip that nothing overlapped. The laptop was at
 about 60% CPU from other work, so every time here is noisy by a factor of 2.
 
 ## The change
 
-Up to 4 files of one walk are opened, proven and read at the same time (\`LIMITS.searchInFlight\`, the option \`limits.searchInFlight\`
+Up to 4 files of one walk are opened, proven and read at the same time (`LIMITS.searchInFlight`, the option `limits.searchInFlight`
 for tests). Each file is proven by its own open as before. The answers are taken in the order of the walk, so the matches, the
-counts and \`truncated\` are the same for any number (a test compares 1, 2, 4 and 8, also with a cut at \`maxMatches\`). The walk slot
+counts and `truncated` are the same for any number (a test compares 1, 2, 4 and 8, also with a cut at `maxMatches`). The walk slot
 is still one walk. A visit that is running ends before its folder closes, and a cancel waits for the running visits.
+
+The second part of the change (C): the `lstat` of an entry, with the proof of the folder right before it and right after it, is made
+for up to the same number of entries of one folder at the same time. Each entry has its own bracket and the answers are taken in
+the order of the listing. The brackets use no state that is shared: `proven()` is an `lstat` of the path of the folder compared with
+the identity that was proven at its open, so two calls at once only read. A swap between the two proofs of an entry is caught for
+that entry, whatever the other entries do. A `list` and a `stat` still go one entry at a time (a test checks the peak). A test swaps
+the folder from the Nth `lstat` on, for N from 1 to 40, with 4 entries in flight: no outside line came back in 40 runs.
 
 ## Numbers
 
@@ -29,7 +36,7 @@ One provider, the same fixture, 7 searches in a row for each setting, 3 rounds o
 | 8 | 1417 | 1430 | 1518 |
 
 The best single search was 1.6 s with 1, 1.05 s with 4 and 0.9 s with 8. 8 was not better than 4 beyond the noise, so the default is 4.
-Through the #151 bench (\`run_code\` calls, hosts started by the script), \`search\` warm, median of 6 calls for each of 1 and 6
+Through the #151 bench (`run_code` calls, hosts started by the script), `search` warm, median of 6 calls for each of 1 and 6
 sessions, one run with 1 in flight and one with 4, back to back:
 
 | sessions | 1 in flight | 4 in flight |
@@ -37,23 +44,38 @@ sessions, one run with 1 in flight and one with 4, back to back:
 | 1 | 2835 ms | 2192 ms |
 | 6 | 2137 ms | 1782 ms |
 
-That is 23% and 17% less. The bridge's \`Grep\` took 239 to 400 ms in the same runs. The gap to it is smaller than before and still large.
+That is 23% and 17% less. The bridge's `Grep` took 239 to 400 ms in the same runs. The gap to it is smaller than before and still large.
 The other Workspace calls and the memory did not change (private bytes after the calls: 134 to 137 MB for 1 session, 563 to
 625 MB for 6 sessions, within the noise of the two runs).
 
-The rest of the time is the walk, which still goes one entry at a time: 3 \`lstat\` per entry for the proof of the folder around it,
-before its file can start. The files overlap, the walk does not.
+With C (the brackets of 4 entries at the same time) the same provider test, 7 searches for each of 3 rounds (median of each round):
 
-Not measured here: one CPU (Docker with \`--cpus 1\`), and Linux and macOS.
+| files and entries in flight | round 1 | round 2 | round 3 |
+|---|---|---|---|
+| 1 | 2248 | 2160 | 2174 |
+| 4 | 1090 | 1257 | 1211 |
+| 8 | 1071 | 996 | 1053 |
+
+Through the #151 bench, `search` warm, median of 6 calls, 1 in flight against 4 (with C), back to back:
+
+| sessions | 1 in flight | 4 in flight |
+|---|---|---|
+| 1 | 2016 ms | 1073 ms |
+| 6 | 2185 ms | 1060 ms |
+
+That is 47% and 51% less. 8 in flight was about 10% faster than 4 in the provider test and is not taken: it is inside the noise,
+and on one CPU more in flight cannot help. The bridge's `Grep` still takes 0.2 to 0.4 s.
+
+Not measured here: one CPU (Docker with `--cpus 1`), and Linux and macOS.
 
 ## Note on the next step (not built)
 
-The 3 \`lstat\` of a walk entry (the folder is proven right before and right after the \`lstat\` of the entry) are the brackets of
-the swap family of the ADR: they make sure that the names and the sizes that \`list\` and \`stat\` show come from the folder that
-was proven, and not from a link that was swapped in for one read. For \`search\` the entry gives only its kind (file or folder) and
+The 3 `lstat` of a walk entry (the folder is proven right before and right after the `lstat` of the entry) are the brackets of
+the swap family of the ADR: they make sure that the names and the sizes that `list` and `stat` show come from the folder that
+was proven, and not from a link that was swapped in for one read. For `search` the entry gives only its kind (file or folder) and
 its name, and nothing of it is shown: a match shows the path of the file that was opened and proven, and its text comes from that
 handle. A file that a swapped folder reached would fail its own open (a link in a part, or an identity that differs), and a name
 that came from outside is opened as a candidate, so it is proven or refused. So a match path cannot show an unproven name. What
 the bracket could still protect is the decision to open or enter: a swapped folder makes the walk spend time on outside
-names (never show them), and it keeps the alternating family of \`list\` out of \`search\` by construction. Whether skipping the
-brackets for \`search\` is a weakening of the proof is a judgment for the reviewer: it is not built here.
+names (never show them), and it keeps the alternating family of `list` out of `search` by construction. Whether skipping the
+brackets for `search` is a weakening of the proof is a judgment for the reviewer: it is not built here.

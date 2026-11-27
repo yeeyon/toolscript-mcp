@@ -223,6 +223,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     hides?: Hides,
     reach?: (folder: readonly string[]) => boolean,
     idle?: () => Promise<void>,
+    ahead = 1,
   ): Promise<boolean> => {
     const read = await dir.names({
       keep: name => !excluded([...dir.parts, name]),
@@ -232,39 +233,57 @@ export const createProvider = (options: ProviderOptions): Provider => {
     within.left -= read.names.length
     if (read.more) within.cut = true
     const names = read.names.sort(byText)
-    for (const name of names) {
-      cancelled(signal)
-      if (!within.timely()) return false
-      const parts = [...dir.parts, name]
-      const entry = await dir.lstat(name)
-      if (entry === undefined) continue
-      // An ignored name still counted as a visited one above. An ignored folder is never entered.
-      if (hides?.(parts, entry.kind === 'folder') === true) continue
-      if (!(await visit({ parts, kind: entry.kind, size: entry.size }, dir, name))) return false
-      if (entry.kind !== 'folder' || levels <= 1 || read.more || skip.has(fold(name))) continue
-      // No glob of `include` reaches below this folder: its entry was visited, its names are not read.
-      if (reach?.(parts) === false) continue
-      const child = await dir.openDir(name).catch((err: unknown) => {
-        if (
-          err instanceof WorkspaceError &&
-          (err.code === 'link' || err.code === 'not-found' || err.code === 'not-folder')
-        )
-          return undefined
-        throw err
-      })
-      if (child === undefined) continue
-      try {
-        if (!(await walk(child, levels - 1, visit, signal, within, hides, reach, idle))) return false
-      } finally {
-        // A visit that is still running must end before its folder closes: its open goes through that folder.
+    // The `lstat` of an entry, with the proof of the folder right before and right after it, is made for up to `ahead`
+    // entries at the same time. Each entry has its own bracket, and the answers are taken in the order of the listing.
+    const looked: Promise<{ entry: Awaited<ReturnType<Dir['lstat']>> } | { error: unknown }>[] = []
+    let started = 0
+    try {
+      for (const name of names) {
+        cancelled(signal)
+        if (!within.timely()) return false
+        for (; started < names.length && looked.length < ahead; started++)
+          looked.push(
+            dir.lstat(names[started]!).then(
+              entry => ({ entry }),
+              (error: unknown) => ({ error }),
+            ),
+          )
+        const got = await looked.shift()!
+        if ('error' in got) throw got.error
+        const entry = got.entry
+        const parts = [...dir.parts, name]
+        if (entry === undefined) continue
+        // An ignored name still counted as a visited one above. An ignored folder is never entered.
+        if (hides?.(parts, entry.kind === 'folder') === true) continue
+        if (!(await visit({ parts, kind: entry.kind, size: entry.size }, dir, name))) return false
+        if (entry.kind !== 'folder' || levels <= 1 || read.more || skip.has(fold(name))) continue
+        // No glob of `include` reaches below this folder: its entry was visited, its names are not read.
+        if (reach?.(parts) === false) continue
+        const child = await dir.openDir(name).catch((err: unknown) => {
+          if (
+            err instanceof WorkspaceError &&
+            (err.code === 'link' || err.code === 'not-found' || err.code === 'not-folder')
+          )
+            return undefined
+          throw err
+        })
+        if (child === undefined) continue
         try {
-          await idle?.()
+          if (!(await walk(child, levels - 1, visit, signal, within, hides, reach, idle, ahead))) return false
         } finally {
-          await child.close()
+          // A visit that is still running must end before its folder closes: its open goes through that folder.
+          try {
+            await idle?.()
+          } finally {
+            await child.close()
+          }
         }
       }
+      return true
+    } finally {
+      // The `lstat` that a stop left running ends before the caller closes this folder: it goes through that folder.
+      await Promise.all(looked)
     }
-    return true
   }
 
   // Names compare with no regard to case on Windows and macOS, as the exclusions do.
@@ -433,6 +452,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
           hides,
           reachOf(input.include),
           () => drain(0),
+          limits.searchInFlight,
         )
         await drain(0)
         if (!complete || within.cut) truncated = true
