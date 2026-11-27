@@ -138,6 +138,15 @@ describe('the Codex read of init, with a fake codex on PATH and a fake CODEX_HOM
     const files = raw('files')
     assert.ok(files && 'fields' in files && files.unseen === undefined)
     assert.ok(!r.notes?.some(n => n.includes('does not show these keys')), String(r.notes))
+    // A table of config.toml that the reader skips (a fifth level) is not seen either: the fixed line.
+    const skipped = setup('ok')
+    fs.appendFileSync(skipped.file.path, '\n[mcp_servers.docs.tools.t.y]\nk = "v"\n')
+    const partial = await read(skipped)
+    assert.equal(partial.kind, 'codex')
+    assert.ok(
+      partial.notes?.some(n => n.includes('does not show these keys')),
+      String(partial.notes),
+    )
     // No config.toml, or one that cannot be read: one fixed line that names the keys.
     for (const text of [undefined, '[mcp_servers.a]\ncommand = "x" junk\n']) {
       const t = setup('ok')

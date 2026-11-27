@@ -4,6 +4,7 @@
 // literal env or header value never goes into a reason, a note or a rule.
 
 import { PLAIN_NAME } from './commands.ts'
+import { shownName } from './policy.ts'
 import { UNREADABLE_ENTRY } from './toml.ts'
 
 export type CodexRaw =
@@ -165,16 +166,17 @@ export const mapCodex = (
   if (texts.some(hasControl)) return { why: 'a command, an argument, a value or a url holds a control character' }
   const own = hasCommand ? STDIO_KEYS : HTTP_KEYS
   const other = hasCommand ? HTTP_KEYS : STDIO_KEYS
+  // A key name comes from the file: it prints through shownName, so an escape of TOML never reaches the screen raw.
+  const left = (name: string, why: string) => dropped.push(`${shownName(name)} (${why})`)
+  const unknown = 'init does not know this key'
   for (const name of Object.keys(fields)) {
     if (!present(fields, name)) continue
-    if (name in REASON) dropped.push(`${name} (${REASON[name]})`)
-    else if (other.includes(name)) dropped.push(`${name} (not used by this kind of server)`)
-    else if (!own.includes(name) && !COMMON_KEYS.includes(name) && !SILENT_KEYS.includes(name))
-      dropped.push(`${name} (init does not know this key)`)
+    if (Object.hasOwn(REASON, name)) left(name, REASON[name]!)
+    else if (other.includes(name)) left(name, 'not used by this kind of server')
+    else if (!own.includes(name) && !COMMON_KEYS.includes(name) && !SILENT_KEYS.includes(name)) left(name, unknown)
   }
   for (const name of unseen)
-    if (!Object.hasOwn(fields, name))
-      dropped.push(name in REASON ? `${name} (${REASON[name]})` : `${name} (init does not know this key)`)
+    if (!Object.hasOwn(fields, name)) left(name, Object.hasOwn(REASON, name) ? REASON[name]! : unknown)
   if (helperOnly)
     notes.push(`${key}: Codex took its header from http_headers_helper only. The server has no header now.`)
   const enabledTools = get('enabled_tools')

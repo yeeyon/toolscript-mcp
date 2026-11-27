@@ -207,12 +207,13 @@ export const readCodexClient = async (
         ? [name, { ...raw, unseen: extra }]
         : [name, raw]
     })
-    const hidden =
-      seen === undefined
-        ? [
-            `Codex does not show these keys of a server through its CLI: ${HIDDEN_KEYS.join(', ')}. init could not read ${at.path}, so it cannot say which servers set them.`,
-          ]
-        : []
+    // A server that the CLI lists and the reader of config.toml did not return (a table that it skipped) is not seen either.
+    const blind = seen === undefined || cli.servers.some(([name, raw]) => 'fields' in raw && !seen.has(name))
+    const hidden = blind
+      ? [
+          `Codex does not show these keys of a server through its CLI: ${HIDDEN_KEYS.join(', ')}. init could not read ${at.path} for every server, so it cannot say which servers set them.`,
+        ]
+      : []
     return { ...at, kind: 'codex', servers, notes: [...notes, ...cli.notes, ...hidden] }
   }
   if (!cli.missing) notes.push(`${cli.why}. init read ${at.path} instead.`)

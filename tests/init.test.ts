@@ -2334,6 +2334,30 @@ describe('Codex', () => {
     assert.equal(why(cli({ type: 'stdio', command: 'c', args: [] }, 'a\u001bb')), 'the name holds a control character')
   })
 
+  test('a dropped key name with an escaped control character never reaches the output raw, on both paths', () => {
+    const probes = ['\u001b[2Jx', '\u001b]0;pwn\u0007', 'a\u202eb']
+    const raw = /[\u0000-\u0009\u000b-\u001f\u007f\u202e]/
+    // Path B: the key is a quoted key of the server table, with escapes of TOML.
+    const table = probes.map(p => JSON.stringify(p) + ' = "v"').join('\n')
+    const toml = importServers([fromToml('[mcp_servers.s]\ncommand = "c"\n' + table + '\n')], 'linux')
+    // Path A: config.toml gave the names of the keys that get --json does not show.
+    const seen = parseCodexGet({ name: 's', transport: { type: 'stdio', command: 'c' } }, undefined)!
+    assert.ok('fields' in seen)
+    const cli = importServers(
+      [{ ...CODEX_FILE, kind: 'codex', servers: [['s', { ...seen, unseen: probes }]] }],
+      'linux',
+    )
+    for (const imp of [toml, cli]) {
+      const o = imp.clients[0]!.outcomes[0]!
+      assert.ok(o.kind === 'imported')
+      assert.equal(o.dropped.length, probes.length)
+      for (const line of o.dropped) assert.ok(!raw.test(line), JSON.stringify(line))
+      const report = initReport(imp, '/c/config.json', 'linux', NPX_LAUNCH)
+      assert.ok(!raw.test(report), JSON.stringify(report))
+      assert.ok(report.includes('Left out: "'), report)
+    }
+  })
+
   test('only o_auth and not_logged_in start a login step, and a table in env_vars has its own reason', () => {
     const report = (status: string) =>
       initReport(importServers([fromCli({ oauthy: status })], 'linux'), '/c/config.json', 'linux', NPX_LAUNCH)
