@@ -1205,7 +1205,12 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     while (reads < 300 && Date.now() < end) {
       const probe = probes[rotation[reads % rotation.length]!]
       const r = await rig.client.callTool({ name: probe.tool, arguments: probe.args })
-      assert.ok(!JSON.stringify(r).includes(secret), 'an outside byte')
+      const shown = JSON.stringify(r)
+      assert.ok(
+        !shown.includes(secret),
+        // The message tells a name (the secret as a file name) from file text, and shows the shape without the value.
+        `an outside byte: tool ${probe.tool}, ${shown.includes(`outside ${secret}`) ? 'file text' : 'name only'}, around the match: ${shown.slice(Math.max(0, shown.indexOf(secret) - 100), shown.indexOf(secret) + 100).replaceAll(secret, '<secret>')}`,
+      )
       // On Windows and macOS a timed swap can still show outside names and metadata through list and stat: the family
       // that ADR 0144 names. Bytes of a file never. Linux shows nothing from outside.
       const metadataOnly = probe.tool !== 'read' && (process.platform === 'win32' || process.platform === 'darwin')
