@@ -1416,3 +1416,130 @@ describe('names that the volume opens but does not list (Linux)', () => {
     },
   )
 })
+
+describe('search with several terms', () => {
+  const tree = (root: string) =>
+    write(root, {
+      '.gitignore': 'big/\n',
+      'a.txt': 'import x from y\nimport z\nFoo foo FOO\n',
+      'b/c.txt': 'abc here, import too\nnothing\n',
+      'big/data.json': 'import from Foo\n',
+    })
+
+  test('tags each match with its term as written, sorts by place then term, and counts overlap for each term', async t => {
+    const root = folders(t)()
+    tree(root)
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    const hits = await rig.call('search', { query: ['from', 'import', 'nothing', 'missing'] })
+    assert.deepEqual(
+      hits.matches.map((m: { path: string; line: number; column: number; query: string }) => [
+        m.path,
+        m.line,
+        m.column,
+        m.query,
+      ]),
+      [
+        ['a.txt', 1, 1, 'import'],
+        ['a.txt', 1, 10, 'from'],
+        ['a.txt', 2, 1, 'import'],
+        ['b/c.txt', 1, 11, 'import'],
+        ['b/c.txt', 2, 1, 'nothing'],
+      ],
+    )
+    assert.deepEqual(hits.matches[0], { path: 'a.txt', line: 1, column: 1, text: 'import x from y', query: 'import' })
+    assert.equal(hits.truncated, false)
+    // Hidden by the .gitignore: no match from big/.
+    assert.ok(!hits.matches.some((m: { path: string }) => m.path.startsWith('big/')))
+    // One term in an array is tagged. A term inside another counts for each term.
+    const single = await rig.call('search', { query: ['import'] })
+    assert.equal(single.matches.length, 3)
+    assert.ok(single.matches.every((m: { query: string }) => m.query === 'import'))
+    const nested = await rig.call('search', { query: ['ab', 'abc'] })
+    assert.deepEqual(
+      nested.matches.map((m: { query: string }) => m.query),
+      ['ab', 'abc'],
+    )
+    // ignoreCase keeps the term as the program wrote it.
+    const caseless = await rig.call('search', { query: ['FOO', 'IMPORT'], ignoreCase: true })
+    assert.deepEqual([...new Set(caseless.matches.map((m: { query: string }) => m.query))].sort(), ['FOO', 'IMPORT'])
+    assert.equal(caseless.matches.filter((m: { query: string }) => m.query === 'FOO').length, 3)
+  })
+
+  test('a string keeps its result shape: no query in a match, the same keys and truncation', async t => {
+    const root = folders(t)()
+    tree(root)
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    assert.deepEqual(await rig.call('search', { query: 'import' }), {
+      matches: [
+        { path: 'a.txt', line: 1, column: 1, text: 'import x from y' },
+        { path: 'a.txt', line: 2, column: 1, text: 'import z' },
+        { path: 'b/c.txt', line: 1, column: 11, text: 'abc here, import too' },
+      ],
+      truncated: false,
+      filesScanned: 3,
+      skipped: 0,
+    })
+    const cut = await rig.call('search', { query: 'import', maxMatches: 2 })
+    assert.equal(cut.matches.length, 2)
+    assert.equal(cut.truncated, true)
+    // A term that reaches the cap with no match past it is not truncated.
+    assert.equal((await rig.call('search', { query: 'import', maxMatches: 3 })).truncated, false)
+    assert.equal((await rig.call('search', { query: ['import'], maxMatches: 3 })).truncated, false)
+  })
+
+  test('a full term takes no more matches and the others go on; truncated tells that a term was cut', async t => {
+    const root = folders(t)()
+    write(root, {
+      'a.txt': 'x x x x\ny\n',
+      'b.txt': 'x\ny\n',
+      'c.txt': 'y\n',
+    })
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    const hits = await rig.call('search', { query: ['x', 'y'], maxMatches: 2 })
+    const of = (q: string) => hits.matches.filter((m: { query: string }) => m.query === q)
+    assert.equal(of('x').length, 2)
+    assert.equal(of('y').length, 2)
+    assert.equal(hits.truncated, true)
+    // A cap that no term reaches past is not a cut.
+    const whole = await rig.call('search', { query: ['x', 'y'], maxMatches: 6 })
+    assert.equal(whole.truncated, false)
+    assert.equal(whole.matches.length, 4 + 1 + 3)
+    // Cut at a cap of 1 for each, and the file count is the same as for one term that reads all the files.
+    const one = await rig.call('search', { query: 'nomatch' })
+    const many = await rig.call('search', { query: ['nomatch', 'nomatch2', 'nomatch3'] })
+    assert.equal(many.filesScanned, one.filesScanned)
+    assert.equal(many.skipped, one.skipped)
+  })
+
+  test('one walk: the same opens for 8 terms as for 1, and an array call ends inside one budget', async t => {
+    const root = folders(t)()
+    const files: Record<string, string> = {}
+    for (let i = 0; i < 60; i++) files[`d${i % 4}/f${i}.txt`] = `line ${i} alpha beta\n`
+    write(root, files)
+    const eight = ['alpha', 'beta', 'g1', 'g2', 'g3', 'g4', 'g5', 'g6']
+    let opens = 0
+    const counting = await rigOf(t, root, { hook: lookup => void (lookup === 'open' && opens++) })
+    if (counting === undefined) return
+    const one = await counting.call('search', { query: 'alpha' })
+    const forOne = opens
+    opens = 0
+    const many = await counting.call('search', { query: eight })
+    assert.equal(one.filesScanned, 60)
+    assert.equal(many.filesScanned, 60)
+    assert.equal(opens, forOne)
+    // With a slow open, a walk is cut at the budget: the array call pays one budget for all the terms.
+    const budget = 300
+    const slow = await rigOf(t, root, {
+      limits: { searchMs: budget },
+      hook: lookup => (lookup === 'open' ? sleep(20) : undefined),
+    })
+    if (slow === undefined) return
+    const began = performance.now()
+    const cut = await slow.call('search', { query: eight })
+    assert.ok(performance.now() - began < 2 * budget, `took ${performance.now() - began} ms`)
+    assert.equal(cut.truncated, true)
+  })
+})

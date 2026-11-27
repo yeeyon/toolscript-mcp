@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- Workspace `search` takes `query` as an array of up to 20 texts, so a program that looks for 8 names pays one walk, not 8. Each match names its text in `query`, `maxMatches` counts for each text (the default is 200, or 2,000 divided by the number of texts if less), and a text that is full takes no more matches while the others go on. A single text works as before.
+
 ## 1.0.4
 
 - A tool name held in a plain string, such as `const g = "mcp__s__t"; await call(g, {})`, is now asked in the prompt before the run, like a name written inside `call("…")`, when the client can ask. A call refused at call time for a name nobody asked about now says that the person was not asked, and tells the model to write the name as a string in the program and run again, so a model no longer reports it as declined.

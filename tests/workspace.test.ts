@@ -46,6 +46,7 @@ import {
   type Guards,
   type Policy,
 } from '../src/core/policy.ts'
+import { argsText } from '../src/core/catalog.ts'
 import type { ServerKey } from '../src/core/config.ts'
 
 const code = (f: () => unknown): string | undefined => {
@@ -513,8 +514,8 @@ describe('the tool table', () => {
       assert.equal(WORKSPACE_TOOLS[name].inputSchema.type, 'object')
       assert.equal((WORKSPACE_TOOLS[name].inputSchema as { additionalProperties: boolean }).additionalProperties, false)
       assert.equal(WORKSPACE_TOOLS[name].outputSchema.type, 'object')
-      // search is the longest: the .gitignore sentence and the truncated sentence.
-      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 360)
+      // search is the longest: the .gitignore sentence, the query array sentence and the truncated sentence.
+      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 520)
     }
     assert.equal(workspaceClass('mcp__workspace__read'), 'read')
     assert.equal(workspaceClass('mcp__workspace__diff'), 'read')
@@ -574,6 +575,61 @@ describe('the tool table', () => {
       code(() => parsePathInput({})),
       'bad-input',
     )
+  })
+
+  test('search takes a text or an array of 1 to 20 texts, and maxMatches counts for each text', () => {
+    const terms = (n: number) => Array.from({ length: n }, (_, i) => `t${i}`)
+    assert.deepEqual(parseSearchInput({ query: ['a'] }), {
+      query: ['a'],
+      path: '.',
+      include: [],
+      ignoreCase: false,
+      maxMatches: 200,
+    })
+    // The default for each text: 200, or 2,000 divided by the number of texts when that is less.
+    for (const [n, each] of [
+      [1, 200],
+      [8, 200],
+      [10, 200],
+      [11, 181],
+      [20, 100],
+    ] as const)
+      assert.equal(parseSearchInput({ query: terms(n) }).maxMatches, each, `${n} texts`)
+    assert.equal(parseSearchInput({ query: terms(20), maxMatches: 100 }).maxMatches, 100)
+    assert.equal(parseSearchInput({ query: ['a'], maxMatches: 2000 }).maxMatches, 2000)
+    assert.equal((parseSearchInput({ query: ['a', 'A'] }).query as string[]).length, 2)
+    const refused = (args: Record<string, unknown>): string => {
+      try {
+        parseSearchInput(args)
+      } catch (error) {
+        assert.equal((error as WorkspaceError).code, 'bad-input')
+        return (error as WorkspaceError).message
+      }
+      return assert.fail(JSON.stringify(args).slice(0, 60))
+    }
+    assert.match(refused({ query: [] }), /array of 1 to 20 texts/)
+    assert.match(refused({ query: terms(21) }), /array of 1 to 20 texts/)
+    assert.match(refused({ query: ['a', 1] }), /query\[1\] must be text/)
+    assert.match(refused({ query: ['a', ''] }), /query\[1\] must be text/)
+    assert.match(refused({ query: ['a', 'b\nc'] }), /query\[1\] must be text/)
+    assert.match(refused({ query: ['a', 'x'.repeat(1001)] }), /query\[1\] must be text/)
+    assert.match(refused({ query: ['a', 'b', 'a'] }), /query\[2\] repeats an earlier text/)
+    assert.match(refused({ query: ['Foo', 'FOO'], ignoreCase: true }), /query\[1\] repeats an earlier text/)
+    assert.match(refused({ query: terms(11), maxMatches: 200 }), /at most 181/)
+    assert.match(refused({ query: terms(2), maxMatches: 1001 }), /at most 1000/)
+    refused({ query: 5 })
+  })
+
+  test('the search schema shows query as a text or an array, in the argument text of search_tools', () => {
+    const { inputSchema, description } = WORKSPACE_TOOLS.search
+    const query = (inputSchema.properties as Record<string, { anyOf: unknown[] }>).query!
+    assert.deepEqual(query.anyOf, [
+      { type: 'string' },
+      { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: LIMITS.queryTerms },
+    ])
+    assert.equal(LIMITS.queryTerms, 20)
+    assert.match(argsText(inputSchema), /query: string \| string\[\]/)
+    assert.match(description, /query can be an array of up to 20 texts: one walk finds all of them/)
   })
 })
 
