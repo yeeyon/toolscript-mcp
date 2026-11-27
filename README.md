@@ -958,6 +958,9 @@ login.
   again, the next call works, with no restart.
 - The region and the service come from the host of `url`, such as `us-east-1` and `aws-mcp`. For another host, set
   `"region"` and `"service"` in `sigv4`.
+- To send pairs such as `AWS_REGION` to the server, as `mcp-proxy-for-aws --metadata` does, set `"metadata"` in
+  `sigv4`, for example `"metadata": { "AWS_REGION": "ap-southeast-1" }`. toolscript-mcp puts the pairs in `params._meta`
+  of each request. A pair that the request already has stays as it is. A value can use `${VAR}`.
 - An entry with `sigv4` does not log in with OAuth. An entry with `sigv4` and `oauth`, or with an `Authorization`
   header, is an error.
 - toolscript-mcp signs only the requests to the origin of `url`. It never writes the credentials or the signature to a
