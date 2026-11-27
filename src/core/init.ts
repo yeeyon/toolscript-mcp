@@ -25,7 +25,7 @@ import {
   PLAIN_NAME,
   type CommandStart,
 } from './commands.ts'
-import { mapCodex, type CodexRaw, type CodexRule } from './codex.ts'
+import { hasControl, mapCodex, type CodexRaw, type CodexRule } from './codex.ts'
 import { printable, shownName } from './policy.ts'
 
 export type ClientId = 'claude-code' | 'claude-desktop' | 'cursor' | 'codex'
@@ -305,9 +305,10 @@ const parseCodex = (name: string, raw: CodexRaw): Parsed => {
   if ('skip' in raw) return { kind: 'skipped', why: raw.skip }
   const { fields } = raw
   if (isSelf(name, { command: fields.command, args: fields.args })) return { kind: 'self' }
+  if (hasControl(name)) return { kind: 'skipped', why: 'the name holds a control character' }
   const key = keyOf(name)
   if (key === undefined) return { kind: 'skipped', why: 'no letter or digit to make a server key of' }
-  const mapped = mapCodex(key, fields, raw.via, raw.authStatus)
+  const mapped = mapCodex(key, fields, raw.via, raw.authStatus, raw.unseen)
   if ('why' in mapped) return { kind: 'skipped', why: mapped.why }
   const entry: Entry = namesAzureDevOps(key, mapped.entry) ? { ...mapped.entry, untrusted: true } : mapped.entry
   const { policy, notes, login } = mapped

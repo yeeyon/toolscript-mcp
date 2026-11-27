@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { readCodexToml, TOML_MAX, UNREADABLE_ENTRY } from '../src/core/toml.ts'
+import { ENV_VARS_TABLE, readCodexToml, TOML_MAX, UNREADABLE_ENTRY } from '../src/core/toml.ts'
 
 const fixture = fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'codex-0.172.0', 'config.toml'),
@@ -145,7 +145,7 @@ describe('the strict reader of config.toml: the forms it refuses', () => {
   test('an array of tables, a deep sub-table, and a key that is also a sub-table skip the server', () => {
     const forms = [
       '[[mcp_servers.s.x]]\nk = "v"\n',
-      '[mcp_servers.s.tools.t]\napproval_mode = "approve"\n',
+      '[mcp_servers.s.tools.t.u]\nk = "v"\n',
       '[mcp_servers.s.env]\nA = "1"\n[mcp_servers.s.env.B]\nC = "2"\n',
       '[mcp_servers.s.x]\nk = 1\n',
     ]
@@ -154,6 +154,25 @@ describe('the strict reader of config.toml: the forms it refuses', () => {
       assert.equal(skipped(text, 's'), UNREADABLE_ENTRY, form)
       assert.deepEqual(fields(text, 't'), { command: 'ok' }, form)
     }
+  })
+
+  test('the per-tool tables of a server are read over and left to the map as the key tools', () => {
+    const text = [
+      '[mcp_servers.s]',
+      'command = "c"',
+      '[mcp_servers.s.tools.a]',
+      'approval_mode = "approve"',
+      '[mcp_servers.s.tools."b c"]',
+      'output_token_limit = 100',
+      'x = 0x10',
+    ].join('\n')
+    assert.deepEqual(fields(text, 's'), { command: 'c', tools: {} })
+  })
+
+  test('a list of tables in env_vars gives its own reason', () => {
+    const text = '[mcp_servers.s]\ncommand = "c"\nenv_vars = ["A", { name = "B", source = "local" }]\n'
+    assert.equal(skipped(text, 's'), ENV_VARS_TABLE)
+    assert.match(ENV_VARS_TABLE, /name and source/)
   })
 
   test('a key defined twice makes the file invalid TOML', () => {
@@ -180,6 +199,18 @@ describe('the strict reader of config.toml: the forms it refuses', () => {
       '[]\n',
     ]
     for (const text of files) assert.ok(!readCodexToml(text).ok, JSON.stringify(text))
+  })
+
+  test('a raw control character in a string refuses the file, with the line, as TOML does', () => {
+    for (const bad of ['\u0001', '\u001b', '\u007f', '\u0000']) {
+      for (const quote of ['"', "'"]) {
+        const text = '[mcp_servers.a]\ncommand = ' + quote + 'x' + bad + 'y' + quote + '\n'
+        assert.match(refused(text), /^a control character in a string at line 2$/, JSON.stringify(text))
+      }
+    }
+    // A tab is allowed, and an escape is valid TOML: the map checks the decoded text.
+    assert.deepEqual(fields('[mcp_servers.a]\ncommand = "x\ty\\u001bz"\n', 'a'), { command: 'x\ty\u001bz' })
+    assert.deepEqual(fields("[mcp_servers.a]\ncommand = 'x\ty'\n", 'a'), { command: 'x\ty' })
   })
 
   test('a reason holds no text of the file', () => {

@@ -6,7 +6,7 @@
 import crossSpawn from 'cross-spawn'
 import fs from 'node:fs'
 import path from 'node:path'
-import { parseCodexGet, parseCodexList, type CodexRaw } from '../core/codex.ts'
+import { HIDDEN_KEYS, parseCodexGet, parseCodexList, SHOWN_KEYS, type CodexRaw } from '../core/codex.ts'
 import type { Env } from '../core/config.ts'
 import type { ClientFile, ClientRead } from '../core/init.ts'
 import { readCodexToml, TOML_MAX } from '../core/toml.ts'
@@ -147,6 +147,31 @@ const viaToml = (text: string, limits: CodexLimits): { servers: Servers; notes: 
   return { servers: servers.slice(0, limits.maxServers), notes }
 }
 
+/** The keys of each server table of config.toml that `codex mcp get --json` does not show, or undefined when the file cannot be read. */
+const unseenKeys = async (
+  file: string,
+  readText: (file: string) => Promise<FileRead>,
+): Promise<Map<string, string[]> | undefined> => {
+  const read = await readText(file)
+  if (read.kind !== 'text' || read.text.length > TOML_MAX) return undefined
+  const toml = readCodexToml(read.text)
+  if (!toml.ok) return undefined
+  return new Map(
+    toml.servers.flatMap(s =>
+      'fields' in s
+        ? [
+            [
+              s.name,
+              Object.keys(s.fields)
+                .filter(k => !SHOWN_KEYS.includes(k))
+                .sort(),
+            ] as const,
+          ]
+        : [],
+    ),
+  )
+}
+
 /**
  * The Codex servers as a `ClientRead`: from the CLI, else from config.toml. `start`: the folder of the session. init
  * reads the user scope only, and says so when the project has a `.codex/config.toml`. A failed CLI call gives a note
@@ -173,7 +198,23 @@ export const readCodexClient = async (
       `init did not read ${project}: Codex loads it only for a project that it trusts, and init cannot see that trust.`,
     )
   const cli = await viaCli(env, home, limits)
-  if (cli.ok) return { ...at, kind: 'codex', servers: cli.servers, notes: [...notes, ...cli.notes] }
+  if (cli.ok) {
+    // `get --json` does not show every key of config.toml: the file gives the names of the others.
+    const seen = await unseenKeys(at.path, readText)
+    const servers = cli.servers.map(([name, raw]): readonly [string, CodexRaw] => {
+      const extra = seen?.get(name)
+      return 'fields' in raw && extra !== undefined && extra.length > 0
+        ? [name, { ...raw, unseen: extra }]
+        : [name, raw]
+    })
+    const hidden =
+      seen === undefined
+        ? [
+            `Codex does not show these keys of a server through its CLI: ${HIDDEN_KEYS.join(', ')}. init could not read ${at.path}, so it cannot say which servers set them.`,
+          ]
+        : []
+    return { ...at, kind: 'codex', servers, notes: [...notes, ...cli.notes, ...hidden] }
+  }
   if (!cli.missing) notes.push(`${cli.why}. init read ${at.path} instead.`)
   const read = await readText(at.path)
   if (read.kind !== 'text') return { ...at, ...read, notes }

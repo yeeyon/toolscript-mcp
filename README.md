@@ -290,9 +290,11 @@ For a development session, use `node` as the client command. Replace the npm arg
 - `disabled_tools` of a Codex server gives one `deny` rule for each tool. `enabled_tools` gives one `ask` rule for
   each tool, then one `deny` rule for the other tools of the server. The rules go first in `policy`. With `--add`,
   they go before the old rules, and no old rule changes. init prints the rules that it wrote.
-- init leaves out `http_headers_helper`, `startup_timeout_sec`, `tool_timeout_sec` and each key that it does
-  not know. It prints each name with its reason. It skips a server with `enabled = false`, and a server with a tool
-  name that a rule cannot name.
+- init leaves out `http_headers_helper`, `startup_timeout_sec`, `tool_timeout_sec`, the per-tool `tools` tables and each
+  key that it does not know. It prints each name with its reason. When it reads the CLI, it also reads `config.toml` for
+  the names of the keys that `codex mcp get` does not show. It skips a server with `enabled = false`, and a server with a
+  tool name that a rule cannot name. It also skips a server with a control character in its name, command, arguments,
+  values or URL.
 - For a Codex server with an OAuth login, init prints the `toolscript-mcp login` command. When init reads
   `config.toml`, it cannot see the login state.
 - For Codex, init prints the TOML entry of toolscript, and `codex mcp remove <name>` for each imported server.

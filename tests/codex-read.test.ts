@@ -123,6 +123,46 @@ describe('the Codex read of init, with a fake codex on PATH and a fake CODEX_HOM
     assert.ok(!namesOf(r).includes('projectonly'))
   })
 
+  test('path A: the keys of config.toml that get --json does not show are listed, or one fixed line names them', async () => {
+    const s = setup('ok')
+    const toml = fs
+      .readFileSync(s.file.path, 'utf8')
+      .replace('startup_timeout_sec = 20', 'startup_timeout_sec = 20\nrequired = true\nscopes = ["a"]')
+    fs.writeFileSync(s.file.path, toml + '\n[mcp_servers.docs.oauth]\nclient_id = "x"\n')
+    const r = await read(s)
+    assert.equal(r.kind, 'codex')
+    const raw = (name: string) => (r.kind === 'codex' ? r.servers.find(([n]) => n === name)![1] : undefined)
+    const docs = raw('docs')
+    assert.ok(docs && 'fields' in docs)
+    assert.deepEqual(docs.unseen, ['oauth', 'required', 'scopes'])
+    const files = raw('files')
+    assert.ok(files && 'fields' in files && files.unseen === undefined)
+    assert.ok(!r.notes?.some(n => n.includes('does not show these keys')), String(r.notes))
+    // No config.toml, or one that cannot be read: one fixed line that names the keys.
+    for (const text of [undefined, '[mcp_servers.a]\ncommand = "x" junk\n']) {
+      const t = setup('ok')
+      if (text === undefined) fs.rmSync(t.file.path)
+      else fs.writeFileSync(t.file.path, text)
+      const none = await read(t)
+      assert.equal(none.kind, 'codex')
+      const line = none.notes?.find(n => n.includes('does not show these keys'))
+      assert.ok(line, String(none.notes))
+      for (const key of [
+        'scopes',
+        'oauth',
+        'oauth_resource',
+        'default_tools_approval_mode',
+        'tools',
+        'required',
+        'supports_parallel_tool_calls',
+        'omit_tools_from',
+        'auth',
+        'environment_id',
+      ])
+        assert.ok(line.includes(key), key)
+    }
+  })
+
   test('the report says that init did not read the project .codex/config.toml', async () => {
     const r = await read(setup('ok'))
     assert.ok(

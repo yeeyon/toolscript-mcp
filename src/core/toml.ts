@@ -19,9 +19,19 @@ export const TOML_MAX = 1024 * 1024
 
 export const UNREADABLE_ENTRY = 'init cannot read this entry'
 
+/** `env_vars` of Codex can hold `{ name, source }` tables. init reads names only. */
+export const ENV_VARS_TABLE = 'a table in env_vars (name and source) is a form that init does not read'
+
 const MAX_DEPTH = 16
 
-type Val = { readonly v: unknown; readonly plain: boolean }
+type Val = {
+  readonly v: unknown
+  readonly plain: boolean
+  /** An inline table. */
+  readonly table?: true
+  /** A list with an inline table in it. */
+  readonly tables?: true
+}
 
 class Bad extends Error {
   readonly line: number
@@ -79,6 +89,9 @@ const basicString = (s: Scan): string => {
     s.i++
     if (c === '"') return out
     if (c !== '\\') {
+      const code = c.charCodeAt(0)
+      // TOML allows a tab and no other control character in a string. An escape such as \u001b is checked by the map.
+      if ((code < 0x20 && code !== 9) || code === 0x7f) return bad(s, 'a control character in a string')
       out += c
       continue
     }
@@ -99,6 +112,7 @@ const literalString = (s: Scan): string => {
   const end = s.t.indexOf("'", s.i + 1)
   const text = end === -1 ? undefined : s.t.slice(s.i + 1, end)
   if (text === undefined || text.includes('\n')) return bad(s, 'a string that does not end')
+  if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(text)) return bad(s, 'a control character in a string')
   s.i = end + 1
   return text
 }
@@ -167,7 +181,11 @@ const value = (s: Scan, depth: number): Val => {
       else if (s.t[s.i] !== ']') return bad(s, 'a list that is not valid')
     }
     const plain = items.every(i => i.plain && typeof i.v === 'string')
-    return { v: plain ? items.map(i => i.v as string) : undefined, plain }
+    return {
+      v: plain ? items.map(i => i.v as string) : undefined,
+      plain,
+      ...(items.some(i => i.table) && { tables: true as const }),
+    }
   }
   if (c === '{') {
     s.i++
@@ -176,7 +194,7 @@ const value = (s: Scan, depth: number): Val => {
     skip(s, false)
     if (s.t[s.i] === '}') {
       s.i++
-      return { v: table, plain }
+      return { v: table, plain, table: true }
     }
     for (;;) {
       skip(s, false)
@@ -193,7 +211,7 @@ const value = (s: Scan, depth: number): Val => {
       if (s.t[s.i] === ',') s.i++
       else if (s.t[s.i] === '}') {
         s.i++
-        return { v: plain ? table : undefined, plain }
+        return { v: plain ? table : undefined, plain, table: true }
       } else return bad(s, 'a table that is not valid')
     }
   }
@@ -218,7 +236,7 @@ export const readCodexToml = (text: string): CodexToml => {
   const s: Scan = { t: text.startsWith('﻿') ? text.slice(1) : text, i: 0 }
   const servers = new Map<string, Table>()
   const headers = new Set<string>()
-  let current: { server: Table; sub: string | undefined } | 'root-of-servers' | 'other' = 'other'
+  let current: { server: Table; sub: string | undefined; ignore?: true } | 'root-of-servers' | 'other' = 'other'
   let rootKeys = new Set<string>()
   const refuse: (why: string) => never = why => {
     throw new Bad(lineOf(s), why)
@@ -250,11 +268,14 @@ export const readCodexToml = (text: string): CodexToml => {
           if (server === undefined) servers.set(name, (server = { name, fields: {} }))
           if (array && path.length === 2) server.skip = UNREADABLE_ENTRY
           const sub = path.length > 2 ? path[2] : undefined
-          if (sub !== undefined) {
+          // [mcp_servers.<name>.tools.<tool>]: per-tool settings, left out by name and not read.
+          const tool = sub === 'tools' && path.length === 4 && !array
+          if (tool) server.fields.tools ??= {}
+          else if (sub !== undefined) {
             if (array || path.length > 3 || Object.hasOwn(server.fields, sub)) server.skip = UNREADABLE_ENTRY
             else server.fields[sub] = {}
           }
-          current = { server, sub }
+          current = tool ? { server, sub, ignore: true } : { server, sub }
         }
         continue
       }
@@ -272,12 +293,13 @@ export const readCodexToml = (text: string): CodexToml => {
         continue
       }
       if (current === 'root-of-servers') refuse('mcp_servers is written in a form that init cannot read')
-      const { server, sub } = current
+      const { server, sub, ignore } = current
       const id = JSON.stringify(key)
       if (rootKeys.has(id)) refuse('a key defined twice')
       rootKeys.add(id)
+      if (ignore) continue
       if (key.length !== 1 || !val.plain) {
-        server.skip = UNREADABLE_ENTRY
+        server.skip = key.length === 1 && key[0] === 'env_vars' && val.tables ? ENV_VARS_TABLE : UNREADABLE_ENTRY
         continue
       }
       if (sub === undefined) {

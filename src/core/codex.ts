@@ -11,6 +11,8 @@ export type CodexRaw =
       readonly via: 'codex' | 'config.toml'
       readonly fields: Readonly<Record<string, unknown>>
       readonly authStatus?: string
+      /** Path A: the keys that config.toml sets and `codex mcp get --json` does not show. */
+      readonly unseen?: readonly string[]
     }
   | { readonly skip: string }
 
@@ -54,12 +56,37 @@ const REASON: Readonly<Record<string, string>> = {
   http_headers_helper: 'init does not run the helper command of Codex',
   startup_timeout_sec: 'toolscript-mcp has no time limit for the start of one server',
   tool_timeout_sec: 'toolscript-mcp has one time limit for every call, set in the config',
+  tools: 'per-tool settings: init does not map them',
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string')
 const isStringMap = (v: unknown): v is Record<string, string> =>
   isObject(v) && Object.values(v).every(s => typeof s === 'string')
+
+/** A C0 control character or DEL: never in a name, a command, an argument, a value or a URL. */
+export const hasControl = (text: string): boolean => /[\u0000-\u001f\u007f]/.test(text)
+
+/**
+ * The keys of a Codex server that ` + "`codex mcp get --json`" + ` shows. config.toml can set more (McpServerConfig in
+ * codex-rs/config/src/mcp_types.rs): scopes, oauth, oauth_resource, default_tools_approval_mode, tools, required,
+ * supports_parallel_tool_calls, omit_tools_from, auth, environment_id.
+ */
+export const SHOWN_KEYS = [...STDIO_KEYS, ...HTTP_KEYS, ...COMMON_KEYS]
+
+/** The keys that the CLI does not show, for the note when init cannot read config.toml. */
+export const HIDDEN_KEYS = [
+  'scopes',
+  'oauth',
+  'oauth_resource',
+  'default_tools_approval_mode',
+  'tools',
+  'required',
+  'supports_parallel_tool_calls',
+  'omit_tools_from',
+  'auth',
+  'environment_id',
+]
 
 const present = (fields: Readonly<Record<string, unknown>>, key: string) =>
   fields[key] !== undefined && fields[key] !== null
@@ -70,6 +97,7 @@ export const mapCodex = (
   fields: Readonly<Record<string, unknown>>,
   via: 'codex' | 'config.toml',
   authStatus: string | undefined,
+  unseen: readonly string[] = [],
 ): CodexMapped => {
   if (present(fields, 'enabled') && typeof fields.enabled !== 'boolean')
     return { why: '"enabled" is not true or false' }
@@ -94,6 +122,8 @@ export const mapCodex = (
     if (typeof command !== 'string' || command.trim() === '') return { why: '"command" is not a text' }
     if (args !== undefined && !isStrings(args)) return { why: '"args" is not a list of strings' }
     if (env !== undefined && !isStringMap(env)) return { why: '"env" is not a table of strings' }
+    if (Array.isArray(env_vars) && env_vars.some(isObject))
+      return { why: 'a table in "env_vars" (name and source) is a form that init does not read' }
     if (env_vars !== undefined && !isStrings(env_vars)) return { why: '"env_vars" is not a list of strings' }
     if (cwd !== undefined && typeof cwd !== 'string') return { why: '"cwd" is not a text' }
     if ((env_vars ?? []).some(v => !VARIABLE.test(v))) return { why: 'an entry of "env_vars" is not a variable name' }
@@ -126,6 +156,13 @@ export const mapCodex = (
     entry = { type: 'http', url, ...(Object.keys(map).length > 0 ? { headers: map } : {}) }
     helperOnly = get('http_headers_helper') !== undefined && Object.keys(map).length === 0
   }
+  // A name, a command, an argument, a value or a URL with a control character, also one that an escape of TOML or JSON
+  // made, never reaches a command line or the screen.
+  const texts =
+    'type' in entry
+      ? [entry.url, ...Object.entries(entry.headers ?? {}).flat()]
+      : [entry.command, entry.cwd ?? '', ...(entry.args ?? []), ...Object.entries(entry.env ?? {}).flat()]
+  if (texts.some(hasControl)) return { why: 'a command, an argument, a value or a url holds a control character' }
   const own = hasCommand ? STDIO_KEYS : HTTP_KEYS
   const other = hasCommand ? HTTP_KEYS : STDIO_KEYS
   for (const name of Object.keys(fields)) {
@@ -135,6 +172,9 @@ export const mapCodex = (
     else if (!own.includes(name) && !COMMON_KEYS.includes(name) && !SILENT_KEYS.includes(name))
       dropped.push(`${name} (init does not know this key)`)
   }
+  for (const name of unseen)
+    if (!Object.hasOwn(fields, name))
+      dropped.push(name in REASON ? `${name} (${REASON[name]})` : `${name} (init does not know this key)`)
   if (helperOnly)
     notes.push(`${key}: Codex took its header from http_headers_helper only. The server has no header now.`)
   const enabledTools = get('enabled_tools')
@@ -159,7 +199,9 @@ export const mapCodex = (
           { match: `${prefix}*`, action: 'deny' } as CodexRule,
         ]),
   ]
-  const oauth = authStatus === 'o_auth' || authStatus === 'not_logged_in' || authStatus === 'oauth'
+  // McpAuthStatus of Codex is serialized in snake_case: unknown, unsupported, not_logged_in, bearer_token, o_auth
+  // (codex-rs/protocol/src/protocol.rs, printed by codex-rs/cli/src/mcp_cmd.rs). A login needs the last two states.
+  const oauth = authStatus === 'o_auth' || authStatus === 'not_logged_in'
   const login = 'type' in entry && via === 'codex' && oauth
   if ('type' in entry && via === 'config.toml' && entry.headers === undefined)
     notes.push(`${key}: init read config.toml only, so it could not see the login state of this HTTP server.`)

@@ -2303,6 +2303,76 @@ describe('Codex', () => {
     ])
   })
 
+  test('a name, command, argument, value or url with a control character, also from an escape, skips the server on both paths', () => {
+    const toml = (table: string, name = 's') => fromToml('[mcp_servers."' + name + '"]\n' + table)
+    const why = (read: ClientRead) => {
+      const o = importServers([read], 'linux').clients[0]!.outcomes[0]!
+      assert.equal(o.kind, 'skipped', JSON.stringify(o))
+      return o.kind === 'skipped' ? o.why : ''
+    }
+    const control = /holds a control character/
+    for (const table of [
+      'command = "a\\u001bb"',
+      'command = "c"\nargs = ["x", "a\\u0007b"]',
+      'command = "c"\ncwd = "/a\\u007fb"',
+      'command = "c"\nenv = { "A\\u001b" = "v" }',
+      'command = "c"\nenv = { A = "v\\u001b[31m" }',
+      'url = "https://example.com/a\\u001bb"',
+      'url = "https://example.com"\nhttp_headers = { A = "v\\r\\nX: y" }',
+    ])
+      assert.match(why(toml(table)), control, table)
+    assert.equal(why(toml('command = "c"', 'a\\u001bb')), 'the name holds a control character')
+    // The same on path A: the JSON of codex mcp get decodes an escape, too.
+    const cli = (transport: Record<string, unknown>, name = 's'): ClientRead => ({
+      ...CODEX_FILE,
+      kind: 'codex',
+      servers: [[name, parseCodexGet({ name, enabled: true, transport }, undefined)!]],
+    })
+    assert.match(why(cli({ type: 'stdio', command: 'a\u001bb', args: [] })), control)
+    assert.match(why(cli({ type: 'stdio', command: 'c', args: ['\u0000'] })), control)
+    assert.match(why(cli({ type: 'streamable_http', url: 'https://example.com/\u001b' })), control)
+    assert.equal(why(cli({ type: 'stdio', command: 'c', args: [] }, 'a\u001bb')), 'the name holds a control character')
+  })
+
+  test('only o_auth and not_logged_in start a login step, and a table in env_vars has its own reason', () => {
+    const report = (status: string) =>
+      initReport(importServers([fromCli({ oauthy: status })], 'linux'), '/c/config.json', 'linux', NPX_LAUNCH)
+    for (const status of ['o_auth', 'not_logged_in']) assert.match(report(status), /Codex has an OAuth login/, status)
+    for (const status of ['oauth', 'unsupported', 'bearer_token', 'unknown'])
+      assert.doesNotMatch(report(status), /Codex has an OAuth login/, status)
+    const tables = parseCodexGet(
+      { name: 's', transport: { type: 'stdio', command: 'c', env_vars: [{ name: 'A', source: 'local' }] } },
+      undefined,
+    )!
+    const o = importServers([{ ...CODEX_FILE, kind: 'codex', servers: [['s', tables]] }], 'linux').clients[0]!
+      .outcomes[0]!
+    assert.deepEqual(o, {
+      kind: 'skipped',
+      name: 's',
+      why: 'a table in "env_vars" (name and source) is a form that init does not read',
+    })
+  })
+
+  test('per-tool tables and keys that the CLI does not show are listed by name under Left out', () => {
+    const imp = only('command = "c"\n[mcp_servers.s.tools.t]\napproval_mode = "approve"\n')
+    const o = imp.clients[0]!.outcomes[0]!
+    assert.ok(o.kind === 'imported')
+    assert.deepEqual(o.dropped, ['tools (per-tool settings: init does not map them)'])
+    const seen = parseCodexGet({ name: 's', transport: { type: 'stdio', command: 'c' } }, undefined)!
+    assert.ok('fields' in seen)
+    const withUnseen: ClientRead = {
+      ...CODEX_FILE,
+      kind: 'codex',
+      servers: [['s', { ...seen, unseen: ['scopes', 'tools'] }]],
+    }
+    const p = importServers([withUnseen], 'linux').clients[0]!.outcomes[0]!
+    assert.ok(p.kind === 'imported')
+    assert.deepEqual(p.dropped, [
+      'scopes (init does not know this key)',
+      'tools (per-tool settings: init does not map them)',
+    ])
+  })
+
   test('a server whose only header came from http_headers_helper is imported with a note', () => {
     const imp = only('url = "https://example.com"\nhttp_headers_helper = "get-token"')
     const o = imp.clients[0]!.outcomes[0]!
