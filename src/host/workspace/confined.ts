@@ -443,13 +443,18 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ELOOP' || code === 'ENOTDIR' || code === 'EMLINK') {
       const st = await lstatBig(at(name)).catch(() => undefined)
-      if (st?.isSymbolicLink()) return linkError()
+      // `name` came from a path text (`spell`): the listed spelling of a link or a file that it reaches under an alias.
+      const listed = async (): Promise<string[] | undefined> => {
+        if (st === undefined) return undefined
+        const real = spell ? await spellOf(name, idOf(st)).catch(() => undefined) : name
+        return real === undefined ? undefined : [...parts, real]
+      }
+      if (st?.isSymbolicLink()) return spelling(linkError(), await listed())
       if (st !== undefined && code === 'ENOTDIR') {
-        const listed = spell ? await spellOf(name, idOf(st)).catch(() => undefined) : name
-        return spelling(
-          new WorkspaceError('not-folder', 'the path is not a folder'),
-          listed === undefined ? undefined : [...parts, listed],
-        )
+        const spelled = await listed()
+        // No listed spelling (the read of the names failed or hit its cap): the answer of a name that is not there.
+        if (spelled === undefined) return mapError(err)
+        return spelling(new WorkspaceError('not-folder', 'the path is not a folder'), spelled)
       }
     }
     return mapError(err)
@@ -478,7 +483,7 @@ const procDir = (handle: FileHandle, parts: readonly string[], owned: boolean, h
     openFile: async (name, spell = false) => {
       await hook('open')
       const opened = await fs.promises.open(at(name), O_RDONLY | O_NOFOLLOW | O_NONBLOCK).catch(async err => {
-        throw await refused(err, name)
+        throw await refused(err, name, spell)
       })
       return checkedFile(opened, [...parts, spell ? await spelled(opened, name) : name])
     },
@@ -634,6 +639,54 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
    * The real parts of `parts` after an open of it failed on its kind, or undefined when there are none. Only the answer
    * `excluded` uses them, so a failed or raced lookup keeps the plain code of the failure.
    */
+  /**
+   * The name that the folder `dirParts` (real parts) lists for the entry that `name` reaches, matched by file id, the
+   * link itself and not what it points to. A name that the folder lists stands. At most `ALIAS_LOOKS` lookups, as `spellOf`.
+   */
+  const listedAs = async (dirParts: readonly string[], name: string): Promise<string | undefined> => {
+    try {
+      const id = idOf(await fs.promises.lstat(full([...dirParts, name]), { bigint: true }))
+      const stream = await fs.promises.opendir(full(dirParts), { bufferSize: 512 })
+      const near: string[] = []
+      const rest: string[] = []
+      const folded = fold(name)
+      try {
+        for await (const { name: listed } of stream) {
+          if (listed === name) return name
+          if (near.length + rest.length < ALIAS_LOOKS) (fold(listed) === folded ? near : rest).push(listed)
+        }
+      } finally {
+        await stream.close().catch(() => {})
+      }
+      for (const listed of [...near, ...rest]) {
+        const st = await lstatBig(full([...dirParts, listed])).catch(() => undefined)
+        if (st !== undefined && sameId(idOf(st), id)) return listed
+      }
+    } catch {
+      // No spelling: the refusal keeps its plain code.
+    }
+    return undefined
+  }
+
+  /**
+   * The parts of `parts` with the listed spelling of the first link on the way (a junction or a symlink: the one that a
+   * refusal named), and the rest as it was. Undefined when no part gives one.
+   */
+  const linkSpell = async (parts: readonly string[]): Promise<string[] | undefined> => {
+    let seen: string[] = []
+    try {
+      for (let i = 0; i < parts.length; i++) {
+        const listed = await listedAs(seen, parts[i]!)
+        if (listed === undefined) return undefined
+        seen = [...seen, listed]
+        if ((await fs.promises.lstat(full(seen))).isSymbolicLink()) return [...seen, ...parts.slice(i + 1)]
+      }
+    } catch {
+      // No spelling: the refusal keeps its plain code.
+    }
+    return undefined
+  }
+
   const spellAfter = async (parts: readonly string[]): Promise<string[] | undefined> => {
     try {
       await hook('realpath')
@@ -671,13 +724,18 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
       }
       // A change opens for writing, and a folder refuses that (Windows and macOS give EISDIR): its spelling is the same.
       if (code === 'EISDIR') throw spelling(mapError(err), await spellAfter(parts))
+      if (code === 'ELOOP') throw spelling(mapError(err), await linkSpell(parts))
       throw mapError(err)
     })
     try {
       return { handle, real: windows ? await proveWindows(parts, handle) : await spellMac(parts) }
     } catch (err) {
       await handle.close().catch(() => {})
-      throw mapError(err)
+      const refusal = mapError(err)
+      // A link on the way (a junction, a symlink) under an alias of an excluded name: the same refusal as the plain name.
+      throw refusal.code === 'link' && refusal.spelled === undefined
+        ? spelling(refusal, await linkSpell(parts))
+        : refusal
     }
   }
 
@@ -745,6 +803,7 @@ const pathConfined = (root: string, rootId: FileId, platform: string, hook: Hook
             const spelled = await realpathNative(full([...parts, name])).catch(err => Promise.reject(mapError(err)))
             real = insideParts(spelled).at(-1) ?? name
           }
+          if (spell && kind === 'link') real = (await listedAs(parts, name)) ?? name
           seen = { kind, size: st.size, real }
         }
         await proven()

@@ -211,6 +211,31 @@ describe('a casefolded folder opens a name that it does not list (Linux)', () =>
     for (const file of ['.ssh/known_hosts', '.aws/credentials', '.env', 'id_rsa'])
       assert.equal(fs.readFileSync(path.join(root, file), 'utf8'), secret, file)
     assert.deepEqual(fs.readdirSync(root).sort(), ['.aws', '.env', '.ssh', 'id_rsa'])
+
+    // A symlink at the excluded name, and a file with a second name: the alias answers as the plain name does, with no
+    // `link` and no `hard-link`. A plain name of the hard-linked file keeps its code.
+    const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(foldBase!, 'ws-fold-out-')))
+    t.after(() => rm(outside))
+    write(outside, { known_hosts: 'outside bytes\n' })
+    const linked = fs.realpathSync.native(fs.mkdtempSync(path.join(foldBase!, 'ws-fold-')))
+    t.after(() => rm(linked))
+    write(linked, { id_rsa: secret })
+    fs.symlinkSync(outside, path.join(linked, '.ssh'))
+    fs.linkSync(path.join(linked, 'id_rsa'), path.join(linked, 'h.txt'))
+    const links = await rigOf(t, linked, { write: true })
+    if (links === undefined) return
+    const more: [string, Record<string, unknown>][] = [
+      ...everyTool(['.ſſh', '.ſſh/known_hosts', 'id_rſa'], hash),
+      ['write', { path: '.ſſh/new.txt', content: 'x' }],
+      ['diff', { path: '.ſſh/new.txt', content: 'x' }],
+    ]
+    for (const [tool, args] of more) {
+      const message = await links.fail(tool, args)
+      assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
+      assert.ok(!message.includes('outside bytes'), `${tool} shows the bytes`)
+    }
+    assert.equal(codeOf(await links.fail('read', { path: 'h.txt' })), 'hard-link')
+    assert.deepEqual(fs.readdirSync(outside), ['known_hosts'])
   })
 })
 
@@ -1471,14 +1496,72 @@ describe('NTFS short names of excluded entries (Windows)', () => {
         assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
         assert.ok(!message.includes(secret), `${tool} shows the bytes`)
       }
-      // Windows gives ENOENT for a path below a file, so a read below `ENV~1` is `not-found`, as below a name that is
-      // not there: no code of another kind tells that the file exists. A new file below it is refused as `excluded`.
+      // Windows gives ENOENT for a path below a file, so most calls below `ENV~1` are `not-found`, as below a name that is
+      // not there: no code of another kind tells that the file exists. Deliberate (see the PR notes of #176): `excluded` there
+      // would cost a read of the names for every `not-found`.
+      const below: Record<string, string> = {
+        stat: 'excluded',
+        diff: 'excluded',
+        write: 'excluded',
+        list: 'not-found',
+        search: 'not-found',
+        read: 'not-found',
+        'diff#': 'not-found',
+        'write#': 'not-found',
+        'edit#': 'not-found',
+      }
       for (const [tool, args] of everyTool(['ENV~1/x', 'ENV~1/new.txt'], hash)) {
-        const code = codeOf(await rig.fail(tool, args))
-        assert.ok(['excluded', 'not-found'].includes(code), `${tool} ${JSON.stringify(args)} gave ${code}`)
+        const key = tool + ('expectedHash' in args ? '#' : '')
+        assert.equal(codeOf(await rig.fail(tool, args)), below[key], `${key} ${JSON.stringify(args)}`)
       }
       assert.equal(fs.readFileSync(path.join(root, '.env'), 'utf8'), secret)
       assert.deepEqual(fs.readdirSync(path.join(root, '.git')), ['config'])
+
+      // A file with a second name (a hard link): its short name answers `excluded`, a plain name keeps `hard-link`.
+      const hardRoot = tempDir()
+      t.after(() => rm(hardRoot))
+      write(hardRoot, { '.env': secret })
+      fs.linkSync(path.join(hardRoot, '.env'), path.join(hardRoot, 'h.txt'))
+      let hardShort = false
+      try {
+        hardShort = path.basename(fs.realpathSync.native(path.join(hardRoot, 'ENV~1'))) === '.env'
+      } catch {
+        // The volume gives the file no short name.
+      }
+      if (hardShort) {
+        const hard = await rigOf(t, hardRoot, { write: true })
+        if (hard === undefined) return
+        for (const [tool, args] of everyTool(['ENV~1'], hash)) {
+          assert.equal(codeOf(await hard.fail(tool, args)), 'excluded', `hard link: ${tool} ${JSON.stringify(args)}`)
+        }
+        assert.equal(codeOf(await hard.fail('read', { path: 'h.txt' })), 'hard-link')
+      }
+
+      // A junction at `.git`: its short name answers `excluded`, as the plain name does (no `link`, no `exists`).
+      const outside = tempDir()
+      t.after(() => rm(outside))
+      write(outside, { config: 'outside bytes\n' })
+      const junctionRoot = tempDir()
+      t.after(() => rm(junctionRoot))
+      if (!trySymlink(outside, path.join(junctionRoot, '.git'), 'junction'))
+        return void t.diagnostic('no junction here')
+      let short = false
+      try {
+        short = fs.lstatSync(path.join(junctionRoot, 'GIT~1')).isSymbolicLink()
+      } catch {
+        // The volume gives the junction no short name.
+      }
+      if (!short) return void t.diagnostic('the junction has no short name here')
+      const junction = await rigOf(t, junctionRoot, { write: true })
+      if (junction === undefined) return
+      for (const [tool, args] of everyTool(['GIT~1', 'GIT~1/config'], hash)) {
+        assert.equal(codeOf(await junction.fail(tool, args)), 'excluded', `junction: ${tool} ${JSON.stringify(args)}`)
+      }
+      for (const [tool, args] of [
+        ['write', { path: 'GIT~1/new.txt', content: 'x' }],
+        ['diff', { path: 'GIT~1/new.txt', content: 'x' }],
+      ] as const)
+        assert.equal(codeOf(await junction.fail(tool, args)), 'excluded', `junction: ${tool}`)
     },
   )
 })
