@@ -22,6 +22,8 @@ npm run check
 
 - Keep the change small. One problem per pull request.
 - Add a test when the change touches behavior.
+- A user-visible change adds a file in `changes/`, as [changes/README.md](changes/README.md) says, and never edits `CHANGELOG.md`.
+- The version-bump pull request runs `node scripts/changelog.mjs <version> --apply`. Then the person rewrites the section by hand as a summary. The script does not summarize.
 - Do not add a runtime dependency without a reason.
 - Use short sentences. Give a measured number only when you have a method.
 

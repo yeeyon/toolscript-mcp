@@ -13,6 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bundledListOnDisk, bundledListText } from '../scripts/bundled-hints.mjs'
+import { FRAGMENT_NAME, fragmentProblems, ignoredName, lf } from '../scripts/changelog.mjs'
 import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -149,6 +150,24 @@ const linkProblems = file => {
   return problems
 }
 
+// The files of changes/ (but the README) and CHANGELOG.md: the structure only, with no word limits (CONTRIBUTING.md).
+const changesProblems = root => {
+  const folder = path.join(root, 'changes')
+  if (!fs.existsSync(folder)) return []
+  return fs
+    .readdirSync(folder)
+    .sort()
+    .filter(name => name !== 'README.md' && !ignoredName(name))
+    .flatMap(name => {
+      const file = path.join(folder, name)
+      if (!FRAGMENT_NAME.test(name)) return [`changes/${name}: the name must match [a-z0-9][a-z0-9._-]*.md`]
+      if (!fs.lstatSync(file).isFile()) return [`changes/${name}: it is not a file`]
+      return fragmentProblems(lf(fs.readFileSync(file, 'utf8'))).map(p => `changes/${name}: ${p}`)
+    })
+}
+const unreleasedProblems = text =>
+  /^##\s+unreleased\b/im.test(text) ? ['CHANGELOG.md: no "## Unreleased" section'] : []
+
 const tests = {
   'slug matches GitHub': () => {
     assert.equal(slug('Every call fails in auto mode'), 'every-call-fails-in-auto-mode')
@@ -176,6 +195,46 @@ const tests = {
       assert.ok(found.includes(message), message)
     }
     assert.ok(!found.includes(':12:'))
+  },
+  'the fragment checks catch each rule': () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-changes-'))
+    fs.mkdirSync(path.join(dir, 'changes'))
+    const put = (name, text) => fs.writeFileSync(path.join(dir, 'changes', name), text)
+    put('README.md', 'Not a fragment.\n')
+    put('good.md', '- one\n  wrapped\n\n- two\n')
+    put('crlf.md', '- one\r\n')
+    assert.deepEqual(changesProblems(dir), [])
+    put('heading.md', '## 1.0.5\n- one\n')
+    put('empty.md', '')
+    put('nonewline.md', '- one')
+    put('Bad.md', '- one\n')
+    put('notes.txt', '- one\n')
+    // A dotfile and an editor backup are skipped, with no error.
+    put('.draft.md.swp', 'x')
+    put('good.md~', 'x')
+    fs.mkdirSync(path.join(dir, 'changes', 'dir.md'))
+    const found = changesProblems(dir).join('\n')
+    for (const message of [
+      'heading.md: line 1: no heading',
+      'empty.md: it is empty',
+      'nonewline.md: it does not end with a newline',
+      'Bad.md: the name must match',
+      'notes.txt: the name must match',
+      'dir.md: it is not a file',
+    ])
+      assert.ok(found.includes(message), message)
+    assert.ok(!found.includes('good.md') && !found.includes('crlf.md') && !found.includes('README.md'))
+    assert.equal(unreleasedProblems('# Changelog\n\n## Unreleased\n').length, 1)
+    assert.equal(unreleasedProblems('# Changelog\n\n## unreleased changes\n').length, 1)
+    assert.deepEqual(unreleasedProblems('# Changelog\n\n## 1.0.5\n\n- an unreleased feature\n'), [])
+    fs.rmSync(dir, { recursive: true, force: true })
+  },
+  'the files of changes/ are well-formed, and CHANGELOG.md has no Unreleased section': () => {
+    const problems = [
+      ...changesProblems(ROOT),
+      ...unreleasedProblems(fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8')),
+    ]
+    assert.deepEqual(problems, [], problems.join('\n'))
   },
   'user docs follow the rules': () => {
     const problems = USER_DOCS.flatMap(f => docProblems(f))
