@@ -1539,7 +1539,14 @@ describe('search with several terms', () => {
     if (slow === undefined) return
     const began = performance.now()
     const cut = await slow.call('search', { query: eight })
-    assert.ok(performance.now() - began < 2 * budget, `took ${performance.now() - began} ms`)
+    const arrayMs = performance.now() - began
+    assert.ok(arrayMs < 2 * budget, `took ${arrayMs} ms`)
     assert.equal(cut.truncated, true)
+    // Single-term calls one after another each run to the budget: 3 of them take about 3 budgets.
+    const serialBegan = performance.now()
+    for (const query of ['alpha', 'beta', 'g1']) await slow.call('search', { query })
+    const serialMs = performance.now() - serialBegan
+    assert.ok(serialMs > 2.5 * budget, `3 serial calls took ${serialMs} ms`)
+    assert.ok(serialMs > 1.5 * arrayMs, `serial ${serialMs} ms, array ${arrayMs} ms`)
   })
 })

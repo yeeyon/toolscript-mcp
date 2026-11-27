@@ -24,6 +24,7 @@ import {
   parseEditInput,
   parseListInput,
   parsePathInput,
+  lowered,
   parseSearchInput,
   parseTaskInput,
   parseWriteInput,
@@ -93,14 +94,6 @@ const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 
 const cancelled = (signal: AbortSignal): void => {
   if (signal.aborted) throw new WorkspaceError('cancelled', 'the call was cancelled')
-}
-
-/** `text` in lower case, one UTF-16 unit for one unit, so a column in the folded line is a column in the line. */
-const lowered = (text: string): string => {
-  const whole = text.toLowerCase()
-  return whole.length === text.length
-    ? whole
-    : text.replace(/[^]/g, c => (c.toLowerCase().length === 1 ? c.toLowerCase() : c))
 }
 
 const BOM = Buffer.from([0xef, 0xbb, 0xbf])
@@ -367,11 +360,11 @@ export const createProvider = (options: ProviderOptions): Provider => {
                     break
                   }
                   taken[t]!++
-                  const text = raw.slice(0, LIMITS.lineChars)
+                  const shown = raw.slice(0, LIMITS.lineChars)
                   matches.push(
                     typeof input.query === 'string'
-                      ? { path, line: i + 1, column: at + 1, text, term: t }
-                      : { path, line: i + 1, column: at + 1, text, query: written[t]!, term: t },
+                      ? { path, line: i + 1, column: at + 1, text: shown, term: t }
+                      : { path, line: i + 1, column: at + 1, text: shown, query: written[t]!, term: t },
                   )
                 }
               }

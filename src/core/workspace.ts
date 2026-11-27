@@ -811,6 +811,14 @@ export const parseListInput = (args: unknown): ListInput => {
   return { path: text(o, 'path', '.'), depth: whole(o, 'depth', 1, 1, LIMITS.maxDepth), include: globs(o) }
 }
 
+/** `text` in lower case, one UTF-16 unit for one unit, so a column in the folded line is a column in the line. */
+export const lowered = (text: string): string => {
+  const whole = text.toLowerCase()
+  return whole.length === text.length
+    ? whole
+    : text.replace(/[^]/g, c => (c.toLowerCase().length === 1 ? c.toLowerCase() : c))
+}
+
 export const parseSearchInput = (args: unknown): SearchInput => {
   const o = asObject(args, ['query', 'path', 'include', 'ignoreCase', 'maxMatches'])
   const one = (v: unknown, name: string): string =>
@@ -826,12 +834,13 @@ export const parseSearchInput = (args: unknown): SearchInput => {
     const list = o.query.map((v, i) => one(v, `query[${i}]`))
     const seen = new Set<string>()
     list.forEach((term, i) => {
-      const key = ignoreCase === true ? term.toLowerCase() : term
+      const key = ignoreCase === true ? lowered(term) : term
       if (seen.has(key)) bad(`query[${i}] repeats an earlier text`)
       seen.add(key)
     })
     query = list
   } else {
+    if (typeof o.query !== 'string') bad(`query must be a text or an array of 1 to ${LIMITS.queryTerms} texts`)
     query = one(o.query, 'query')
   }
   const terms = typeof query === 'string' ? 1 : query.length

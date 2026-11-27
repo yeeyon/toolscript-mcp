@@ -515,7 +515,10 @@ describe('the tool table', () => {
       assert.equal((WORKSPACE_TOOLS[name].inputSchema as { additionalProperties: boolean }).additionalProperties, false)
       assert.equal(WORKSPACE_TOOLS[name].outputSchema.type, 'object')
       // search is the longest: the .gitignore sentence, the query array sentence and the truncated sentence.
-      assert.ok(WORKSPACE_TOOLS[name].description.length > 20 && WORKSPACE_TOOLS[name].description.length < 520)
+      assert.ok(
+        WORKSPACE_TOOLS[name].description.length > 20 &&
+          WORKSPACE_TOOLS[name].description.length < (name === 'search' ? 520 : 360),
+      )
     }
     assert.equal(workspaceClass('mcp__workspace__read'), 'read')
     assert.equal(workspaceClass('mcp__workspace__diff'), 'read')
@@ -617,7 +620,11 @@ describe('the tool table', () => {
     assert.match(refused({ query: ['Foo', 'FOO'], ignoreCase: true }), /query\[1\] repeats an earlier text/)
     assert.match(refused({ query: terms(11), maxMatches: 200 }), /at most 181/)
     assert.match(refused({ query: terms(2), maxMatches: 1001 }), /at most 1000/)
-    refused({ query: 5 })
+    assert.match(refused({ query: 5 }), /query must be a text or an array of 1 to 20 texts/)
+    assert.match(refused({ query: { a: 1 } }), /query must be a text or an array of 1 to 20 texts/)
+    // One fold for the duplicate check and the search: a fold that changes the length keeps the unit as it is.
+    assert.match(refused({ query: ['İΣ', 'İσ'], ignoreCase: true }), /query\[1\] repeats an earlier text/)
+    assert.deepEqual(parseSearchInput({ query: ['İ', 'i̇'], ignoreCase: true }).query, ['İ', 'i̇'])
   })
 
   test('the search schema shows query as a text or an array, in the argument text of search_tools', () => {
