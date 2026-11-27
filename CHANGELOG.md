@@ -2,6 +2,7 @@
 
 ## 1.0.5
 
+- The refusal of a nested call whose argument names a guarded folder now says where: the key path of the argument, such as `edits[0].new`, never its value. It also says that a mention in text counts, so a file text or a comment that holds the folder path is refused too, and tells the model to leave the folder out, or the person to edit the file or post the text outside `run_code`. What the guard checks did not change.
 - An HTTP entry with `sigv4` takes an optional `"metadata"` object (issue #137): its pairs go into `params._meta` of each request to the server, as `mcp-proxy-for-aws --metadata` does, before the signature. A pair that the request already holds stays as it is, and with no `metadata` the bytes sent do not change. It sets `AWS_REGION` for an AWS MCP Server host in a region other than the one of the calls.
 - A CLI that has no `aws configure export-credentials` (AWS CLI version 1, or an older version 2) now gets the reason "this AWS CLI has no `configure export-credentials`: update to a current AWS CLI version 2", in place of "needs AWS CLI version 2".
 - When the host closes, each `aws configure export-credentials` child that is still running ends with its process tree, so a hung AWS CLI in its own process group no longer outlives the host on Linux and macOS.

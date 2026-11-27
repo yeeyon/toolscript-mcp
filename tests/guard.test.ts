@@ -7,6 +7,7 @@ import {
   GUARD_PARENT_STEPS,
   GUARD_REALPATHS,
   absolutePath,
+  guardFind,
   guardHit,
   guardedList,
   isFileName,
@@ -43,6 +44,50 @@ const hit = (args: unknown, f = fake(), cwd = PROJECT, windows = false) =>
     realpath: f.realpath,
     windows,
   })
+
+// The marker text of a guarded folder is built from parts here, because the guard refuses any call whose argument holds
+// it, also a Workspace edit of this file.
+const MARK = '.' + 'toolscript-mcp' + '/hints'
+
+describe('guardFind: the key path of the string that hit', () => {
+  const find = (args: unknown) =>
+    guardFind(args, {
+      home: HOME,
+      cwd: PROJECT,
+      list: LIST,
+      forms: () => resolveGuarded(LIST, fake().realpath),
+      realpath: fake().realpath,
+      windows: false,
+    })
+
+  test('names a nested edit, a deep object, an array and the arguments as a whole', async () => {
+    const text = 'see ~/' + MARK + ' now'
+    assert.deepEqual(await find({ path: 'a.md', edits: [{ old: 'x', new: text }] }), {
+      label: '~/' + MARK,
+      at: 'edits[0].new',
+    })
+    assert.equal((await find({ a: { b: { c: { d: text } } } }))?.at, 'a.b.c.d')
+    assert.equal((await find({ items: ['ok', ['ok', text]] }))?.at, 'items[1][1]')
+    assert.equal((await find({ content: text }))?.at, 'content')
+    assert.equal((await find(text))?.at, '')
+    assert.equal((await find([text]))?.at, '[0]')
+  })
+
+  test('names the argument of a path hit too, and keeps `guardHit` the same', async () => {
+    assert.deepEqual(await find({ file: '/home/u/' + MARK + '/x.md' }), { label: '~/' + MARK, at: 'file' })
+    assert.equal(await hit({ file: '/home/u/' + MARK + '/x.md' }), '~/' + MARK)
+  })
+
+  test('the path carries no argument text: an odd key shows as a dots mark, and a long path is cut', async () => {
+    const text = 'x ' + MARK
+    assert.equal((await find({ ['bad key/' + MARK]: text }))?.at, '…')
+    assert.equal((await find({ ['k'.repeat(41)]: text }))?.at, '…')
+    const deep = [...Array(14).keys()].reduce<unknown>(acc => ({ ['k'.repeat(30)]: acc }), text)
+    const at = (await find(deep))?.at ?? ''
+    assert.ok(at.length <= 101 && at.endsWith('…'), at)
+    assert.ok(!at.includes(MARK) && !at.includes('x '), at)
+  })
+})
 
 describe('the markers', () => {
   test('are the six folders, never the bare state folder', () => {
