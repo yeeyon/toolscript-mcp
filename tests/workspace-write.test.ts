@@ -633,26 +633,28 @@ describe('a swap of a folder while a file is changed', () => {
   const swapper = (root: string, outside: string) => {
     const b = path.join(root, 'b')
     let out = false
+    const exists = (p: string) => fs.lstatSync(p, { throwIfNoEntry: false }) !== undefined
+    // Each step is repeated from what is on disk: Windows can refuse one step (a file is open), and a half swap, with
+    // the link gone and the real folder not yet back, would otherwise make the next step and the reset fail with ENOENT.
     const unlink = () => {
-      if (win) fs.rmdirSync(b)
-      else fs.unlinkSync(b)
-      fs.renameSync(`${b}.real`, b)
+      if (fs.lstatSync(b, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        if (win) fs.rmdirSync(b)
+        else fs.unlinkSync(b)
+      }
+      if (exists(`${b}.real`) && !exists(b)) fs.renameSync(`${b}.real`, b)
     }
     return {
       set: (want: boolean) => {
         if (want === out) return
         if (want) {
-          fs.renameSync(b, `${b}.real`)
+          if (!exists(`${b}.real`)) fs.renameSync(b, `${b}.real`)
           fs.symlinkSync(outside, b, win ? 'junction' : 'dir')
         } else unlink()
         out = want
       },
       reset: () => {
-        try {
-          if (out) unlink()
-        } finally {
-          out = false
-        }
+        unlink()
+        out = false
       },
     }
   }
