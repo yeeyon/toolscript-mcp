@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5
+
+- An HTTP entry with `sigv4` takes an optional `"metadata"` object (issue #137): its pairs go into `params._meta` of each request to the server, as `mcp-proxy-for-aws --metadata` does, before the signature. A pair that the request already holds stays as it is, and with no `metadata` the bytes sent do not change. It sets `AWS_REGION` for an AWS MCP Server host in a region other than the one of the calls.
+- A CLI that has no `aws configure export-credentials` (AWS CLI version 1, or an older version 2) now gets the reason "this AWS CLI has no `configure export-credentials`: update to a current AWS CLI version 2", in place of "needs AWS CLI version 2".
+- When the host closes, each `aws configure export-credentials` child that is still running ends with its process tree, so a hung AWS CLI in its own process group no longer outlives the host on Linux and macOS.
+
 ## 1.0.4
 
 - A tool name held in a plain string, such as `const g = "mcp__s__t"; await call(g, {})`, is now asked in the prompt before the run, like a name written inside `call("…")`, when the client can ask. A call refused at call time for a name nobody asked about now says that the person was not asked, and tells the model to write the name as a string in the program and run again, so a model no longer reports it as declined.
