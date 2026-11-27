@@ -6,6 +6,7 @@
 - A CLI that has no `aws configure export-credentials` (AWS CLI version 1, or an older version 2) now gets the reason "this AWS CLI has no `configure export-credentials`: update to a current AWS CLI version 2", in place of "needs AWS CLI version 2".
 - When the host closes, each `aws configure export-credentials` child that is still running ends with its process tree, so a hung AWS CLI in its own process group no longer outlives the host on Linux and macOS.
 - Workspace answers `excluded` for a name that an alias reaches, with every tool (issue #176). A short name such as `GIT~1` or a casefold spelling such as `.ſſh` of an excluded file or folder, used with a tool of the other kind (`list` of a file, `read`, `edit`, `write` or `diff` of a folder, or a file alias in the middle of a path), no longer gets `not-folder`, `not-file` or `exists`, which told that the excluded entry is there. The same holds for an alias of an excluded link (a symlink or a junction, no longer `link`) and of an excluded file with a second name (no longer `hard-link`). A name that is not excluded keeps those codes.
+- When a refresh of OAuth tokens waited for another toolscript-mcp process and the token endpoint then gave no answer, the reason now gives the time the request had, as "the token endpoint did not answer in 12 s, after 8 s of waiting for another toolscript-mcp process" (issue #123). With no wait it still says "did not answer in 20 s".
 
 ## 1.0.4
 

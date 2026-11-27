@@ -29,6 +29,7 @@ import {
 } from '../core/config.ts'
 import { oauthFile } from '../core/paths.ts'
 import { errorText } from '../core/protocol.ts'
+import { silentReason } from '../core/lock.ts'
 import { dropLock, takeLock, type LockFs } from './oauthlock.ts'
 
 // Both are OAuthErrors: the SDK passes on an OAuthError from a refresh, and starts a login after any other error.
@@ -253,7 +254,9 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
           `another toolscript-mcp process is refreshing the tokens and did not finish in ${timeoutMs / 1000} s`,
         ),
       )
+    const waitStart = Date.now()
     const lock = await takeLock(file, deadline, timeoutMs + RENAME_WAIT_MS + LOCK_MARGIN_MS, lockFs)
+    const waited = Date.now() - waitStart
     if (lock === 'busy') throw busy()
     try {
       // The process that held the lock before this one saved the tokens that this refresh needs.
@@ -263,7 +266,7 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
       // counts its time from its own start, so waiters that each sent with the rest would fail one after another.
       const left = deadline - Date.now()
       if (left < timeoutMs / 2) throw busy()
-      return await exchange(send, sent, now, left, timeoutMs)
+      return await exchange(send, sent, now, left, timeoutMs, waited)
     } finally {
       if (typeof lock === 'object') await dropLock(lock, lockFs)
     }
@@ -276,13 +279,14 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     now: OAuthTokens | undefined,
     left: number,
     timeoutMs: number,
+    waited: number,
   ): Promise<OAuthTokens> => {
     // The refresh token that the store must still hold for this refresh to save. A login in another process can save
     // other tokens before the answer comes.
     const storeHad = unsaved.get(file)?.storeHad ?? sent
     // Every call and link of the server waits for this refresh, so a token endpoint that never answers must not hold it.
     const signal = AbortSignal.timeout(left)
-    const silent = () => new RefreshFailed(refreshReason(`the token endpoint did not answer in ${timeoutMs / 1000} s`))
+    const silent = () => new RefreshFailed(refreshReason(silentReason(timeoutMs, left, waited)))
     let response: Response
     try {
       response = await send(signal)
