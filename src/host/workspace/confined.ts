@@ -397,6 +397,12 @@ const lstatBig = async (file: string): Promise<fs.BigIntStats | undefined> => {
  * looked at, so a folder of any size costs a bounded read. Undefined when none matches. Reading the names is no lookup of
  * a name, so it calls no hook. A failed read of the names throws.
  */
+/**
+ * `fold` and then the other case mapping, so a casefolding volume's pair such as `ſ` and `s` compares equal. It orders the
+ * names that `listedName` looks at, and decides nothing else.
+ */
+const likeName = (text: string): string => fold(text).toUpperCase().toLowerCase()
+
 const listedName = async (
   folder: string,
   name: string,
@@ -407,11 +413,11 @@ const listedName = async (
   const stream = await fs.promises.opendir(folder, { bufferSize: 512 }).catch(err => Promise.reject(mapError(err)))
   const near: string[] = []
   const rest: string[] = []
-  const folded = fold(name)
+  const folded = likeName(name)
   try {
     for await (const { name: listed } of stream) {
       if (listed === name) return name
-      if (near.length + rest.length < looks) (fold(listed) === folded ? near : rest).push(listed)
+      if (near.length + rest.length < looks) (likeName(listed) === folded ? near : rest).push(listed)
     }
   } catch (err) {
     throw mapError(err)
