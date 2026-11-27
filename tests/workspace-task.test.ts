@@ -1389,7 +1389,9 @@ describe('run_task: the warm helper of Windows', { skip: !win }, () => {
     const grand = Number(fs.readFileSync(path.join(dir, 'grand.pid'), 'utf8'))
     process.kill(runner.helperPid()!)
     await assert.rejects(call, (e: Error) => /^io: the task ended with no result/.test(e.message))
-    assert.ok(await gone(grand), 'the grandchild is gone')
+    // The top process of the task has the folder as its cwd: when the call is over, it must be gone too, not only the grandchild.
+    const top = Number(fs.readFileSync(path.join(dir, 'top.pid'), 'utf8'))
+    assert.ok(await gone(grand, top), 'the grandchild and the top process are gone')
   })
 })
 

@@ -32,7 +32,10 @@ export const rm = (dir: string): void => {
       fs.rmSync(dir, { recursive: true, force: true })
       return
     } catch (error) {
-      if (Date.now() > deadline || (error as NodeJS.ErrnoException).code !== 'EBUSY') throw error
+      const code = (error as NodeJS.ErrnoException).code
+      // EPERM is the same wait on Windows: a folder with a handle that is still closing is answered with EPERM (CI, node 24).
+      const busy = code === 'EBUSY' || (code === 'EPERM' && process.platform === 'win32')
+      if (Date.now() > deadline || !busy) throw error
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
     }
   }
