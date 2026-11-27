@@ -6,13 +6,17 @@ import { PONG, cleanup, until, setup, group, round, requests, revocations, stop,
 
 after(cleanup)
 
+// The races of a takeover are proven in tests/oauthlock.test.ts with no process. Here a round is the plain contention
+// of N live processes, so a few rounds show it.
+const ROUNDS = 4
+
 describe('processes that share one store', { timeout: 180_000 }, () => {
   for (const n of [2, 6]) {
-    test(`${n} processes, 20 rounds: one refresh request each round, no revocation, the store keeps the newest tokens`, async () => {
+    test(`${n} processes, ${ROUNDS} rounds: one refresh request each round, no revocation, the store keeps the newest tokens`, async () => {
       const s = await setup()
       const [fake] = s.fakes as [Fake]
       const children = await group(s, n)
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < ROUNDS; i++) {
         const before = requests(fake)
         const { lines } = await round(s, children)
         assert.equal(revocations(s), 0, `round ${i}: the server revoked the grant ${revocations(s)} times`)
@@ -97,9 +101,14 @@ describe('processes that share one store', { timeout: 180_000 }, () => {
     fake.change.stallRefreshes = true
     const failed = await round(s, children)
     assert.equal(failed.lines.length, 6)
-    for (const l of failed.lines)
+    // Each reason gives a time that is not more than the refresh time (2 s): no waiter had more time than that, and
+    // none waited for the age of a lock. A waiter that waited for the lock names the wait and the time that was left.
+    for (const l of failed.lines) {
       assert.match(l.text, /could not refresh the OAuth token: .*No login is needed/, l.text)
-    assert.ok(failed.ms < 2000 + 2000, `${failed.ms} ms`)
+      const time = /did not (?:answer|finish) in (\d+(?:\.\d)?) s/.exec(l.text)
+      assert.ok(time, l.text)
+      assert.ok(Number(time[1]) <= 2, l.text)
+    }
     assert.ok(requests(fake) <= 2, `${requests(fake)} requests`)
     assert.deepEqual(s.leftovers(), [])
     fake.change.stallRefreshes = false

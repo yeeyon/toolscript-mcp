@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- When a refresh of OAuth tokens waited for another toolscript-mcp process and the token endpoint then gave no answer, the reason now gives the time the request had, as "the token endpoint did not answer in 12 s, after 8 s of waiting for another toolscript-mcp process" (issue #123). With no wait it still says "did not answer in 20 s".
+
 ## 1.0.4
 
 - A tool name held in a plain string, such as `const g = "mcp__s__t"; await call(g, {})`, is now asked in the prompt before the run, like a name written inside `call("…")`, when the client can ask. A call refused at call time for a name nobody asked about now says that the person was not asked, and tells the model to write the name as a string in the program and run again, so a model no longer reports it as declined.

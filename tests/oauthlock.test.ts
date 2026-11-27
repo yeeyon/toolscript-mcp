@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { lockStale, lockText, parseLock } from '../src/core/lock.ts'
+import { lockStale, lockText, parseLock, silentReason } from '../src/core/lock.ts'
 import { oauthProvider } from '../src/host/oauth.ts'
 import { takeLock, type LockFs } from '../src/host/oauthlock.ts'
 
@@ -48,6 +48,28 @@ describe('the lock content', () => {
       ['garbage, past the age', undefined, AGE + 1, false, true],
     ]
     for (const [name, c, ageMs, lives, stale] of table) assert.equal(lockStale(c, ageMs, lives, AGE), stale, name)
+  })
+
+  test('the reason of a silent endpoint gives the whole time with no wait, and the time the request had after a wait', () => {
+    const table: [string, number, number, number, string][] = [
+      ['no wait', 20_000, 19_990, 10, 'the token endpoint did not answer in 20 s'],
+      ['a wait below the naming limit', 300, 250, 499, 'the token endpoint did not answer in 0.3 s'],
+      [
+        'a wait of 8 s',
+        20_000,
+        12_000,
+        8000,
+        'the token endpoint did not answer in 12 s, after 8 s of waiting for another toolscript-mcp process',
+      ],
+      [
+        'rounded to one decimal',
+        2000,
+        1349,
+        651,
+        'the token endpoint did not answer in 1.3 s, after 0.7 s of waiting for another toolscript-mcp process',
+      ],
+    ]
+    for (const [name, total, had, waited, text] of table) assert.equal(silentReason(total, had, waited), text, name)
   })
 })
 
@@ -153,7 +175,36 @@ describe('one refresh in one process', () => {
       undefined,
       2000,
     )
-    assert.match(((await h.refresh()) as Error).message, /did not answer in 2 s/)
+    assert.match(((await h.refresh()) as Error).message, /did not answer in 2 s\./)
+    assert.equal(fs.existsSync(h.lock), false)
+  })
+
+  test('the timeout reason gives the time the request had, and names the wait for another process', async () => {
+    const h = harness(
+      signal =>
+        new Promise<Response>((_, reject) => {
+          const alive = setInterval(() => {}, 50)
+          signal?.addEventListener('abort', () => (clearInterval(alive), reject(new Error('aborted'))))
+        }),
+      undefined,
+      2400,
+    )
+    // Another process holds the lock for 600 ms, past the naming limit, and saves nothing. Its wait ends at 0.6 to 0.8 s,
+    // far from the half of 2.4 s, so the waiter sends its own request.
+    fs.writeFileSync(h.lock, lockText({ pid: process.pid, id: ID, at: Date.now() }))
+    setTimeout(() => fs.rmSync(h.lock), 600)
+    const message = ((await h.refresh()) as Error).message
+    const m =
+      /did not answer in (\d+(?:\.\d)?) s, after (\d+(?:\.\d)?) s of waiting for another toolscript-mcp process\./.exec(
+        message,
+      )
+    assert.ok(m, message)
+    const [had, waited] = [Number(m[1]), Number(m[2])]
+    assert.ok(had < 2.4, `the request had ${had} s of 2.4 s`)
+    assert.ok(waited >= 0.5, `the wait was ${waited} s`)
+    // The read of the store before the lock is in neither number, and each is rounded.
+    assert.ok(had + waited <= 2.4 + 0.1, `${had} s and ${waited} s`)
+    assert.equal(h.sent(), 1)
     assert.equal(fs.existsSync(h.lock), false)
   })
 
@@ -283,4 +334,164 @@ describe('a lock that changes while a waiter reads it', () => {
     assert.equal(await takeLock(store, Date.now() + 400, 1000, io), 'busy')
     assert.equal(parseLock(fs.readFileSync(lock, 'utf8'))?.id, fresh)
   })
+
+  // Two waiters over real files in a temp folder. A waiter stops at a gate (a promise that the test opens), so the order
+  // of the calls is the test's, never the clock's. The clock is a frozen Date that the test moves to a deadline.
+  const FAR_MS = 5000
+  const STALE_MS = 15_000
+
+  /** The calls that waiters made and finished, as `A open-create lock ok`: what ended, and what failed with which code. */
+  const recorder = () => {
+    const entries: string[] = []
+    const waiting: [string, () => void][] = []
+    return {
+      entries,
+      push: (entry: string) => {
+        entries.push(entry)
+        for (const [wanted, wake] of waiting) if (wanted === entry) wake()
+      },
+      until: (entry: string) =>
+        entries.includes(entry) ? Promise.resolve() : new Promise<void>(resolve => waiting.push([entry, resolve])),
+      count: (entry: string) => entries.filter(e => e === entry).length,
+    }
+  }
+
+  /**
+   * A LockFs over the real file system for the waiter `who`. It records each call. `stopBefore` gets the label of a call
+   * and the labels of the calls before it: the first call for which it says true waits at the gate until `release`.
+   * `reached` is true after that call came.
+   */
+  const traced = (
+    who: string,
+    log: ReturnType<typeof recorder>,
+    stopBefore?: (label: string, before: string[]) => boolean,
+  ) => {
+    const before: string[] = []
+    let release = () => {}
+    let reach = () => {}
+    const gate = new Promise<void>(resolve => (release = resolve))
+    const reached = new Promise<void>(resolve => (reach = resolve))
+    let stopped = false
+    const wrap =
+      (name: keyof LockFs) =>
+      async (...args: unknown[]) => {
+        const file = String(args[0])
+        const kind = file.endsWith('.claim') ? 'claim' : file.endsWith('.lock') ? 'lock' : 'other'
+        const how = name === 'open' ? (args[1] === 'wx' ? 'create' : 'read') : name
+        const label = `${how} ${kind}`
+        if (!stopped && stopBefore?.(label, before) === true) {
+          stopped = true
+          reach()
+          await gate
+        }
+        before.push(label)
+        try {
+          const out = await (fs.promises[name] as (...a: unknown[]) => Promise<unknown>)(...args)
+          log.push(`${who} ${label} ok`)
+          return out
+        } catch (err) {
+          log.push(`${who} ${label} ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+          throw err
+        }
+      }
+    const io = {
+      open: wrap('open'),
+      readFile: wrap('readFile'),
+      stat: wrap('stat'),
+      unlink: wrap('unlink'),
+      mkdir: wrap('mkdir'),
+    } as LockFs
+    return { io, reached, release: () => release() }
+  }
+
+  /** A store with the stale lock L1: a live pid, 60 s old, and the clock frozen at now. */
+  const stale = () => {
+    const dir = fs.mkdtempSync(path.join(ROOT, 'take-'))
+    const store = path.join(dir, 'fake-0123456789abcdef.json')
+    const lock = `${store}.lock`
+    fs.writeFileSync(lock, lockText({ pid: process.pid, id: ID, at: 0 }))
+    const old = new Date(Date.now() - 60_000)
+    fs.utimesSync(lock, old, old)
+    mock.timers.enable({ apis: ['Date'], now: Date.now() })
+    return { dir, store, lock, deadline: () => Date.now() + FAR_MS }
+  }
+  /** Fails the test, with a message, when the waiter ends before it reached its gate. */
+  const stopsAt = (reached: Promise<void>, waiter: Promise<unknown>, what: string) =>
+    Promise.race([reached, waiter.then(out => assert.fail(`${what}: the waiter ended with ${JSON.stringify(out)}`))])
+
+  test(
+    'a waiter held before its claim: another takes over and makes its lock, and the held waiter leaves that lock alone',
+    { timeout: 10_000 },
+    async () => {
+      const log = recorder()
+      try {
+        const s = stale()
+        // A stops at the first call after its look at L1: with a claim, that call is the create of the claim file.
+        const a = traced('A', log, (_label, before) => before.includes('read lock'))
+        const waitA = takeLock(s.store, s.deadline(), STALE_MS, a.io)
+        await stopsAt(a.reached, waitA, 'A before its claim')
+        // B takes over L1 and makes its live lock L2 while A is held.
+        const b = traced('B', log)
+        const held = await takeLock(s.store, s.deadline(), STALE_MS, b.io)
+        assert.equal(typeof held, 'object', 'B takes the lock')
+        const idB = (held as { id: string }).id
+        assert.equal(parseLock(fs.readFileSync(s.lock, 'utf8'))?.id, idB)
+        // A goes on, and its deadline comes: it must not have removed L2 or made a lock over it.
+        a.release()
+        mock.timers.tick(FAR_MS * 2)
+        assert.equal(await waitA, 'busy')
+        assert.equal(parseLock(fs.readFileSync(s.lock, 'utf8'))?.id, idB, 'L2 is still there with the id of B')
+        assert.equal(log.count('A create lock ok'), 0, 'A never held the lock while B did')
+        assert.equal(log.count('A create claim ok'), 1, 'A went through the claim, as the code says')
+        assert.deepEqual(
+          fs.readdirSync(s.dir).filter(name => name.endsWith('.claim')),
+          [],
+          'no claim file is left',
+        )
+      } finally {
+        mock.timers.reset()
+      }
+    },
+  )
+
+  test(
+    'a waiter held after its claim: the other cannot claim and polls, and exactly one waiter removes the lock',
+    { timeout: 10_000 },
+    async () => {
+      const log = recorder()
+      try {
+        const s = stale()
+        // A stops at its second look at the lock, after it made the claim file.
+        const a = traced('A', log, (label, before) => label === 'read lock' && before.includes('create claim'))
+        const waitA = takeLock(s.store, s.deadline(), STALE_MS, a.io)
+        await stopsAt(a.reached, waitA, 'A after its claim')
+        const b = traced('B', log)
+        let bEnded = false
+        const waitB = takeLock(s.store, s.deadline(), STALE_MS, b.io).finally(() => (bEnded = true))
+        // B finds the claim of A, sees that it is live, and leaves L1 where it is.
+        await log.until('B create claim EEXIST')
+        await log.until('B read claim ok')
+        assert.equal(fs.existsSync(s.lock), true, 'L1 stays while A holds the claim')
+        assert.equal(parseLock(fs.readFileSync(s.lock, 'utf8'))?.id, ID)
+        assert.equal(bEnded, false, 'B polls for the lock')
+        a.release()
+        const held = await waitA
+        assert.equal(typeof held, 'object', 'A takes the lock after it removes L1')
+        // B sees the new lock of A, which is young, and goes on polling to its deadline.
+        mock.timers.tick(FAR_MS * 2)
+        assert.equal(await waitB, 'busy')
+        assert.equal(log.count('A unlink lock ok') + log.count('B unlink lock ok'), 1, 'one waiter removes L1')
+        assert.equal(log.count('A unlink lock ok'), 1)
+        assert.equal(log.count('B create lock ok'), 0)
+        assert.equal(parseLock(fs.readFileSync(s.lock, 'utf8'))?.id, (held as { id: string }).id)
+        assert.deepEqual(
+          fs.readdirSync(s.dir).filter(name => name.endsWith('.claim')),
+          [],
+          'no claim file is left',
+        )
+      } finally {
+        mock.timers.reset()
+      }
+    },
+  )
 })

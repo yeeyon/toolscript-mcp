@@ -25,14 +25,17 @@ after(cleanup)
 const SLOW_WAIT_MS = 15_000
 
 describe('a lock that is already there', { timeout: 180_000 }, () => {
-  test('a dead pid: 6 waiters take it over at once in each of 5 rounds, with one request and no revocation', async () => {
+  test('a dead pid: 6 waiters take it over with no wait for the age in each of 2 rounds, with one request and no revocation', async () => {
     const s = await setup()
     const [fake] = s.fakes as [Fake]
+    // The refresh time is 20 s, and a lock that is 0 s old goes stale by age only after 31 s. So a waiter that waited for
+    // the age would fail its refresh first. The answer `pong` of all 6 proves the takeover with no wait, on any runner.
+    // The races of the takeover itself are proven in tests/oauthlock.test.ts, with no process.
     const children = await group(s, 6)
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 2; i++) {
       putLock(s, lockText(await deadPid()), 0)
       const before = requests(fake)
-      const { lines, ms } = await round(s, children)
+      const { lines } = await round(s, children)
       assert.equal(revocations(s), 0, `round ${i}: the server revoked the grant`)
       assert.deepEqual(
         lines.map(l => l.text),
@@ -40,87 +43,70 @@ describe('a lock that is already there', { timeout: 180_000 }, () => {
         `round ${i}`,
       )
       assert.equal(requests(fake) - before, 1, `round ${i}`)
-      assert.ok(ms < 5000, `${ms} ms: no wait for the age`)
       assert.deepEqual(s.leftovers(), [], `round ${i}`)
     }
     await stop(children)
   })
 
-  test('a live pid that is not a holder: young, the refresh fails at its time with no request. Old, it is taken over', async () => {
+  test('a live pid, garbage, an empty file and a folder: young, the refresh fails at its time with no request. Old, 6 waiters take over a file with one request', async () => {
     const s = await setup()
     const [fake] = s.fakes as [Fake]
     const children = await group(s, 6, 1000)
     // Both groups start before any lock or expiry: the warm-up round of a group must not meet a lock.
     const takers = await group(s, 6, SLOW_WAIT_MS)
-    // After the start of the processes: on a slow machine it takes longer than the age of a lock (12 s here).
-    putLock(s, lockText(process.pid), 0)
-    const young = await round(s, children)
-    assert.equal(young.lines.length, 6)
-    for (const l of young.lines)
-      assert.match(l.text, /another toolscript-mcp process is refreshing.*No login is needed/, l.text)
-    assert.ok(young.ms < 1000 + 2000, `${young.ms} ms`)
-    assert.equal(requests(fake), 0)
-    await stop(children)
-    // The old phase: one process takes over and refreshes while the others wait for it, and on a slow machine
-    // that takes more than the 1 s that the young phase gives a waiter. So these waiters wait longer.
-    putLock(s, lockText(process.pid), 600)
-    const old = await round(s, takers)
-    assert.deepEqual(
-      old.lines.map(l => l.text),
-      Array(6).fill(PONG),
-    )
-    assert.equal(requests(fake), 1)
-    assert.equal(revocations(s), 0)
-    assert.deepEqual(s.leftovers(), [])
-    await stop(takers)
-  })
-
-  for (const [name, text] of [
-    ['garbage', 'this is not a lock'],
-    ['an empty file', ''],
-  ] as const)
-    test(`${name}: waits for the age, and then 6 waiters take it over with one request`, async () => {
-      const s = await setup()
-      const [fake] = s.fakes as [Fake]
-      const children = await group(s, 6, 1000)
-      const takers = await group(s, 6, SLOW_WAIT_MS)
+    // One store and two groups for the three kinds of lock: each start of 12 processes costs more than a round.
+    for (const [name, text] of [
+      ['a live pid', lockText(process.pid)],
+      ['garbage', 'this is not a lock'],
+      ['an empty file', ''],
+    ] as const) {
+      const before = requests(fake)
+      // After the start of the processes: on a slow machine it takes longer than the age of a lock (12 s here).
       putLock(s, text, 0)
       const young = await round(s, children)
-      for (const l of young.lines) assert.match(l.text, /another toolscript-mcp process is refreshing/, l.text)
-      assert.equal(requests(fake), 0)
-      await stop(children)
+      assert.equal(young.lines.length, 6, name)
+      // The reason names the refresh time of these waiters (1 s), not the age of the lock (12 s): they gave up at their
+      // own time and did not wait for the age. No clock bound is needed, and a busy runner cannot break the proof.
+      for (const l of young.lines)
+        assert.match(
+          l.text,
+          /another toolscript-mcp process is refreshing.*did not finish in 1 s.*No login is needed/,
+          `${name}: ${l.text}`,
+        )
+      assert.equal(requests(fake) - before, 0, name)
+      // The old phase: one process takes over and refreshes while the others wait for it, and on a slow machine
+      // that takes more than the 1 s that the young phase gives a waiter. So these waiters wait longer.
       putLock(s, text, 600)
       const old = await round(s, takers)
       assert.deepEqual(
         old.lines.map(l => l.text),
         Array(6).fill(PONG),
+        name,
       )
-      assert.equal(requests(fake), 1)
-      assert.equal(revocations(s), 0)
-      await stop(takers)
-    })
-
-  test('a folder where the lock goes: no crash and no hang past the time', async () => {
-    const s = await setup()
+      assert.equal(requests(fake) - before, 1, name)
+      assert.equal(revocations(s), 0, name)
+      assert.deepEqual(s.leftovers(), [], name)
+    }
+    // A folder where the lock goes: no crash, and no hang past the time of each waiter.
     const lock = `${s.files[0]}.lock`
     fs.mkdirSync(lock)
-    const old = new Date(Date.now() - 600_000)
-    fs.utimesSync(lock, old, old)
-    const children = await group(s, 2, 1000)
-    const { lines, ms } = await round(s, children)
-    assert.equal(lines.length, 2)
-    for (const l of lines) assert.match(l.text, /another toolscript-mcp process is refreshing/, l.text)
-    assert.ok(ms < 1000 + 2000, `${ms} ms`)
+    const aged = new Date(Date.now() - 600_000)
+    fs.utimesSync(lock, aged, aged)
+    const folder = await round(s, children)
+    assert.equal(folder.lines.length, 6, 'a folder')
+    for (const l of folder.lines)
+      assert.match(l.text, /another toolscript-mcp process is refreshing.*did not finish in 1 s/, l.text)
     assert.ok(
       children.every(c => c.proc.exitCode === null),
       'a process died',
     )
     await stop(children)
+    await stop(takers)
   })
 })
 
 describe('a holder that dies', { timeout: 180_000 }, () => {
-  test('SIGKILL while the endpoint holds the answer: the others take over within 1 s, with one more request', async () => {
+  test('SIGKILL while the endpoint holds the answer: the others take over with no wait for the age, with one more request', async () => {
     const s = await setup()
     const [fake] = s.fakes as [Fake]
     const children = await group(s, 6)
@@ -135,9 +121,9 @@ describe('a holder that dies', { timeout: 180_000 }, () => {
     const holder = children.find(c => c.proc.pid === held.pid)
     assert.ok(holder, 'the lock holds the pid of one of the children')
     holder.proc.kill('SIGKILL')
-    const killed = Date.now()
-    await until('the second request', () => requests(fake) === 2, 1500)
-    assert.ok(Date.now() - killed < 1000, `${Date.now() - killed} ms after the kill`)
+    // The lock holds a dead pid, so it is stale at once. The refresh time of the others is 20 s, and the age is 31 s: a
+    // wait for the age would fail their refresh, so 5 answers of `pong` prove the takeover with no wait for the age.
+    await until('the second request', () => requests(fake) === 2)
     release()
     const others = children.filter(c => c !== holder)
     await Promise.all(others.map(c => c.ended()))
