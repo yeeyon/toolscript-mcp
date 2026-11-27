@@ -235,6 +235,9 @@ describe('a casefolded folder opens a name that it does not list (Linux)', () =>
       assert.ok(!message.includes('outside bytes'), `${tool} shows the bytes`)
     }
     assert.equal(codeOf(await links.fail('read', { path: 'h.txt' })), 'hard-link')
+    // `h.txt` and `id_rsa` are one file, so the lookup of `id_rſa` finds both names and answers for the excluded one, in
+    // whatever order the folder lists them. The plain name that is not excluded still shows its metadata.
+    assert.equal((await links.call('stat', { path: 'h.txt' })).type, 'file')
     assert.deepEqual(fs.readdirSync(outside), ['known_hosts'])
   })
 })

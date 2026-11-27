@@ -131,7 +131,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
    */
   const unalias = <T>(opened: Promise<T>): Promise<T> =>
     opened.catch((err: unknown) => {
-      if (err instanceof WorkspaceError && err.spelled !== undefined && excluded(err.spelled)) throw excludedError()
+      if (err instanceof WorkspaceError && err.spelled?.some(p => excluded(p)) === true) throw excludedError()
       throw err
     })
   const confined: Confined = {
@@ -635,7 +635,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
       const entry = await parent.lstat(last, true)
       if (entry === undefined) return missing
       const real = [...parent.parts, entry.real]
-      if (excluded(real)) throw new WorkspaceError('excluded', 'the path is excluded from Workspace')
+      // A file with a second name in the folder: the alias is excluded when any of its names is.
+      if (excluded(real) || (entry.alike ?? []).some(n => excluded([...parent.parts, n])))
+        throw new WorkspaceError('excluded', 'the path is excluded from Workspace')
       if (entry.kind === 'link')
         throw new WorkspaceError('link', 'the path is a link: Workspace never follows a symlink or a junction')
       return { path: showPath(real), type: entry.kind, ...(entry.kind === 'file' && { size: entry.size }) }
