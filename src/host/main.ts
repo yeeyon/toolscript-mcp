@@ -186,5 +186,7 @@ process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
+// A direct child runs in its own process group outside Windows, so the SIGHUP of a closed terminal no longer reaches it.
+process.on('SIGHUP', shutdown)
 
 await server.connect(new StdioServerTransport())

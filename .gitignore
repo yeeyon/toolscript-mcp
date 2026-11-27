@@ -4,3 +4,5 @@ dist/
 .audit/
 .claude/worktrees/
 .claude/settings.local.json
+CHANGELOG.md.tmp
+CHANGELOG.md.folded
