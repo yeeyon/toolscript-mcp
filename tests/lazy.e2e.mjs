@@ -17,7 +17,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { readTable } from '../bench/memory.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = path.join(ROOT, 'dist', 'host', 'main.js')
