@@ -2,7 +2,8 @@
 // `claude-code` (tests/pid-server.mjs, which ignores EOF) and a temp HOME. The first session has no cache: it connects,
 // writes the cache and stops the child after the idle time. The next session starts with no child, lists the same tools
 // in a search, starts the child for a call, and after the idle time the child is gone. A call after that works.
-// With TOOLSCRIPT_LAZY=0 the child starts at once. Run `npm run build` first.
+// With TOOLSCRIPT_LAZY=0 the child starts at once. A SIGKILL of the host while a lazy child is still starting leaves
+// neither the child nor its wrapper. Run `npm run build` first.
 //
 //   node tests/lazy.e2e.mjs
 
@@ -92,11 +93,11 @@ const alive = pid => {
     return false
   }
 }
-const until = async (what, check, ms = 15_000) => {
+const until = async (what, check, ms = 15_000, step = 50) => {
   const end = Date.now() + ms
   while (!(await check())) {
     assert.ok(Date.now() < end, `timed out: ${what}`)
-    await new Promise(r => setTimeout(r, 50))
+    await new Promise(r => setTimeout(r, step))
   }
 }
 const pidOf = async host => {
@@ -238,6 +239,100 @@ describe('lazy start', () => {
       assert.ok(!left, 'the child is gone when the host has left')
       assert.ok(ms < SHUTDOWN_BOUND_MS, `the host needed ${ms} ms`)
     })
+})
+
+// A hard kill of the host while a lazy child is still starting (#120). The server (tests/slow-start-server.mjs) never
+// answers `initialize` once the file `slow` exists, so the child is mid-start when the host gets SIGKILL: no `close()`
+// runs, and the child and its wrapper can only learn of it from the end of their stdin. Both must be gone in 10 s.
+describe('a hard kill of the host while a lazy child starts', () => {
+  test('leaves neither the child nor its wrapper', async () => {
+    const own = path.join(dir, 'slow')
+    const flags = path.join(own, 'flags')
+    const home = path.join(own, 'home')
+    fs.mkdirSync(flags, { recursive: true })
+    fs.mkdirSync(home)
+    const slowConfig = path.join(own, 'config.json')
+    const SLOW = path.join(ROOT, 'tests', 'slow-start-server.mjs')
+    fs.writeFileSync(
+      slowConfig,
+      JSON.stringify({
+        sandbox: { timeoutSeconds: 20, callTimeoutSeconds: 15 },
+        policy: [{ match: 'mcp__claude-code__pid', action: 'allow' }],
+        mcpServers: {
+          'claude-code': {
+            // The node that runs this test, not the one on PATH. On Windows cmd cannot be given a quoted path through
+            // the arguments, so cmd starts in the folder of node.exe and finds it there.
+            ...(process.platform === 'win32'
+              ? { command: 'cmd', args: ['/c', 'node.exe', SLOW], cwd: path.dirname(process.execPath) }
+              : { command: 'sh', args: ['-c', '"$0" "$1"; true', process.execPath, SLOW] }),
+            env: { SLOW_START_DIR: flags },
+          },
+        },
+      }),
+    )
+    const open = async () => {
+      const client = new Client({ name: 'lazy-e2e', version: '0' }, { capabilities: {} })
+      const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [MAIN, '--config', slowConfig],
+        env: { ...envOf(true), HOME: home, USERPROFILE: home },
+        stderr: 'pipe',
+      })
+      transport.stderr.on('data', () => {})
+      await client.connect(transport)
+      return { client, transport }
+    }
+    // Phase 1, no `slow` file: a normal session writes the cache that makes the server lazy.
+    const first = await open()
+    await first.client.callTool({ name: 'search_tools', arguments: { query: '' } })
+    await until('the cache file', () => fs.existsSync(path.join(home, '.toolscript-mcp', 'learned', 'tools.json')))
+    await first.client.close()
+    // Phase 2: a session with no child; one call starts it, and the child never finishes starting.
+    fs.writeFileSync(path.join(flags, 'slow'), '')
+    const second = await open()
+    const started = path.join(flags, 'started')
+    const idOf = p => `${p.pid}:${p.t}`
+    // The ids (pid and creation time) of the host, the wrapper and the child, recorded once the child runs.
+    const ids = new Set()
+    try {
+      await second.client.callTool({ name: 'search_tools', arguments: { query: '' } })
+      await new Promise(r => setTimeout(r, 300))
+      assert.ok(!fs.existsSync(started), 'no child before a call')
+      second.client
+        .callTool({ name: 'run_code', arguments: { code: 'return await call("mcp__claude-code__pid", {})' } })
+        .catch(() => {})
+      await until('the child is starting', () => fs.existsSync(started))
+      const pids = [second.transport.pid, ...fs.readFileSync(started, 'utf8').trim().split(' ').map(Number)]
+      assert.equal(pids.length, 3)
+      // Also the other direct children of the host, such as the sandbox runner of the call: all must end with it.
+      // A child is never older than its parent: an older row only holds the stale ppid of a dead parent.
+      const table = await readTable()
+      const host = table.find(p => p.pid === pids[0])
+      const rows = table.filter(
+        p => pids.includes(p.pid) || (host !== undefined && p.ppid === host.pid && p.t >= host.t),
+      )
+      for (const p of rows) ids.add(idOf(p))
+      assert.ok(
+        pids.every(pid => rows.some(p => p.pid === pid)),
+        'the host, the wrapper and the child run',
+      )
+      await new Promise(r => setTimeout(r, 50))
+      process.kill(second.transport.pid, 'SIGKILL')
+      await until(
+        'the end of the host, the child and its wrapper',
+        async () => !(await readTable()).some(p => ids.has(idOf(p))),
+        10_000,
+        250,
+      )
+    } finally {
+      // Only a row that still has a recorded pid and creation time: a pid that was reused is not ours.
+      for (const p of (await readTable().catch(() => [])).filter(p => ids.has(idOf(p)))) {
+        try {
+          process.kill(p.pid, 'SIGKILL')
+        } catch {}
+      }
+    }
+  })
 })
 
 // The child guard (decision: a stdio child never outlives a host that was killed). A host with a direct server and a
