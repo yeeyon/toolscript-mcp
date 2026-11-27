@@ -23,25 +23,37 @@ jobs:
       - run: npm ci
       - name: Walks with 1 slot and with 2 slots
         run: |
+          mkdir results
           {
             echo "commit $GITHUB_SHA"
             echo "nproc $(nproc)"
             node --version
-          } | tee results.txt
+          } | tee results/results.txt
           # The copy, so the sed changes no file of the checkout.
           cp -a . "$RUNNER_TEMP/app"
           cd "$RUNNER_TEMP/app"
-          for slots in 1 2; do
-            sed -i "s/walkSlots: [0-9]*,/walkSlots: $slots,/" src/core/workspace.ts
-            grep -n "walkSlots" src/core/workspace.ts
+          slots() { sed -i "s/walkSlots: [0-9]*,/walkSlots: $1,/" src/core/workspace.ts; grep -n "walkSlots" src/core/workspace.ts; }
+          # A first pass makes the tree and warms the file cache: its numbers are dropped, so no slot count has the warm cache
+          # alone. Then 2, 1, 2, 1 slots, each pass with 3 runs for each cell.
+          slots 1
+          node --experimental-strip-types bench/walks.mjs --files 2500 --runs 1 --tree "$RUNNER_TEMP/walks-tree" > /dev/null 2>&1
+          pass=0
+          for s in 2 1 2 1; do
+            pass=$((pass + 1))
+            slots "$s"
             {
               echo
-              echo "== walkSlots $slots"
+              echo "== pass $pass, walkSlots $s"
               node --experimental-strip-types bench/walks.mjs --files 2500 --runs 3 --tree "$RUNNER_TEMP/walks-tree"
-            } 2>&1 | tee -a "$GITHUB_WORKSPACE/results.txt"
+            } 2>&1 | tee "$GITHUB_WORKSPACE/results/pass$pass-slots$s.txt" | tee -a "$GITHUB_WORKSPACE/results/results.txt"
           done
+          {
+            echo
+            echo "== summary (median of every run of every pass of a slot count)"
+            node bench/walks-summary.mjs "$GITHUB_WORKSPACE/results"
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/results/results.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: walks-results
-          path: results.txt
+          path: results/
