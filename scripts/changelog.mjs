@@ -59,13 +59,21 @@ const lower = (a, b) => {
 
 /** The names of the files of changes/ to fold, in code point order, each checked. */
 const readFragments = folder => {
-  if (!fs.existsSync(folder)) return []
+  // One listing with the kind of each entry: no check of the folder or of a file before the read. A link is not a file.
+  let entries
+  try {
+    entries = fs.readdirSync(folder, { withFileTypes: true })
+  } catch (err) {
+    if (err.code === 'ENOENT') return []
+    throw err
+  }
   const found = []
-  for (const name of fs.readdirSync(folder).sort()) {
+  for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    const name = entry.name
     if (name === 'README.md' || ignoredName(name)) continue
     const file = path.join(folder, name)
     if (!FRAGMENT_NAME.test(name)) refuse(`changes/${name}: the name must match [a-z0-9][a-z0-9._-]*.md`)
-    if (!fs.lstatSync(file).isFile()) refuse(`changes/${name}: it is not a file`)
+    if (!entry.isFile()) refuse(`changes/${name}: it is not a file`)
     const text = lf(fs.readFileSync(file, 'utf8'))
     const problems = fragmentProblems(text)
     if (problems.length > 0) refuse(`changes/${name}: ${problems[0]}`)
