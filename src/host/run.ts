@@ -17,7 +17,7 @@ import {
   type ServerState,
 } from '../core/catalog.ts'
 import type { Config, ServerKey } from '../core/config.ts'
-import { guardHit, guardedList, resolveGuarded, type GuardForm } from '../core/guard.ts'
+import { guardFind, guardedList, resolveGuarded, type GuardForm } from '../core/guard.ts'
 import {
   approvalNote,
   checkCall,
@@ -540,8 +540,13 @@ const execute = async (
     // it runs before the link and the policy check: no wait sits between that check and the call, and a mark that a
     // server adds during the wait is in the list that the check reads. The log keeps what the policy says of the tool.
     const entry = config.servers.get(server)
-    const folder = await guardHit(args, {
+    // The schema of the tool, if its server listed it: it decides which keys of the key path a refusal shows.
+    const known = downstream.states().find(s => s.key === server)
+    const schema =
+      known !== undefined && 'tools' in known ? known.tools.find(t => t.name === target.name)?.inputSchema : undefined
+    const folder = await guardFind(args, {
       home: ctx.home,
+      schema,
       cwd:
         entry?.kind === 'stdio' && entry.cwd !== undefined
           ? entry.cwd
@@ -555,7 +560,7 @@ const execute = async (
     })
     if (folder !== undefined) {
       decided.set(id, callDecision(config.policy, config.guards, approved, tool, interactiveNow()))
-      return { ok: false, error: guardedText(tool, folder), code: 'guarded' }
+      return { ok: false, error: guardedText(tool, folder.label, folder.at), code: 'guarded' }
     }
     const fromUntrusted = (): { untrusted?: true } => (downstream.untrusted(server) ? { untrusted: true } : {})
     // The link comes with the list after the last change of the server, so the check sees each new mark.

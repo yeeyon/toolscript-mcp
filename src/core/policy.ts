@@ -414,11 +414,12 @@ export const checkCall = (
 }
 
 /**
- * Why a call was refused because its arguments name a guarded folder. One fixed shape: it names the tool and the
- * folder, never the argument. No allow rule or approval lifts it, so the only next step is the person's edit.
+ * Why a call was refused because its arguments name a guarded folder. One fixed shape: it names the tool, the folder
+ * and the key path of the argument (`edits[0].new`), never the argument itself. A mention in text counts, so it says
+ * so. No allow rule or approval lifts it: the next step is to leave the folder out, or the person's edit or post.
  */
-export const guardedText = (tool: string, folder: string): string =>
-  `refused: an argument of ${tool} names ${folder}, a folder that toolscript-mcp guards. No allow rule or approval lifts this. The person can edit the file outside run_code.`
+export const guardedText = (tool: string, folder: string, at = ''): string =>
+  `refused: an argument of ${tool} names ${folder}, a folder that toolscript-mcp guards${at === '' ? '' : ` (in ${at})`}. A mention in text counts too. No allow rule or approval lifts this. Leave the folder out of the argument, or the person can edit the file or post the text outside run_code.`
 
 // Why `*` or `mcp__*__Bash` does not allow a tool of the bridge `bridge`.
 const bridgeRule = (bridge: string): string =>
