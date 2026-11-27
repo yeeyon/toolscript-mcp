@@ -329,6 +329,10 @@
     ["merge pull request", "mcp__github__merge_pull_request"],
     ["add comment to jira issue", "mcp__atlassian__addCommentToJiraIssue"],
     ["transition jira issue", "mcp__atlassian__transitionJiraIssue"],
-    ["move jira issue status", "mcp__atlassian__transitionJiraIssue"]
+    ["move jira issue status", "mcp__atlassian__transitionJiraIssue"],
+    ["update status of pr thread", "mcp__azure-devops__repo_pull_request_thread_write"],
+    ["update the status of a thread", "mcp__azure-devops__repo_pull_request_thread_write"],
+    ["azure devops update status of pr thread", "mcp__azure-devops__repo_pull_request_thread_write"],
+    ["update the reviewers of a pr", "mcp__azure-devops__repo_pull_request_write"]
   ]
 }

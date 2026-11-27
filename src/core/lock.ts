@@ -23,6 +23,20 @@ export const parseLock = (text: string): LockContent | undefined => {
     : undefined
 }
 
+/** A wait for the lock shorter than this is not named: a slow disk or a busy machine makes the take of a free lock that slow. */
+export const WAIT_NAMED_MS = 500
+
+const seconds = (ms: number): number => Math.round(ms / 100) / 10
+
+/**
+ * Why a request that got no answer ended. The lock wait took `waitedMs` of the refresh time (`totalMs`), so the request
+ * had `hadMs`. With no wait, the text gives the whole time.
+ */
+export const silentReason = (totalMs: number, hadMs: number, waitedMs: number): string =>
+  waitedMs < WAIT_NAMED_MS
+    ? `the token endpoint did not answer in ${totalMs / 1000} s`
+    : `the token endpoint did not answer in ${seconds(hadMs)} s, after ${seconds(waitedMs)} s of waiting for another toolscript-mcp process`
+
 /**
  * True when a waiter may take the lock over. The pid of a lock that parses is dead: the holder cannot finish, so no
  * wait for the age. Any lock older than `staleAfterMs` goes, also one that does not parse. A live pid is never taken
