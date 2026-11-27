@@ -36,7 +36,7 @@ import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
 import { ChildTransport } from './childtransport.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
-import { AwsCredentialsError, sigv4Fetch } from './sigv4.ts'
+import { AwsCredentialsError, sigv4Fetch, stopCredentialReads } from './sigv4.ts'
 import type { WorkspaceLink } from './workspace/bind.ts'
 
 /** A server entry that starts: any entry but an invalid one. */
@@ -936,7 +936,8 @@ export const connectAll = (
     close: () =>
       (closing ??= (() => {
         for (const child of children) child.hurry()
-        return Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})
+        // A hung AWS CLI is in its own process group, so it would outlive the host.
+        return Promise.all([stopCredentialReads(), ...[...opened].map(c => c.close().catch(() => {}))]).then(() => {})
       })()),
   }
 }
