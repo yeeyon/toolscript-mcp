@@ -289,8 +289,9 @@ For a development session, use `node` as the client command. Replace the npm arg
   `headers`. `env_http_headers = { H = "V" }` becomes the header `H: ${V}`.
 - `disabled_tools` of a Codex server gives one `deny` rule for each tool. `enabled_tools` gives one `ask` rule for
   each tool, then one `deny` rule for the other tools of the server. init writes the rules in this order: the `deny` rules of tools,
-  the old `deny` rules, the `ask` rules, the `deny` rule of the other tools, and the other old rules. So no `deny`
-  rule gets weaker. An old `allow` rule never loosens a Codex list. No old rule changes. init prints the rules that it
+  the `ask` rules, the `deny` rule of the other tools, and then the old rules, which keep their order. If an old `deny`
+  rule matches a tool of an `enabled_tools` list, that tool gets a `deny` rule and no `ask` rule. An old `allow` rule
+  never loosens a Codex list. No old rule changes. init prints the rules that it
   wrote. If two clients define the same server, init keeps the rules of Codex.
 - init leaves out `http_headers_helper`, `startup_timeout_sec`, `tool_timeout_sec`, the per-tool `tools` tables and each
   key that it does not know. It prints each name with its reason. When it reads the CLI, it also reads `config.toml` for

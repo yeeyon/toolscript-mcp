@@ -2357,8 +2357,11 @@ describe('Codex', () => {
     // An old deny stays a deny of a tool that Codex lists.
     const denied = await run([{ match: 'mcp__*__read', action: 'deny' }])
     assert.equal(denied.verdict('mcp__s__read'), 'deny')
-    assert.deepEqual(denied.policy.slice(0, 2), [
+    // The ask of the listed tool became a deny, and the old rule stays where it was.
+    assert.deepEqual(denied.policy, [
       { match: 'mcp__t__write', action: 'deny' },
+      { match: 'mcp__s__read', action: 'deny' },
+      { match: 'mcp__s__*', action: 'deny' },
       { match: 'mcp__*__read', action: 'deny' },
     ])
     // An old allow loosens neither the ask of a listed tool nor the deny of an unlisted one.
@@ -2378,6 +2381,45 @@ describe('Codex', () => {
       { match: 'mcp__t__*', action: 'allow' },
     ])
     assert.equal(allowed.policy.length, 3 + 3)
+  })
+
+  test('--add leaves the old rules in their order, so the policy of another server is the same as before', async () => {
+    const toml = '[mcp_servers.s]\ncommand = "fake"\nenabled_tools = ["read"]\n'
+    const old = [
+      { match: 'mcp__x__read', action: 'allow' },
+      { match: 'mcp__*__read', action: 'deny' },
+      { match: 'mcp__y__*', action: 'ask' },
+      { match: 'mcp__z__*', action: 'allow' },
+    ]
+    const home = homeWith({ '.codex/config.toml': toml })
+    const config = path.join(home, 'cfg', 'config.json')
+    fs.mkdirSync(path.dirname(config), { recursive: true })
+    fs.writeFileSync(config, JSON.stringify({ mcpServers: {}, policy: old }))
+    const add = await init(home, ['--add=s', '--project', home, '--config', config])
+    assert.equal(add.code, 0, add.out)
+    const policy = JSON.parse(fs.readFileSync(config, 'utf8')).policy as typeof old
+    assert.deepEqual(policy.slice(-old.length), old)
+    const verdict = (rules: typeof old, tool: string) =>
+      decide(
+        rules.map((r, index) => ({ ...r, index })),
+        NO_GUARDS,
+        tool,
+      ).action
+    // A server that init does not import gets the same answer for every tool, with the allow exception for x.
+    for (const tool of [
+      'mcp__x__read',
+      'mcp__x__write',
+      'mcp__y__read',
+      'mcp__y__list',
+      'mcp__z__read',
+      'mcp__z__go',
+      'mcp__w__read',
+    ])
+      assert.equal(verdict(policy, tool), verdict(old, tool), tool)
+    assert.equal(verdict(policy, 'mcp__x__read'), 'allow')
+    // The imported server: its listed tool matches an old deny, so it is denied, and an unlisted tool is denied.
+    assert.equal(verdict(policy, 'mcp__s__read'), 'deny')
+    assert.equal(verdict(policy, 'mcp__s__other'), 'deny')
   })
 
   test('a key that the map does not name is listed by name, and so is a key of the other kind of server', () => {
