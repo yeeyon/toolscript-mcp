@@ -2,6 +2,9 @@
 
 ## 1.0.5
 
+- An HTTP entry with `sigv4` takes an optional `"metadata"` object (issue #137): its pairs go into `params._meta` of each request to the server, as `mcp-proxy-for-aws --metadata` does, before the signature. A pair that the request already holds stays as it is, and with no `metadata` the bytes sent do not change. It sets `AWS_REGION` for an AWS MCP Server host in a region other than the one of the calls.
+- A CLI that has no `aws configure export-credentials` (AWS CLI version 1, or an older version 2) now gets the reason "this AWS CLI has no `configure export-credentials`: update to a current AWS CLI version 2", in place of "needs AWS CLI version 2".
+- When the host closes, each `aws configure export-credentials` child that is still running ends with its process tree, so a hung AWS CLI in its own process group no longer outlives the host on Linux and macOS.
 - When a refresh of OAuth tokens waited for another toolscript-mcp process and the token endpoint then gave no answer, the reason now gives the time the request had, as "the token endpoint did not answer in 12 s, after 8 s of waiting for another toolscript-mcp process" (issue #123). With no wait it still says "did not answer in 20 s".
 
 ## 1.0.4
