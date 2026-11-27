@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- `search_tools` ranks a tool first when the query spells out one whole value of its `action`, `method` or `operation` argument with all of its words in order, such as "update reviewers" for the value `update_reviewers`. Before, each word scored alone, and a tool with "update" in its name ranked above it. A query of one word, words in another order and a real word between them rank as before.
+
 ## 1.0.4
 
 - A tool name held in a plain string, such as `const g = "mcp__s__t"; await call(g, {})`, is now asked in the prompt before the run, like a name written inside `call("…")`, when the client can ask. A call refused at call time for a name nobody asked about now says that the person was not asked, and tells the model to write the name as a string in the program and run again, so a model no longer reports it as declined.
