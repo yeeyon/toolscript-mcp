@@ -976,6 +976,9 @@ login.
   again, the next call works, with no restart.
 - The region and the service come from the host of `url`, such as `us-east-1` and `aws-mcp`. For another host, set
   `"region"` and `"service"` in `sigv4`.
+- To send pairs such as `AWS_REGION` to the server, as `mcp-proxy-for-aws --metadata` does, set `"metadata"` in
+  `sigv4`, for example `"metadata": { "AWS_REGION": "ap-southeast-1" }`. toolscript-mcp puts the pairs in `params._meta`
+  of each request. A pair that the request already has stays as it is. A value can use `${VAR}`.
 - An entry with `sigv4` does not log in with OAuth. An entry with `sigv4` and `oauth`, or with an `Authorization`
   header, is an error.
 - toolscript-mcp signs only the requests to the origin of `url`. It never writes the credentials or the signature to a
@@ -1214,7 +1217,7 @@ tools add `stale`, `busy`, `exists`, `no-match`, `many-matches` and `read-only`.
 - No tool follows a symlink or a junction, and `read` refuses a file with more than one hard link. `search` skips such a file.
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8. `search` skips these files and files over 1 MiB, and counts them in `skipped`.
 - `search` and `list` stop after they read 20,000 names or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. Excluded names do not count toward the 20,000, and only the 10 seconds bound them. A folder with more names than the rest of the budget gives a part of its names, in the order of the volume. A cancel ends a `search` within one second.
-- `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
+- `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `query` can be an array of up to 20 texts: one walk finds all of them, each match names its text in `query`, and `maxMatches` counts for each text. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
 - `list` and `search` leave out the names that the `.gitignore` in the root ignores. Each call reads that file again. The files below the root, `.git/info/exclude` and the global ignore file count for nothing.
 - The rules are discovery only. `read`, `stat`, `diff`, `edit`, `write` and `run_task` never use them, so an ignored file reads and changes as before. A `path` that is ignored, or inside an ignored folder, applies no rule.
 - The syntax has `#` comments, `*`, `?`, `**` as a whole part, and classes such as `[Bb]in/`. A trailing `/` takes folders only. A `/` at the start or in the middle anchors the pattern to the root.

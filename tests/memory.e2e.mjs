@@ -1,5 +1,5 @@
 // Test of bench/memory.mjs in fixture mode, on Linux, macOS and Windows: the smoke run (2 rounds, 4 stdio servers
-// each), the same with sharing on, the secrets rule, the bad --json path and the hard kill of the bench. It asserts no memory threshold. Run
+// each), the same with sharing on, the secrets rule, the bad --json path, the hard kill of the bench and the hard kill of the hosts while the lazy servers are awake (sharing off and on). It asserts no memory threshold. Run
 // `npm run build` first.
 //
 //   node tests/memory.e2e.mjs
@@ -348,3 +348,84 @@ test('a hard kill of the bench leaves no host and no fake server, and the next s
   assert.equal(next.status, 0, next.stderr)
   assert.deepEqual(benchDirs(), [], 'the stale dir is gone and the next bench left none')
 })
+
+// A hard kill of each HOST while its lazy children are awake (#120). The case above kills the bench while the lazy
+// servers sleep, so the hosts end in the normal way. Here the hosts get SIGKILL after a run woke bench4 (behind a
+// wrapper process, BENCH_WRAP) and the fake bridge: no `close()` runs, and the children can only learn of it from the
+// end of their stdin. A fake server ends on that EOF, as a real one does. A server that ignores EOF is NOT asserted:
+// a host that dies by SIGKILL runs no cleanup, so such a child lives on. That is the same for a direct child, and no
+// user-space host can prevent it without an OS job or a watchdog process.
+const matches = (cmd, key) => new RegExp(String.raw`fake-server\.mjs"? ${key}\b`).test(cmd.replaceAll('\\', '/'))
+
+for (const [label, base, limit] of [
+  ['sharing off', env, 10_000],
+  ['sharing on', shared, 10_000 + IDLE_MS * 2],
+]) {
+  test(`a hard kill of the hosts while the lazy servers are awake leaves no lazy child and no process below it, ${label}`, async () => {
+    // A process of another run whose command line names the broker of this build: neither counted nor ended.
+    const other = spawn(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)', path.join(ROOT, 'dist', 'host', 'broker.js')],
+      {
+        stdio: 'ignore',
+        windowsHide: true,
+      },
+    )
+    const child = spawn(process.execPath, [BENCH, ...FAST, '--counts', '2', '--idle', '1', '--after-run', '60'], {
+      env: { ...base, BENCH_WRAP: '1' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    })
+    let tree = new Set()
+    let left = []
+    let ended = true
+    try {
+      const seen = await waitFor(child, /after-run: 60 s/, 120_000)
+      const pids = [...seen.matchAll(/host pid (\d+)/g)].map(m => Number(m[1]))
+      assert.equal(pids.length, 2)
+      const table = await readTable()
+      tree = treeOf(table, pids)
+      // The lazy servers are awake: below each host, one copy of each key, and bench4 has its wrapper above its node.
+      for (const pid of pids) {
+        const own = treeOf(table, [pid])
+        const rows = table.filter(p => own.has(idOf(p)))
+        for (const key of LAZY_KEYS) {
+          const of = rows.filter(p => matches(p.cmd, key))
+          const tops = of.filter(p => !of.some(q => q.pid === p.ppid))
+          assert.equal(tops.length, 1, `host ${pid}: one copy of ${key} is awake`)
+          if (key === 'bench4') assert.ok(of.length >= 2, `host ${pid}: bench4 runs behind a wrapper`)
+        }
+      }
+      for (const pid of pids) process.kill(pid, 'SIGKILL')
+      const stop = Date.now() + limit
+      for (;;) {
+        left = (await readTable()).filter(p => tree.has(idOf(p)))
+        if (left.length === 0 || Date.now() >= stop) break
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+      ended = await Promise.race([
+        new Promise(resolve => other.once('exit', () => resolve(true))),
+        new Promise(resolve => setTimeout(() => resolve(false), 1000)),
+      ])
+    } finally {
+      // Record what is left first, then end it by pid and creation time, so a failure leaves nothing running.
+      const names = left.map(p => `${p.name} ${p.pid}`)
+      const now = new Map((await readTable().catch(() => [])).map(p => [idOf(p), p.pid]))
+      for (const [id, pid] of now) {
+        if (!tree.has(id)) continue
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {}
+      }
+      child.kill('SIGKILL')
+      await new Promise(resolve =>
+        child.exitCode !== null || child.signalCode !== null ? resolve() : child.on('exit', resolve),
+      )
+      other.kill()
+      for (const d of benchDirs().filter(d => d.startsWith(`toolscript-memory-${child.pid}-`)))
+        fs.rmSync(path.join(dir, d), { recursive: true, force: true, maxRetries: 5 })
+      assert.deepEqual(names, [], 'a process of the killed hosts is still running')
+    }
+    assert.equal(ended, false, 'the process of another run still lives')
+  })
+}

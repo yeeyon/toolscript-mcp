@@ -102,15 +102,17 @@ describe('plugin config helper', () => {
           c: { type: 'http', url, headers: { 'X-Fake': 'fake-h' }, sigv4: { profile: 'fakeprofile' } },
           d: { type: 'http', url, oauth: true, sigv4: { profile: 'fakeprofile' } },
           e: { type: 'http', url, sigv4: 'fake-text' },
+          f: { type: 'http', url, sigv4: { profile: 'fakeprofile', metadata: { FAKE_KEY: 'fake-meta-value' } } },
         },
       }),
     )
     const { code, out } = run(file)
     assert.equal(code, 0)
     const lines = out.split('\n')
-    for (const name of ['a', 'b', 'c', 'd'])
+    for (const name of ['a', 'b', 'c', 'd', 'f'])
       assert.ok(lines.includes(`${name}  http  https://aws-mcp.us-east-1.api.aws  sigv4`), name)
-    for (const secret of ['fakeprofile', 'fake-h', 'fake-text', '/mcp']) assert.ok(!out.includes(secret), secret)
+    for (const secret of ['fakeprofile', 'fake-h', 'fake-text', '/mcp', 'FAKE_KEY', 'fake-meta-value'])
+      assert.ok(!out.includes(secret), secret)
   })
 
   it('says when the policy is empty', () => {

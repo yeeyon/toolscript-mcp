@@ -1,4 +1,5 @@
-// The stdio transport of a lazy server (issue #63, slice 5). Like the SDK's, with three differences: it counts the
+// The stdio transport of every stdio server (issue #63, slice 5; for direct children too since the fix of the wrapper
+// that ignores EOF). Like the SDK's, with three differences: it counts the
 // requests that wait for an answer (the idle clock runs only with none open), it tells the host at each message (a call
 // sets the clock back), and it stops the child as the broker does: end stdin, wait STOP_WAIT_MS, then end the whole
 // tree (`taskkill /T /F` on Windows, the process group elsewhere), so a wrapper or a grandchild never stays.
@@ -14,10 +15,15 @@ import { STOP_WAIT_MS } from '../core/broker.ts'
 import { endTree } from './broker.ts'
 
 /**
- * The same time at the shutdown of the host: the client of the host waits about 2 s before it kills the host, so the
- * host must have ended the tree of each child by then.
+ * The same time at the shutdown of the host: the client of the host waits about 2 s after it ends our stdin, then kills
+ * the host (the SDK does, at once on Windows), so the host must have ended the tree of each child by then. The rest of
+ * the shutdown (the start of `taskkill`, the exit of the tree, the exit of the host) took 0.5 to 0.8 s on Windows, and
+ * with 300 ms here the stop of a direct child took 1.2 to 1.6 s: too near. Children stop in parallel.
  */
-export const HURRY_WAIT_MS = 300
+export const HURRY_WAIT_MS = process.platform === 'win32' ? 100 : 300
+
+/** Outside Windows, the wait between the SIGTERM to the group of a child and the end of its tree. */
+export const TERM_WAIT_MS = 200
 
 export type ChildParams = {
   readonly command: string
@@ -48,6 +54,7 @@ export class ChildTransport implements Transport {
   #grace = STOP_WAIT_MS
   #timer: NodeJS.Timeout | undefined
   #kill: (() => void) | undefined
+  #term: NodeJS.Timeout | undefined
 
   constructor(params: ChildParams) {
     this.#params = params
@@ -150,14 +157,24 @@ export class ChildTransport implements Transport {
         endTree(proc)
         return resolve()
       }
-      this.#kill = () => {
+      const end = () => {
         endTree(proc)
         // The close event follows the kill. Do not wait for it longer than a second.
         setTimeout(resolve, 1000).unref()
       }
+      // Outside Windows a child that ignores EOF first gets SIGTERM for its group, so it can clean up (a server that
+      // removes a temp file or a lock). Windows has no such signal: its tree ends at once.
+      this.#kill = () => {
+        if (process.platform === 'win32' || proc.pid === undefined) return end()
+        try {
+          process.kill(-proc.pid, 'SIGTERM')
+        } catch {}
+        this.#term = setTimeout(end, TERM_WAIT_MS)
+      }
       this.#timer = setTimeout(this.#kill, this.#grace)
       proc.once('close', () => {
         clearTimeout(this.#timer)
+        clearTimeout(this.#term)
         resolve()
       })
       try {

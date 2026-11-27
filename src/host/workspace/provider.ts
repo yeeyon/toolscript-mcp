@@ -24,6 +24,7 @@ import {
   parseEditInput,
   parseListInput,
   parsePathInput,
+  lowered,
   parseSearchInput,
   parseTaskInput,
   parseWriteInput,
@@ -95,14 +96,6 @@ const cancelled = (signal: AbortSignal): void => {
   if (signal.aborted) throw new WorkspaceError('cancelled', 'the call was cancelled')
 }
 
-/** `text` in lower case, one UTF-16 unit for one unit, so a column in the folded line is a column in the line. */
-const lowered = (text: string): string => {
-  const whole = text.toLowerCase()
-  return whole.length === text.length
-    ? whole
-    : text.replace(/[^]/g, c => (c.toLowerCase().length === 1 ? c.toLowerCase() : c))
-}
-
 const BOM = Buffer.from([0xef, 0xbb, 0xbf])
 
 const sha = (bytes: Uint8Array): string => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
@@ -124,7 +117,23 @@ const decoded = (bytes: Uint8Array): { text: string; bom: boolean } | 'binary' |
 }
 
 export const createProvider = (options: ProviderOptions): Provider => {
-  const { confined, excluded, windows, log } = options
+  const { excluded, windows, log } = options
+  /**
+   * A refusal of the kind of an entry (`not-file`, `not-folder`, `hard-link`) that names an excluded entry through an alias
+   * answers `excluded`, as the plain spelling does: no code of the kind tells that the entry is there.
+   */
+  const unalias = <T>(opened: Promise<T>): Promise<T> =>
+    opened.catch((err: unknown) => {
+      if (err instanceof WorkspaceError && err.spelled?.some(p => excluded(p)) === true) throw excludedError()
+      throw err
+    })
+  const confined: Confined = {
+    ...options.confined,
+    dir: parts => unalias(options.confined.dir(parts)),
+    file: parts => unalias(options.confined.file(parts)),
+    update: parts => unalias(options.confined.update(parts)),
+    create: (parts, bytes, guard) => unalias(options.confined.create(parts, bytes, guard)),
+  }
   const limits = {
     searchFiles: LIMITS.searchFiles,
     listEntries: LIMITS.listEntries,
@@ -315,8 +324,12 @@ export const createProvider = (options: ProviderOptions): Provider => {
   const search = async (input: SearchInput, signal: AbortSignal) => {
     const start = target(input.path, true)
     const inList = includeTest(input.include)
-    const query = input.ignoreCase ? lowered(input.query) : input.query
-    const matches: { path: string; line: number; column: number; text: string }[] = []
+    const written = typeof input.query === 'string' ? [input.query] : input.query
+    const needles = written.map(q => (input.ignoreCase ? lowered(q) : q))
+    // Per term: the matches taken, and whether a match past `maxMatches` was seen. The walk ends when every term has.
+    const taken = needles.map(() => 0)
+    const over = needles.map(() => false)
+    const matches: { path: string; line: number; column: number; text: string; query?: string; term: number }[] = []
     const within = budget()
     let truncated = false
     let scanned = 0
@@ -353,13 +366,25 @@ export const createProvider = (options: ProviderOptions): Provider => {
             for (let i = 0; i < lines.length; i++) {
               const raw = lines[i]!.endsWith('\r') ? lines[i]!.slice(0, -1) : lines[i]!
               const line = input.ignoreCase ? lowered(raw) : raw
-              for (let at = line.indexOf(query); at >= 0; at = line.indexOf(query, at + query.length)) {
-                if (matches.length >= input.maxMatches) {
-                  truncated = true
-                  return false
+              for (let t = 0; t < needles.length; t++) {
+                const needle = needles[t]!
+                if (over[t]) continue
+                for (let at = line.indexOf(needle); at >= 0; at = line.indexOf(needle, at + needle.length)) {
+                  if (taken[t]! >= input.maxMatches) {
+                    over[t] = true
+                    truncated = true
+                    break
+                  }
+                  taken[t]!++
+                  const shown = raw.slice(0, LIMITS.lineChars)
+                  matches.push(
+                    typeof input.query === 'string'
+                      ? { path, line: i + 1, column: at + 1, text: shown, term: t }
+                      : { path, line: i + 1, column: at + 1, text: shown, query: written[t]!, term: t },
+                  )
                 }
-                matches.push({ path, line: i + 1, column: at + 1, text: raw.slice(0, LIMITS.lineChars) })
               }
+              if (over.every(Boolean)) return false
             }
             return true
           } finally {
@@ -375,8 +400,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
     } finally {
       await dir.close()
     }
-    matches.sort((a, b) => byText(a.path, b.path) || a.line - b.line || a.column - b.column)
-    return { matches, truncated, filesScanned: scanned, skipped }
+    matches.sort((a, b) => byText(a.path, b.path) || a.line - b.line || a.column - b.column || a.term - b.term)
+    return { matches: matches.map(({ term: _, ...match }) => match), truncated, filesScanned: scanned, skipped }
   }
 
   /**
@@ -537,7 +562,10 @@ export const createProvider = (options: ProviderOptions): Provider => {
         .catch(async (err: unknown) => {
           // A file is there: when its real spelling (a short name) is excluded, that is the answer, as in `vacant`.
           if (err instanceof WorkspaceError && err.code === 'exists') {
-            const there = await confined.file(parts).catch(() => undefined)
+            const there = await confined.file(parts).catch((e: unknown) => {
+              if (e instanceof WorkspaceError && e.code === 'excluded') throw e
+              return undefined
+            })
             if (there !== undefined) {
               await there.handle.close().catch(() => {})
               if (excluded(there.parts)) throw excludedError()
@@ -616,7 +644,9 @@ export const createProvider = (options: ProviderOptions): Provider => {
       const entry = await parent.lstat(last, true)
       if (entry === undefined) return missing
       const real = [...parent.parts, entry.real]
-      if (excluded(real)) throw new WorkspaceError('excluded', 'the path is excluded from Workspace')
+      // A file with a second name in the folder: the alias is excluded when any of its names is.
+      if (excluded(real) || (entry.alike ?? []).some(n => excluded([...parent.parts, n])))
+        throw new WorkspaceError('excluded', 'the path is excluded from Workspace')
       if (entry.kind === 'link')
         throw new WorkspaceError('link', 'the path is a link: Workspace never follows a symlink or a junction')
       return { path: showPath(real), type: entry.kind, ...(entry.kind === 'file' && { size: entry.size }) }

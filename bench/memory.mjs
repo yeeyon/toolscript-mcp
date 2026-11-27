@@ -954,14 +954,28 @@ export const render = data => {
 
 // Setup
 
+/**
+ * The command of a fixture server. With BENCH_WRAP=1 in the environment of the bench, bench4 runs behind a wrapper
+ * process, as an npx or shell launcher does (cmd /c node on Windows, sh -c elsewhere; the `exit` keeps sh from
+ * replacing itself with node), so that its tree is more than one process. tests/memory.e2e.mjs sets it for the hard
+ * kill case. Unset, the config is the one of every other run.
+ */
+const serverCommand = k => {
+  const note = `--note=${MARKER}`
+  if (process.env.BENCH_WRAP !== '1' || k !== 'bench4')
+    return { command: process.execPath, args: [FAKE_SERVER, k, note] }
+  return process.platform === 'win32'
+    ? { command: 'cmd', args: ['/c', 'node', FAKE_SERVER, k, note] }
+    : { command: 'sh', args: ['-c', '"$0" "$@"; exit $?', process.execPath, FAKE_SERVER, k, note] }
+}
+
 const fixtureConfig = cwd => {
   const extra = { bench1: { share: true }, bench2: { cwd }, bench3: {}, bench4: { share: false, lazy: true } }
   const servers = Object.fromEntries(
     FIXTURE_KEYS.map(k => [
       k,
       {
-        command: process.execPath,
-        args: [FAKE_SERVER, k, `--note=${MARKER}`],
+        ...serverCommand(k),
         env: { BENCH_NOTE: MARKER },
         ...extra[k],
       },
