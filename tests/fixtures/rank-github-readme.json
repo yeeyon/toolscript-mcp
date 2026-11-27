@@ -1,8 +1,51 @@
 {
   "servers": {
     "github": [
-      ["actions_get", "Get details of GitHub Actions resources (workflows, workflow runs, jobs, and artifacts)"],
-      ["actions_list", "List GitHub Actions workflows in a repository"],
+      [
+        "actions_get",
+        "Get details of GitHub Actions resources (workflows, workflow runs, jobs, and artifacts)",
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "get_workflow",
+                "get_workflow_run",
+                "get_workflow_job",
+                "download_workflow_run_artifact",
+                "get_workflow_run_usage",
+                "get_workflow_run_logs_url"
+              ]
+            },
+            "owner": { "type": "string" },
+            "repo": { "type": "string" },
+            "resource_id": { "type": "string" }
+          },
+          "required": ["method", "owner", "repo", "resource_id"]
+        }
+      ],
+      [
+        "actions_list",
+        "List GitHub Actions workflows in a repository",
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": ["list_workflows", "list_workflow_runs", "list_workflow_jobs", "list_workflow_run_artifacts"]
+            },
+            "owner": { "type": "string" },
+            "repo": { "type": "string" },
+            "page": { "type": "number", "minimum": 1 },
+            "perPage": { "type": "number", "minimum": 1, "maximum": 100 },
+            "resource_id": { "type": "string" },
+            "workflow_jobs_filter": { "type": "object" },
+            "workflow_runs_filter": { "type": "object" }
+          },
+          "required": ["method", "owner", "repo"]
+        }
+      ],
       ["get_job_logs", "Get GitHub Actions workflow job logs"],
       ["get_me", "Get my user profile"],
       ["get_teams", "Get teams"],
@@ -31,13 +74,75 @@
       ["create_pull_request", "Open new pull request"],
       ["list_pull_requests", "List pull requests"],
       ["merge_pull_request", "Merge pull request"],
-      ["pull_request_read", "Get details for a single pull request"],
-      ["pull_request_review_write", "Write operations (create, submit, delete) on pull request reviews"],
+      [
+        "pull_request_read",
+        "Get details for a single pull request",
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "get",
+                "get_diff",
+                "get_status",
+                "get_files",
+                "get_commits",
+                "get_review_comments",
+                "get_reviews",
+                "get_comments",
+                "get_check_runs"
+              ]
+            },
+            "owner": { "type": "string" },
+            "pullNumber": { "type": "number" },
+            "repo": { "type": "string" },
+            "after": { "type": "string" },
+            "page": { "type": "number", "minimum": 1 },
+            "perPage": { "type": "number", "minimum": 1, "maximum": 100 }
+          },
+          "required": ["method", "owner", "pullNumber", "repo"]
+        }
+      ],
+      [
+        "pull_request_review_write",
+        "Write operations (create, submit, delete) on pull request reviews",
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": ["create", "submit_pending", "delete_pending", "resolve_thread", "unresolve_thread"]
+            },
+            "owner": { "type": "string" },
+            "pullNumber": { "type": "number" },
+            "repo": { "type": "string" },
+            "body": { "type": "string" },
+            "commitID": { "type": "string" },
+            "event": { "type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "COMMENT"] },
+            "resolutionReason": { "type": "string", "enum": ["addressed", "wont-fix", "invalid"] },
+            "threadId": { "type": "string" }
+          },
+          "required": ["method", "owner", "pullNumber", "repo"]
+        }
+      ],
       ["search_pull_requests", "Search pull requests"],
       ["update_pull_request", "Edit pull request"],
       ["update_pull_request_branch", "Update pull request branch"],
       ["create_pull_request_with_copilot", "Perform task with GitHub Copilot coding agent"]
     ]
   },
-  "queries": []
+  "queries": [
+    ["resolve review thread", "mcp__github__pull_request_review_write"],
+    ["submit pending pr review", "mcp__github__pull_request_review_write"],
+    ["list workflow runs", "mcp__github__actions_list"],
+    ["list workflow run artifacts", "mcp__github__actions_list"],
+    ["workflow run logs url", "mcp__github__actions_get"],
+    ["download workflow run artifact", "mcp__github__actions_get"],
+    ["get pr check runs", "mcp__github__pull_request_read"],
+    ["submit pending review", "mcp__github__pull_request_review_write"],
+    ["resolve thread", "mcp__github__pull_request_review_write"],
+    ["get review comments", "mcp__github__pull_request_read"],
+    ["get workflow run usage", "mcp__github__actions_get"]
+  ]
 }

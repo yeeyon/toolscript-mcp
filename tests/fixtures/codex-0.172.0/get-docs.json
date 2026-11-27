@@ -1,0 +1,17 @@
+{
+  "name": "docs",
+  "enabled": true,
+  "disabled_reason": null,
+  "transport": {
+    "type": "streamable_http",
+    "url": "https://example.com/mcp",
+    "bearer_token_env_var": "DOCS_TOKEN",
+    "http_headers": null,
+    "env_http_headers": null,
+    "http_headers_helper": null
+  },
+  "enabled_tools": ["a", "b"],
+  "disabled_tools": null,
+  "startup_timeout_sec": 20.0,
+  "tool_timeout_sec": 60.0
+}

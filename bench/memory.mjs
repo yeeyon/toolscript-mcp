@@ -954,14 +954,35 @@ export const render = data => {
 
 // Setup
 
+/**
+ * The command of a fixture server. With BENCH_WRAP=1 in the environment of the bench, bench4 runs behind a wrapper
+ * process, as an npx or shell launcher does (cmd /c node on Windows, sh -c elsewhere; the `exit` keeps sh from
+ * replacing itself with node), so that its tree is more than one process. tests/memory.e2e.mjs sets it for the hard
+ * kill case. Unset, the config is the one of every other run.
+ */
+const serverCommand = k => {
+  const note = `--note=${MARKER}`
+  const extra = fakeFlags()
+  if (process.env.BENCH_WRAP !== '1' || k !== 'bench4')
+    return { command: process.execPath, args: [FAKE_SERVER, k, note, ...extra] }
+  return process.platform === 'win32'
+    ? { command: 'cmd', args: ['/c', 'node', FAKE_SERVER, k, note, ...extra] }
+    : { command: 'sh', args: ['-c', '"$0" "$@"; exit $?', process.execPath, FAKE_SERVER, k, note, ...extra] }
+}
+
+/**
+ * With BENCH_IGNORE_EOF=1 in the environment of the bench, every fake server keeps running when its stdin ends, as a
+ * server that ignores EOF does, so only the child guard can end it after a hard kill of the host (tests/memory.e2e.mjs).
+ */
+const fakeFlags = () => (process.env.BENCH_IGNORE_EOF === '1' ? ['--ignore-eof'] : [])
+
 const fixtureConfig = cwd => {
   const extra = { bench1: { share: true }, bench2: { cwd }, bench3: {}, bench4: { share: false, lazy: true } }
   const servers = Object.fromEntries(
     FIXTURE_KEYS.map(k => [
       k,
       {
-        command: process.execPath,
-        args: [FAKE_SERVER, k, `--note=${MARKER}`],
+        ...serverCommand(k),
         env: { BENCH_NOTE: MARKER },
         ...extra[k],
       },
@@ -969,7 +990,7 @@ const fixtureConfig = cwd => {
   )
   servers[BRIDGE_KEY] = {
     command: process.execPath,
-    args: [FAKE_SERVER, BRIDGE_KEY, `--note=${MARKER}`],
+    args: [FAKE_SERVER, BRIDGE_KEY, `--note=${MARKER}`, ...fakeFlags()],
     env: { BENCH_NOTE: MARKER },
   }
   // An HTTP entry that nothing answers: it costs no process, and holds a header and a URL for the secrets test.

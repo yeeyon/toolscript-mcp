@@ -62,6 +62,8 @@ export type ToolEntry = {
   description: string
   /** The words of the values of its `action`, `method` or `operation` argument (`actionWords`). Only `rankTools` reads it. */
   actions?: ReadonlySet<string>
+  /** The values of 2 or more words as word lists (`actionValues`). Only `rankTools` reads it. */
+  values?: readonly (readonly string[])[]
 }
 
 /** Splits buffered stdout into whole protocol lines; other lines are ignored. */
@@ -1693,6 +1695,38 @@ const joinedIn = (segs: readonly string[], word: string): boolean => {
   return false
 }
 
+/** The score of a query word of a covered action value, before 0.01 for each word of the name. */
+const COVERED_HIT = 2.75
+
+/** The positions of the query words that spell a covered value. `nextReal[j]` is the first non-filler position from `j`. */
+const coveredBy = (
+  values: ToolEntry['values'],
+  query: readonly string[],
+  nextReal: readonly number[],
+  queryWords: ReadonlySet<string>,
+) => {
+  const covered = new Set<number>()
+  for (const value of values ?? []) {
+    // A value with a word that the query lacks is not covered: no scan for it.
+    if (!value.every(w => queryWords.has(w)) || value.filter(w => !FILLER.has(w)).length < 2) continue
+    for (let start = 0; start < query.length; start++) {
+      if (query[start] !== value[0]) continue
+      const at = [start]
+      for (let k = 1; k < value.length; k++) {
+        let j = at[k - 1]! + 1
+        if (query[j] !== value[k]) j = nextReal[j] ?? query.length
+        if (query[j] !== value[k]) break
+        at.push(j)
+      }
+      if (at.length === value.length) {
+        for (const p of at) covered.add(p)
+        break
+      }
+    }
+  }
+  return covered
+}
+
 /** A regex for `word` or its plural as a whole word. */
 const wholeWordRe = (word: string): RegExp => new RegExp(`(?<![a-z0-9])${word}s?(?![a-z0-9])`)
 
@@ -1707,6 +1741,11 @@ const wholeWordRe = (word: string): RegExp => new RegExp(`(?<![a-z0-9])${word}s?
  * first, else 1 in the description, else 0.5 when the stem of a plural word (`stem`) is in the short name, joined
  * from its words or in the description. A stem hit scores less than the
  * full word, so for "builds" a tool whose description holds "builds" ranks above one whose description holds "build".
+ * A whole value of `values` that the query spells out is covered: 2 or more words, 2 or more not in `FILLER`, all in the
+ * query in order with only `FILLER` words between. Each of its query words scores `COVERED_HIT` (2.75, less 0.01 for each
+ * word of the name) when no tier gave it more: "update reviewers" finds `update_reviewers`. `COVERED_HIT` stays over 2.5
+ * and under 3, so a covered 2-word value beats a name hit with a description or server hit, and loses to 2 name hits.
+ * It never sets the name bonus of an abbreviation, and one word alone is never covered.
  * A word of `ABBREVIATIONS` or its plural ("prs") scores 6 as a name word as written ("mr_discussions"): a tool that
  * spells the abbreviation is the one meant, and it must stay above the dozens of `*_merge_request*` tools. It scores
  * 3 as the long form joined from the name words ("get_pull_request", "getPullRequest"), 3.25 when the description also
@@ -1731,6 +1770,10 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
         : { short: abbr, long: phrase.replace(' ', ''), phrase, plural, whole: wholeWordRe(abbr) }
     return { word, stem: stem(word), abbr: found }
   })
+  const qwords = wanted.map(w => w.word)
+  const qset = new Set(qwords)
+  const nextReal: number[] = Array(qwords.length + 1).fill(qwords.length)
+  for (let i = qwords.length - 1; i >= 0; i--) nextReal[i] = FILLER.has(qwords[i]!) ? nextReal[i + 1]! : i
   const idents = q
     .toLowerCase()
     .split(/[^a-z0-9_.-]+/)
@@ -1755,7 +1798,8 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
     let segs: string[] | undefined
     let named = false
     let phrase = 0
-    for (const { word, stem, abbr } of wanted) {
+    const covered = tool.values === undefined ? undefined : coveredBy(tool.values, qwords, nextReal, qset)
+    for (const [at, { word, stem, abbr }] of wanted.entries()) {
       segs ??= nameWords(tool.name)
       let hit = 0
       if (abbr !== undefined) {
@@ -1778,6 +1822,7 @@ export const rankTools = <T extends ToolEntry>(tools: readonly T[], query: strin
       else if (stem !== word && (short.includes(stem) || description.includes(stem))) hit = 0.5
       else if (stem !== word && stem.length >= 4 && joinedIn(segs, stem)) hit = 0.5
       if (hit >= 2.5) named = true
+      if (covered?.has(at)) hit = Math.max(hit, COVERED_HIT - 0.01 * Math.min(segs.length, 20))
       if (FILLER.has(word)) filler += hit
       else real += hit
     }

@@ -1,4 +1,5 @@
-// The stdio transport of a lazy server (issue #63, slice 5). Like the SDK's, with three differences: it counts the
+// The stdio transport of every stdio server (issue #63, slice 5; for direct children too since the fix of the wrapper
+// that ignores EOF). Like the SDK's, with three differences: it counts the
 // requests that wait for an answer (the idle clock runs only with none open), it tells the host at each message (a call
 // sets the clock back), and it stops the child as the broker does: end stdin, wait STOP_WAIT_MS, then end the whole
 // tree (`taskkill /T /F` on Windows, the process group elsewhere), so a wrapper or a grandchild never stays.
@@ -12,12 +13,18 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import crossSpawn from 'cross-spawn'
 import { STOP_WAIT_MS } from '../core/broker.ts'
 import { endTree } from './broker.ts'
+import type { Guard } from './childguard.ts'
 
 /**
- * The same time at the shutdown of the host: the client of the host waits about 2 s before it kills the host, so the
- * host must have ended the tree of each child by then.
+ * The same time at the shutdown of the host: the client of the host waits about 2 s after it ends our stdin, then kills
+ * the host (the SDK does, at once on Windows), so the host must have ended the tree of each child by then. The rest of
+ * the shutdown (the start of `taskkill`, the exit of the tree, the exit of the host) took 0.5 to 0.8 s on Windows, and
+ * with 300 ms here the stop of a direct child took 1.2 to 1.6 s: too near. Children stop in parallel.
  */
-export const HURRY_WAIT_MS = 300
+export const HURRY_WAIT_MS = process.platform === 'win32' ? 100 : 300
+
+/** Outside Windows, the wait between the SIGTERM to the group of a child and the end of its tree. */
+export const TERM_WAIT_MS = 200
 
 export type ChildParams = {
   readonly command: string
@@ -25,6 +32,8 @@ export type ChildParams = {
   /** The env of the config. The SDK's short list of safe variables is added under it, as the SDK transport does. */
   readonly env: Readonly<Record<string, string>>
   readonly cwd?: string
+  /** The child guard: it ends the tree of this child if the host dies with no cleanup. Absent: none. */
+  readonly guard?: Guard
 }
 
 /** The env that the child gets. The cache key of a launch does not hash it: it holds the inherited PATH. */
@@ -48,6 +57,7 @@ export class ChildTransport implements Transport {
   #grace = STOP_WAIT_MS
   #timer: NodeJS.Timeout | undefined
   #kill: (() => void) | undefined
+  #term: NodeJS.Timeout | undefined
 
   constructor(params: ChildParams) {
     this.#params = params
@@ -80,12 +90,17 @@ export class ChildTransport implements Transport {
         reject(error)
         this.onerror?.(error)
       })
-      proc.on('spawn', () => resolve())
+      proc.on('spawn', () => {
+        this.#params.guard?.add(proc.pid)
+        resolve()
+      })
       proc.on('close', () => {
         this.#proc = undefined
         this.#open.clear()
         // A wrapper that left on EOF must not leave a grandchild that ignores it.
         endTree(proc)
+        // After the group is ended, and before its id can be reused.
+        this.#params.guard?.remove(proc.pid)
         this.onclose?.()
       })
       proc.stdin?.on('error', error => this.onerror?.(error))
@@ -148,16 +163,29 @@ export class ChildTransport implements Transport {
     this.#stopping = new Promise<void>(resolve => {
       if (proc.exitCode !== null || proc.signalCode !== null) {
         endTree(proc)
+        // The 'close' event may never come on this path: the group must not stay listed.
+        this.#params.guard?.remove(proc.pid)
         return resolve()
       }
-      this.#kill = () => {
+      const end = () => {
         endTree(proc)
+        this.#params.guard?.remove(proc.pid)
         // The close event follows the kill. Do not wait for it longer than a second.
         setTimeout(resolve, 1000).unref()
+      }
+      // Outside Windows a child that ignores EOF first gets SIGTERM for its group, so it can clean up (a server that
+      // removes a temp file or a lock). Windows has no such signal: its tree ends at once.
+      this.#kill = () => {
+        if (process.platform === 'win32' || proc.pid === undefined) return end()
+        try {
+          process.kill(-proc.pid, 'SIGTERM')
+        } catch {}
+        this.#term = setTimeout(end, TERM_WAIT_MS)
       }
       this.#timer = setTimeout(this.#kill, this.#grace)
       proc.once('close', () => {
         clearTimeout(this.#timer)
+        clearTimeout(this.#term)
         resolve()
       })
       try {

@@ -231,6 +231,14 @@ describe('the built server with the Workspace', () => {
     assert.deepEqual(returned(r.text), { paths: ['src/retry.ts'], truncated: false, scanned: 1 })
   })
 
+  test('search takes query as a text or an array of texts, and refuses a number', async () => {
+    const r = await session.run(
+      'const s = await call("mcp__workspace__search", { query: "ttempts" })\nconst a = await call("mcp__workspace__search", { query: ["ttempts", "delayMs"], include: ["src/**/*.ts"] })\nlet refused\ntry { await call("mcp__workspace__search", { query: 5 }) } catch (e) { refused = e.message.split(":")[0] }\nreturn { untagged: s.matches.length > 0 && s.matches.every(m => m.query === undefined), tagged: [...new Set(a.matches.map(m => m.query))].sort(), refused }',
+    )
+    assert.equal(r.isError, false, r.text)
+    assert.deepEqual(returned(r.text), { untagged: true, tagged: ['delayMs', 'ttempts'], refused: 'bad-input' })
+  })
+
   test('the excluded file and a path that leaves the root are refused, and the refusal holds no secret', async () => {
     const r = await session.run(
       'const out = []\nfor (const path of [".env", "../outside.txt", "src/../.env", "C:/Windows/win.ini"])\n  try { await call("mcp__workspace__read", { path }) } catch (e) { out.push(e.message.split(":")[0]) }\nreturn out',

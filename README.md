@@ -109,8 +109,8 @@ You need Node 22.13 or later and npm.
 npx -y toolscript-mcp init
 ```
 
-init imports user-scope servers from Claude Code, Claude Desktop and Cursor. It writes a toolscript-mcp config
-and prints the client changes. Use [Client setup](#client-setup) for Codex or a manual setup. Then follow
+init imports user-scope servers from Claude Code, Claude Desktop, Cursor and Codex. It writes a toolscript-mcp config
+and prints the client changes. For a manual setup, see [Client setup](#client-setup). Then follow
 [Configure downstream servers](#configure-downstream-servers).
 
 To print the version of the package, run `npx -y toolscript-mcp --version`.
@@ -274,10 +274,33 @@ For a development session, use `node` as the client command. Replace the npm arg
 
 ### init
 
-- `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code, Claude Desktop and Cursor.
+- `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code, Claude Desktop, Cursor and Codex.
   To add servers from a project, use `--list` and `--add` below.
 - If two clients have a server with the same name, init keeps the first one. The order is Claude Code, Claude
-  Desktop, Cursor.
+  Desktop, Cursor, Codex.
+- Codex: init runs `codex mcp list --json`, then `codex mcp get <name> --json` for each server, at most 64 servers.
+  It starts `codex` with no shell, in your home folder, with a 10 s limit and a 1 MB output cap for each call.
+  If `codex` is not on `PATH`, or a call fails, init reads `config.toml` in `CODEX_HOME` (default `~/.codex`)
+  with its own strict reader. The reader skips a server that it cannot read, and prints the reason.
+- init reads the user scope of Codex only. It does not read the `.codex/config.toml` of a project, because Codex
+  loads that file only for a project that it trusts. init says so when the file exists.
+- init maps `command`, `args`, `env`, `cwd` and `url` of a Codex server. `env_vars = ["X"]` becomes `"X": "${X}"`
+  in `env`. `bearer_token_env_var = "T"` becomes the header `Authorization: Bearer ${T}`. `http_headers` become
+  `headers`. `env_http_headers = { H = "V" }` becomes the header `H: ${V}`.
+- `disabled_tools` of a Codex server gives one `deny` rule for each tool. `enabled_tools` gives one `ask` rule for
+  each tool, then one `deny` rule for the other tools of the server. init writes the rules in this order: the `deny` rules of tools,
+  the `ask` rules, the `deny` rule of the other tools, and then the old rules, which keep their order. If the old
+  policy denies a tool of an `enabled_tools` list, that tool gets a `deny` rule and no `ask` rule. An old `allow` rule
+  never loosens a Codex list. No old rule changes. init prints the rules that it
+  wrote. If two clients define the same server, init keeps the rules of Codex.
+- init leaves out `http_headers_helper`, `startup_timeout_sec`, `tool_timeout_sec`, the per-tool `tools` tables and each
+  key that it does not know. It prints each name with its reason. When it reads the CLI, it also reads `config.toml` for
+  the names of the keys that `codex mcp get` does not show. It skips a server with `enabled = false`, and a server with a
+  tool name that a rule cannot name. It also skips a server with a control character in its name, command, arguments,
+  values or URL.
+- For a Codex server with an OAuth login, init prints the `toolscript-mcp login` command. When init reads
+  `config.toml`, it cannot see the login state.
+- For Codex, init prints the TOML entry of toolscript, and `codex mcp remove <name>` for each imported server.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
 - init keeps the `cwd` of a stdio server. If that `cwd` is not an absolute path, only that server fails until you fix it.
 - init sets `"untrusted": true` on each server that names Azure DevOps. The name, the command, an argument or the
@@ -855,7 +878,7 @@ A broker holds at most 256 links and 32 copies. A session has one link for each 
 
 Sharing does not keep apart the state inside one copy of a server, or its stderr. Set `"share": false` on a server that keeps state. [SECURITY.md](SECURITY.md) says what the broker protects and what it does not.
 
-A run from source has no broker, so each shared server fails with that reason. Run the built package to share servers. A server that ignores the end of its input can stay after a broker crash. It can also stay after a session crash.
+A run from source has no broker, so each shared server fails with that reason. Run the built package to share servers. A server that ignores the end of its input can stay after a broker crash or a session crash, unless the [child guard](#child-guard) is on.
 
 ### Lazy start
 
@@ -866,6 +889,17 @@ The `claude mcp serve` bridge costs about 315 MB of private memory in each sessi
 - A stop ends the state of the bridge: the files that it read, and the shells that it started in the background. Use `"lazy": false` on its entry, or `TOOLSCRIPT_LAZY=0`, to start it with the session as before.
 - Any other stdio server is lazy only with `"lazy": true`. Do not set it on a server that keeps state between calls, such as a browser or a shell. With sharing on, a server in a broker has no `"lazy"` key.
 - `toolscript-mcp doctor` shows each lazy server in the `lazy` line.
+
+### Child guard
+
+A host that is killed runs no cleanup: no `close`, no end of input. A server that ignores the end of its input then stays, and so does the server behind a wrapper such as `cmd /c` or `sh -c`. The child guard ends them.
+
+- On Linux and macOS the guard is on. One `/bin/sh` process for each session lists the process group of each stdio child. When the host or the broker dies, it ends the groups that are left. It adds about 1 MB. Set `TOOLSCRIPT_CHILD_GUARD=0` to turn it off.
+- On Windows the guard is off. Set `TOOLSCRIPT_CHILD_GUARD=1` to turn it on. toolscript-mcp compiles `runtime/child-guard.cs` one time with the `csc.exe` of .NET Framework 4, keeps the program in `~/.toolscript-mcp/guard`, and starts it for each session. The program puts each child in a Job Object, so Windows ends the children when the host ends. It uses about 16 MB of private memory. A system binary is never copied.
+- Windows Defender can stop a newly compiled program. The attack surface reduction rule `01443614-CD74-433A-B99E-2ECDC07BFC25` does it in block mode. The guard then stays off, and one line on stderr says why.
+- Only pids go to the guard, never a command, an argument or a value of `env`. The broker guards its own children in the same way.
+- A guard that cannot start never stops a server. `toolscript-mcp doctor` shows it in the `child-guard` line.
+- Two cases stay. A process that leaves its group on Linux or macOS (`setsid`, a daemon) is not ended. A process that breaks away from the job on Windows is not ended. The first moments of a Windows session are not guarded, until the program is ready.
 
 ### OAuth login
 
@@ -958,6 +992,9 @@ login.
   again, the next call works, with no restart.
 - The region and the service come from the host of `url`, such as `us-east-1` and `aws-mcp`. For another host, set
   `"region"` and `"service"` in `sigv4`.
+- To send pairs such as `AWS_REGION` to the server, as `mcp-proxy-for-aws --metadata` does, set `"metadata"` in
+  `sigv4`, for example `"metadata": { "AWS_REGION": "ap-southeast-1" }`. toolscript-mcp puts the pairs in `params._meta`
+  of each request. A pair that the request already has stays as it is. A value can use `${VAR}`.
 - An entry with `sigv4` does not log in with OAuth. An entry with `sigv4` and `oauth`, or with an `Authorization`
   header, is an error.
 - toolscript-mcp signs only the requests to the origin of `url`. It never writes the credentials or the signature to a
@@ -1196,7 +1233,7 @@ tools add `stale`, `busy`, `exists`, `no-match`, `many-matches` and `read-only`.
 - No tool follows a symlink or a junction, and `read` refuses a file with more than one hard link. `search` skips such a file.
 - `read` refuses a file over 4 MiB, a file with a NUL byte and a file that is not UTF-8. `search` skips these files and files over 1 MiB, and counts them in `skipped`.
 - `search` and `list` stop after they read 20,000 names or run 10 seconds, and `list` also stops at 5,000 entries. Each then sets `truncated`. Excluded names do not count toward the 20,000, and only the 10 seconds bound them. A folder with more names than the rest of the budget gives a part of its names, in the order of the volume. A cancel ends a `search` within one second.
-- `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
+- `search` takes literal text on one line, not a regular expression. Filter the lines in your program. `query` can be an array of up to 20 texts: one walk finds all of them, each match names its text in `query`, and `maxMatches` counts for each text. `include` takes up to 16 globs with `*`, `?` and `**`, over paths from the root.
 - `list` and `search` leave out the names that the `.gitignore` in the root ignores. Each call reads that file again. The files below the root, `.git/info/exclude` and the global ignore file count for nothing.
 - The rules are discovery only. `read`, `stat`, `diff`, `edit`, `write` and `run_task` never use them, so an ignored file reads and changes as before. A `path` that is ignored, or inside an ignored folder, applies no rule.
 - The syntax has `#` comments, `*`, `?`, `**` as a whole part, and classes such as `[Bb]in/`. A trailing `/` takes folders only. A `/` at the start or in the middle anchors the pattern to the root.

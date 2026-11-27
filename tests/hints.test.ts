@@ -378,7 +378,7 @@ describe('the hint-file guard', () => {
 
   test('guardedDirs skips an empty root', () => {
     assert.deepEqual(guardedDirs('', '/repo'), ['/repo/.toolscript-mcp/hints'])
-    assert.equal(guardedDirs(HOME, '').length, 6)
+    assert.equal(guardedDirs(HOME, '').length, 7)
   })
 
   test('guardedDirs lists the OAuth folder, so a program cannot read a token file', () => {
@@ -426,6 +426,7 @@ describe('the hint-file guard', () => {
       '/home/u/.toolscript-mcp/oauth',
       '/home/u/.toolscript-mcp/broker',
       '/home/u/.toolscript-mcp/locks',
+      '/home/u/.toolscript-mcp/guard',
       '/repo/.toolscript-mcp/hints',
       plugin,
     ])

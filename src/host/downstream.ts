@@ -10,7 +10,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
@@ -34,9 +33,10 @@ import type { Bridges } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
+import type { Guard } from './childguard.ts'
 import { ChildTransport } from './childtransport.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
-import { AwsCredentialsError, sigv4Fetch } from './sigv4.ts'
+import { AwsCredentialsError, sigv4Fetch, stopCredentialReads } from './sigv4.ts'
 import type { WorkspaceLink } from './workspace/bind.ts'
 
 /** A server entry that starts: any entry but an invalid one. */
@@ -379,7 +379,7 @@ const transportOf = (
   auth: Auth | undefined,
   stderr: (chunk: Buffer) => void,
   share: ShareOptions | undefined,
-  lazy: boolean,
+  guard: Guard | undefined,
 ): { transport: Transport; lastError: () => string; child?: ChildTransport } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   // With sharing on, a shared or per-folder server has one child in the broker and never a child of this process.
@@ -400,31 +400,22 @@ const transportOf = (
       lastError: () => tail.replace(/\s+/g, ' ').trim().slice(-300),
     }
   }
-  // A lazy child has the transport that stops its whole tree and counts its open requests.
-  const child = lazy
-    ? new ChildTransport({
-        command: server.command,
-        args: server.args,
-        env: childEnv(server),
-        ...(server.cwd !== undefined && { cwd: server.cwd }),
-      })
-    : undefined
-  const transport =
-    child ??
-    new StdioClientTransport({
-      command: server.command,
-      args: [...server.args],
-      env: childEnv(server),
-      ...(server.cwd !== undefined && { cwd: server.cwd }),
-      stderr: 'pipe',
-    })
+  // Every stdio child has the transport that stops its whole tree, so a wrapper (`cmd /c`, `sh -c`) never leaves a server
+  // that ignores EOF. The SDK transport ends only the wrapper. A lazy child also counts its open requests.
+  const transport = new ChildTransport({
+    command: server.command,
+    args: server.args,
+    env: childEnv(server),
+    ...(server.cwd !== undefined && { cwd: server.cwd }),
+    ...(guard !== undefined && { guard }),
+  })
   let tail = ''
-  transport.stderr?.on('data', (chunk: Buffer) => {
+  transport.stderr.on('data', (chunk: Buffer) => {
     stderr(chunk)
     tail = (tail + chunk.toString('utf8')).slice(-2000)
   })
   const lastError = () => tail.replace(/\s+/g, ' ').trim().slice(-300)
-  return { transport, lastError, ...(child !== undefined && { child }) }
+  return { transport, lastError, child: transport }
 }
 
 /**
@@ -483,6 +474,8 @@ export type ConnectOptions = {
   readonly firstWaitMs?: number
   /** The longest time in ms of the whole connect of one server: CONNECT_TIMEOUT_MS unless a test sets it. */
   readonly connectTimeoutMs?: number
+  /** The longest wait in ms of a caller for a connect that is not a wake: RETRY_WAIT_MS unless a test sets it. */
+  readonly retryWaitMs?: number
   /**
    * Gets what each stdio child writes to stderr. The running server passes it on to its own stderr, the log of the
    * client. `toolscript-mcp tools` drops it, so it prints only its own lines. No reason holds that text: `redact` hides
@@ -497,6 +490,8 @@ export type ConnectOptions = {
   readonly lazy?: LazyOptions
   /** The built-in Workspace (issue #144): the link of the entry of kind `workspace`. Absent: that entry fails to connect. */
   readonly workspace?: WorkspaceLink | Promise<WorkspaceLink>
+  /** The child guard: each direct stdio child is listed in it, so a host killed with no cleanup does not leave it. Absent: none. */
+  readonly guard?: Guard
 }
 
 /** The tool lists of lazy servers on disk. The host reads and writes the file; a test gives a fake. */
@@ -537,11 +532,13 @@ export const connectAll = (
     listFloorMs = LIST_FLOOR_MS,
     firstWaitMs = FIRST_WAIT_MS,
     connectTimeoutMs = CONNECT_TIMEOUT_MS,
+    retryWaitMs = RETRY_WAIT_MS,
     childStderr = chunk => void process.stderr.write(chunk),
     unshown = UNSHOWN,
     share,
     lazy,
     workspace,
+    guard,
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -637,6 +634,7 @@ export const connectAll = (
       lists === undefined ? void (early = true) : lists.changed(),
     )
     let lastError = () => ''
+    let started: ChildTransport | undefined
     try {
       // Inside the try: a transport that cannot be made fails this server only.
       const reason = loginReason(login(key))
@@ -662,11 +660,12 @@ export const connectAll = (
               unbound = true
               throw err
             })
-          : transportOf(key, server, sessionEnded, auth, childStderr, share, lazily)
+          : transportOf(key, server, sessionEnded, auth, childStderr, share, guard)
       lastError = made.lastError
       if (made.transport instanceof HttpTransport && !auth) secrets = made.transport.secrets
       if (made.child !== undefined) {
         children.add(made.child)
+        started = made.child
         // A shutdown that began before this child started hurries it at once.
         if (closing) made.child.hurry()
       }
@@ -739,6 +738,8 @@ export const connectAll = (
       // After an await: a failure that comes at once must not come before `attempt` marks the link connecting.
       await client.close().catch(() => {})
       opened.delete(client)
+      // A closed transport of a failed connect is no child to hurry at the shutdown.
+      if (started !== undefined) children.delete(started)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
       // An AwsCredentialsError holds the text of the AWS CLI, not of the server, so an untrusted entry shows it too.
       if (
@@ -790,6 +791,9 @@ export const connectAll = (
     if (closing || server === undefined || server.kind === 'invalid') return undefined
     const link = links.get(key)
     if (link?.status !== 'failed' || link.final || capWait(key) > 0) return undefined
+    // A lazy server that failed starts again as a wake: a failed link has no child, because `connect` closes its client
+    // before it fails the link, so nothing is left to wait for.
+    if (lazyServer(key, server)) return attempt(key, server, Promise.resolve())
     log(`${key}: connecting again`)
     return attempt(key, server)
   }
@@ -822,7 +826,19 @@ export const connectAll = (
   }
 
   /** A wake waits for the start of a child: up to CONNECT_TIMEOUT_MS, not RETRY_WAIT_MS. */
-  const longWait = (key: ServerKey): boolean => links.get(key)?.status === 'asleep' || waking.has(key)
+  const longWait = (key: ServerKey): boolean => {
+    const link = links.get(key)
+    const server = servers.get(key)
+    return (
+      link?.status === 'asleep' ||
+      waking.has(key) ||
+      (link?.status === 'failed' &&
+        !link.final &&
+        server !== undefined &&
+        server.kind !== 'invalid' &&
+        lazyServer(key, server))
+    )
+  }
 
   const stateOf = (key: ServerKey, link: Link): ServerState => {
     if (link.status === 'connecting')
@@ -887,7 +903,7 @@ export const connectAll = (
       // Each key has its own deadline: a wake waits longer than a reconnect, and must not give the others its time.
       await Promise.all(
         keys.map(key => {
-          const end = deadline(signal, longWait(key) ? CONNECT_TIMEOUT_MS : RETRY_WAIT_MS)
+          const end = deadline(signal, longWait(key) ? connectTimeoutMs : retryWaitMs)
           return within(settle(key, end), end)
         }),
       )
@@ -895,7 +911,7 @@ export const connectAll = (
     client: async (key, signal) => {
       if (closing) return { ok: false, reason: 'toolscript-mcp is shutting down' }
       if (!links.has(key)) return { ok: false, reason: `no MCP server "${key}" is connected` }
-      const end = deadline(signal, longWait(key) ? CONNECT_TIMEOUT_MS : RETRY_WAIT_MS)
+      const end = deadline(signal, longWait(key) ? connectTimeoutMs : retryWaitMs)
       await settle(key, end)
       const link = links.get(key)!
       if (link.status !== 'connected') return { ok: false, reason: notConnected(stateOf(key, link))! }
@@ -918,7 +934,8 @@ export const connectAll = (
     close: () =>
       (closing ??= (() => {
         for (const child of children) child.hurry()
-        return Promise.all([...opened].map(c => c.close().catch(() => {}))).then(() => {})
+        // A hung AWS CLI is in its own process group, so it would outlive the host.
+        return Promise.all([stopCredentialReads(), ...[...opened].map(c => c.close().catch(() => {}))]).then(() => {})
       })()),
   }
 }

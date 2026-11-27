@@ -121,6 +121,10 @@
     ["list iterations", "mcp__azure-devops__work"],
     ["commit multiple files", "mcp__github__push_files"],
     ["ARI", "mcp__atlassian__fetch"],
-    ["set reviewers on a pull request", "mcp__azure-devops__repo_pull_request_write"]
+    ["set reviewers on a pull request", "mcp__azure-devops__repo_pull_request_write"],
+    ["vote on azure devops pull request", "mcp__azure-devops__repo_pull_request_write"],
+    ["update reviewers", "mcp__azure-devops__repo_pull_request_write"],
+    ["reply to pr thread", "mcp__azure-devops__repo_pull_request_thread_write"],
+    ["update status of pr thread", "mcp__azure-devops__repo_pull_request_thread_write"]
   ]
 }

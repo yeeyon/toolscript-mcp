@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import crossSpawn from 'cross-spawn'
+import { createGuard } from './childguard.ts'
 import {
   attachedFrame,
   brokerSide,
@@ -375,6 +376,8 @@ export const startBroker = async ({
   const dir = brokerFolder(home)
   privateFolder(dir)
   const log = makeLog(`${dir}/broker.log`)
+  // The children of the broker end with it, also when it is killed: the same guard as the host's.
+  const guard = createGuard({ home, log })
   const key = loadKey(home)
   const wire = makeCrypto(key)
   const endpoint = endpointFor(home, key, buildId(file))
@@ -418,6 +421,7 @@ export const startBroker = async ({
       child.proc.once('exit', () => resolve())
       const timer = setTimeout(() => {
         endTree(child.proc)
+        guard.remove(child.proc.pid)
         setTimeout(resolve, 1000)
       }, STOP_WAIT_MS)
       child.proc.once('exit', () => clearTimeout(timer))
@@ -448,6 +452,7 @@ export const startBroker = async ({
       // The process group is how the tree of a child ends outside Windows. Windows ends it with taskkill.
       detached: process.platform !== 'win32',
     })
+    guard.add(proc.pid)
     const child: Child = {
       id,
       proc,
@@ -534,6 +539,7 @@ export const startBroker = async ({
       child.conns.clear()
       // A wrapper that left on EOF must not leave a grandchild that ignores it.
       endTree(proc)
+      guard.remove(proc.pid)
       checkEmpty()
     }
     proc.on('error', err => gone('the server process could not start', (err as NodeJS.ErrnoException).code))
@@ -811,6 +817,7 @@ export const startBroker = async ({
       clearTimeout(emptyTimer)
       closeServer()
       await Promise.all([...children.values()].map(stopChild))
+      guard.close()
       for (const socket of sockets) socket.destroy()
       log('exit')
       finish()

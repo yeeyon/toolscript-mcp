@@ -40,14 +40,31 @@ export const guardedList = (home: string, project: string): GuardedDir[] => {
   }))
 }
 
-// Each string of the arguments, in order, to GUARD_DEPTH. Object keys are never read.
-function* stringsOf(value: unknown, level: number): Generator<string> {
+// Each string of the arguments with its key path (`edits[0].new`), in order, to GUARD_DEPTH. Object keys are never read as
+// text. A key shows only when it is a property name of the input schema at that place (the schema walks with the
+// arguments: `properties`, then `items`). Any other key shows as `…`, so a key that holds data (a token) never reaches the
+// refusal. A long path is cut.
+const PLAIN_KEY = /^[A-Za-z0-9_$-]{1,40}$/
+const KEY_PATH_CHARS = 100
+const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const own = (o: Record<string, unknown>, key: string): unknown => (Object.hasOwn(o, key) ? o[key] : undefined)
+function* stringsOf(value: unknown, level: number, at = '', schema: unknown = undefined): Generator<[string, string]> {
   if (typeof value === 'string') {
-    yield value
+    yield [at.length > KEY_PATH_CHARS ? `${at.slice(0, KEY_PATH_CHARS)}…` : at, value]
     return
   }
   if (level >= GUARD_DEPTH || typeof value !== 'object' || value === null) return
-  for (const item of Array.isArray(value) ? value : Object.values(value)) yield* stringsOf(item, level + 1)
+  if (Array.isArray(value)) {
+    const items = isRec(schema) ? own(schema, 'items') : undefined
+    for (const [i, item] of value.entries()) yield* stringsOf(item, level + 1, `${at}[${i}]`, items)
+    return
+  }
+  const properties = isRec(schema) ? own(schema, 'properties') : undefined
+  for (const [key, item] of Object.entries(value)) {
+    const known = isRec(properties) && Object.hasOwn(properties, key) && PLAIN_KEY.test(key)
+    const name = known ? key : '…'
+    yield* stringsOf(item, level + 1, at === '' ? name : `${at}.${name}`, known ? properties[key] : undefined)
+  }
 }
 
 const WORD = /^[\p{L}\p{N}_.-]$/u
@@ -227,6 +244,8 @@ export type GuardSetup = {
   /** The guarded folders with their real paths. Called only when a call has a path candidate. */
   readonly forms: () => Promise<readonly GuardForm[]>
   readonly realpath: Realpath
+  /** The input schema of the tool, for the key path of a refusal: a key shows only when the schema names it. */
+  readonly schema?: unknown
   /** True on Windows, where `//host/share` and `\\host\share` are UNC paths that a real path would connect to. */
   readonly windows: boolean
 }
@@ -237,44 +256,58 @@ export type GuardSetup = {
  * check. A bare file name with an extension, such as `notes.json`, can be a link in the folder of the server: the
  * first GUARD_REALPATHS of them get one `realpath` each, with no parent steps.
  */
-export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string | undefined> => {
+export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string | undefined> =>
+  (await guardFind(args, setup))?.label
+
+/** A guarded folder that a call names, and the key path of the argument that names it (`''` for the arguments as a whole). */
+export type GuardFound = { readonly label: string; readonly at: string }
+
+/** `guardHit` with the key path of the string that hit. */
+export const guardFind = async (args: unknown, setup: GuardSetup): Promise<GuardFound | undefined> => {
   const lexical = setup.list.map(({ label, dir }) => ({ label, dirs: [dir] }))
-  const paths: { abs: string; raw: string; remote: boolean }[] = []
-  const names: string[] = []
-  for (const original of stringsOf(args, 0)) {
+  const paths: { abs: string; raw: string; remote: boolean; at: string }[] = []
+  const names: { name: string; at: string }[] = []
+  for (const [at, original] of stringsOf(args, 0, '', setup.schema)) {
     const marker = markerIn(original)
-    if (marker !== undefined) return `~/${marker}`
+    if (marker !== undefined) return { label: `~/${marker}`, at }
     const url = fileUrlPath(original)
     if (url === undefined && !isPathLike(original)) {
-      if (names.length < GUARD_REALPATHS && isFileName(original)) names.push(`${setup.cwd}/${original}`)
+      if (names.length < GUARD_REALPATHS && isFileName(original)) names.push({ name: `${setup.cwd}/${original}`, at })
       continue
     }
     // `\\?\C:\x` and `\\.\C:\x` are the local path `C:\x`: Node writes through them.
     const text = (url ?? original).replace(/^[\\/]{2}[?.][\\/](?=[A-Za-z]:)/, '')
     const abs = absolutePath(text, setup.home, setup.cwd)
     const hit = hitIn(abs, lexical)
-    if (hit !== undefined) return hit
+    if (hit !== undefined) return { label: hit, at }
     // On Windows, a UNC path (`\\host\share`) gets the lexical check only: a real path would open a connection to that host.
-    paths.push({ abs, raw: rawPath(text, setup.home, setup.cwd), remote: setup.windows && /^[\\/]{2}/.test(text) })
+    paths.push({
+      abs,
+      raw: rawPath(text, setup.home, setup.cwd),
+      remote: setup.windows && /^[\\/]{2}/.test(text),
+      at,
+    })
   }
   if ((paths.length === 0 && names.length === 0) || setup.list.length === 0) return undefined
   const forms = await setup.forms()
-  for (const { abs } of paths) {
+  for (const { abs, at } of paths) {
     const hit = hitIn(abs, forms)
-    if (hit !== undefined) return hit
+    if (hit !== undefined) return { label: hit, at }
   }
   // The form as written resolves a link before a `..` after it (POSIX). The form with `..` folded by name resolves a
   // link name after a `..`, as a server that calls `path.resolve` first writes it. Both count, to GUARD_REALPATHS.
-  const walks = paths.flatMap(({ raw, abs, remote }) => (remote ? [] : raw === abs ? [raw] : [raw, abs]))
-  for (const path of walks.slice(0, GUARD_REALPATHS)) {
+  const walks = paths.flatMap(({ raw, abs, remote, at }) =>
+    remote ? [] : (raw === abs ? [raw] : [raw, abs]).map(path => ({ path, at })),
+  )
+  for (const { path, at } of walks.slice(0, GUARD_REALPATHS)) {
     const real = await realPathOf(path, setup.realpath)
     const hit = real === undefined ? undefined : hitIn(real, forms)
-    if (hit !== undefined) return hit
+    if (hit !== undefined) return { label: hit, at }
   }
-  for (const name of names) {
+  for (const { name, at } of names) {
     const real = await setup.realpath(name).then(plain, () => undefined)
     const hit = real === undefined ? undefined : hitIn(normalizePath(real), forms)
-    if (hit !== undefined) return hit
+    if (hit !== undefined) return { label: hit, at }
   }
   return undefined
 }

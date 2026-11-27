@@ -14,7 +14,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
   text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
   proof of the key, the entry, `PATH` resolve), `lock.ts` (the content of the OAuth refresh lock file, its parse and
-  the stale decision), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
+  the stale decision, and the reason text of a silent token endpoint), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
   note on `Promise.all`), `workspace.ts` (the built-in Workspace, issue #144: the tool table with a class for each
   tool, the limits, the check of a path text, globs, exclusions, the refusal of a root, the binding of a session to its
   root, the input of each tool, the application of edits and the unified diff) and `task.ts` (its named tasks: the
@@ -30,7 +30,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   run and their text. `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
   checks, such as `hiddenBy` (one glob covers another).
   `guard.ts` holds the guard of the folders in `guardedDirs` at each nested call: the walk of the arguments, the
-  markers, the path candidates and the compare. It takes `realpath` as a parameter. `commands.ts` holds the commands
+  markers, the path candidates and the compare. It takes `realpath` as a parameter. `toml.ts` (the strict reader of the `[mcp_servers]` tables of a Codex `config.toml`, for `init`) and `codex.ts` (the map of a Codex server to an entry, policy rules and notes) hold the Codex import of `init`, which `src/host/codex.ts` reads for (the Codex CLI first, then `config.toml`, cwd the home folder). `commands.ts` holds the commands
   that the CLI prints for a person or an agent to run: the allowlist of names and paths (`PLAIN_NAME`, `PLAIN_PATH`),
   the label lines, and the plan and lines of `toolscript-mcp allow`. Imports between them use `.ts` extensions.
 - `src/host/` holds the host code, which runs in Node. `tsconfig.host.json` checks its types. `scripts/build.mjs`
@@ -78,11 +78,18 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `saveShapes` merges a run's shapes in with the same temp file and rename. `shownShapes` in `catalog.ts` shows a
     stored shape only when the hash of the tool's `inputSchema` matches. `run.ts` saves after a run that read no
     untrusted content.
-  - `childtransport.ts`: the stdio transport of a lazy server: it counts open requests, tells the host of each message, and
+  - `childtransport.ts`: the stdio transport of every direct stdio server, lazy or not: it counts open requests, tells the host of each message, and
     stops the child as the broker does (end stdin, wait 2 s, end the tree). `toolscache.ts`: the display-only tool lists in
     `~/.toolscript-mcp/learned/tools.json` (`toolsFile` in `paths.ts`; `parseToolsCache` and `isLazy` in `src/core/lazy.ts`).
     `downstream.ts` holds the `asleep` state, the wake and the idle clock. `TOOLSCRIPT_LAZY=0` turns every lazy start off, and
     `TOOLSCRIPT_LAZY_IDLE_MS` (at least 1000) shortens the idle time for tests and the bench.
+  - `childguard.ts`: the child guard, so a stdio child never outlives a host or a broker that was killed with no cleanup:
+    `createGuard` (outside Windows one `/bin/sh` watchdog that reads `+<pgid>` and `-<pgid>` lines and, at EOF, ends the groups
+    still listed; on Windows, only with `TOOLSCRIPT_CHILD_GUARD=1`, `runtime/child-guard.cs` compiled one time with the
+    csc.exe of .NET Framework 4 into `~/.toolscript-mcp/guard`, a Job Object that Windows closes with the host). `ChildTransport`
+    and the broker list each child in it. A guard that cannot start logs one line and never fails a server. The pure parts
+    (switch, lines, watchdog text, texts) are in `src/core/childguard.ts`. Tests: `tests/childguard.test.ts` and the guard
+    case of `tests/lazy.e2e.mjs`.
   - `doctor.ts`: `toolscript-mcp doctor`, one pass over the whole setup. Its checks are a table of small async
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.
@@ -111,9 +118,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only. `runtime/task-job.ps1` is the warm Windows PowerShell 5.1
-  job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS (issue #149). They are shipped files that
-  `scripts/pack-check.mjs` requires, and the build does not bundle them.
+  job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS (issue #149). `runtime/child-guard.cs` is the source of the
+  Windows child guard. They are shipped files that `scripts/pack-check.mjs` requires, and the build does not bundle them.
 - `hints/` holds the bundled hints and `hints/sha256.json`.
+- `changes/` holds one file for each pull request with a user-visible change (`changes/README.md` says how), and
+  `scripts/changelog.mjs <version> [--apply]` folds them into `CHANGELOG.md` at the release (Node built-ins only; a
+  dry run by default; `tests/changelog.test.ts`). The npm package does not hold `changes/`.
 - `.claude-plugin/marketplace.json` makes the repo a Claude Code plugin marketplace with one plugin, `plugin/`. Its
   skill `setup` installs toolscript-mcp from npm, and `config.mjs` beside it changes the
   config without printing secrets. `roots.mjs` beside it is a pure copy of the root rules of `src/core/workspace.ts`
@@ -150,5 +160,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - Read `CODING_STANDARDS.md` before a change to code, tests or model-facing text.
 - Never weaken a sandbox layer to make a test pass.
 - stdout carries only MCP JSON-RPC. Log to stderr.
+- A user-visible change adds a file in `changes/`, and never edits `CHANGELOG.md`. The version-bump PR runs
+  `node scripts/changelog.mjs <version> --apply`, then rewrites the section by hand as a summary.
 - After a change in `plugin/`, raise `version` in `plugin/.claude-plugin/plugin.json`. Users get a new copy of the
   plugin only when the version changes.

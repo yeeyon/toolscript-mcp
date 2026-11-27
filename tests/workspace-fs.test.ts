@@ -158,6 +158,20 @@ describe('non-ASCII names on a folder that does not fold (Linux)', () => {
   })
 })
 
+/** Every tool, with the options that change what it does, on each of `paths`: the kind of the path decides nothing. */
+const everyTool = (paths: readonly string[], hash: string): [string, Record<string, unknown>][] =>
+  paths.flatMap((p): [string, Record<string, unknown>][] => [
+    ['stat', { path: p }],
+    ['list', { path: p }],
+    ['search', { query: 'SECRET', path: p }],
+    ['read', { path: p }],
+    ['diff', { path: p, content: 'x' }],
+    ['diff', { path: p, expectedHash: hash, content: 'x' }],
+    ['write', { path: p, content: 'x' }],
+    ['write', { path: p, expectedHash: hash, content: 'x' }],
+    ['edit', { path: p, expectedHash: hash, edits: [{ old: 'SECRET', new: 'x' }] }],
+  ])
+
 // A casefolded folder (ext4 with `chattr +F`, as on Android or a share for SMB clients) opens `.ſſh` as `.ssh`. CI makes
 // an ext4 image with casefold and names a folder on it in the variable.
 const foldBase = process.env.TOOLSCRIPT_TEST_CASEFOLD_DIR
@@ -184,26 +198,47 @@ describe('a casefolded folder opens a name that it does not list (Linux)', () =>
     const rig = await rigOf(t, root, { write: true })
     if (rig === undefined) return
     const hash = sha(Buffer.from(secret))
-    // Split by kind, as the vfat test does: a tool that needs the other kind fails before the exclusion check.
-    const folderCalls = ['.ſſh', '.awſ'].flatMap((p): [string, object][] => [
-      ['stat', { path: p }],
-      ['list', { path: p }],
-      ['search', { query: 'SECRET', path: p }],
-    ])
-    const fileCalls = ['.ſſh/known_hosts', '.awſ/credentials', 'id_rſa'].flatMap((p): [string, object][] => [
-      ['read', { path: p }],
-      ['stat', { path: p }],
-      ['diff', { path: p, content: 'x' }],
-      ['write', { path: p, content: 'x' }],
-      ['edit', { path: p, expectedHash: hash, edits: [{ old: 'SECRET', new: 'x' }] }],
-    ])
-    const calls = [...folderCalls, ...fileCalls]
+    // Every tool on every alias, of either kind, and an alias of a file in the middle of a path.
+    const calls = everyTool(
+      ['.ſſh', '.awſ', '.ſſh/known_hosts', '.awſ/credentials', 'id_rſa', 'id_rſa/x', 'id_rſa/new.txt'],
+      hash,
+    )
     for (const [tool, args] of calls) {
-      const message = await rig.fail(tool, args as Record<string, unknown>)
+      const message = await rig.fail(tool, args)
       assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
       assert.ok(!message.includes(secret), `${tool} shows the bytes`)
     }
-    assert.equal(fs.readFileSync(path.join(root, '.ssh/known_hosts'), 'utf8'), secret)
+    for (const file of ['.ssh/known_hosts', '.aws/credentials', '.env', 'id_rsa'])
+      assert.equal(fs.readFileSync(path.join(root, file), 'utf8'), secret, file)
+    assert.deepEqual(fs.readdirSync(root).sort(), ['.aws', '.env', '.ssh', 'id_rsa'])
+
+    // A symlink at the excluded name, and a file with a second name: the alias answers as the plain name does, with no
+    // `link` and no `hard-link`. A plain name of the hard-linked file keeps its code.
+    const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(foldBase!, 'ws-fold-out-')))
+    t.after(() => rm(outside))
+    write(outside, { known_hosts: 'outside bytes\n' })
+    const linked = fs.realpathSync.native(fs.mkdtempSync(path.join(foldBase!, 'ws-fold-')))
+    t.after(() => rm(linked))
+    write(linked, { id_rsa: secret })
+    fs.symlinkSync(outside, path.join(linked, '.ssh'))
+    fs.linkSync(path.join(linked, 'id_rsa'), path.join(linked, 'h.txt'))
+    const links = await rigOf(t, linked, { write: true })
+    if (links === undefined) return
+    const more: [string, Record<string, unknown>][] = [
+      ...everyTool(['.ſſh', '.ſſh/known_hosts', 'id_rſa'], hash),
+      ['write', { path: '.ſſh/new.txt', content: 'x' }],
+      ['diff', { path: '.ſſh/new.txt', content: 'x' }],
+    ]
+    for (const [tool, args] of more) {
+      const message = await links.fail(tool, args)
+      assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
+      assert.ok(!message.includes('outside bytes'), `${tool} shows the bytes`)
+    }
+    assert.equal(codeOf(await links.fail('read', { path: 'h.txt' })), 'hard-link')
+    // `h.txt` and `id_rsa` are one file, so the lookup of `id_rſa` finds both names and answers for the excluded one, in
+    // whatever order the folder lists them. The plain name that is not excluded still shows its metadata.
+    assert.equal((await links.call('stat', { path: 'h.txt' })).type, 'file')
+    assert.deepEqual(fs.readdirSync(outside), ['known_hosts'])
   })
 })
 
@@ -1181,7 +1216,7 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     await sweep(t, 'statNested')
   })
 
-  test('a loop that swaps the folder for at most 2 s while at most 300 reads, listings and stats run shows no outside byte', async t => {
+  test('a loop that swaps the folder for at most 2 s while at most 300 reads, listings and stats run shows nothing outside the documented Windows and macOS swap family', async t => {
     const { root, secret, swap } = setup(t)
     const rig = await rigOf(t, root)
     if (rig === undefined) return
@@ -1205,12 +1240,42 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     while (reads < 300 && Date.now() < end) {
       const probe = probes[rotation[reads % rotation.length]!]
       const r = await rig.client.callTool({ name: probe.tool, arguments: probe.args })
-      assert.ok(!JSON.stringify(r).includes(secret), 'an outside byte')
-      // On Windows and macOS a timed swap can still show outside names and metadata through list and stat: the family
-      // that ADR 0144 names. Bytes of a file never. Linux shows nothing from outside.
-      const metadataOnly = probe.tool !== 'read' && (process.platform === 'win32' || process.platform === 'darwin')
-      if (r.isError !== true && !metadataOnly)
-        assert.ok(probe.safe(r.structuredContent), `${probe.tool}: ${JSON.stringify(r)}`)
+      const shown = JSON.stringify(r)
+      // The text of a failure names the tool and the shape of the result, with the secret masked.
+      const why = (what: string) => `${what}: tool ${probe.tool}, ${shown.slice(0, 300).replaceAll(secret, '<secret>')}`
+      const sc = r.structuredContent as any
+      if (r.isError === true) {
+        if (shown.includes(secret)) assert.fail(why('an outside byte in an error'))
+      } else if (probe.tool === 'read') {
+        // Windows: a swap that is out at the open of one proof shows the outside file at the same path (ADR 0144).
+        const ok = win ? sc.content === 'inside file' || sc.content === `outside ${secret}` : probe.safe(sc)
+        if (!(ok && (win || !shown.includes(secret))))
+          assert.fail(why('a read shows more than the documented Windows family'))
+      } else if (probe.tool === 'list') {
+        // Windows and macOS: a swap that alternates can show an outside entry, which is the same name with the size of the outside file, or the file that is named by the secret.
+        const family = [
+          JSON.stringify(inside),
+          JSON.stringify({ path: 'b/id.txt', type: 'file', size: `outside ${secret}`.length }),
+          JSON.stringify({ path: `b/${secret}.txt`, type: 'file', size: 777 }),
+        ]
+        const ok = win || mac ? sc.entries.every((e: unknown) => family.includes(JSON.stringify(e))) : probe.safe(sc)
+        if (!(ok && (win || mac || !shown.includes(secret))))
+          assert.fail(why('a list shows more than the documented family'))
+      } else {
+        // stat: no secret in any case. Windows can show the size of the outside file at the same path, never its text.
+        // macOS spells the folder with a handle (`realpath` opens it and asks the kernel for its path), so a swap that
+        // renames `b` to `b.real` between the open and that answer gives the inside file at its new, inside path: the
+        // swapper makes `b.real` in the root, the size is the inside file's, and no outside byte is shown.
+        const renamed = (): boolean =>
+          mac && sc.path === 'b.real/id.txt' && sc.type === 'file' && sc.size === inside.size
+        const ok = win
+          ? sc.type === 'missing' ||
+            (sc.path === 'b/id.txt' &&
+              sc.type === 'file' &&
+              [inside.size, `outside ${secret}`.length].includes(sc.size))
+          : probe.safe(sc) || renamed()
+        if (!(ok && !shown.includes(secret))) assert.fail(why('a stat shows more than the documented family'))
+      }
       const key = r.isError === true ? codeOf((r.content as { text: string }[])[0]!.text) : probe.tool
       outcomes.set(key, (outcomes.get(key) ?? 0) + 1)
       reads++
@@ -1354,6 +1419,7 @@ describe('names that the volume opens but does not list (Linux)', () => {
       '.ssh/known_hosts': secret,
       'a long file name.txt': 'long file bytes\n',
       'README.md': 'readme bytes\n',
+      'my docs folder/inner.txt': 'inner bytes\n',
     })
     const opens = (name: string) => {
       try {
@@ -1363,7 +1429,9 @@ describe('names that the volume opens but does not list (Linux)', () => {
         return false
       }
     }
-    const missing = ['GIT~1/config', 'ENV~1', 'SSH~1/known_hosts', 'ALONGF~1.TXT'].filter(n => !opens(n))
+    const missing = ['GIT~1/config', 'ENV~1', 'SSH~1/known_hosts', 'ALONGF~1.TXT', 'MYDOCS~1/inner.txt'].filter(
+      n => !opens(n),
+    )
     if (missing.length > 0) {
       // CI mounts the vfat image and sets CI: a volume that gives no alias there is a failed step, not a skip.
       assert.ok(!process.env.CI, `the alias volume gives no short name for ${missing.join(', ')}`)
@@ -1378,20 +1446,13 @@ describe('names that the volume opens but does not list (Linux)', () => {
     if (fx === undefined) return
     const rig = await rigOf(t, fx.root, { write: true })
     if (rig === undefined) return
-    const calls: [string, Record<string, unknown>][] = [
-      ['read', { path: 'GIT~1/config' }],
-      ['list', { path: 'GIT~1' }],
-      ['stat', { path: 'GIT~1' }],
-      ['search', { query: 'SECRET', path: 'GIT~1' }],
-      ['read', { path: 'ENV~1' }],
-      ['stat', { path: 'ENV~1' }],
-      ['diff', { path: 'ENV~1', content: 'x' }],
-      ['diff', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), content: 'x' }],
-      ['read', { path: 'SSH~1/known_hosts' }],
-      ['write', { path: 'GIT~1/new.txt', content: 'x' }],
-      ['write', { path: 'ENV~1', content: 'x' }],
-      ['edit', { path: 'ENV~1', expectedHash: sha(Buffer.from(fx.secret)), edits: [{ old: 'SECRET', new: 'x' }] }],
-    ]
+    // Every tool on every alias, of either kind (a folder, a file, a file in a folder, a file in the middle of a path).
+    const calls = everyTool(
+      ['GIT~1', 'git~1', 'SSH~1', 'GIT~1/config', 'SSH~1/known_hosts', 'ENV~1', 'ENV~1/x', 'ENV~1/new.txt'],
+      sha(Buffer.from(fx.secret)),
+    )
+    // A new file below an alias of an excluded folder: the two tools that make one.
+    calls.push(['write', { path: 'GIT~1/new.txt', content: 'x' }], ['diff', { path: 'GIT~1/new.txt', content: 'x' }])
     for (const [tool, args] of calls) {
       const message = await rig.fail(tool, args)
       assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
@@ -1399,6 +1460,39 @@ describe('names that the volume opens but does not list (Linux)', () => {
     }
     assert.equal(fs.readFileSync(path.join(fx.root, '.env'), 'utf8'), fx.secret)
     assert.deepEqual(fs.readdirSync(path.join(fx.root, '.git')), ['config'])
+    assert.deepEqual(fs.readdirSync(path.join(fx.root, '.ssh')), ['known_hosts'])
+  })
+
+  test('a name that the capped read of names cannot spell is not there', { skip: skipWhy }, async t => {
+    const fx = fixture(t)
+    if (fx === undefined) return
+    const c = await openConfined(fx.root, { aliasLooks: 0 })
+    t.after(() => c.close())
+    // `ENV~1` opens, but no listed name can be held for it: the answer is the one of a name that is not there.
+    await assert.rejects(c.dir(['ENV~1']), (err: unknown) => (err as { code?: string }).code === 'not-found')
+    await assert.rejects(c.file(['ENV~1/x']), (err: unknown) => (err as { code?: string }).code === 'not-found')
+  })
+
+  test('a name that is not excluded keeps the code of its kind', { skip: skipWhy }, async t => {
+    const fx = fixture(t)
+    if (fx === undefined) return
+    const rig = await rigOf(t, fx.root, { write: true })
+    if (rig === undefined) return
+    const kind = async (tool: string, args: Record<string, unknown>) => codeOf(await rig.fail(tool, args))
+    // A file alias as a folder, a folder alias as a file, and a write over a folder.
+    assert.equal(await kind('list', { path: 'ALONGF~1.TXT' }), 'not-folder')
+    assert.equal(await kind('search', { query: 'x', path: 'ALONGF~1.TXT' }), 'not-folder')
+    assert.equal(await kind('read', { path: 'MYDOCS~1' }), 'not-file')
+    assert.equal(
+      await kind('edit', { path: 'MYDOCS~1', expectedHash: sha(Buffer.from('x')), edits: [{ old: 'x', new: 'y' }] }),
+      'not-file',
+    )
+    assert.equal(await kind('write', { path: 'MYDOCS~1', content: 'x' }), 'exists')
+    assert.equal(await kind('diff', { path: 'MYDOCS~1', content: 'x' }), 'exists')
+    assert.equal(await kind('read', { path: 'NOSUCH~1' }), 'not-found')
+    assert.equal(await kind('list', { path: 'NOSUCH~1' }), 'not-found')
+    // The listed name shows in a result.
+    assert.equal((await rig.call('read', { path: 'ALONGF~1.TXT' })).path, 'a long file name.txt')
   })
 
   test(
@@ -1413,6 +1507,257 @@ describe('names that the volume opens but does not list (Linux)', () => {
       assert.equal(read.path, 'a long file name.txt')
       assert.match(read.content, /long file bytes/)
       assert.deepEqual(await rig.call('stat', { path: 'readme.md' }), { path: 'README.md', type: 'file', size: 13 })
+    },
+  )
+})
+
+describe('search with several terms', () => {
+  const tree = (root: string) =>
+    write(root, {
+      '.gitignore': 'big/\n',
+      'a.txt': 'import x from y\nimport z\nFoo foo FOO\n',
+      'b/c.txt': 'abc here, import too\nnothing\n',
+      'big/data.json': 'import from Foo\n',
+    })
+
+  test('tags each match with its term as written, sorts by place then term, and counts overlap for each term', async t => {
+    const root = folders(t)()
+    tree(root)
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    const hits = await rig.call('search', { query: ['from', 'import', 'nothing', 'missing'] })
+    assert.deepEqual(
+      hits.matches.map((m: { path: string; line: number; column: number; query: string }) => [
+        m.path,
+        m.line,
+        m.column,
+        m.query,
+      ]),
+      [
+        ['a.txt', 1, 1, 'import'],
+        ['a.txt', 1, 10, 'from'],
+        ['a.txt', 2, 1, 'import'],
+        ['b/c.txt', 1, 11, 'import'],
+        ['b/c.txt', 2, 1, 'nothing'],
+      ],
+    )
+    assert.deepEqual(hits.matches[0], { path: 'a.txt', line: 1, column: 1, text: 'import x from y', query: 'import' })
+    assert.equal(hits.truncated, false)
+    // Hidden by the .gitignore: no match from big/.
+    assert.ok(!hits.matches.some((m: { path: string }) => m.path.startsWith('big/')))
+    // One term in an array is tagged. A term inside another counts for each term.
+    const single = await rig.call('search', { query: ['import'] })
+    assert.equal(single.matches.length, 3)
+    assert.ok(single.matches.every((m: { query: string }) => m.query === 'import'))
+    const nested = await rig.call('search', { query: ['ab', 'abc'] })
+    assert.deepEqual(
+      nested.matches.map((m: { query: string }) => m.query),
+      ['ab', 'abc'],
+    )
+    // ignoreCase keeps the term as the program wrote it.
+    const caseless = await rig.call('search', { query: ['FOO', 'IMPORT'], ignoreCase: true })
+    assert.deepEqual([...new Set(caseless.matches.map((m: { query: string }) => m.query))].sort(), ['FOO', 'IMPORT'])
+    assert.equal(caseless.matches.filter((m: { query: string }) => m.query === 'FOO').length, 3)
+  })
+
+  test('a string keeps its result shape: no query in a match, the same keys and truncation', async t => {
+    const root = folders(t)()
+    tree(root)
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    assert.deepEqual(await rig.call('search', { query: 'import' }), {
+      matches: [
+        { path: 'a.txt', line: 1, column: 1, text: 'import x from y' },
+        { path: 'a.txt', line: 2, column: 1, text: 'import z' },
+        { path: 'b/c.txt', line: 1, column: 11, text: 'abc here, import too' },
+      ],
+      truncated: false,
+      filesScanned: 3,
+      skipped: 0,
+    })
+    const cut = await rig.call('search', { query: 'import', maxMatches: 2 })
+    assert.equal(cut.matches.length, 2)
+    assert.equal(cut.truncated, true)
+    // A term that reaches the cap with no match past it is not truncated.
+    assert.equal((await rig.call('search', { query: 'import', maxMatches: 3 })).truncated, false)
+    assert.equal((await rig.call('search', { query: ['import'], maxMatches: 3 })).truncated, false)
+  })
+
+  test('a full term takes no more matches and the others go on; truncated tells that a term was cut', async t => {
+    const root = folders(t)()
+    write(root, {
+      'a.txt': 'x x x x\ny\n',
+      'b.txt': 'x\ny\n',
+      'c.txt': 'y\n',
+    })
+    const rig = await rigOf(t, root)
+    if (rig === undefined) return
+    const hits = await rig.call('search', { query: ['x', 'y'], maxMatches: 2 })
+    const of = (q: string) => hits.matches.filter((m: { query: string }) => m.query === q)
+    assert.equal(of('x').length, 2)
+    assert.equal(of('y').length, 2)
+    assert.equal(hits.truncated, true)
+    // A cap that no term reaches past is not a cut.
+    const whole = await rig.call('search', { query: ['x', 'y'], maxMatches: 6 })
+    assert.equal(whole.truncated, false)
+    assert.equal(whole.matches.length, 4 + 1 + 3)
+    // Cut at a cap of 1 for each, and the file count is the same as for one term that reads all the files.
+    const one = await rig.call('search', { query: 'nomatch' })
+    const many = await rig.call('search', { query: ['nomatch', 'nomatch2', 'nomatch3'] })
+    assert.equal(many.filesScanned, one.filesScanned)
+    assert.equal(many.skipped, one.skipped)
+  })
+
+  test('one walk: the same opens for 8 terms as for 1, and an array call ends inside one budget', async t => {
+    const root = folders(t)()
+    const files: Record<string, string> = {}
+    for (let i = 0; i < 60; i++) files[`d${i % 4}/f${i}.txt`] = `line ${i} alpha beta\n`
+    write(root, files)
+    const eight = ['alpha', 'beta', 'g1', 'g2', 'g3', 'g4', 'g5', 'g6']
+    let opens = 0
+    const counting = await rigOf(t, root, { hook: lookup => void (lookup === 'open' && opens++) })
+    if (counting === undefined) return
+    // The first call of a rig can pay a one-time open (65 against 66 on Linux and macOS), so a call warms it up first.
+    await counting.call('search', { query: 'warm' })
+    opens = 0
+    const one = await counting.call('search', { query: 'alpha' })
+    const forOne = opens
+    opens = 0
+    const many = await counting.call('search', { query: eight })
+    assert.equal(one.filesScanned, 60)
+    assert.equal(many.filesScanned, 60)
+    assert.equal(opens, forOne)
+    // With a slow open, a walk is cut at the budget: the array call pays one budget for all the terms.
+    const budget = 300
+    const slow = await rigOf(t, root, {
+      limits: { searchMs: budget },
+      hook: lookup => (lookup === 'open' ? sleep(20) : undefined),
+    })
+    if (slow === undefined) return
+    const began = performance.now()
+    const cut = await slow.call('search', { query: eight })
+    const arrayMs = performance.now() - began
+    assert.ok(arrayMs < 2 * budget, `took ${arrayMs} ms`)
+    assert.equal(cut.truncated, true)
+    // Single-term calls one after another each run to the budget: 3 of them take about 3 budgets.
+    const serialBegan = performance.now()
+    for (const query of ['alpha', 'beta', 'g1']) await slow.call('search', { query })
+    const serialMs = performance.now() - serialBegan
+    assert.ok(serialMs > 2.5 * budget, `3 serial calls took ${serialMs} ms`)
+    assert.ok(serialMs > 1.5 * arrayMs, `serial ${serialMs} ms, array ${arrayMs} ms`)
+  })
+})
+
+// NTFS gives `.git` and `.env` the short names `GIT~1` and `ENV~1` when the volume makes 8.3 names. The names are the first
+// of their kind in a new folder. `realpath.native` shows whether the volume opens them, and the test skips when it does not.
+describe('NTFS short names of excluded entries (Windows)', () => {
+  test(
+    'an 8.3 name of an excluded folder or file is excluded in every tool',
+    { skip: !win && 'Windows only' },
+    async t => {
+      const root = fs.realpathSync.native(tempDir())
+      t.after(() => rm(root))
+      const secret = marker()
+      write(root, { '.git/config': secret, '.env': secret })
+      const real = (name: string) => {
+        try {
+          return path.basename(fs.realpathSync.native(path.join(root, name)))
+        } catch {
+          return undefined
+        }
+      }
+      if (real('GIT~1') !== '.git' || real('ENV~1') !== '.env')
+        return void t.skip('this volume gives no 8.3 name to .git and .env')
+      const rig = await rigOf(t, root, { write: true })
+      if (rig === undefined) return
+      const hash = sha(Buffer.from(secret))
+      for (const [tool, args] of everyTool(['GIT~1', 'GIT~1/config', 'ENV~1'], hash)) {
+        const message = await rig.fail(tool, args)
+        assert.equal(codeOf(message), 'excluded', `${tool} ${JSON.stringify(args)}`)
+        assert.ok(!message.includes(secret), `${tool} shows the bytes`)
+      }
+      // Windows gives ENOENT for a path below a file, so most calls below `ENV~1` are `not-found`, as below a name that is
+      // not there: no code of another kind tells that the file exists. Deliberate (see the PR notes of #176): `excluded` there
+      // would cost a read of the names for every `not-found`.
+      const below: Record<string, string> = {
+        stat: 'excluded',
+        diff: 'excluded',
+        write: 'excluded',
+        list: 'not-found',
+        search: 'not-found',
+        read: 'not-found',
+        'diff#': 'not-found',
+        'write#': 'not-found',
+        'edit#': 'not-found',
+      }
+      for (const [tool, args] of everyTool(['ENV~1/x', 'ENV~1/new.txt'], hash)) {
+        const key = tool + ('expectedHash' in args ? '#' : '')
+        assert.equal(codeOf(await rig.fail(tool, args)), below[key], `${key} ${JSON.stringify(args)}`)
+      }
+      assert.equal(fs.readFileSync(path.join(root, '.env'), 'utf8'), secret)
+      assert.deepEqual(fs.readdirSync(path.join(root, '.git')), ['config'])
+
+      // A file with a second name (a hard link): its short name answers `excluded`, a plain name keeps `hard-link`.
+      const hardRoot = tempDir()
+      t.after(() => rm(hardRoot))
+      write(hardRoot, { '.env': secret })
+      fs.linkSync(path.join(hardRoot, '.env'), path.join(hardRoot, 'h.txt'))
+      let hardShort = false
+      try {
+        hardShort = path.basename(fs.realpathSync.native(path.join(hardRoot, 'ENV~1'))) === '.env'
+      } catch {
+        // The volume gives the file no short name.
+      }
+      if (hardShort) {
+        const hard = await rigOf(t, hardRoot, { write: true })
+        if (hard === undefined) return
+        for (const [tool, args] of everyTool(['ENV~1'], hash)) {
+          assert.equal(codeOf(await hard.fail(tool, args)), 'excluded', `hard link: ${tool} ${JSON.stringify(args)}`)
+        }
+        assert.equal(codeOf(await hard.fail('read', { path: 'h.txt' })), 'hard-link')
+      }
+
+      // A junction at `.git`: its short name answers `excluded`, as the plain name does (no `link`, no `exists`).
+      const outside = tempDir()
+      t.after(() => rm(outside))
+      write(outside, { config: 'outside bytes\n' })
+      const junctionRoot = tempDir()
+      t.after(() => rm(junctionRoot))
+      if (!trySymlink(outside, path.join(junctionRoot, '.git'), 'junction'))
+        return void t.diagnostic('no junction here')
+      let short = false
+      try {
+        short = fs.lstatSync(path.join(junctionRoot, 'GIT~1')).isSymbolicLink()
+      } catch {
+        // The volume gives the junction no short name.
+      }
+      if (!short) return void t.diagnostic('the junction has no short name here')
+      const junction = await rigOf(t, junctionRoot, { write: true })
+      if (junction === undefined) return
+      for (const [tool, args] of everyTool(['GIT~1', 'GIT~1/config'], hash)) {
+        assert.equal(codeOf(await junction.fail(tool, args)), 'excluded', `junction: ${tool} ${JSON.stringify(args)}`)
+      }
+      for (const [tool, args] of [
+        ['write', { path: 'GIT~1/new.txt', content: 'x' }],
+        ['diff', { path: 'GIT~1/new.txt', content: 'x' }],
+      ] as const)
+        assert.equal(codeOf(await junction.fail(tool, args)), 'excluded', `junction: ${tool}`)
+
+      // The folder lists the junction under its real name, and a read of the names that is cut to nothing gives no name: the
+      // entry is then missing, as a name that is not there (no `link` for a name that the volume cannot spell).
+      for (const [looks, want] of [
+        [undefined, '.git'],
+        [0, undefined],
+      ] as const) {
+        const c = await openConfined(junctionRoot, looks === undefined ? {} : { aliasLooks: looks })
+        try {
+          const top = await c.root()
+          assert.equal((await top.lstat('GIT~1', true))?.real, want, `aliasLooks ${looks}`)
+          await top.close()
+        } finally {
+          await c.close()
+        }
+      }
     },
   )
 })
