@@ -8,6 +8,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { spawn } from 'node:child_process'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -102,6 +103,69 @@ const pidOf = async host => {
   return Number(/PID=(\d+)/.exec(r.text)?.[1])
 }
 
+/**
+ * The host as a client that only ends its stdin: the real clients wait 2 s after that, then end the host at once (the SDK
+ * does, with TerminateProcess on Windows), so a host that needs longer leaves its children behind.
+ */
+const SHUTDOWN_BOUND_MS = 1500
+const endStdin = async lazy => {
+  const proc = spawn(process.execPath, [MAIN, '--config', configFile], {
+    env: envOf(lazy),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+  let out = ''
+  proc.stdout.on('data', chunk => (out += chunk))
+  proc.stderr.resume()
+  const exited = new Promise(resolve => proc.once('exit', resolve))
+  const send = msg => proc.stdin.write(`${JSON.stringify(msg)}\n`)
+  const find = id =>
+    out
+      .split('\n')
+      .filter(l => l.startsWith('{'))
+      .map(l => JSON.parse(l))
+      .find(m => m.id === id)
+  const reply = async id => {
+    await until(`the reply ${id}`, () => find(id) !== undefined)
+    return find(id)
+  }
+  send({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'eof', version: '0' } },
+  })
+  try {
+    await reply(1)
+  } catch (error) {
+    proc.kill()
+    throw error
+  }
+  send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+  send({
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: {
+      name: 'run_code',
+      arguments: { code: 'return "PID=" + String(await call("mcp__claude-code__pid", {}))' },
+    },
+  })
+  let pid
+  try {
+    pid = Number(/PID=(\d+)/.exec((await reply(2)).result.content[0].text)?.[1])
+    assert.ok(alive(pid))
+    const began = Date.now()
+    proc.stdin.end()
+    await Promise.race([exited, until('the host exit', () => false, SHUTDOWN_BOUND_MS * 4)])
+    return { pid, ms: Date.now() - began }
+  } finally {
+    // A failed test must leave neither the host nor its child.
+    if (proc.exitCode === null) proc.kill()
+    if (pid !== undefined && alive(pid)) process.kill(pid)
+  }
+}
+
 describe('lazy start', () => {
   let tools
 
@@ -145,8 +209,21 @@ describe('lazy start', () => {
     assert.doesNotMatch(host.log(), /started on first use/)
     const pid = await pidOf(host)
     assert.ok(alive(pid))
+    const began = Date.now()
     await host.client.close()
+    const closed = Date.now() - began
     // A server that is not lazy also ends with its wrapper's whole tree: the SDK transport would end only the wrapper.
-    await until('the end of the server at close', () => !alive(pid))
+    await until(
+      `the end of the server at close (client.close took ${closed} ms; host log: ${host.log()})`,
+      () => !alive(pid),
+    )
   })
+
+  for (const lazy of [false, true])
+    test(`a host whose stdin ends exits within ${SHUTDOWN_BOUND_MS} ms and leaves no child (lazy ${lazy})`, async () => {
+      const { pid, ms } = await endStdin(lazy)
+      console.error(`shutdown ms (lazy ${lazy}): ${ms}`)
+      assert.ok(ms < SHUTDOWN_BOUND_MS, `the host needed ${ms} ms`)
+      assert.ok(!alive(pid), 'the child is gone when the host has left')
+    })
 })

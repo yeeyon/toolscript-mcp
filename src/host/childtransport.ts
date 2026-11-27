@@ -15,10 +15,12 @@ import { STOP_WAIT_MS } from '../core/broker.ts'
 import { endTree } from './broker.ts'
 
 /**
- * The same time at the shutdown of the host: the client of the host waits about 2 s before it kills the host, so the
- * host must have ended the tree of each child by then.
+ * The same time at the shutdown of the host: the client of the host waits about 2 s after it ends our stdin, then kills
+ * the host (the SDK does, at once on Windows), so the host must have ended the tree of each child by then. The rest of
+ * the shutdown (the start of `taskkill`, the exit of the tree, the exit of the host) took 0.5 to 0.8 s on Windows, and
+ * with 300 ms here the stop of a direct child took 1.2 to 1.6 s: too near. Children stop in parallel.
  */
-export const HURRY_WAIT_MS = 300
+export const HURRY_WAIT_MS = 100
 
 export type ChildParams = {
   readonly command: string
