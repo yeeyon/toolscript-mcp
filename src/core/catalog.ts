@@ -728,6 +728,25 @@ export const actionWords = (inputSchema: unknown): ReadonlySet<string> => {
   return words
 }
 
+/** The same values as lists of words, for a query that spells a whole value ("update reviewers"): 2 or more words each. */
+export const actionValues = (inputSchema: unknown): readonly (readonly string[])[] => {
+  const values: string[][] = []
+  const properties =
+    isObject(inputSchema) && Object.hasOwn(inputSchema, 'properties') ? inputSchema.properties : undefined
+  if (!isObject(properties)) return values
+  for (const key of ACTION_PROPERTIES) {
+    const property = Object.hasOwn(properties, key) ? properties[key] : undefined
+    if (!isObject(property) || !Array.isArray(property.enum)) continue
+    for (let i = 0; i < property.enum.length && i < MAX_ENUM; i++) {
+      const value: unknown = property.enum[i]
+      if (typeof value !== 'string' || value.length > MAX_ACTION_VALUE) continue
+      const words = value.toLowerCase().match(/[a-z0-9]+/g) ?? []
+      if (words.length >= 2 && values.flat().length + words.length <= MAX_ACTION_WORDS) values.push(words)
+    }
+  }
+  return values
+}
+
 /**
  * The text of a search_tools result: the best matches, then the servers that
  * are not connected. A query with words shows its first DETAIL_HITS matches in
@@ -752,7 +771,7 @@ export const searchResult = (
 ): string => {
   const all = catalogOf(states)
   const found = rankTools(
-    all.map(t => ({ ...t, actions: actionWords(t.inputSchema) })),
+    all.map(t => ({ ...t, actions: actionWords(t.inputSchema), values: actionValues(t.inputSchema) })),
     query,
     limit,
   )

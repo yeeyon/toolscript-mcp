@@ -16,11 +16,93 @@
       ["repo_create_branch", "Create a new branch in a repository"],
       ["repo_file", "Get the content of a file in a repository"],
       ["repo_file_write", "Create, update or delete a file in a repository"],
-      ["repo_pull_request", "Get or list pull requests of a repository"],
+      [
+        "repo_pull_request",
+        "Get or list pull requests of a repository",
+        {
+          "$comment": "cut: 2 more properties, source 130-real-schemas, 2026-11-27",
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "enum": ["get", "list", "list_by_commits"] },
+            "repositoryId": { "type": "string" },
+            "pullRequestId": { "type": "number", "minimum": 1 },
+            "project": { "type": "string" },
+            "includeWorkItemRefs": { "type": "boolean" },
+            "includeLabels": { "type": "boolean" },
+            "includeChangedFiles": { "type": "boolean" },
+            "top": { "type": "number" },
+            "skip": { "type": "number" },
+            "created_by_me": { "type": "boolean" },
+            "created_by_user": { "type": "string" },
+            "i_am_reviewer": { "type": "boolean" },
+            "user_is_reviewer": { "type": "string" },
+            "status": { "type": "string", "enum": ["NotSet", "Active", "Abandoned", "Completed", "All"] },
+            "sourceRefName": { "type": "string" },
+            "targetRefName": { "type": "string" },
+            "repository": { "type": "string" }
+          },
+          "required": ["action"]
+        }
+      ],
       ["repo_pull_request_org", "List pull requests across the organization"],
       ["repo_pull_request_thread", "List comment threads of a pull request"],
-      ["repo_pull_request_thread_write", "Reply to or resolve a pull request comment thread"],
-      ["repo_pull_request_write", "Create or update a pull request, set reviewers, complete"],
+      [
+        "repo_pull_request_thread_write",
+        "Reply to or resolve a pull request comment thread",
+        {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "enum": ["create", "reply", "update", "update_status"] },
+            "repositoryId": { "type": "string" },
+            "pullRequestId": { "type": "number", "minimum": 1 },
+            "project": { "type": "string" },
+            "threadId": { "type": "number", "minimum": 1 },
+            "commentId": { "type": "number", "minimum": 1 },
+            "content": { "type": "string" },
+            "status": {
+              "type": "string",
+              "enum": ["Unknown", "Active", "Fixed", "WontFix", "Closed", "ByDesign", "Pending"]
+            },
+            "filePath": { "type": "string" },
+            "fullResponse": { "type": "boolean" },
+            "rightFileStartLine": { "type": "number" },
+            "rightFileStartOffset": { "type": "number" },
+            "rightFileEndLine": { "type": "number" },
+            "rightFileEndOffset": { "type": "number" },
+            "changeTrackingId": { "type": "number" },
+            "firstComparingIteration": { "type": "number" },
+            "secondComparingIteration": { "type": "number" }
+          },
+          "required": ["action", "repositoryId", "pullRequestId"]
+        }
+      ],
+      [
+        "repo_pull_request_write",
+        "Create or update a pull request, set reviewers, complete",
+        {
+          "$comment": "cut: 7 more properties, source 130-real-schemas, 2026-11-27",
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "enum": ["create", "update", "update_reviewers", "vote"] },
+            "repositoryId": { "type": "string" },
+            "pullRequestId": { "type": "number", "minimum": 1 },
+            "project": { "type": "string" },
+            "sourceRefName": { "type": "string" },
+            "targetRefName": { "type": "string" },
+            "title": { "type": "string" },
+            "description": { "type": "string" },
+            "isDraft": { "type": "boolean" },
+            "workItems": { "type": "string" },
+            "forkSourceRepositoryId": { "type": "string" },
+            "labels": { "type": "array", "items": { "type": "string" } },
+            "status": { "type": "string", "enum": ["Active", "Abandoned"] },
+            "autoComplete": { "type": "boolean" },
+            "mergeStrategy": { "type": "string", "enum": ["NoFastForward", "Squash", "Rebase", "RebaseMerge"] },
+            "mergeCommitMessage": { "type": "string" }
+          },
+          "required": ["action"]
+        }
+      ],
       ["repo_repository", "List or get git repositories"],
       ["repo_search_commits", "Search commits in a repository"],
       ["search_code", "Search code across repositories"],
@@ -247,6 +329,10 @@
     ["merge pull request", "mcp__github__merge_pull_request"],
     ["add comment to jira issue", "mcp__atlassian__addCommentToJiraIssue"],
     ["transition jira issue", "mcp__atlassian__transitionJiraIssue"],
-    ["move jira issue status", "mcp__atlassian__transitionJiraIssue"]
+    ["move jira issue status", "mcp__atlassian__transitionJiraIssue"],
+    ["update status of pr thread", "mcp__azure-devops__repo_pull_request_thread_write"],
+    ["update the status of a thread", "mcp__azure-devops__repo_pull_request_thread_write"],
+    ["azure devops update status of pr thread", "mcp__azure-devops__repo_pull_request_thread_write"],
+    ["update the reviewers of a pr", "mcp__azure-devops__repo_pull_request_write"]
   ]
 }

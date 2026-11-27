@@ -32,6 +32,8 @@ export const LIMITS = {
   globChars: 200,
   globWildcards: 6,
   queryChars: 1_000,
+  /** Texts in the `query` array of one `search`. */
+  queryTerms: 20,
   roots: 16,
   configGlobs: 64,
   /** `edits` of one call. */
@@ -96,6 +98,12 @@ export type WorkspaceCode =
 /** A failed call. The message starts with the code and holds no byte or name from outside the root. */
 export class WorkspaceError extends Error {
   readonly code: WorkspaceCode
+  /**
+   * For a refusal of the kind of an entry (`not-file`, `not-folder`, `hard-link`, `link`): the real parts of the entry that
+   * the request named, when the volume opened it under an alias. A file with several names has one spelling for each.
+   * The provider answers `excluded` when any of them is excluded. Never part of the text.
+   */
+  spelled?: readonly (readonly string[])[]
   constructor(code: WorkspaceCode, text: string) {
     super(`${code}: ${text}`)
     this.code = code
@@ -548,11 +556,17 @@ export const WORKSPACE_TOOLS = {
   search: {
     class: 'read',
     description:
-      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. Filter the lines in your program. The .gitignore of the root hides files: name an ignored folder in path to search it. truncated is true when it stopped early (10 s, 20,000 names or maxMatches): the matches are then partial.',
+      'Find literal text, not a regular expression, in the text files under a folder. One match for each place, with its line and column. query can be an array of up to 20 texts: one walk finds all of them, and each match names its query. Filter the lines in your program. The .gitignore of the root hides files: name an ignored folder in path to search it. truncated is true when it stopped early (10 s, 20,000 names or maxMatches): the matches are then partial.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'The text to find, on one line.' },
+        query: {
+          anyOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: LIMITS.queryTerms },
+          ],
+          description: 'The text to find, on one line. An array of texts is one walk for all of them.',
+        },
         path: pathArg(
           'The folder to search, relative to the workspace root. Default ".". Name the smallest folder that holds what you look for.',
         ),
@@ -563,7 +577,12 @@ export const WORKSPACE_TOOLS = {
             'Globs over paths from the workspace root, also when path is set, such as "src/**/*.ts". * and ? stay inside a part, ** spans parts.',
         },
         ignoreCase: { type: 'boolean', description: 'Default false.' },
-        maxMatches: { type: 'integer', minimum: 1, maximum: LIMITS.maxMatches, description: 'Default 200.' },
+        maxMatches: {
+          type: 'integer',
+          minimum: 1,
+          maximum: LIMITS.maxMatches,
+          description: 'For each query. Default 200, or 2,000 divided by the number of queries if less.',
+        },
       },
       required: ['query'],
       additionalProperties: false,
@@ -580,6 +599,7 @@ export const WORKSPACE_TOOLS = {
               line: { type: 'integer' },
               column: { type: 'integer' },
               text: { type: 'string' },
+              query: { type: 'string', description: 'The query that matched, when query was an array.' },
             },
             required: ['path', 'line', 'column', 'text'],
           },
@@ -745,7 +765,14 @@ export const workspaceClass = (tool: string): ToolClass | undefined => {
 // The input of each tool, checked here: the schema is advice to the model, not a check.
 
 export type ListInput = { path: string; depth: number; include: string[] }
-export type SearchInput = { query: string; path: string; include: string[]; ignoreCase: boolean; maxMatches: number }
+/** `query` is a text, or an array of texts for one walk (then each match names its text). */
+export type SearchInput = {
+  query: string | string[]
+  path: string
+  include: string[]
+  ignoreCase: boolean
+  maxMatches: number
+}
 export type PathInput = { path: string }
 
 const bad = (text: string): never => {
@@ -790,20 +817,44 @@ export const parseListInput = (args: unknown): ListInput => {
   return { path: text(o, 'path', '.'), depth: whole(o, 'depth', 1, 1, LIMITS.maxDepth), include: globs(o) }
 }
 
+/** `text` in lower case, one UTF-16 unit for one unit, so a column in the folded line is a column in the line. */
+export const lowered = (text: string): string => {
+  const whole = text.toLowerCase()
+  return whole.length === text.length
+    ? whole
+    : text.replace(/[^]/g, c => (c.toLowerCase().length === 1 ? c.toLowerCase() : c))
+}
+
 export const parseSearchInput = (args: unknown): SearchInput => {
   const o = asObject(args, ['query', 'path', 'include', 'ignoreCase', 'maxMatches'])
-  const query = text(o, 'query')
-  if (query === '' || query.length > LIMITS.queryChars || /[\r\n]/.test(query))
-    bad(`query must be text of 1 to ${LIMITS.queryChars} characters on one line`)
+  const one = (v: unknown, name: string): string =>
+    typeof v !== 'string' || v === '' || v.length > LIMITS.queryChars || /[\r\n]/.test(v)
+      ? bad(`${name} must be text of 1 to ${LIMITS.queryChars} characters on one line`)
+      : v
   const ignoreCase = o.ignoreCase
   if (ignoreCase !== undefined && typeof ignoreCase !== 'boolean') bad('ignoreCase must be true or false')
-  return {
-    query,
-    path: text(o, 'path', '.'),
-    include: globs(o),
-    ignoreCase: ignoreCase === true,
-    maxMatches: whole(o, 'maxMatches', LIMITS.defaultMatches, 1, LIMITS.maxMatches),
+  let query: string | string[]
+  if (Array.isArray(o.query)) {
+    if (o.query.length < 1 || o.query.length > LIMITS.queryTerms)
+      bad(`query must be a text or an array of 1 to ${LIMITS.queryTerms} texts`)
+    const list = o.query.map((v, i) => one(v, `query[${i}]`))
+    const seen = new Set<string>()
+    list.forEach((term, i) => {
+      const key = ignoreCase === true ? lowered(term) : term
+      if (seen.has(key)) bad(`query[${i}] repeats an earlier text`)
+      seen.add(key)
+    })
+    query = list
+  } else {
+    if (typeof o.query !== 'string') bad(`query must be a text or an array of 1 to ${LIMITS.queryTerms} texts`)
+    query = one(o.query, 'query')
   }
+  const terms = typeof query === 'string' ? 1 : query.length
+  const share = Math.min(LIMITS.defaultMatches, Math.floor(LIMITS.maxMatches / terms))
+  const maxMatches = whole(o, 'maxMatches', share, 1, LIMITS.maxMatches)
+  if (maxMatches * terms > LIMITS.maxMatches)
+    bad(`maxMatches counts for each query: ${terms} queries allow at most ${Math.floor(LIMITS.maxMatches / terms)}`)
+  return { query, path: text(o, 'path', '.'), include: globs(o), ignoreCase: ignoreCase === true, maxMatches }
 }
 
 export const parsePathInput = (args: unknown): PathInput => {
