@@ -21,14 +21,18 @@ import {
 } from '../src/core/childguard.ts'
 import { childGuardFolder, guardedDirs } from '../src/core/paths.ts'
 import { createGuard } from '../src/host/childguard.ts'
+import { readTable } from '../bench/memory.mjs'
 
 const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-childguard-test-')))
-const started: number[] = []
-after(() => {
-  for (const pid of started)
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch {}
+// Each process that a test starts, with its creation time: the cleanup ends only a process that still matches both.
+const started = new Map<number, number | undefined>()
+after(async () => {
+  const table = await readTable().catch(() => [])
+  for (const [pid, t] of started)
+    if (table.some(p => p.pid === pid && p.t === t))
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {}
   fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 })
 })
 
@@ -46,15 +50,18 @@ const until = async (check: () => boolean, ms: number): Promise<boolean> => {
   return check()
 }
 /** A child that ignores stdin EOF, the leader of its own group, as the host starts every stdio child. */
-const sleeper = (): number => {
+const sleeper = async (): Promise<number> => {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
     stdio: 'ignore',
     detached: process.platform !== 'win32',
     windowsHide: true,
   })
   child.unref()
-  started.push(child.pid!)
+  await remember(child.pid!)
   return child.pid!
+}
+const remember = async (pid: number): Promise<void> => {
+  started.set(pid, (await readTable()).find((p: { pid: number }) => p.pid === pid)?.t)
 }
 
 describe('the switch and the lines', () => {
@@ -105,7 +112,7 @@ describe('the watchdog (Linux and macOS)', { skip: process.platform === 'win32' 
 
   test('a child that was removed is left alone when the guard ends', async () => {
     const guard = make()
-    const pid = sleeper()
+    const pid = await sleeper()
     guard.add(pid)
     assert.equal(guard.state().state, 'on')
     guard.remove(pid)
@@ -113,14 +120,16 @@ describe('the watchdog (Linux and macOS)', { skip: process.platform === 'win32' 
     await new Promise(r => setTimeout(r, 400))
     assert.ok(alive(pid), 'the host stopped it, so the guard must not touch it')
     process.kill(-pid, 'SIGKILL')
+    started.delete(pid)
   })
 
   test('a child that is still listed loses its group when the guard ends, as when the host dies', async () => {
     const guard = make()
-    const pid = sleeper()
+    const pid = await sleeper()
     guard.add(pid)
     guard.close()
     assert.ok(await until(() => !alive(pid), 3000), 'the group was ended')
+    started.delete(pid)
   })
 
   test('a guard that never had a child starts no process', () => {
@@ -133,7 +142,7 @@ describe('the watchdog (Linux and macOS)', { skip: process.platform === 'win32' 
     const before = lines.length
     const guard = make({ env: { [GUARD_ENV]: '0' } })
     assert.equal(guard.state().state, 'unwanted')
-    guard.add(sleeper())
+    guard.add(await sleeper())
     assert.equal(lines.length, before)
     assert.equal((await guard.settled()).state, 'unwanted')
   })
@@ -141,9 +150,9 @@ describe('the watchdog (Linux and macOS)', { skip: process.platform === 'win32' 
   test('no shell: one line, the child still runs', async () => {
     lines.length = 0
     const guard = make({ shell: path.join(home, 'no-such-shell') })
-    const pid = sleeper()
+    const pid = await sleeper()
     guard.add(pid)
-    guard.add(sleeper())
+    guard.add(await sleeper())
     assert.equal(guard.state().state, 'failed')
     assert.equal(lines.length, 1)
     assert.match(lines[0]!, /^child guard: off, there is no .*no-such-shell\. A host that is killed/)
@@ -152,6 +161,7 @@ describe('the watchdog (Linux and macOS)', { skip: process.platform === 'win32' 
     await new Promise(r => setTimeout(r, 200))
     assert.ok(alive(pid))
     process.kill(-pid, 'SIGKILL')
+    started.delete(pid)
   })
 })
 
@@ -198,6 +208,39 @@ describe('the Windows program', { skip: process.platform !== 'win32' }, () => {
     assert.match(lines[0]!, /compile/)
     const folder = childGuardFolder(home)
     assert.deepEqual(fs.existsSync(folder) ? fs.readdirSync(folder) : [], [])
+  })
+
+  test('a process that the host did not start is not adopted, and one that it started is', async () => {
+    lines.length = 0
+    const guard = make()
+    guard.start()
+    assert.equal((await guard.settled()).state, 'on', lines.join('\n'))
+    // A child of this process: adopted.
+    const mine = await sleeper()
+    // A process whose parent is not this process: a node starts a sleeper and leaves, so its ppid names a dead process.
+    const maker = spawn(
+      process.execPath,
+      [
+        '-e',
+        "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true, windowsHide: true }); c.unref(); console.log(c.pid)",
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
+    )
+    let text = ''
+    maker.stdout.on('data', d => (text += d))
+    await new Promise(resolve => maker.on('close', resolve))
+    const orphan = Number(text.trim())
+    assert.ok(orphan > 0 && alive(orphan))
+    await remember(orphan)
+    guard.add(mine)
+    guard.add(orphan)
+    await new Promise(r => setTimeout(r, 1500))
+    guard.close()
+    assert.ok(await until(() => !alive(mine), 5000), 'the process of the host was in the job')
+    started.delete(mine)
+    assert.ok(alive(orphan), 'a process that the host did not start was left alone')
+    process.kill(orphan, 'SIGKILL')
+    started.delete(orphan)
   })
 
   test('a missing source is a failure with its reason', async () => {

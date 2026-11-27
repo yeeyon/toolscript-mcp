@@ -163,10 +163,13 @@ export class ChildTransport implements Transport {
     this.#stopping = new Promise<void>(resolve => {
       if (proc.exitCode !== null || proc.signalCode !== null) {
         endTree(proc)
+        // The 'close' event may never come on this path: the group must not stay listed.
+        this.#params.guard?.remove(proc.pid)
         return resolve()
       }
       const end = () => {
         endTree(proc)
+        this.#params.guard?.remove(proc.pid)
         // The close event follows the kill. Do not wait for it longer than a second.
         setTimeout(resolve, 1000).unref()
       }

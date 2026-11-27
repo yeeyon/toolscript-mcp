@@ -22,6 +22,7 @@ import {
   windowsFailure,
 } from '../core/childguard.ts'
 import { childGuardFolder } from '../core/paths.ts'
+import { privateFolder } from './brokerwire.ts'
 
 export const GUARD_SOURCE = fileURLToPath(new URL('../../runtime/child-guard.cs', import.meta.url))
 /** The Windows program has this long, from its start, to say `ready` (the first start of a new program is scanned). */
@@ -68,6 +69,15 @@ const isFile = (file: string): boolean => {
     return fs.statSync(file).isFile()
   } catch {
     return false
+  }
+}
+
+/** True for a plain file, false for a link, a folder or anything else, undefined when there is nothing at the path. */
+const plainFile = (file: string): boolean | undefined => {
+  try {
+    return fs.lstatSync(file).isFile()
+  } catch {
+    return undefined
   }
 }
 
@@ -184,7 +194,10 @@ const ensureProgram = async (
   }
   const dir = childGuardFolder(options.home)
   const exe = path.join(dir, guardExeName(createHash('sha256').update(source).digest('hex')))
-  if (isFile(exe)) return exe
+  // A link or a folder where the program goes is never run.
+  const found = plainFile(exe)
+  if (found === true) return exe
+  if (found === false) throw new Error('the guard program is not a plain file')
   const root = env.SystemRoot ?? env.SYSTEMROOT
   const csc =
     options.csc ??
@@ -192,7 +205,7 @@ const ensureProgram = async (
       ? path.win32.join(root, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe')
       : undefined)
   if (csc === undefined || !isFile(csc)) throw new Error('the csc.exe of .NET Framework 4 was not found')
-  fs.mkdirSync(dir, { recursive: true })
+  privateFolder(dir)
   const temp = path.join(dir, `tmp-${process.pid}-${randomBytes(4).toString('hex')}.exe`)
   const text = await new Promise<string | undefined>(resolve => {
     let out = ''
@@ -219,7 +232,7 @@ const ensureProgram = async (
   } catch {
     // Another process made the same file first, and it may be running: use it.
     fs.rmSync(temp, { force: true })
-    if (!isFile(exe)) throw new Error('the compiled program could not be put in place')
+    if (plainFile(exe) !== true) throw new Error('the compiled program could not be put in place')
   }
   return exe
 }

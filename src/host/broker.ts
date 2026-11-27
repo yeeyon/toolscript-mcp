@@ -389,6 +389,7 @@ export const startBroker = async ({
       child.proc.once('exit', () => resolve())
       const timer = setTimeout(() => {
         endTree(child.proc)
+        guard.remove(child.proc.pid)
         setTimeout(resolve, 1000)
       }, STOP_WAIT_MS)
       child.proc.once('exit', () => clearTimeout(timer))

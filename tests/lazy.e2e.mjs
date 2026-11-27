@@ -400,8 +400,12 @@ describe('the child guard', () => {
       assert.ok(server > 0, reply.content[0].text)
       // The broker is detached, and its ppid still names the host that started it.
       const table = await readTable()
+      const hostRow = table.find(p => p.pid === host.transport.pid)
       const broker = table.find(
-        p => p.ppid === host.transport.pid && p.cmd.replaceAll('\\', '/').includes('dist/host/broker.js'),
+        p =>
+          p.ppid === host.transport.pid &&
+          p.t >= hostRow.t &&
+          p.cmd.replaceAll('\\', '/').includes('dist/host/broker.js'),
       )
       assert.ok(broker, 'the broker runs')
       // Wait for the guard of the broker: its program or its watchdog is below it, with the wrapper and the server.
