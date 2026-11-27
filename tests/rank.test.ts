@@ -5,15 +5,25 @@ import path from 'node:path'
 import { actionWords } from '../src/core/catalog.ts'
 import { listsAll, rankTools, type ToolEntry } from '../src/core/protocol.ts'
 
-type Servers = Record<string, [string, string][]>
+// A fixture tool is [name, description] or [name, description, inputSchema]: the schema is the real one of the server
+// (#130), cut where it says so, and gives `actions` as `search_tools` does.
+type Servers = Record<string, ([string, string] | [string, string, unknown])[]>
 type Queries = [string, string][]
 
 const load = (file: string): { servers?: Servers; queries: Queries } =>
   JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'fixtures', file), 'utf8'))
 const toCatalog = (servers: Servers): ToolEntry[] =>
   Object.entries(servers).flatMap(([server, tools]) =>
-    tools.map(([tool, description]) => ({ name: `mcp__${server}__${tool}`, description })),
+    tools.map(([tool, description, schema]) => ({
+      name: `mcp__${server}__${tool}`,
+      description,
+      ...(schema === undefined ? {} : { actions: actionWords(schema) }),
+    })),
   )
+const schemaOf = (servers: Servers, tool: string): unknown =>
+  Object.values(servers)
+    .flat()
+    .find(t => t[0] === tool)?.[2]
 
 const tuning = load('rank-catalog.json')
 const catalog = toCatalog(tuning.servers!)
@@ -21,7 +31,8 @@ const heldOutA = load('rank-heldout-a.json')
 const heldOutB = load('rank-heldout-b.json')
 const catalogB = toCatalog(heldOutB.servers!)
 // 36 tools of github/github-mcp-server with the names and descriptions of its README.
-const catalogH = toCatalog(load('rank-github-readme.json').servers!)
+const heldOutC = load('rank-github-readme.json')
+const catalogH = toCatalog(heldOutC.servers!)
 const dotted: ToolEntry[] = [
   ...catalog,
   { name: 'mcp__fs__files.read', description: 'Read a file' },
@@ -46,7 +57,7 @@ const score = (tools: readonly ToolEntry[], queries: Queries) => {
   }
 }
 
-describe('rankTools on three sets of searches', () => {
+describe('rankTools on four sets of searches', () => {
   // The floors sit 2 top-1 points and about 0.01 MRR under the measured values. A later rule that is no worse out of
   // sample must pass. The first set tuned the rule: the other two did not. Measured, before #49 -> now:
   // tuning set 65 -> 69 (MRR 0.855 -> 0.894), set A 107 -> 111 (0.920 -> 0.939), set B 101 -> 101 (0.910 -> 0.909).
@@ -56,10 +67,15 @@ describe('rankTools on three sets of searches', () => {
   // 103 -> 104 (0.932 -> 0.938). A stem that cuts "ies", "es" only after s, x, z, ch or sh, else "s", left all three.
   // Then "pr", "prs", "mr", "mrs" and a word written together from name words (#67): 69 (0.894), 112 -> 114
   // (0.947 -> 0.961), 104 -> 107 (0.938 -> 0.961). The long form in a description (#82): 69, 114, 107, unchanged.
+  // The fixtures hold the real action and method enums, and the sets rank with `actions` as `search_tools` does
+  // (#130). Without them: tuning 69 (0.894), A 114 (0.942), B 107 (0.961). With them, and 4 azure and 7 github
+  // searches whose verb sits only in an enum: 69 (0.894), A 114 -> 116 (0.942 -> 0.952), B 107 (0.961), GitHub 3 -> 7
+  // of 7 (0.714 -> 1.000).
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 84 searches on 140 tools', catalog, tuning.queries, 67, 0.88],
-    ['held-out set A: 122 searches on the same 140 tools', catalog, heldOutA.queries, 112, 0.95],
+    ['held-out set A: 126 searches on the same 140 tools', catalog, heldOutA.queries, 114, 0.95],
     ['held-out set B: 114 searches on 200 other tools', catalogB, heldOutB.queries, 105, 0.95],
+    ['held-out set C: 7 searches on 36 GitHub tools', catalogH, heldOutC.queries, 5, 0.99],
   ]
   for (const [label, tools, queries, top1Floor, mrrFloor] of sets)
     test(label, () => {
@@ -407,13 +423,15 @@ describe('rankTools on three sets of searches', () => {
         ['create pr', 'create_pull_request'],
         ['merge pr', 'merge_pull_request'],
         ['list prs', 'list_pull_requests'],
-        ['pr comments', 'add_reply_to_pull_request_comment'],
+        // #130: with the real method enum, a bare 'pr comments' is a read.
+        ['pr comments', 'pull_request_read'],
         ['pr review', 'pull_request_review_write'],
         ['update pr', 'update_pull_request'],
         ['update pr branch', 'update_pull_request_branch'],
       ])
         assert.equal(short(catalogH, query, 1)[0], wanted, query)
       // Main ranked add_issue_comment 5 and 3: its name holds "comment", so the long form in its description stays 1.
+      assert.ok(short(catalogH, 'pr comments', 3).includes('add_reply_to_pull_request_comment'))
       assert.equal(rankOf(catalogH, 'comment on pr', 'mcp__github__add_issue_comment'), 5)
       assert.equal(rankOf(catalogH, 'add comment to pr', 'mcp__github__add_issue_comment'), 3)
     })
@@ -571,20 +589,25 @@ describe('rankTools with each server of the tuning set twice', () => {
 // The action enum of a tool (#125): `repo_pull_request_write` holds its verbs in `action` and none in its description.
 describe('rankTools with the action values of the input schema', () => {
   const act = (...values: unknown[]) => ({ properties: { action: { enum: values } } })
+  const real = (tool: string) => schemaOf(tuning.servers!, tool)
   const azure = (tool: string, description: string, schema: unknown) => ({
     name: `mcp__azure-devops__${tool}`,
     description,
     schema,
   })
   const defs = [
-    azure('repo_pull_request', 'Read operations for pull requests.', act('get', 'list', 'list_by_commits')),
+    azure('repo_pull_request', 'Read operations for pull requests.', real('repo_pull_request')),
     azure('repo_pull_request_org', 'List pull requests of the organization.', undefined),
     azure('repo_pull_request_thread', 'Read the threads of a pull request.', act('list', 'get')),
-    azure('repo_pull_request_thread_write', 'Write operations for threads of pull requests.', act('create', 'reply')),
+    azure(
+      'repo_pull_request_thread_write',
+      'Write operations for threads of pull requests.',
+      real('repo_pull_request_thread_write'),
+    ),
     azure(
       'repo_pull_request_write',
       'Write operations for pull requests. Use the action parameter to specify the operation.',
-      act('create', 'update', 'update_reviewers', 'vote'),
+      real('repo_pull_request_write'),
     ),
     azure('repo_create_branch', 'Make a branch from a commit.', undefined),
   ]
@@ -620,14 +643,36 @@ describe('rankTools with the action values of the input schema', () => {
     assert.equal(names(withSchemas, 'azure devops create')[0], 'mcp__azure-devops__repo_create_branch')
   })
 
-  test('a method enum lifts the review tool under the create_pull_request tool', () => {
-    const tools = catalogH.map(t =>
-      t.name.endsWith('__pull_request_review_write')
-        ? { ...t, actions: actionWords({ properties: { method: { enum: ['create', 'submit_pending'] } } }) }
-        : t,
-    )
-    assert.ok(tools.some(t => t.actions !== undefined))
-    assert.ok(rankTools(tools, 'create github pull request', 1)[0]?.name.endsWith('__create_pull_request'))
+  test('the real method enum of the review tool stays under the create_pull_request tool', () => {
+    assert.ok(catalogH.some(t => t.actions !== undefined))
+    assert.ok(rankTools(catalogH, 'create github pull request', 1)[0]?.name.endsWith('__create_pull_request'))
+  })
+
+  test('the fixtures hold the real action enums', () => {
+    const counts: [Servers, string, string, number][] = [
+      [tuning.servers!, 'repo_pull_request', 'action', 3],
+      [tuning.servers!, 'repo_pull_request_write', 'action', 4],
+      [tuning.servers!, 'repo_pull_request_thread_write', 'action', 4],
+      [heldOutC.servers!, 'pull_request_read', 'method', 9],
+      [heldOutC.servers!, 'pull_request_review_write', 'method', 5],
+      [heldOutC.servers!, 'actions_list', 'method', 4],
+      [heldOutC.servers!, 'actions_get', 'method', 6],
+    ]
+    for (const [servers, tool, key, count] of counts) {
+      const schema = schemaOf(servers, tool) as { properties: Record<string, { enum: string[] }> }
+      assert.equal(schema.properties[key]!.enum.length, count, tool)
+    }
+    const values = (tool: string) =>
+      (schemaOf(tuning.servers!, tool) as { properties: { action: { enum: string[] } } }).properties.action.enum
+    assert.deepEqual(values('repo_pull_request_write'), ['create', 'update', 'update_reviewers', 'vote'])
+    assert.deepEqual(values('repo_pull_request_thread_write'), ['create', 'reply', 'update', 'update_status'])
+  })
+
+  test('the reply intent still wins where it is named, and the review tool wins "pr review"', () => {
+    const first = (query: string) => names(catalogH, query, 1)[0]
+    assert.equal(first('pr review'), 'mcp__github__pull_request_review_write')
+    assert.equal(first('reply to pr comment'), 'mcp__github__add_reply_to_pull_request_comment')
+    assert.ok(catalogH.find(t => t.name.endsWith('__pull_request_read'))!.actions!.has('comments'))
   })
 
   test('only the own top-level action, method and operation enums count', () => {
