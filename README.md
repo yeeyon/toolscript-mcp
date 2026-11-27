@@ -109,8 +109,8 @@ You need Node 22.13 or later and npm.
 npx -y toolscript-mcp init
 ```
 
-init imports user-scope servers from Claude Code, Claude Desktop and Cursor. It writes a toolscript-mcp config
-and prints the client changes. Use [Client setup](#client-setup) for Codex or a manual setup. Then follow
+init imports user-scope servers from Claude Code, Claude Desktop, Cursor and Codex. It writes a toolscript-mcp config
+and prints the client changes. For a manual setup, see [Client setup](#client-setup). Then follow
 [Configure downstream servers](#configure-downstream-servers).
 
 To print the version of the package, run `npx -y toolscript-mcp --version`.
@@ -274,10 +274,33 @@ For a development session, use `node` as the client command. Replace the npm arg
 
 ### init
 
-- `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code, Claude Desktop and Cursor.
+- `npx -y toolscript-mcp init` imports the user-scope servers of Claude Code, Claude Desktop, Cursor and Codex.
   To add servers from a project, use `--list` and `--add` below.
 - If two clients have a server with the same name, init keeps the first one. The order is Claude Code, Claude
-  Desktop, Cursor.
+  Desktop, Cursor, Codex.
+- Codex: init runs `codex mcp list --json`, then `codex mcp get <name> --json` for each server, at most 64 servers.
+  It starts `codex` with no shell, in your home folder, with a 10 s limit and a 1 MB output cap for each call.
+  If `codex` is not on `PATH`, or a call fails, init reads `config.toml` in `CODEX_HOME` (default `~/.codex`)
+  with its own strict reader. The reader skips a server that it cannot read, and prints the reason.
+- init reads the user scope of Codex only. It does not read the `.codex/config.toml` of a project, because Codex
+  loads that file only for a project that it trusts. init says so when the file exists.
+- init maps `command`, `args`, `env`, `cwd` and `url` of a Codex server. `env_vars = ["X"]` becomes `"X": "${X}"`
+  in `env`. `bearer_token_env_var = "T"` becomes the header `Authorization: Bearer ${T}`. `http_headers` become
+  `headers`. `env_http_headers = { H = "V" }` becomes the header `H: ${V}`.
+- `disabled_tools` of a Codex server gives one `deny` rule for each tool. `enabled_tools` gives one `ask` rule for
+  each tool, then one `deny` rule for the other tools of the server. init writes the rules in this order: the `deny` rules of tools,
+  the `ask` rules, the `deny` rule of the other tools, and then the old rules, which keep their order. If the old
+  policy denies a tool of an `enabled_tools` list, that tool gets a `deny` rule and no `ask` rule. An old `allow` rule
+  never loosens a Codex list. No old rule changes. init prints the rules that it
+  wrote. If two clients define the same server, init keeps the rules of Codex.
+- init leaves out `http_headers_helper`, `startup_timeout_sec`, `tool_timeout_sec`, the per-tool `tools` tables and each
+  key that it does not know. It prints each name with its reason. When it reads the CLI, it also reads `config.toml` for
+  the names of the keys that `codex mcp get` does not show. It skips a server with `enabled = false`, and a server with a
+  tool name that a rule cannot name. It also skips a server with a control character in its name, command, arguments,
+  values or URL.
+- For a Codex server with an OAuth login, init prints the `toolscript-mcp login` command. When init reads
+  `config.toml`, it cannot see the login state.
+- For Codex, init prints the TOML entry of toolscript, and `codex mcp remove <name>` for each imported server.
 - init does not import an SSE server, a disabled server, or toolscript-mcp itself.
 - init keeps the `cwd` of a stdio server. If that `cwd` is not an absolute path, only that server fails until you fix it.
 - init sets `"untrusted": true` on each server that names Azure DevOps. The name, the command, an argument or the

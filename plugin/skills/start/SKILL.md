@@ -47,7 +47,7 @@ Run `claude mcp get toolscript`. In each path of its arguments, write each `\` a
 ## 2. Pick a server
 
 Run `npx -y toolscript-mcp init --list --config "<config>"`. It shows one line for each server of Claude Code, Claude Desktop
-and Cursor: the name, client, scope, kind, status, key and folder. Show the list to the person, and ask which server to
+Cursor and Codex: the name, client, scope, kind, status, key and folder. Show the list to the person, and ask which server to
 use first. `<server>` is the value in the `key` column of its line: the key that the server has or gets in `<config>`.
 A line with `-` as its key cannot go into `<config>`.
 

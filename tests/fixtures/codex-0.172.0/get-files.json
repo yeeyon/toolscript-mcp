@@ -1,0 +1,20 @@
+{
+  "name": "files",
+  "enabled": true,
+  "disabled_reason": null,
+  "transport": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@example/files-server", "--root", "/tmp/x"],
+    "env": {
+      "API_KEY": "literal-secret-value",
+      "MODE": "fast"
+    },
+    "env_vars": ["HOME_TOKEN"],
+    "cwd": "/tmp"
+  },
+  "enabled_tools": null,
+  "disabled_tools": null,
+  "startup_timeout_sec": null,
+  "tool_timeout_sec": null
+}
