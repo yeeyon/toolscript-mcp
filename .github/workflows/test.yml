@@ -23,13 +23,21 @@ jobs:
         node: ['22.13', '24']
     name: ${{ matrix.os }} node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # Windows took 8.2 minutes on main with the old limit of 10, so a slow runner cancelled the job. The child guard cases add
+    # about 35 s there (memory.e2e 19 s, lazy.e2e 11 s, tests/childguard.test.ts the rest).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
+      # The Windows cases that compile the child guard program raise a Defender audit event for each new program, so a
+      # laptop skips them. CI runs them: tests/childguard.test.ts, tests/lazy.e2e.mjs and tests/memory.e2e.mjs.
+      - name: Turn on the Windows child guard cases
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "TOOLSCRIPT_TEST_CHILD_GUARD=1" >> "$GITHUB_ENV"
       # A vfat volume has short names such as GIT~1: the alias test of tests/workspace-fs.test.ts runs on it.
       - name: Mount a vfat image for the alias test
         if: runner.os == 'Linux'

@@ -878,7 +878,7 @@ A broker holds at most 256 links and 32 copies. A session has one link for each 
 
 Sharing does not keep apart the state inside one copy of a server, or its stderr. Set `"share": false` on a server that keeps state. [SECURITY.md](SECURITY.md) says what the broker protects and what it does not.
 
-A run from source has no broker, so each shared server fails with that reason. Run the built package to share servers. A server that ignores the end of its input can stay after a broker crash. It can also stay after a session crash.
+A run from source has no broker, so each shared server fails with that reason. Run the built package to share servers. A server that ignores the end of its input can stay after a broker crash or a session crash, unless the [child guard](#child-guard) is on.
 
 ### Lazy start
 
@@ -889,6 +889,17 @@ The `claude mcp serve` bridge costs about 315 MB of private memory in each sessi
 - A stop ends the state of the bridge: the files that it read, and the shells that it started in the background. Use `"lazy": false` on its entry, or `TOOLSCRIPT_LAZY=0`, to start it with the session as before.
 - Any other stdio server is lazy only with `"lazy": true`. Do not set it on a server that keeps state between calls, such as a browser or a shell. With sharing on, a server in a broker has no `"lazy"` key.
 - `toolscript-mcp doctor` shows each lazy server in the `lazy` line.
+
+### Child guard
+
+A host that is killed runs no cleanup: no `close`, no end of input. A server that ignores the end of its input then stays, and so does the server behind a wrapper such as `cmd /c` or `sh -c`. The child guard ends them.
+
+- On Linux and macOS the guard is on. One `/bin/sh` process for each session lists the process group of each stdio child. When the host or the broker dies, it ends the groups that are left. It adds about 1 MB. Set `TOOLSCRIPT_CHILD_GUARD=0` to turn it off.
+- On Windows the guard is off. Set `TOOLSCRIPT_CHILD_GUARD=1` to turn it on. toolscript-mcp compiles `runtime/child-guard.cs` one time with the `csc.exe` of .NET Framework 4, keeps the program in `~/.toolscript-mcp/guard`, and starts it for each session. The program puts each child in a Job Object, so Windows ends the children when the host ends. It uses about 16 MB of private memory. A system binary is never copied.
+- Windows Defender can stop a newly compiled program. The attack surface reduction rule `01443614-CD74-433A-B99E-2ECDC07BFC25` does it in block mode. The guard then stays off, and one line on stderr says why.
+- Only pids go to the guard, never a command, an argument or a value of `env`. The broker guards its own children in the same way.
+- A guard that cannot start never stops a server. `toolscript-mcp doctor` shows it in the `child-guard` line.
+- Two cases stay. A process that leaves its group on Linux or macOS (`setsid`, a daemon) is not ended. A process that breaks away from the job on Windows is not ended. The first moments of a Windows session are not guarded, until the program is ready.
 
 ### OAuth login
 

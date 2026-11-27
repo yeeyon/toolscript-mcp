@@ -121,3 +121,5 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   }
   send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `method not found: ${msg.method}` } })
 })
+// `--ignore-eof` keeps the process running when stdin ends, as a server that ignores EOF does (BENCH_IGNORE_EOF in bench/memory.mjs).
+if (process.argv.includes('--ignore-eof')) setInterval(() => {}, 1000)

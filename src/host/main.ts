@@ -19,6 +19,7 @@ import { ALLOW_USAGE, runAllow } from './allow.ts'
 import { RUNS_USAGE, runRuns, runTools, TOOLS_USAGE } from './diagnose.ts'
 import { DOCTOR_USAGE, runDoctor } from './doctor.ts'
 import { brokerFileBeside } from './brokerlink.ts'
+import { createGuard } from './childguard.ts'
 import { connectAll } from './downstream.ts'
 import { lazyIdleMs } from '../core/lazy.ts'
 import { toolsStore } from './toolscache.ts'
@@ -132,7 +133,10 @@ const workspace =
     ? undefined
     : bindOf(config.workspace, roots, step)
 
+// The guard of the stdio children (decision: a killed host leaves none). It starts at the first child.
+const guard = createGuard({ home: os.homedir(), log })
 const downstream = connectAll(config.servers, version, log, {
+  guard,
   login: loginFor(launch, file, process.env, process.platform, os.homedir()),
   ...(workspace !== undefined && { workspace: workspace.then(linkOf) }),
   // Lazy start (decision 028): the bridge starts on its first call and stops when idle. TOOLSCRIPT_LAZY=0 turns it off.
@@ -179,6 +183,8 @@ const shutdown = () => {
   ])
     .then(() => workspace)
     .then(w => (w?.ok ? w.bound.provider.close() : undefined))
+    // Every child is stopped: the guard ends with nothing left in its list.
+    .then(() => guard.close())
     .then(() => process.exit(0)))
 }
 

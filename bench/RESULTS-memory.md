@@ -224,3 +224,21 @@ The broker's life was measured instead with headless Claude Code (2.1.330) sessi
 lived when the session that started it exited (4 runs) and when its `claude` process was ended (1 run), and the next
 session reused the same broker each time. A broker ended alone left no process behind, the same as a host with the
 switch off.
+
+
+## Child guard on Windows: on and off
+
+2026-11-27, Windows_NT 10.0.26300 x64, Node v22.23.3, commit 2818203 plus the child guard, mode fixture. Command, one run with the guard off and one with `TOOLSCRIPT_CHILD_GUARD=1`:
+
+    node bench/memory.mjs --counts 1,6 --idle 5 --after-run 5 --min-free-mb 0
+
+On Windows the guard is off unless that variable is `1`. With it on, each host starts `child-guard.exe` (`runtime/child-guard.cs`, compiled one time into the temp HOME of the bench) at its first stdio child. Private bytes (commit), MB:
+
+| sessions | phase | guard off, per session | guard on, per session | difference | processes off | processes on |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | idle | 121.0 | 136.1 | +15.1 | 8 | 9 |
+| 1 | after-run | 155.3 | 169.9 | +14.6 | 12 | 13 |
+| 6 | idle | 121.0 | 136.5 | +15.5 | 48 | 54 |
+| 6 | after-run | 146.6 | 161.1 | +14.5 | 72 | 78 |
+
+The guard program is one process for each session: 15.6 MB private bytes (15.6 to 15.7) and 2.4 MB private working set, with 1 conhost less than a console program because it has no console. Both runs ended with no leftover after the end of stdin. The host and its servers are the same in both runs (host 69 MB, 16.6 MB for each fake server). Outside Windows the watchdog is one `/bin/sh` of about 1.7 MB resident for each session.

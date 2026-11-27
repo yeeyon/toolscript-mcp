@@ -1263,12 +1263,17 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
           assert.fail(why('a list shows more than the documented family'))
       } else {
         // stat: no secret in any case. Windows can show the size of the outside file at the same path, never its text.
+        // macOS spells the folder with a handle (`realpath` opens it and asks the kernel for its path), so a swap that
+        // renames `b` to `b.real` between the open and that answer gives the inside file at its new, inside path: the
+        // swapper makes `b.real` in the root, the size is the inside file's, and no outside byte is shown.
+        const renamed = (): boolean =>
+          mac && sc.path === 'b.real/id.txt' && sc.type === 'file' && sc.size === inside.size
         const ok = win
           ? sc.type === 'missing' ||
             (sc.path === 'b/id.txt' &&
               sc.type === 'file' &&
               [inside.size, `outside ${secret}`.length].includes(sc.size))
-          : probe.safe(sc)
+          : probe.safe(sc) || renamed()
         if (!(ok && !shown.includes(secret))) assert.fail(why('a stat shows more than the documented family'))
       }
       const key = r.isError === true ? codeOf((r.content as { text: string }[])[0]!.text) : probe.tool

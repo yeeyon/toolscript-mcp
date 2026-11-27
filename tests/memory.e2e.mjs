@@ -352,9 +352,12 @@ test('a hard kill of the bench leaves no host and no fake server, and the next s
 // A hard kill of each HOST while its lazy children are awake (#120). The case above kills the bench while the lazy
 // servers sleep, so the hosts end in the normal way. Here the hosts get SIGKILL after a run woke bench4 (behind a
 // wrapper process, BENCH_WRAP) and the fake bridge: no `close()` runs, and the children can only learn of it from the
-// end of their stdin. A fake server ends on that EOF, as a real one does. A server that ignores EOF is NOT asserted:
-// a host that dies by SIGKILL runs no cleanup, so such a child lives on. That is the same for a direct child, and no
-// user-space host can prevent it without an OS job or a watchdog process.
+// end of their stdin. The fake servers here ignore that EOF
+// (BENCH_IGNORE_EOF, as a real server can), so only the child guard ends them: a /bin/sh watchdog outside Windows, and on
+// Windows the Job Object program, which TOOLSCRIPT_CHILD_GUARD=1 turns on in this case. A leftover is a failure.
+// The case that ignores EOF needs the guard. On Windows the guard compiles a program, which raises a Defender audit event for
+// each new program, so a laptop runs the case without it (servers that end on EOF) and CI sets TOOLSCRIPT_TEST_CHILD_GUARD=1.
+const guardCase = process.platform !== 'win32' || process.env.TOOLSCRIPT_TEST_CHILD_GUARD === '1'
 const matches = (cmd, key) => new RegExp(String.raw`fake-server\.mjs"? ${key}\b`).test(cmd.replaceAll('\\', '/'))
 
 for (const [label, base, limit] of [
@@ -372,7 +375,7 @@ for (const [label, base, limit] of [
       },
     )
     const child = spawn(process.execPath, [BENCH, ...FAST, '--counts', '2', '--idle', '1', '--after-run', '60'], {
-      env: { ...base, BENCH_WRAP: '1' },
+      env: { ...base, BENCH_WRAP: '1', ...(guardCase ? { BENCH_IGNORE_EOF: '1', TOOLSCRIPT_CHILD_GUARD: '1' } : {}) },
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
     })
