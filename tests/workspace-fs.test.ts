@@ -1181,7 +1181,7 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     await sweep(t, 'statNested')
   })
 
-  test('a loop that swaps the folder for at most 2 s while at most 300 reads, listings and stats run shows no outside byte', async t => {
+  test('a loop that swaps the folder for at most 2 s while at most 300 reads, listings and stats run shows nothing outside the documented Windows and macOS swap family', async t => {
     const { root, secret, swap } = setup(t)
     const rig = await rigOf(t, root)
     if (rig === undefined) return
@@ -1205,12 +1205,37 @@ describe('a swap of a folder while a file is read, a folder is listed or a path 
     while (reads < 300 && Date.now() < end) {
       const probe = probes[rotation[reads % rotation.length]!]
       const r = await rig.client.callTool({ name: probe.tool, arguments: probe.args })
-      assert.ok(!JSON.stringify(r).includes(secret), 'an outside byte')
-      // On Windows and macOS a timed swap can still show outside names and metadata through list and stat: the family
-      // that ADR 0144 names. Bytes of a file never. Linux shows nothing from outside.
-      const metadataOnly = probe.tool !== 'read' && (process.platform === 'win32' || process.platform === 'darwin')
-      if (r.isError !== true && !metadataOnly)
-        assert.ok(probe.safe(r.structuredContent), `${probe.tool}: ${JSON.stringify(r)}`)
+      const shown = JSON.stringify(r)
+      // The text of a failure names the tool and the shape of the result, with the secret masked.
+      const why = (what: string) => `${what}: tool ${probe.tool}, ${shown.slice(0, 300).replaceAll(secret, '<secret>')}`
+      const sc = r.structuredContent as any
+      if (r.isError === true) {
+        if (shown.includes(secret)) assert.fail(why('an outside byte in an error'))
+      } else if (probe.tool === 'read') {
+        // Windows: a swap that is out at the open of one proof shows the outside file at the same path (ADR 0144).
+        const ok = win ? sc.content === 'inside file' || sc.content === `outside ${secret}` : probe.safe(sc)
+        if (!(ok && (win || !shown.includes(secret))))
+          assert.fail(why('a read shows more than the documented Windows family'))
+      } else if (probe.tool === 'list') {
+        // Windows and macOS: a swap that alternates can show an outside entry, which is the same name with the size of the outside file, or the file that is named by the secret.
+        const family = [
+          JSON.stringify(inside),
+          JSON.stringify({ path: 'b/id.txt', type: 'file', size: `outside ${secret}`.length }),
+          JSON.stringify({ path: `b/${secret}.txt`, type: 'file', size: 777 }),
+        ]
+        const ok = win || mac ? sc.entries.every((e: unknown) => family.includes(JSON.stringify(e))) : probe.safe(sc)
+        if (!(ok && (win || mac || !shown.includes(secret))))
+          assert.fail(why('a list shows more than the documented family'))
+      } else {
+        // stat: no secret in any case. Windows can show the size of the outside file at the same path, never its text.
+        const ok = win
+          ? sc.type === 'missing' ||
+            (sc.path === 'b/id.txt' &&
+              sc.type === 'file' &&
+              [inside.size, `outside ${secret}`.length].includes(sc.size))
+          : probe.safe(sc)
+        if (!(ok && !shown.includes(secret))) assert.fail(why('a stat shows more than the documented family'))
+      }
       const key = r.isError === true ? codeOf((r.content as { text: string }[])[0]!.text) : probe.tool
       outcomes.set(key, (outcomes.get(key) ?? 0) + 1)
       reads++
