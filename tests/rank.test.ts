@@ -75,7 +75,9 @@ describe('rankTools on four sets of searches', () => {
   // value that agrees with its top-1 floor of 5, and the 0.01 margin of the large sets does not fit.
   // Then a whole action value that the query spells out ("update reviewers" and `update_reviewers`), with 4 new searches
   // in the tuning set and 4 in set C: tuning 73 of 88 (0.899) with and without the rule, A 116 -> 117 (0.952 -> 0.958),
-  // B 107 (0.961), C 9 -> 11 of 11 (0.909 -> 1.000). The tuning search "update status of pr thread" is also in A: rank 1 with and without the rule. The floors of the tuning set, A and C rise by the rule above.
+  // B 107 (0.961), C 9 -> 11 of 11 (0.909 -> 1.000). The tuning search "update status of pr thread" is also in A: rank 1 with and without the rule.
+  // Set C then has 11 searches, and its floors are 9 and 0.9 = (9 + 2 x 0.5) / 11 by the same rule. The floors of the
+  // tuning set and A rise by the rule above too.
   const sets: [string, readonly ToolEntry[], Queries, number, number][] = [
     ['tuning set: 88 searches on 140 tools', catalog, tuning.queries, 71, 0.89],
     ['held-out set A: 126 searches on the same 140 tools', catalog, heldOutA.queries, 115, 0.95],

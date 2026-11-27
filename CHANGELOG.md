@@ -3,6 +3,10 @@
 ## 1.0.5
 
 - `search_tools` ranks a tool first when the query spells out one whole value of its `action`, `method` or `operation` argument with all of its words in order, such as "update reviewers" for the value `update_reviewers`. Before, each word scored alone, and a tool with "update" in its name ranked above it. A query of one word, words in another order and a real word between them rank as before.
+- An HTTP entry with `sigv4` takes an optional `"metadata"` object (issue #137): its pairs go into `params._meta` of each request to the server, as `mcp-proxy-for-aws --metadata` does, before the signature. A pair that the request already holds stays as it is, and with no `metadata` the bytes sent do not change. It sets `AWS_REGION` for an AWS MCP Server host in a region other than the one of the calls.
+- A CLI that has no `aws configure export-credentials` (AWS CLI version 1, or an older version 2) now gets the reason "this AWS CLI has no `configure export-credentials`: update to a current AWS CLI version 2", in place of "needs AWS CLI version 2".
+- When the host closes, each `aws configure export-credentials` child that is still running ends with its process tree, so a hung AWS CLI in its own process group no longer outlives the host on Linux and macOS.
+- Workspace answers `excluded` for a name that an alias reaches, with every tool (issue #176). A short name such as `GIT~1` or a casefold spelling such as `.ſſh` of an excluded file or folder, used with a tool of the other kind (`list` of a file, `read`, `edit`, `write` or `diff` of a folder, or a file alias in the middle of a path), no longer gets `not-folder`, `not-file` or `exists`, which told that the excluded entry is there. The same holds for an alias of an excluded link (a symlink or a junction, no longer `link`) and of an excluded file with a second name (no longer `hard-link`). A name that is not excluded keeps those codes.
 
 ## 1.0.4
 

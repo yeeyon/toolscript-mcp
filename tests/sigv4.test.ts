@@ -317,3 +317,186 @@ test('sigv4Fetch keeps signing with the credentials in use when a read inside th
   await send()
   assert.equal(seen[3]!.get('x-amz-security-token'), 'NEW', 'one ms before the expiry the credentials still sign')
 })
+
+const AWS_URL = 'https://aws-mcp.us-east-1.api.aws/mcp'
+const metaOf = (sigv4: unknown, env: Record<string, string> = {}) => {
+  const parsed = parseConfig(
+    JSON.stringify({ mcpServers: { aws: { type: 'http', url: AWS_URL, sigv4 } } }),
+    env,
+    process.execPath,
+    process.platform,
+  )
+  assert.ok(parsed.ok)
+  return parsed.config.servers.get('aws' as never)
+}
+
+test('item 7: sigv4.metadata parses with ${VAR} expansion, and an empty object is no metadata', () => {
+  const server = metaOf(
+    { profile: 'dev', metadata: { AWS_REGION: 'ap-southeast-1', 'a.b-c_d': '${FAKE_TAG}' } },
+    { FAKE_TAG: 'fake-tag' },
+  )
+  assert.ok(server?.kind === 'http')
+  assert.deepEqual(server.sigv4?.metadata, { AWS_REGION: 'ap-southeast-1', 'a.b-c_d': 'fake-tag' })
+  const none = metaOf({ profile: 'dev', metadata: {} })
+  assert.ok(none?.kind === 'http')
+  assert.deepEqual(none.sigv4, { profile: 'dev', region: 'us-east-1', service: 'aws-mcp' }, 'no metadata key at all')
+})
+
+test('item 7: each bad sigv4.metadata is a config error that names the path and never the value', () => {
+  const bad = (metadata: unknown, env: Record<string, string> = {}): string => {
+    const server = metaOf({ profile: 'dev', metadata }, env)
+    assert.equal(server?.kind, 'invalid', JSON.stringify(metadata))
+    return JSON.stringify(server)
+  }
+  const pairs = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`K${i}`, 'v']))
+  assert.match(bad('ap-southeast-1'), /sigv4\.metadata: must be an object of strings/)
+  assert.match(bad([1]), /sigv4\.metadata: must be an object of strings/)
+  assert.match(bad(pairs(17)), /sigv4\.metadata: has 17 pairs, at most 16/)
+  assert.match(bad({ AWS_REGION: 5 }), /sigv4\.metadata\.AWS_REGION: must be a non-empty string/)
+  assert.match(bad({ AWS_REGION: '' }), /sigv4\.metadata\.AWS_REGION: must be a non-empty string/)
+  assert.match(bad({ 'bad key': 'v' }), /sigv4\.metadata\[\\"bad key\\"\]: a key must be 1 to 64 characters/)
+  assert.match(bad({ ['k'.repeat(65)]: 'v' }), new RegExp(`sigv4\\.metadata\\.k{65}: a key must be 1 to 64 characters`))
+  assert.match(bad({ K: 'v'.repeat(257) }), /sigv4\.metadata\.K: is longer than 256 characters/)
+  assert.match(bad({ K: '${FAKE_MISSING}' }), /sigv4\.metadata\.K: the environment variable FAKE_MISSING is not set/)
+  assert.match(bad({ K: '${FAKE_EMPTY}' }, { FAKE_EMPTY: '' }), /sigv4\.metadata\.K: is empty after the expansion/)
+  assert.doesNotMatch(bad({ K: 'v'.repeat(257) }), /vvvvvvvv/)
+  assert.equal(metaOf({ profile: 'dev', metadata: pairs(16) })?.kind, 'http', '16 pairs pass')
+  assert.equal(metaOf({ profile: 'dev', metadata: { K: 'v'.repeat(256) } })?.kind, 'http', '256 characters pass')
+})
+
+/** A fake MCP server that records what each request carried. */
+const recorder = async () => {
+  const seen: { headers: http.IncomingHttpHeaders; body: string; url: string }[] = []
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', c => (body += c))
+    req.on('end', () => {
+      seen.push({ headers: req.headers, body, url: req.url ?? '' })
+      res.end('{}')
+    })
+  })
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  return { seen, origin, close: () => new Promise<void>(r => server.close(() => r())) }
+}
+
+const plainHttp = (url: string) => ({ kind: 'http', url, headers: {} }) as never
+
+test('item 7: the pairs go into params._meta of each JSON-RPC request, and the signature covers that body', async () => {
+  const fake = await recorder()
+  const now = Date.UTC(2026, 10, 27, 8)
+  try {
+    const url = `${fake.origin}/mcp`
+    const sigv4 = {
+      profile: 'dev',
+      region: 'us-east-1',
+      service: 'aws-mcp',
+      metadata: { AWS_REGION: 'ap-southeast-1', trace: 'fake-t' },
+    }
+    const signed = sigv4Fetch(
+      { url, sigv4 },
+      serverFetch(plainHttp(url)),
+      async () => ({ ...EXAMPLE, sessionToken: 'fakeToken' }),
+      () => now,
+    )
+    const post = (message: unknown) =>
+      signed(url, { method: 'POST', body: JSON.stringify(message), headers: { 'content-type': 'application/json' } })
+    await post({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 't', arguments: {} } })
+    await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 't', _meta: { trace: 'own', x: 1 } } })
+    await post({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 't', _meta: 'text' } })
+    const [a, b, c] = fake.seen
+    assert.deepEqual(JSON.parse(a!.body).params._meta, { AWS_REGION: 'ap-southeast-1', trace: 'fake-t' })
+    assert.deepEqual(JSON.parse(b!.body).params._meta, { AWS_REGION: 'ap-southeast-1', trace: 'own', x: 1 })
+    assert.deepEqual(JSON.parse(c!.body).params._meta, { AWS_REGION: 'ap-southeast-1', trace: 'fake-t' })
+    for (const request of fake.seen) {
+      assert.match(String(request.headers.authorization), /^AWS4-HMAC-SHA256 /)
+      const headers = new Headers(request.headers as Record<string, string>)
+      const again = signRequest(
+        { method: 'POST', url, headers, body: request.body },
+        { ...EXAMPLE, sessionToken: 'fakeToken' },
+        sigv4,
+        new Date(now),
+      )
+      assert.equal(request.headers.authorization, again.authorization, 'the signature is over the body as sent')
+    }
+  } finally {
+    await fake.close()
+  }
+})
+
+test('item 7: with no metadata the body is sent byte for byte, and a body that is not a JSON-RPC object with params is not touched', async () => {
+  const fake = await recorder()
+  try {
+    const url = `${fake.origin}/mcp`
+    const base = serverFetch(plainHttp(url))
+    const scope = { profile: 'dev', region: 'us-east-1', service: 'aws-mcp' }
+    const plain = sigv4Fetch({ url, sigv4: scope }, base, async () => EXAMPLE)
+    const withMeta = sigv4Fetch({ url, sigv4: { ...scope, metadata: { K: 'v' } } }, base, async () => EXAMPLE)
+    const spaced = '{ "jsonrpc": "2.0",  "id": 1, "method": "tools/list", "params": {} }'
+    await plain(url, { method: 'POST', body: spaced })
+    assert.equal(fake.seen[0]!.body, spaced, 'no metadata: not even a space changes')
+    const odd = [
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+      '[{"jsonrpc":"2.0","id":1,"method":"x","params":{}}]',
+      '{"hello":"world","params":{}}',
+      'not json',
+      '{"jsonrpc":"2.0","id":1,"method":"x","params":[1]}',
+    ]
+    for (const body of odd) await withMeta(url, { method: 'POST', body })
+    assert.deepEqual(
+      fake.seen.slice(1).map(r => r.body),
+      odd,
+      'the same bytes',
+    )
+    await withMeta(url, { method: 'GET' })
+    assert.equal(fake.seen.at(-1)!.body, '', 'a GET has no body')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('item 7: a request to another origin gets no pairs and no signature', async () => {
+  const fake = await recorder()
+  const other = await recorder()
+  try {
+    const url = `${fake.origin}/mcp`
+    const signed = sigv4Fetch(
+      { url, sigv4: { profile: 'dev', region: 'us-east-1', service: 'aws-mcp', metadata: { K: 'v' } } },
+      serverFetch(plainHttp(url)),
+      async () => EXAMPLE,
+    )
+    const body = '{"jsonrpc":"2.0","id":1,"method":"x","params":{}}'
+    await signed(`${other.origin}/token`, { method: 'POST', body })
+    assert.equal(other.seen[0]!.body, body)
+    assert.equal(other.seen[0]!.headers.authorization, undefined)
+  } finally {
+    await fake.close()
+    await other.close()
+  }
+})
+
+test('a request whose signal is aborted (after the close) starts no credential read', async () => {
+  let loads = 0
+  let sent = 0
+  const signed = sigv4Fetch(
+    { url: AWS_URL, sigv4: { profile: 'dev', region: 'us-east-1', service: 'aws-mcp' } },
+    async () => (sent++, new Response('{}')),
+    async () => (loads++, EXAMPLE),
+  )
+  await signed(AWS_URL, { method: 'POST', body: '{}', signal: AbortSignal.abort() })
+  assert.equal(loads, 0)
+  assert.equal(sent, 1, 'the base fetch gets it, and fails it as it does for any aborted request')
+})
+
+test('item 1: long-lived keys (no expiry) are read one time and never again', async () => {
+  let loads = 0
+  const now = Date.UTC(2026, 10, 27, 8)
+  const signed = sigv4Fetch(
+    { url: AWS_URL, sigv4: { profile: 'dev', region: 'us-east-1', service: 'aws-mcp' } },
+    async () => new Response('{}'),
+    async () => (loads++, EXAMPLE),
+    () => now + loads * 365 * 24 * 3600_000,
+  )
+  for (let i = 0; i < 3; i++) await signed(AWS_URL, { method: 'POST', body: '{}' })
+  assert.equal(loads, 1)
+})
