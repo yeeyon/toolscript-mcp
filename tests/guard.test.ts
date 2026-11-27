@@ -45,9 +45,7 @@ const hit = (args: unknown, f = fake(), cwd = PROJECT, windows = false) =>
     windows,
   })
 
-// The marker text of a guarded folder is built from parts here, because the guard refuses any call whose argument holds
-// it, also a Workspace edit of this file.
-const MARK = '.' + 'toolscript-mcp' + '/hints'
+const MARK = '.toolscript-mcp/hints'
 
 describe('guardFind: the key path of the string that hit', () => {
   const find = (args: unknown) =>

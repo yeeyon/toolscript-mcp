@@ -2914,8 +2914,7 @@ describe('the guarded folders', () => {
   })
 
   test('a mention in text is refused with the key path of the argument, and never with its value', async () => {
-    // Built from parts: the guard also refuses a Workspace edit of this file that holds the text.
-    const mark = '.' + 'toolscript-mcp' + '/hints'
+    const mark = '.toolscript-mcp/hints'
     const home = dir('home-')
     const s = setup({ home })
     const value = `zz-note about ~/${mark} here`
