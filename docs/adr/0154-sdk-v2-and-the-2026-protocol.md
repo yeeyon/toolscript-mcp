@@ -168,7 +168,7 @@ Legacy era with our current server: verified for Claude Code 2.1.332 (`bench/RES
 of the toolscript arms correct; the runtime of Claude Code and the era were not recorded) and for the SDK 1.32.2 client. Finding for
 PR 13 and the release: Claude Code states that on its v2 runtime it asks stdio servers for the newer revision by default ("Claude Code
 asks stdio servers for that revision by default", and "A channel server that doesn't support that revision connects on the earlier
-handshake"). So today a probe may already reach our v1 stdio server. Its answer to `server/discover` is not verified in a test of this repo.
+handshake"). So today a probe may already reach our v1 stdio server. Observed in use on 2026-11-28 (Claude Code 2.1.332, Windows, SDK 1.32.2 server, one working day of `run_code` calls), no test in this repo: the session worked. Which runtime that session used is not recorded. The gap stays: its answer to `server/discover` is not verified in a test, and PR 13 adds a test that sends `server/discover` to the built server and checks the answer that the stdio fallback of the spec expects.
 The setting that keeps a client on the earlier handshake is `MCP_PROTOCOL_NEGOTIATION=legacy` (same page). The same page also says "Claude Code connects to every other server as v1 does."
 
 The extension matrix of the MCP site (`https://modelcontextprotocol.io/extensions/client-matrix`, read 2026-11-28) marks ChatGPT Skills "Partial" and leaves the cells of the other clients blank. It does not say what blank means, and no row names the protocol era, MRTR or `listen`: it changes no cell above. The announcement (`https://blog.modelcontextprotocol.io/posts/2026-07-28/`, read 2026-11-28) says "All four Tier 1 SDKs speak 2026-07-28 as of today" (stated).
