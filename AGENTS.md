@@ -28,7 +28,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   `policy.ts`). `policy.ts` takes one `Guards` value: the bridges, and whether the built-in Workspace is on, so that
   its read tools run with no rule and its change and exec tools ask. `runlog.ts` also holds the applied changes of a
   run and their text. `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
-  checks, such as `hiddenBy` (one glob covers another).
+  checks, such as `hiddenBy` (one glob covers another). `skills.ts` (issue #92, S1) is the pure mapping from hint files and saved
+  functions to skill entries (`skillsOf`): which hint files apply, the name, the fixed description and the `SKILL.md` text of each
+  skill, and the caps (8 skills, 1,000 characters of names and descriptions, `more-hints`). It reads no file and serves nothing.
   `guard.ts` holds the guard of the folders in `guardedDirs` at each nested call: the walk of the arguments, the
   markers, the path candidates and the compare. It takes `realpath` as a parameter. `toml.ts` (the strict reader of the `[mcp_servers]` tables of a Codex `config.toml`, for `init`) and `codex.ts` (the map of a Codex server to an entry, policy rules and notes) hold the Codex import of `init`, which `src/host/codex.ts` reads for (the Codex CLI first, then `config.toml`, cwd the home folder). `commands.ts` holds the commands
   that the CLI prints for a person or an agent to run: the allowlist of names and paths (`PLAIN_NAME`, `PLAIN_PATH`),
@@ -94,6 +96,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.
   - `start.ts`: how the process started, the config read and the login command, shared by the server and the CLI.
+  - `skills.ts`: the reader for `src/core/skills.ts` (issue #92, S1): the bundled hints whose SHA-256 `hints/sha256.json` lists, the
+    `*.md` files directly in the person's hint folder and function folder (never `pending/`, a project folder or a link; 64 files,
+    65,536 bytes, UTF-8), one stderr line for a skipped file. Nothing imports it yet but `tests/skills-fs.test.ts`.
   - `workspace/`: the built-in Workspace (issue #144, `docs/adr/0144-workspace-provider.md`). `confined.ts`: the
     confined file system, with a proof of each open for each OS, the first-use test of the method, the identity of the
     root and a `Hook` that runs before each lookup of a name, so a test swaps a folder between two lookups. `provider.ts`:
