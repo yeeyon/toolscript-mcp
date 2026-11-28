@@ -1,1 +1,1 @@
-- The README is now short, and each topic has its own page in `docs/`. The text of each section moved as it was, and the README has an index of the sections. The setup hint of `login` for a server with no client registration now says `see "OAuth login" in docs/auth.md`.
+- The README is now short, and each topic has its own page in `docs/`. The text of each section moved as it was, and the README has an index of the sections. The setup hint of `login` for a server with no client registration now says `see "OAuth login" at` the GitHub URL of `docs/auth.md#oauth-login`.

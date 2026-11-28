@@ -374,7 +374,7 @@ describe('login', () => {
       assert.equal(await s.login(cancel()), 1, s.lines.join('\n'))
       assert.equal(
         s.lines.join('\n'),
-        'login to fake failed: it answered without a token and has 1 tool, but its authorization server has no dynamic client registration. Calls that need a token need "clientId" in "oauth": see "OAuth login" in docs/auth.md. No tokens were stored.',
+        'login to fake failed: it answered without a token and has 1 tool, but its authorization server has no dynamic client registration. Calls that need a token need "clientId" in "oauth": see "OAuth login" at https://github.com/yeeyon/toolscript-mcp/blob/main/docs/auth.md#oauth-login. No tokens were stored.',
       )
       assert.equal(fake.seen.authorizations.length, 0)
       assert.equal(storedTokens(s), undefined)

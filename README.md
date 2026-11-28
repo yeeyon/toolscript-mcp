@@ -17,7 +17,6 @@ The goal is a server that works with any MCP client, for example Claude Code, Cl
 - **Local development.** The built-in [Workspace](docs/workspace.md#workspace) lists, searches and reads the files of one folder. With a write grant, it edits them. It is off by default.
 - **Clients.** Claude Code, Claude Desktop, Cursor and Codex. See [Client setup](docs/install.md#client-setup). A manual smoke test passed in Codex CLI 0.171.0 with `codex exec`. See the [result](bench/CODEX.md#smoke-test-result).
 
-
 JavaScript variables do not persist between runs. MCP resources, hint tools and saved-function tools are not available.
 See [Roadmap](#roadmap) for the remaining work.
 
@@ -61,11 +60,13 @@ The model sees a short list of keys and titles, not every full issue.
 A bench of 6 tasks in headless Claude Code 2.1.322 with Haiku 5.5, 5 runs per task, compares direct tool calls with toolscript-mcp.
 Read [Measured](docs/benchmarks.md#measured) for the method, and the comparison with Claude Code Code Mode.
 
-directly. The other arm used toolscript-mcp.
-
+| | Direct tool calls | toolscript-mcp |
+| --- | --- | --- |
 | Correct answers | 30/30 | 30/30 |
 | Mean cost per task | $0.0060 | $0.0033 |
 | Tool result characters in the context, mean | 41,595 | 8,133 |
+
+On the 2 tasks with small results, toolscript-mcp cost more, because it adds a search step.
 
 ## Quick start
 

@@ -1,6 +1,6 @@
 # toolscript-mcp FAQ
 
-Answers for the npm setup and for daily use. The [README](README.md) has the full reference.
+Answers for the npm setup and for daily use. The [documentation index](README.md#documentation) lists the full reference.
 
 Every example uses sample data and placeholder values. Replace each path, server name and credential with your own.
 Do not paste a real token into a config or a bug report.
