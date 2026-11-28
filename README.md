@@ -139,7 +139,7 @@ Claude Desktop, Cursor and Codex need a different entry. Read [Client setup](doc
 - [x] Require per-run approval for tools marked for user interaction.
 - [x] Keep images and other non-text results as files, and show the images that a program returns.
 - [x] Publish 1.0.0 to npm.
-- [ ] Run the Codex comparison and publish its results.
+- [ ] Run the [Codex comparison](bench/CODEX.md) and publish its results.
 - [ ] Keep state between `run_code` calls, as an option.
 - [ ] Serve hint files and saved functions as tools.
 
