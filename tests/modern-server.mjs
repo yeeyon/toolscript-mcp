@@ -75,7 +75,9 @@ const beforeInitialize = msg => {
     case 'slow':
       return void setTimeout(() => send(fail(msg.id, -32601, `Method not found: ${msg.method}`)), Number(arg ?? 1500))
     default:
-      return send(fail(msg.id, -32601, `Method not found: ${msg.method}`))
+      // A listed kind with no case above is a bug of this fake: it must not pass as a -32601 server.
+      process.stderr.write(`modern-server: no beforeInitialize case for kind ${String(kind)}\n`)
+      return process.exit(2)
   }
 }
 

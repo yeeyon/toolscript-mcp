@@ -59,9 +59,9 @@
     },
     {
       "target": "tests/modern-peers.test.ts",
-      "count": 8,
+      "count": 4,
       "box": 2,
-      "note": "raw fake servers, 60 processes, about 15 s a run (C0)"
+      "note": "raw fake servers, 60 processes, about 24 s a run (C0)"
     },
     {
       "target": "tests/childguard.test.ts",

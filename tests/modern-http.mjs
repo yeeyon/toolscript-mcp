@@ -242,6 +242,9 @@ export const startHttp = async kind => {
       res.write('{')
       return undefined
     }
+    // The kinds whose probe fails and whose next requests are a legacy session. Any other kind that reaches here has no case.
+    if (!PLAIN.has(kind) && kind !== 'probe-400-rpc' && kind !== 'probe-401')
+      throw new Error(`modern-http: no case for kind ${String(kind)}`)
     return legacy(req, res, json)
   }
 

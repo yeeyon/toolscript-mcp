@@ -1280,8 +1280,8 @@
       "kind": "modern",
       "link": "upstream-stdio",
       "flag": "legacy",
-      "expect": "error: method not found (-32601)",
-      "source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning (the stdio fallback: a server of the old revision answers server/discover with an error)",
+      "expect": "error: any code (the client falls back)",
+      "source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning (the stdio fallback: a server of the old revision answers server/discover with an error; the fallback must not be keyed to one specific error code)",
       "status": "pending",
       "owner": "13"
     },
@@ -1310,8 +1310,8 @@
       "kind": "probe-then-initialize",
       "link": "upstream-stdio",
       "flag": "auto",
-      "expect": "error: initialize refused after discover (-32601)",
-      "source": "docs/adr/0154-sdk-v2-and-the-2026-protocol.md section 4 and 11, answer 2 (one era for each connection, pinned by the first message)",
+      "expect": "error: -32022 unsupported protocol version (initialize has no envelope)",
+      "source": "docs/adr/0154-sdk-v2-and-the-2026-protocol.md section 4 and 11, answer 2 (one era for each connection, pinned by the first message); the v2 SDK ladder: src-CeKsbNLO.mjs:4614-4624 of the v2 client package answers an envelope-less request, initialize included, with -32022 and data.supported",
       "status": "pending",
       "owner": "13"
     },
@@ -1340,8 +1340,8 @@
       "kind": "claude-code-auto",
       "link": "upstream-stdio",
       "flag": "legacy",
-      "expect": "error: method not found (-32601)",
-      "source": "tests/modern-client.mjs OPENINGS (the S0 probe of Claude Code 2.1.332): the old era answers discover and listen with an error",
+      "expect": "error: any code (the client falls back)",
+      "source": "tests/modern-client.mjs OPENINGS (the S0 probe of Claude Code 2.1.332): the old era answers discover and listen with an error; the fallback must not be keyed to one specific error code",
       "status": "pending",
       "owner": "13"
     },
