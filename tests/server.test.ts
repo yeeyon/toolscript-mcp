@@ -1422,7 +1422,7 @@ describe('the catalog', () => {
     )
     const listed = searchResult(odd, 'x', 15)
     assert.match(listed, /^x: 1 tool, this server only\. [^\n]*\n\n### mcp__x__ok\nFine ### forged\ncall\(/)
-    assert.ok(searchResult(odd, '', 15).startsWith('1 MCP tools on 1 server. '))
+    assert.ok(searchResult(odd, '', 15).startsWith('1 MCP tool on 1 server. '))
     assert.deepEqual(
       listed.split('\n').filter(line => line.startsWith('#')),
       ['### mcp__x__ok', '## Not connected'],

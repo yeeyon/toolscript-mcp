@@ -632,7 +632,7 @@ describe('search_tools with an empty query', () => {
       { key: serverKey('down')!, status: 'failed', reason: 'spawn fake ENOENT' },
     ]
     const overview =
-      '1 MCP tools on 1 server. A server key as the query lists all the tool names of that server.\nx: 1 tool: get'
+      '1 MCP tool on 1 server. A server key as the query lists all the tool names of that server.\nx: 1 tool: get'
     const tail = '\n\n## Not connected\n- down: spawn fake ENOENT'
     for (const limit of [1, 15]) assert.equal(searchResult(states, '', limit), `${overview}${tail}`)
     assert.equal(searchResult(states, ' ', 1), `${overview}${tail}`)
@@ -1259,6 +1259,30 @@ describe('search_tools overview and server keys', () => {
     for (const q of [' ', '   ', 'a', ' a '])
       for (const limit of [1, 15, 40]) assert.equal(searchResult(realistic(), q, limit), text)
     assert.equal(searchResult([...realistic(), down], '', 1), `${text}${TAIL}`)
+  })
+
+  test('1: the first name is kept whole, so one name of 200 characters passes the limit of a line', () => {
+    const name = 'n'.repeat(200)
+    const long: ServerState = { key: serverKey('longnames')!, status: 'connected', tools: [{ name }, { name: 'o' }] }
+    const line = searchResult([long], '', 15).split('\n')[1]
+    assert.equal(line, `longnames: 2 tools: ${'n'.repeat(200)} (+1 more)`)
+  })
+
+  test('1: a server with long names keeps every line at 180 characters or less', () => {
+    for (const length of [30, 40, 60, 80]) {
+      const long: ServerState = {
+        key: serverKey('longnames')!,
+        status: 'connected',
+        tools: Array.from({ length: 212 }, (_, i) => ({
+          name: `${String(i).padStart(3, '0')}_${'n'.repeat(length - 4)}`,
+        })),
+      }
+      const lines = searchResult([long], '', 15).split('\n').slice(1)
+      assert.equal(lines.length, 1)
+      assert.ok(lines[0]!.length <= 180, `${length}: ${lines[0]!.length}`)
+      assert.ok(lines[0]!.startsWith('longnames: 212 tools: 000_'), lines[0])
+      assert.ok(lines[0]!.endsWith(' more)'), lines[0])
+    }
   })
 
   test('1: a server line shows one tool as "1 tool", at most 5 names, and no "more" at 5 or fewer', () => {

@@ -776,13 +776,16 @@ const overviewText = (all: readonly CatalogEntry[]): string => {
   const lines = [...byServer].map(([key, names]) => {
     let line = `${key}: ${plural(names.length, 'tool')}: ${names[0]}`
     let shown = 1
+    // The first name is kept whole, so a name over about 145 characters passes the limit of a line. Then a name is added only when the line, with the "(+N more)" that then follows, stays within OVERVIEW_LINE.
     for (; shown < names.length && shown < OVERVIEW_NAMES; shown++) {
-      if (line.length >= OVERVIEW_LINE) break
+      const rest = names.length - shown - 1
+      const tail = rest > 0 ? ` (+${rest} more)`.length : 0
+      if (line.length + 2 + names[shown]!.length + tail > OVERVIEW_LINE) break
       line += `, ${names[shown]}`
     }
     return names.length > shown ? `${line} (+${names.length - shown} more)` : line
   })
-  const head = `${all.length} MCP tools on ${plural(byServer.size, 'server')}. A server key as the query lists all the tool names of that server.`
+  const head = `${plural(all.length, 'MCP tool')} on ${plural(byServer.size, 'server')}. A server key as the query lists all the tool names of that server.`
   return `${head}\n${lines.join('\n')}`
 }
 
