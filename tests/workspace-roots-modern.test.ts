@@ -210,6 +210,8 @@ describe('what a call does', () => {
       { roots: { error: { code: 1 } } },
       { roots: { roots: 'x' } },
       { roots: { roots: { uri: 'file:///a' } } },
+      { roots: { roots: [{ uri: 5 }] } },
+      { roots: { roots: [{ uri: 'file:///a' }, {}] } },
       { roots: 5 },
       { roots: null },
       { roots: [] },
@@ -225,8 +227,11 @@ describe('what a call does', () => {
       assert.deepEqual(roots.calls, ['modern'], JSON.stringify(inputResponses))
       assert.deepEqual(lines, [NO_WORKSPACE_LINE])
     }
-    assert.equal(urisOf({ roots: [{ uri: 'file:///a', name: 'x' }, { uri: 5 }, null, 'y'] })?.length, 1)
-    assert.deepEqual(urisOf({ roots: [] }), [])
+    assert.deepEqual(urisOf({ roots: [{ uri: 'file:///a', name: 'x' }] }), ['file:///a'])
+    for (const bad of [[{ uri: 5 }], [{}], [null], ['y'], [{ uri: 'file:///a' }, { uri: 5 }], [{ name: 'x' }]]) {
+      assert.equal(urisOf({ roots: bad }), undefined, JSON.stringify(bad))
+    }
+    assert.deepEqual(urisOf({ roots: [] }), [], 'an empty list names no root: the bound root, as on legacy')
   })
 
   test('two roots requests with no retry: the third call goes on with no Workspace, and a client that never answers loses two calls', () => {
@@ -367,18 +372,60 @@ describe('gate G6: the same roots on a legacy opening and on a modern one', () =
     }
   })
 
-  test('no roots: the bind refuses and no file of the bound root is read, whatever the way to it', async t => {
+  test('no roots: the bind refuses and the confined file system is never asked, by either way to no Workspace', async t => {
     const base = fs.realpathSync.native(tempDir())
     t.after(() => rm(base))
     const projects = path.join(base, 'Projects')
     write(projects, { 'top.txt': 'x' })
-    const roots = createRoots({ log: () => {} })
-    const round = createRootsRound({ roots, log: () => {} })
-    round.round('run_code', {}, { capabilities: {} })
-    assert.equal(await roots.read(), 'modern')
-    const opened = await open(projects, { start: path.join(base), clientRoots: roots.read })
-    assert.ok('unavailable' in opened)
-    if ('rig' in opened) await opened.rig.close()
-    else assert.match(opened.unavailable, /gives no roots/)
+    const CAPS_ROOTS = { roots: { listChanged: true } }
+    const ways: [string, (round: ReturnType<typeof createRootsRound>) => void][] = [
+      ['no roots declared', round => void round.round('run_code', {}, { capabilities: {} })],
+      [
+        'two asks and no retry',
+        round => {
+          for (let i = 0; i < ROOTS_ASKS_MAX + 1; i++) round.round('run_code', {}, { capabilities: CAPS_ROOTS })
+        },
+      ],
+      [
+        'a retry with a malformed entry',
+        round => {
+          const first = round.round('run_code', {}, { capabilities: CAPS_ROOTS }) as { state: string }
+          round.round('run_code', {}, { requestState: first.state, inputResponses: { roots: { roots: [{ uri: 5 }] } } })
+        },
+      ],
+    ]
+    for (const [name, way] of ways) {
+      const roots = createRoots({ log: () => {} })
+      way(createRootsRound({ roots, log: () => {} }))
+      assert.equal(await roots.read(), 'modern', name)
+      let lookups = 0
+      const opened = await open(projects, { start: base, clientRoots: roots.read, hook: () => void lookups++ })
+      assert.ok('unavailable' in opened, name)
+      if ('rig' in opened) await opened.rig.close()
+      else assert.match(opened.unavailable, /gives no roots/, name)
+      assert.equal(lookups, 0, `${name}: no lookup of the confined file system`)
+    }
+  })
+
+  test('the counting hook sees a lookup once the roots are answered, and none before the settle', async t => {
+    const base = fs.realpathSync.native(tempDir())
+    t.after(() => rm(base))
+    const projects = path.join(base, 'Projects')
+    write(projects, { 'top.txt': 'x' })
+    let lookups = 0
+    let release!: (uris: string[]) => void
+    const gate = new Promise<string[]>(resolve => (release = resolve))
+    const opening = open(projects, { start: base, clientRoots: () => gate, hook: () => void lookups++ })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    assert.equal(lookups, 0, 'nothing is looked up before the settle')
+    release([uri(projects)])
+    const opened = await opening
+    if ('unavailable' in opened) {
+      if (process.platform === 'darwin') return void t.skip('Workspace is unavailable on macOS')
+      assert.fail(opened.unavailable)
+    }
+    t.after(() => opened.rig.close())
+    await opened.rig.call('list', {})
+    assert.ok(lookups > 0, 'the hook is on the path of a call')
   })
 })

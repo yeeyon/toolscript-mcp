@@ -35,10 +35,19 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 /** True when the capabilities of the request declare `roots`. */
 export const declaresRoots = (capabilities: unknown): boolean => isObj(capabilities) && isObj(capabilities['roots'])
 
-/** The `uri` of each root of an answer, or undefined when the entry is not a roots result (a list under `roots`). */
+/**
+ * The `uri` of each root of an answer, or undefined when the entry is not a roots result: a list under `roots` whose every entry is an
+ * object with a string `uri`. One entry of another shape makes the whole answer no roots result (no Workspace), and an empty list is
+ * a roots result that names none (the bound root, as the legacy path treats it).
+ */
 export const urisOf = (entry: unknown): readonly string[] | undefined => {
   if (!isObj(entry) || !Object.hasOwn(entry, 'roots') || !Array.isArray(entry['roots'])) return undefined
-  return entry['roots'].flatMap(root => (isObj(root) && typeof root['uri'] === 'string' ? [root['uri']] : []))
+  const uris: string[] = []
+  for (const root of entry['roots']) {
+    if (!isObj(root) || typeof root['uri'] !== 'string') return undefined
+    uris.push(root['uri'])
+  }
+  return uris
 }
 
 export type RootsRound = {
