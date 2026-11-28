@@ -57,14 +57,14 @@ The model sees a short list of keys and titles, not every full issue.
 
 ## Numbers
 
-A bench of 6 tasks in headless Claude Code 2.1.322 with Haiku 5.5, 5 runs per task, compares direct tool calls with toolscript-mcp.
+A bench of 6 tasks in headless Claude Code 2.1.332 with Haiku 5.5, 5 runs per task, compares direct tool calls with toolscript-mcp.
 Read [Measured](docs/benchmarks.md#measured) for the method, and the comparison with Claude Code Code Mode.
 
 | | Direct tool calls | toolscript-mcp |
 | --- | --- | --- |
 | Correct answers | 30/30 | 30/30 |
-| Mean cost per task | $0.0060 | $0.0033 |
-| Tool result characters in the context, mean | 41,595 | 8,133 |
+| Mean cost per task | $0.0058 | $0.0024 |
+| Tool result characters in the context, mean | 39,213 | 3,022 |
 
 On the 2 tasks with small results, toolscript-mcp cost more, because it adds a search step.
 
