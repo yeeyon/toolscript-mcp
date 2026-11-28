@@ -20,6 +20,7 @@ import type { TaskConfig } from '../src/core/task.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
 import { newKept, type Kept } from '../src/core/protocol.ts'
 import { TOOL } from '../src/core/tools.ts'
+import { WORKSPACE_KEY, WORKSPACE_TOOLS } from '../src/core/workspace.ts'
 import { connectAll, type ConnectOptions, type Downstream } from '../src/host/downstream.ts'
 import { runCode, type Approval, type RunContext } from '../src/host/run.ts'
 import { loadShapes, schemaHash } from '../src/host/shapes.ts'
@@ -290,6 +291,10 @@ type Options = {
 }
 
 const filesDir = path.join(ROOT, 'files', 'session')
+
+/** The refusal of `readFile` with the Workspace off, with the asked path replaced by X. */
+const NO_WORKSPACE_REFUSAL =
+  'readFile: X is not a file from saveFile in this session. Put the text in the program as a string literal'
 
 const setup = (o: Options = {}) => {
   const fake = fakeDownstream(o.others, o.servers)
@@ -571,6 +576,45 @@ describe('files', () => {
     assert.ok(r.text.includes('"a\\nb"'), r.text)
     assert.ok(!r.text.includes('fake-secret'), r.text)
     assert.equal(r.text.match(/is not a file from saveFile in this session/g)?.length, 3, r.text)
+  })
+
+  test('the readFile refusal names the next step, with one text for every refused path', async t => {
+    const outside = path.join(ROOT, 'secret.txt')
+    fs.writeFileSync(outside, 'fake-secret')
+    fs.mkdirSync(path.join(filesDir, 'sub'), { recursive: true })
+    const outDir = fs.mkdtempSync(path.join(ROOT, 'out-'))
+    fs.writeFileSync(path.join(outDir, 'secret.txt'), 'fake-secret')
+    const paths = [outside, '../../secret.txt', 'nope.txt', 'sub', '.']
+    try {
+      fs.rmSync(path.join(filesDir, 'out'), { force: true, recursive: true })
+      fs.symlinkSync(outDir, path.join(filesDir, 'out'), 'junction')
+      paths.push('out/secret.txt')
+    } catch (e) {
+      t.diagnostic(`no link here: ${String(e)}`)
+    }
+    const r = await setup().run(
+      [
+        'await saveFile("ids.txt", "a\\nb")',
+        'const out = []',
+        `for (const p of ${JSON.stringify(paths)}) {`,
+        '  try { out.push(await readFile(p)) } catch (e) { out.push(e.message.replace(p, "X")) }',
+        '}',
+        'out.push(await readFile("ids.txt"))',
+        'return out',
+      ].join('\n'),
+    )
+    assert.ok(!r.text.includes('fake-secret'), r.text)
+    const msgs = JSON.parse(r.text.split('\n\n')[0] ?? '') as string[]
+    assert.equal(msgs.pop(), 'a\nb')
+    assert.equal(msgs.length, paths.length, r.text)
+    assert.equal(new Set(msgs).size, 1, r.text)
+    const [text] = msgs as [string]
+    assert.equal(text, NO_WORKSPACE_REFUSAL)
+    const long = await setup().run(`try { await readFile("a".repeat(10000)) } catch (e) { return e.message }`)
+    const longText = JSON.parse(long.text.split('\n\n')[0] ?? '') as string
+    assert.ok(longText.length < 400, `${longText.length}`)
+    assert.ok(longText.endsWith(NO_WORKSPACE_REFUSAL.replace('readFile: X', '')), longText)
+    assert.ok(text.replace('X', '').length <= 110, text)
   })
 
   test('resources are not offered', async () => {
@@ -1303,15 +1347,20 @@ describe('calls of one tool one after another', () => {
   })
 
   test('a Promise.all after a large reply inside the scan limits stays fast', async () => {
-    const r = await setup().run(
-      'await call("mcp__f__sized", {})\nconst t = Date.now()\nawait Promise.all(Array.from({ length: 50 }, (_, i) => call("mcp__f__sized", { i, n: Array.from({ length: 15 }, (_, j) => Number("1".repeat(j + 2))) })))\nreturn Date.now() - t',
-    )
+    const batch =
+      'const t = Date.now()\nawait Promise.all(Array.from({ length: 50 }, (_, i) => call("mcp__f__sized", { i, n: Array.from({ length: 15 }, (_, j) => Number("1".repeat(j + 2))) })))\nreturn Date.now() - t'
+    // The same 50 calls with no large reply before them: what this runner takes for them. The bound is relative to it, so a
+    // slow or busy runner cannot fail the test, and a host that scans the large reply for each call still does.
+    const base = await setup().run(batch)
+    assert.equal(base.isError, false, base.text)
+    const r = await setup().run(`await call("mcp__f__sized", {})\n${batch}`)
     assert.equal(r.isError, false, r.text)
     // The reply and the 16 new values are inside the scan limits, and one scan takes about 10 ms. The host scans for
     // the first call sent after the reply only. Without that rule, the scans still stop within the 200 ms gap, so this
     // test cannot see that rule: it bounds the whole cost.
+    const baseMs = Number(/^\d+/.exec(base.text)?.[0])
     const ms = Number(/^\d+/.exec(r.text)?.[0])
-    assert.ok(ms < 2000, r.text)
+    assert.ok(ms < baseMs * 3 + 500, `${r.text} ms after the large reply, ${base.text} ms without it`)
   })
 })
 
@@ -3190,6 +3239,35 @@ describe('workspace', () => {
       ],
       'the run log shows the Workspace calls',
     )
+  })
+
+  test('the readFile refusal names mcp__workspace__read only when the Workspace is listed, and that step runs', async t => {
+    const r = await rig(t, { policy: [] })
+    if (r === undefined) return
+    const asked = path.join(r.root, 'src', 'retry.ts')
+    const out = await r.run(
+      [
+        'let refusal',
+        `try { await readFile(${JSON.stringify(asked)}) } catch (e) { refusal = e.message }`,
+        'const file = await call("mcp__workspace__read", { path: "src/retry.ts" })',
+        'return { refusal, file: file.content }',
+      ].join('\n'),
+    )
+    assert.equal(out.isError, false, out.text)
+    const got = JSON.parse(hostMark(out.text)?.inside ?? 'null') as { refusal: string; file: string }
+    const refusal = got.refusal
+    assert.equal(WORKSPACE_TOOLS.read.class, 'read')
+    assert.ok(refusal.includes(`mcp__${WORKSPACE_KEY}__read`), refusal)
+    assert.match(refusal, /string literal/)
+    const bare = refusal.split(asked).join('')
+    assert.ok(bare.length <= 180, bare)
+    assert.ok(!bare.includes(r.root), bare)
+    assert.ok(got.file.includes('maxAttempts'), got.file)
+
+    const none = await setup({ servers: entry, workspace: true }).run(
+      'try { await readFile("/nope/x") } catch (e) { return e.message.replace("/nope/x", "X") }',
+    )
+    assert.equal(JSON.parse(none.text.split('\n\n')[0] ?? ''), NO_WORKSPACE_REFUSAL)
   })
 
   test('a cut search or list shows in the footer, with counts, and an uncut run adds no line', async t => {

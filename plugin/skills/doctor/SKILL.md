@@ -68,7 +68,7 @@ Use the output of step 1.
 ## 4. Check the clients
 
 Run `npx -y toolscript-mcp init --list --config "<config>"`. It shows one line for each server of Claude Code, Claude Desktop
-and Cursor.
+Cursor and Codex.
 
 - A server with the status `in config` is in `<config>` and still in that client. The model can call it directly, and
   each full result goes into the context. Name the server, the client and the scope. `/toolscript:start` step 7

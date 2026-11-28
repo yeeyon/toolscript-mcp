@@ -33,6 +33,7 @@ import type { Bridges } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
+import type { Guard } from './childguard.ts'
 import { ChildTransport } from './childtransport.ts'
 import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
 import { AwsCredentialsError, sigv4Fetch, stopCredentialReads } from './sigv4.ts'
@@ -378,6 +379,7 @@ const transportOf = (
   auth: Auth | undefined,
   stderr: (chunk: Buffer) => void,
   share: ShareOptions | undefined,
+  guard: Guard | undefined,
 ): { transport: Transport; lastError: () => string; child?: ChildTransport } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   // With sharing on, a shared or per-folder server has one child in the broker and never a child of this process.
@@ -405,6 +407,7 @@ const transportOf = (
     args: server.args,
     env: childEnv(server),
     ...(server.cwd !== undefined && { cwd: server.cwd }),
+    ...(guard !== undefined && { guard }),
   })
   let tail = ''
   transport.stderr.on('data', (chunk: Buffer) => {
@@ -487,6 +490,8 @@ export type ConnectOptions = {
   readonly lazy?: LazyOptions
   /** The built-in Workspace (issue #144): the link of the entry of kind `workspace`. Absent: that entry fails to connect. */
   readonly workspace?: WorkspaceLink | Promise<WorkspaceLink>
+  /** The child guard: each direct stdio child is listed in it, so a host killed with no cleanup does not leave it. Absent: none. */
+  readonly guard?: Guard
 }
 
 /** The tool lists of lazy servers on disk. The host reads and writes the file; a test gives a fake. */
@@ -533,6 +538,7 @@ export const connectAll = (
     share,
     lazy,
     workspace,
+    guard,
   }: ConnectOptions = {},
 ): Downstream => {
   let closing: Promise<void> | undefined
@@ -654,7 +660,7 @@ export const connectAll = (
               unbound = true
               throw err
             })
-          : transportOf(key, server, sessionEnded, auth, childStderr, share)
+          : transportOf(key, server, sessionEnded, auth, childStderr, share, guard)
       lastError = made.lastError
       if (made.transport instanceof HttpTransport && !auth) secrets = made.transport.secrets
       if (made.child !== undefined) {
@@ -726,14 +732,16 @@ export const connectAll = (
         else lost(`the connection closed. ${STDERR_UNSHOWN}`, 'the connection closed')
       }
     } catch (err) {
-      // A child that exits gives only "Connection closed": its stderr says
-      // why (on Windows, also for a command that is not found).
+      // A child that exits gives only "Connection closed": its stderr says why.
       const stderr = lastError()
       // After an await: a failure that comes at once must not come before `attempt` marks the link connecting.
       await client.close().catch(() => {})
       opened.delete(client)
       // A closed transport of a failed connect is no child to hurry at the shutdown.
       if (started !== undefined) children.delete(started)
+      // A command that could not start: the error of the spawn comes before the close of the child, so it is known here.
+      // Its stderr (the text of cmd.exe on Windows) says nothing more, so the reason is the whole text.
+      if (started?.spawnReason !== undefined) return fail(started.spawnReason, undefined, unbound || undefined)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
       // An AwsCredentialsError holds the text of the AWS CLI, not of the server, so an untrusted entry shows it too.
       if (

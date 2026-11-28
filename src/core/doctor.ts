@@ -30,6 +30,7 @@ export const CHECK_NAMES = [
   'share',
   'broker',
   'lazy',
+  'child-guard',
   'policy',
   'sandbox',
   'run-log',

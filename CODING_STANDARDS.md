@@ -8,7 +8,7 @@ enforces; the others rely on discipline.
   pinned version. Turn on the pre-commit hook one time per clone: `git config core.hooksPath .githooks`.
   `[test: code.check.mjs]`
 - `src/core/` holds the pure helpers: `protocol.ts`, `hints.ts`, `functions.ts`, `paths.ts`, `tools.ts`,
-  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts`, `lock.ts`, `workspace.ts`, `task.ts`, `roots.ts` and `ignore.ts`. They import no Node module and no host package, so tests call them directly.
+  `config.ts`, `catalog.ts`, `policy.ts`, `serial.ts`, `guard.ts`, `mux.ts`, `share.ts`, `broker.ts`, `lock.ts`, `workspace.ts`, `task.ts`, `roots.ts`, `ignore.ts`, `toml.ts` and `codex.ts`. They import no Node module and no host package, so tests call them directly.
   `[test: tsc fails when a file in src/core uses a Node type: tsconfig.json sets types to an empty list]`
 - `src/host/` holds the code that runs in Node. `tsconfig.host.json` checks it with the Node types.
 - The package runs `dist/host/main.js`, and starts `dist/host/broker.js` on demand when sharing is on (issue #63).
@@ -51,7 +51,7 @@ enforces; the others rely on discipline.
   verifier or client secret: each downstream error goes through the `hide` of its link, which passes the secrets of
   the provider to `redact`. `[test: oauth.test.ts, server.e2e.mjs case (p)]`
 - `src/host/launch.ts` holds the sandbox layers of each OS in `SANDBOXES`. To add or change a layer, change it there
-  and in the sandbox table of `README.md`. `[test: runner.integration.mjs checks each layer that LAYERS names]`
+  and in the sandbox table of `docs/sandbox.md`. `[test: runner.integration.mjs checks each layer that LAYERS names]`
 - Imports between files use the `.ts` extension, so Node can run the sources and `tsc` rewrites them. Use only
   syntax that Node can strip: no enums, no parameter properties, no namespaces. `[test: tsc, erasableSyntaxOnly]`
 - Make each path into `.toolscript-mcp` with a helper from `src/core/paths.ts`: `hintsFolder`, `functionsFolder`,
@@ -104,7 +104,7 @@ enforces; the others rely on discipline.
 quotes and the `^` of cmd dropped, hold the
   Claude Code word (`CLAUDE`), then `mcp`, then `serve`, with any words between. One pass over the words: a config can
   hold a long hostile command line, so never rescan the words from each word. `main.ts` logs the bridges at start. Add a launch form
-  there and to the README list, and keep the docs saying to use the key `claude-code` for any other. An allow rule allows a tool of a bridge only when its match starts with
+  there and to the list in `docs/claude-code-bridge.md`, and keep the docs saying to use the key `claude-code` for any other. An allow rule allows a tool of a bridge only when its match starts with
   `mcp__<key>__` (`counts` in `src/core/policy.ts`). Never keep a list of the tools of a bridge: a later version adds
   tools. `[test: policy.test.ts and run.test.ts]`
 - `guardedDirs` is enforced at each nested call (`callTool` in `src/host/run.ts`, `src/core/guard.ts`), after the
@@ -174,6 +174,9 @@ quotes and the `^` of cmd dropped, hold the
   - `node tests/server.e2e.mjs`: the built server over stdio, with the bench fake server and a probe server. Run
     `npm run build` first.
   - `sh scripts/format.sh --check .`: the format of code, JSON and YAML.
+- Repeats, flakes, one-CPU runs and the baseline budgets run in `.github/workflows/stress.yml`, not in PR CI, and not on the laptop:
+  start a run with `gh workflow run stress.yml`, or push a copy of the branch to `stress/<name>`. A timing assert that fails only
+  under load is rewritten as a proof by order, never given a longer timeout.
 - CI (`.github/workflows/test.yml`) runs the sandbox test and the server test on Linux, macOS and Windows. Linux and macOS each have
   a network block (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail
   where neither works. On Windows the test checks that the network block is absent. The Linux legs of the job `test` mount a
@@ -200,7 +203,7 @@ bundled hints in `hints/`.
 - A hint is one short, factual bullet about a server. No data, no instructions about other actions.
 
 ## Docs
-User docs are `README.md`, `FAQ.md` and the four skills `plugin/skills/setup/SKILL.md`, `plugin/skills/start/SKILL.md`, `plugin/skills/doctor/SKILL.md` and `plugin/skills/workspace/SKILL.md`. Out of this set: `AGENTS.md`, this file and the model-facing text above.
+User docs are `README.md`, `FAQ.md`, every `docs/*.md` page (not `docs/adr/`) and the four skills `plugin/skills/setup/SKILL.md`, `plugin/skills/start/SKILL.md`, `plugin/skills/doctor/SKILL.md` and `plugin/skills/workspace/SKILL.md`. Out of this set: `AGENTS.md`, this file and the model-facing text above.
 `tests/docs.check.mjs` checks the rules marked `[test]`.
 
 ### Format

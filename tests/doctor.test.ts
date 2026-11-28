@@ -264,6 +264,7 @@ describe('doctor', () => {
       'workspace',
       'share',
       'lazy',
+      'child-guard',
       'policy',
       'sandbox',
       'run-log',

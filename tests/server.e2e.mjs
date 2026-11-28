@@ -254,8 +254,14 @@ test('(a) tools/list shows run_code and search_tools, and no downstream tool', a
   for (const tool of tools) assert.equal(tool._meta?.['anthropic/alwaysLoad'], true, tool.name)
 })
 
-test('(b) an empty query lists the 5 fake tools as mcp__bench__<name>', async () => {
-  const text = await search('', 100)
+test('(b) an empty query lists the servers, and the key of bench lists the 5 fake tools as mcp__bench__<name>', async () => {
+  const overview = await search('', 100)
+  assert.match(
+    overview,
+    /^\d+ MCP tools on \d+ servers?\. A server key as the query lists all the tool names of that server\.\nbench: 5 tools: /,
+    overview,
+  )
+  const text = await search('bench', 100)
   const names = [...text.matchAll(/^### (mcp__bench__\S+)$/gm)].map(m => m[1]).sort()
   assert.deepEqual(
     names,
@@ -273,9 +279,13 @@ test('(c) "issue" ranks list_issues first', async () => {
 test('(d) a server whose command does not exist shows as failed, and bench still works', async () => {
   const text = await search('deploys')
   assert.match(text, /### mcp__bench__get_deploys/, text)
-  // Linux and macOS: spawn ... ENOENT. Windows: cmd.exe says on stderr that the command is not recognized, and
-  // search_tools shows no stderr, because it can hold a secret that is not in the config.
-  assert.match(text, /## Not connected\n(- .+\n)*- missing: .*(ENOENT|Its stderr is not shown here)/, text)
+  // The reason names the command on every platform. The stderr of cmd.exe on Windows is not shown, because search_tools
+  // shows no stderr: it can hold a secret that is not in the config.
+  assert.match(
+    text,
+    /## Not connected\n(- .+\n)*- missing: its command was not found on PATH: toolscript-e2e-no-such-command(\.|\n|$)/,
+    text,
+  )
   assert.doesNotMatch(text, /not recognized/, text)
 })
 
@@ -304,7 +314,7 @@ test('(d) a config entry with an error fails alone, and search_tools shows the e
     /- broken: invalid entry in the toolscript-mcp config: mcpServers\.broken\.env\.TOKEN: the environment variable TOOLSCRIPT_E2E_UNSET is not set/,
     text,
   )
-  assert.match(text, /### mcp__bench__/, text)
+  assert.match(text, /^bench: 5 tools: /m, text)
 })
 
 test('(k) an http entry whose URL does not parse fails alone, and the error names the key, not the URL', async () => {
@@ -319,7 +329,7 @@ test('(k) an http entry whose URL does not parse fails alone, and the error name
     /- badvar: invalid entry in the toolscript-mcp config: mcpServers\.badvar\.url: must be a valid URL/,
     text,
   )
-  assert.match(text, /### mcp__bench__/, text)
+  assert.match(text, /^bench: 5 tools: /m, text)
   assert.ok(!text.includes(BAD_URL) && !transport.stderr.includes(BAD_URL), 'the URL of the variable is not shown')
 })
 

@@ -12,7 +12,10 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import crossSpawn from 'cross-spawn'
 import { STOP_WAIT_MS } from '../core/broker.ts'
+import { spawnCode, spawnReason, trustedSpawnError } from '../core/spawn.ts'
 import { endTree } from './broker.ts'
+import type { Guard } from './childguard.ts'
+import { findCommand, type FindCommand } from './commandfind.ts'
 
 /**
  * The same time at the shutdown of the host: the client of the host waits about 2 s after it ends our stdin, then kills
@@ -31,6 +34,10 @@ export type ChildParams = {
   /** The env of the config. The SDK's short list of safe variables is added under it, as the SDK transport does. */
   readonly env: Readonly<Record<string, string>>
   readonly cwd?: string
+  /** The child guard: it ends the tree of this child if the host dies with no cleanup. Absent: none. */
+  readonly guard?: Guard
+  /** The look for a command on the failure path of a Windows start: a test gives a fake. */
+  readonly find?: FindCommand
 }
 
 /** The env that the child gets. The cache key of a launch does not hash it: it holds the inherited PATH. */
@@ -55,6 +62,7 @@ export class ChildTransport implements Transport {
   #timer: NodeJS.Timeout | undefined
   #kill: (() => void) | undefined
   #term: NodeJS.Timeout | undefined
+  #spawnReason: string | undefined
 
   constructor(params: ChildParams) {
     this.#params = params
@@ -63,6 +71,14 @@ export class ChildTransport implements Transport {
   /** The stderr of the child, from before the start, so no early line is lost. */
   get stderr(): PassThrough {
     return this.#stderr
+  }
+
+  /**
+   * Why the command could not start, when the spawn failed: the first error of the spawn, whichever of the error and
+   * the close of the child comes first (cross-spawn on Windows emits it after `spawn`, and elsewhere it rejects `start`).
+   */
+  get spawnReason(): string | undefined {
+    return this.#spawnReason
   }
 
   /** The requests that wait for an answer. */
@@ -84,15 +100,22 @@ export class ChildTransport implements Transport {
       })
       this.#proc = proc
       proc.on('error', error => {
+        const code = spawnCode(error)
+        if (code !== undefined && this.#trusted(error)) this.#spawnReason ??= spawnReason(this.#params.command, code)
         reject(error)
         this.onerror?.(error)
       })
-      proc.on('spawn', () => resolve())
+      proc.on('spawn', () => {
+        this.#params.guard?.add(proc.pid)
+        resolve()
+      })
       proc.on('close', () => {
         this.#proc = undefined
         this.#open.clear()
         // A wrapper that left on EOF must not leave a grandchild that ignores it.
         endTree(proc)
+        // After the group is ended, and before its id can be reused.
+        this.#params.guard?.remove(proc.pid)
         this.onclose?.()
       })
       proc.stdin?.on('error', error => this.onerror?.(error))
@@ -114,6 +137,12 @@ export class ChildTransport implements Transport {
         }
       })
     })
+  }
+
+  /** The look runs only here, on the failure path of a start: a start that works makes no file system call. */
+  #trusted(error: unknown): boolean {
+    const { command, cwd, env, find = findCommand } = this.#params
+    return trustedSpawnError(error, process.platform, () => find(command, childEnvironment(env), cwd))
   }
 
   #seen(message: JSONRPCMessage): void {
@@ -155,10 +184,13 @@ export class ChildTransport implements Transport {
     this.#stopping = new Promise<void>(resolve => {
       if (proc.exitCode !== null || proc.signalCode !== null) {
         endTree(proc)
+        // The 'close' event may never come on this path: the group must not stay listed.
+        this.#params.guard?.remove(proc.pid)
         return resolve()
       }
       const end = () => {
         endTree(proc)
+        this.#params.guard?.remove(proc.pid)
         // The close event follows the kill. Do not wait for it longer than a second.
         setTimeout(resolve, 1000).unref()
       }

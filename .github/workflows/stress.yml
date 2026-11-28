@@ -1,0 +1,190 @@
+# Repeats, flakes and load runs on the free runners of this public repository, on Linux, macOS and Windows: the work
+# that does not belong on the laptop. PR CI (test.yml) does not run it. See scripts/stress.mjs and tests/stress.json.
+#
+# Start it from the Actions tab (Run workflow) or with
+#   gh workflow run stress.yml --ref <branch> -f profile=one -f target=tests/lazy.e2e.mjs -f pattern="2 s kill" -f count=200 -f os=windows-latest
+# or push a copy of a branch to stress/<name>: the profile of the stress.json at the root of that branch runs (default flakes).
+# A stress/** branch is deleted by the person who pushed it, when the run is read. A schedule runs flakes and baseline on main
+# every Sunday: its baseline compares main with the newest v* release tag. A green flakes and baseline run on main is a
+# condition of the release (AGENTS.md). A run of one profile ends its repeats at 45 minutes (--deadline 45, the setup before it was not timed, so 15 minutes stay for it and the upload) and writes the block of
+# each target when it ends, so the 60-minute limit of a job never leaves a run with no summary.
+#
+# One event makes at most 9 jobs, 3 of them on macOS: a full run of one profile makes at most 6. The jobs share the runners
+# of PR CI, so a big run can slow a PR by minutes. No secret is used, and a stress/** branch runs its own copy of this file.
+name: stress
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: The profile of tests/stress.json, baseline, or one test file
+        type: choice
+        default: flakes
+        options: [flakes, load, cpu1, bench, baseline, one]
+      target:
+        description: 'one: the test file, for example tests/lazy.e2e.mjs'
+        type: string
+        default: ''
+      pattern:
+        description: 'one: a test name pattern (a regular expression)'
+        type: string
+        default: ''
+      count:
+        description: 'one: the repeats, 1 to 5000, in at most 45 minutes'
+        type: string
+        default: '100'
+      os:
+        description: One system, or all
+        type: choice
+        default: all
+        options: [all, ubuntu-latest, macos-latest, windows-latest]
+      node:
+        description: One Node version, or the default of the profile (22.13 and 24 for flakes)
+        type: choice
+        default: default
+        options: [default, '22.13', '24']
+      base:
+        description: 'baseline: the ref to compare with'
+        type: string
+        default: main
+  push:
+    branches: ['stress/**']
+  schedule:
+    - cron: '0 18 * * 0'
+
+permissions:
+  contents: read
+
+# One group for each event: a push to a stress/** branch cancels the earlier push of that ref only. A scheduled or manual run has
+# its own group (the run id), so no push cancels it and no other run replaces it while it waits.
+concurrency:
+  group: stress-${{ github.event_name }}-${{ github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      stress: ${{ steps.plan.outputs.stress }}
+      has_stress: ${{ steps.plan.outputs.has_stress }}
+      baseline: ${{ steps.plan.outputs.baseline }}
+      has_baseline: ${{ steps.plan.outputs.has_baseline }}
+      base: ${{ steps.plan.outputs.base }}
+    steps:
+      # The whole history with its tags: the schedule compares with the newest v* tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The inputs reach the script as environment variables, never inside a shell command.
+      - id: plan
+        run: node scripts/stress.mjs plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PROFILE: ${{ inputs.profile }}
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_PATTERN: ${{ inputs.pattern }}
+          INPUT_COUNT: ${{ inputs.count }}
+          INPUT_OS: ${{ inputs.os }}
+          INPUT_NODE: ${{ inputs.node }}
+          INPUT_BASE: ${{ inputs.base }}
+
+  stress:
+    needs: plan
+    if: needs.plan.outputs.has_stress == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.stress) }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      STRESS_LABEL: ${{ matrix.profile }} ${{ matrix.os }} node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run build
+      # The same volumes and switches as test.yml. The cpu1 profile on Linux runs in a container, which has none of them.
+      - if: matrix.profile != 'cpu1'
+        uses: ./.github/actions/test-volumes
+      - name: Run the profile
+        if: matrix.profile != 'cpu1' && matrix.profile != 'one'
+        shell: bash
+        run: node scripts/stress.mjs profile "$PROFILE" --deadline 45 --out stress-out
+        env:
+          PROFILE: ${{ matrix.profile }}
+      - name: Run one test file
+        if: matrix.profile == 'one'
+        shell: bash
+        run: |
+          args=(run --target "$TARGET" --count "$COUNT" --box 45 --deadline 45 --out stress-out)
+          if [ -n "$PATTERN" ]; then args+=(--pattern "$PATTERN"); fi
+          node scripts/stress.mjs "${args[@]}"
+        env:
+          TARGET: ${{ matrix.target }}
+          PATTERN: ${{ matrix.pattern }}
+          COUNT: ${{ matrix.count }}
+      # One CPU on Linux: a container with --cpus 1 (a quota of the scheduler, as the flakes were seen on a laptop in Docker).
+      - name: Run cpu1 in a container with one CPU
+        if: matrix.profile == 'cpu1' && runner.os == 'Linux'
+        run: >
+          docker run --rm --cpus 1 --user "$(id -u):$(id -g)" -e HOME=/tmp -e STRESS_LABEL
+          -e GITHUB_STEP_SUMMARY=/summary.md -v "$GITHUB_STEP_SUMMARY:/summary.md" -v "$PWD:/app" -w /app
+          node:24-bookworm-slim@sha256:873f586f3794f52281bd039bf02c048a0be08fde619338f9941bad1eb6b34530 node scripts/stress.mjs profile cpu1 --deadline 45 --out stress-out
+      # One CPU on Windows: the affinity of this shell, which the node processes below it inherit. macOS has no such switch.
+      - name: Run cpu1 on one CPU
+        if: matrix.profile == 'cpu1' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          (Get-Process -Id $PID).ProcessorAffinity = 1
+          node scripts/stress.mjs profile cpu1 --deadline 45 --out stress-out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: stress-${{ matrix.profile }}-${{ matrix.os }}-node${{ matrix.node }}
+          path: stress-out
+          retention-days: 14
+          if-no-files-found: ignore
+
+  baseline:
+    needs: plan
+    if: needs.plan.outputs.has_baseline == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.baseline) }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci && npm run build
+        working-directory: head
+      - run: npm ci && npm run build
+        working-directory: base
+      # head and base are measured in turns on this runner, so the noise of the runner hits both.
+      - run: node head/scripts/stress.mjs baseline --base base --head head --deadline 40 --out stress-out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: baseline-${{ matrix.os }}-node${{ matrix.node }}
+          path: stress-out
+          retention-days: 14
+          if-no-files-found: ignore

@@ -23,43 +23,17 @@ jobs:
         node: ['22.13', '24']
     name: ${{ matrix.os }} node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # Windows took 8.2 minutes on main with the old limit of 10, so a slow runner cancelled the job. The child guard cases add
+    # about 35 s there (memory.e2e 19 s, lazy.e2e 11 s, tests/childguard.test.ts the rest).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
-      # A vfat volume has short names such as GIT~1: the alias test of tests/workspace-fs.test.ts runs on it.
-      - name: Mount a vfat image for the alias test
-        if: runner.os == 'Linux'
-        run: |
-          command -v mkfs.vfat >/dev/null || { sudo apt-get update && sudo apt-get install -y dosfstools; }
-          truncate -s 8M "$RUNNER_TEMP/alias.img"
-          sudo "$(command -v mkfs.vfat || echo /sbin/mkfs.vfat)" "$RUNNER_TEMP/alias.img"
-          mkdir "$RUNNER_TEMP/alias"
-          sudo mount -o loop,uid=$(id -u),gid=$(id -g) "$RUNNER_TEMP/alias.img" "$RUNNER_TEMP/alias"
-          echo "TOOLSCRIPT_TEST_ALIAS_DIR=$RUNNER_TEMP/alias" >> "$GITHUB_ENV"
-      # A case-sensitive APFS image: tests/workspace-roots-fs.test.ts holds `app` and `App` there as two folders.
-      - name: Attach a case-sensitive APFS image
-        if: runner.os == 'macOS'
-        run: |
-          hdiutil create -size 16m -fs "Case-sensitive APFS" -volname casefs "$RUNNER_TEMP/case.dmg"
-          mkdir "$RUNNER_TEMP/case"
-          hdiutil attach "$RUNNER_TEMP/case.dmg" -mountpoint "$RUNNER_TEMP/case" -nobrowse
-          echo "TOOLSCRIPT_TEST_CASE_DIR=$RUNNER_TEMP/case" >> "$GITHUB_ENV"
-      # A casefolded ext4 folder opens .ſſh as .ssh: the casefold test of tests/workspace-fs.test.ts runs on it.
-      - name: Mount a casefolded ext4 image
-        if: runner.os == 'Linux'
-        run: |
-          truncate -s 16M "$RUNNER_TEMP/fold.img"
-          mkfs.ext4 -q -O casefold "$RUNNER_TEMP/fold.img"
-          mkdir "$RUNNER_TEMP/fold"
-          sudo mount -o loop "$RUNNER_TEMP/fold.img" "$RUNNER_TEMP/fold"
-          sudo chown $(id -u):$(id -g) "$RUNNER_TEMP/fold"
-          mkdir "$RUNNER_TEMP/fold/dir"
-          chattr +F "$RUNNER_TEMP/fold/dir"
-          echo "TOOLSCRIPT_TEST_CASEFOLD_DIR=$RUNNER_TEMP/fold/dir" >> "$GITHUB_ENV"
+      # The vfat, casefold and APFS images and the Windows child guard switch: .github/actions/test-volumes.
+      - uses: ./.github/actions/test-volumes
       - run: npm test
       - run: npm run build
       - run: node tests/server.e2e.mjs

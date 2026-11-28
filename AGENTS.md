@@ -14,7 +14,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
   text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
   proof of the key, the entry, `PATH` resolve), `lock.ts` (the content of the OAuth refresh lock file, its parse and
-  the stale decision, and the reason text of a silent token endpoint), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
+  the stale decision, and the reason text of a silent token endpoint), `spawn.ts` (the reason text of a stdio command that cannot start: the command only, never an argument or a variable), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
   note on `Promise.all`), `workspace.ts` (the built-in Workspace, issue #144: the tool table with a class for each
   tool, the limits, the check of a path text, globs, exclusions, the refusal of a root, the binding of a session to its
   root, the input of each tool, the application of edits and the unified diff) and `task.ts` (its named tasks: the
@@ -30,7 +30,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   run and their text. `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
   checks, such as `hiddenBy` (one glob covers another).
   `guard.ts` holds the guard of the folders in `guardedDirs` at each nested call: the walk of the arguments, the
-  markers, the path candidates and the compare. It takes `realpath` as a parameter. `commands.ts` holds the commands
+  markers, the path candidates and the compare. It takes `realpath` as a parameter. `toml.ts` (the strict reader of the `[mcp_servers]` tables of a Codex `config.toml`, for `init`) and `codex.ts` (the map of a Codex server to an entry, policy rules and notes) hold the Codex import of `init`, which `src/host/codex.ts` reads for (the Codex CLI first, then `config.toml`, cwd the home folder). `commands.ts` holds the commands
   that the CLI prints for a person or an agent to run: the allowlist of names and paths (`PLAIN_NAME`, `PLAIN_PATH`),
   the label lines, and the plan and lines of `toolscript-mcp allow`. Imports between them use `.ts` extensions.
 - `src/host/` holds the host code, which runs in Node. `tsconfig.host.json` checks its types. `scripts/build.mjs`
@@ -40,11 +40,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `brokerlink.ts`: the host side of sharing (issue #63): `entryOf` (the entry of a server with its `PATH` resolved),
     `openLink` (find or start the broker, the mutual proof of the key, the entry) and `BrokerTransport`, an SDK
     `Transport` over one connection. `downstream.ts` uses it for a shared or per-folder server when sharing is on. A
-    broker that cannot be reached fails the link with a reason (decision 024): it starts no direct child.
+    broker that cannot be reached fails the link with a reason (decision 024): it starts no direct child. A peer that closes before it sends one line is a broker that was killed a moment ago: `openLink` dials again on the same 10 s clock (one start of a broker for the whole link), and a silent or wrong peer is never taken for a dead one.
     `brokerwire.ts` holds the key file, the build id (SHA-256 of `broker.js`) and the endpoint name.
   - `broker.ts`: the broker process, built from `brokermain.ts` into `dist/host/broker.js`, a second bundle with Node
     built-ins and `cross-spawn` only. One router (`src/core/mux.ts`) and one child for each share key. The listen is the
-    lock. `TOOLSCRIPT_BROKER_IDLE_MS` (at least 1000) shortens the 10-minute idle time, for tests and the bench. Log:
+    lock. A socket file that refuses a connect is removed only after the same file has refused for `guardMs` (1 s), because
+    a broker between its bind and its listen refuses too (issue #133). `TOOLSCRIPT_BROKER_IDLE_MS` (at least 1000) shortens the 10-minute idle time, for tests and the bench. Log:
     `~/.toolscript-mcp/broker/broker.log`, lifecycle lines only. Frames of the broker to a host start with `MARK`
     (`src/core/broker.ts`), so no server line passes as one (`WIRE` 2). Child stderr goes to the hosts as `stderr`
     frames (rate, backlog and tail limits in `src/core/broker.ts`), never to the log. The caps `LINKS_MAX`,
@@ -82,6 +83,13 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `~/.toolscript-mcp/learned/tools.json` (`toolsFile` in `paths.ts`; `parseToolsCache` and `isLazy` in `src/core/lazy.ts`).
     `downstream.ts` holds the `asleep` state, the wake and the idle clock. `TOOLSCRIPT_LAZY=0` turns every lazy start off, and
     `TOOLSCRIPT_LAZY_IDLE_MS` (at least 1000) shortens the idle time for tests and the bench.
+  - `childguard.ts`: the child guard, so a stdio child never outlives a host or a broker that was killed with no cleanup:
+    `createGuard` (outside Windows one `/bin/sh` watchdog that reads `+<pgid>` and `-<pgid>` lines and, at EOF, ends the groups
+    still listed; on Windows, only with `TOOLSCRIPT_CHILD_GUARD=1`, `runtime/child-guard.cs` compiled one time with the
+    csc.exe of .NET Framework 4 into `~/.toolscript-mcp/guard`, a Job Object that Windows closes with the host). `ChildTransport`
+    and the broker list each child in it. A guard that cannot start logs one line and never fails a server. The pure parts
+    (switch, lines, watchdog text, texts) are in `src/core/childguard.ts`. Tests: `tests/childguard.test.ts` and the guard
+    case of `tests/lazy.e2e.mjs`.
   - `doctor.ts`: `toolscript-mcp doctor`, one pass over the whole setup. Its checks are a table of small async
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.
@@ -107,11 +115,13 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     pure parts (reports, decision, frames, environment block) are in `src/core/taskjob.ts`. `tests/workspace-rig.ts` is
     the helper of its tests, `tests/task-child.mjs` the child of the task tests, and `tests/task-host-child.ts` the host
     that the hard-kill test kills.
+- `docs/` holds the user docs, one page for each topic, with the index in `README.md`. A new page needs no edit of
+  `tests/docs.check.mjs`: it reads every `docs/*.md`. `docs/adr/` holds the design records and is checked for links only.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only. `runtime/task-job.ps1` is the warm Windows PowerShell 5.1
-  job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS (issue #149). They are shipped files that
-  `scripts/pack-check.mjs` requires, and the build does not bundle them.
+  job helper and `runtime/task-reap.pl` the perl helper of Linux and macOS (issue #149). `runtime/child-guard.cs` is the source of the
+  Windows child guard. They are shipped files that `scripts/pack-check.mjs` requires, and the build does not bundle them.
 - `hints/` holds the bundled hints and `hints/sha256.json`.
 - `changes/` holds one file for each pull request with a user-visible change (`changes/README.md` says how), and
   `scripts/changelog.mjs <version> [--apply]` folds them into `CHANGELOG.md` at the release (Node built-ins only; a
@@ -130,6 +140,11 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `memory.mjs`: what N sessions cost in private bytes, processes and start time, with no model and no spend.
     Fixture mode by default; `--config <file>` is real mode, for the owner only. Results in `RESULTS-memory.md`.
     `tests/memory.e2e.mjs` runs its smoke and the hard-kill case.
+  - `broker-race.mjs`: N brokers started at once on a fresh HOME, R rounds, counts the rounds with two brokers at once
+    (issue #133). Linux and macOS; no model and no spend. `--contenders 20 --rounds 300` is the case that reproduced it.
+  - `bridge-modes.mjs`: interactive Claude Code through node-pty, with the real `claude mcp serve` bridge behind toolscript-mcp
+    (issue #94): the permission-mode matrix (`matrix`, `cell`, `print`) and G10 of issue #63 (`g10`, two sessions on one
+    broker, Windows only). It spends money on Haiku and stops at `--max-spend` (default 3 USD). Temp HOME and fixture for each cell.
   - `walks.mjs`: N parallel Workspace `search` calls on one tree, in Docker with `--cpus 1` only. Results in `RESULTS-walks.md`.
   - `workspace-bridge.mjs`: the same four questions about one temp repository through hosts with the built-in Workspace or the
     Claude Code bridge (`claude mcp serve`), driven as `run_code` calls: time, result characters, processes and private memory
@@ -138,6 +153,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     judges an answer of another agent.
   - `data.mjs` holds the tasks and their checks, `fake-server.mjs` the fake MCP server, and `forget.mjs` removes the
     Claude Code project folder of a run.
+- `.github/workflows/stress.yml` runs repeats, flakes, load, one-CPU, bench and baseline runs on the free runners (Linux, macOS,
+  Windows), from the Actions tab, from a push to `stress/**`, and every Sunday on main (flakes and baseline). Its profiles are
+  `tests/stress.json`. `scripts/stress.mjs` (Node built-ins only; `tests/stress.test.ts`) repeats one target with the junit
+  reporter and writes the summary of each test that failed (runs, fails, rate, first failing run and seed), the budgets of
+  `baseline`, and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
+  `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake
   servers. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
 
@@ -145,6 +166,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `npm test`, `npm run typecheck`, `npm run build`, `npm run check`.
 - `node tests/runner.integration.mjs` runs the real sandbox on Linux, macOS and Windows.
 - `node tests/server.e2e.mjs` runs the built server over stdio. Run `npm run build` first.
+- `node tests/bridge.e2e.mjs` runs one program through the real `claude mcp serve` bridge (Grep, Read, Edit, a shell test run)
+  and the missing-binary case. It needs `claude` on PATH, else it prints one line and exits 0. It is not in `npm test`.
 - `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
 - After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
 - `node scripts/start-time.mjs` measures the start, from the spawn to the `tools/list` reply. Run `npm run build` first.
@@ -155,5 +178,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - stdout carries only MCP JSON-RPC. Log to stderr.
 - A user-visible change adds a file in `changes/`, and never edits `CHANGELOG.md`. The version-bump PR runs
   `node scripts/changelog.mjs <version> --apply`, then rewrites the section by hand as a summary.
+- Before the release button, a `flakes` run and a `baseline` run of `stress.yml` on main must be green (the weekly run counts when
+  main has not changed since): `gh run list --workflow stress.yml --branch main`. A flake is fixed, never accepted: there is no
+  allow list. A red weekly run is read at the start of the next session and taken before other work.
 - After a change in `plugin/`, raise `version` in `plugin/.claude-plugin/plugin.json`. Users get a new copy of the
   plugin only when the version changes.

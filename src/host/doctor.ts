@@ -42,6 +42,8 @@ import { brokerFileBeside, idOf, openLink } from './brokerlink.ts'
 import { connectStates, readRunLog, type CheckIo } from './diagnose.ts'
 import { LAYERS, RUNNER, launch, makeExchangeDir, removeExchangeDir } from './launch.ts'
 import { storeFile } from './oauth.ts'
+import { createGuard } from './childguard.ts'
+import { GUARD_ENV, offLine, windowsFailure } from '../core/childguard.ts'
 import { probeHelper } from './taskjob.ts'
 import { loadToolsCache, toolsKey } from './toolscache.ts'
 import { loadConfig, loginFor, otherConfig, type Loaded } from './start.ts'
@@ -316,6 +318,25 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
         ? cache.get(toolsKey(server))?.tools.length
         : undefined
     })
+  },
+
+  // Starts the guard and waits for it, then ends it: on Windows this compiles the program the first time.
+  'child-guard': async ({ io }) => {
+    const guard = createGuard({ home: io.home, log: () => {}, platform: io.platform, env: io.env })
+    if (guard.state().state === 'unwanted')
+      return [
+        info(
+          io.platform === 'win32'
+            ? `off on Windows (opt-in). Set ${GUARD_ENV}=1 to turn it on: a compiled program then ends the servers of a host that was killed`
+            : `off by ${GUARD_ENV}=0. A host that is killed leaves its servers running`,
+        ),
+      ]
+    guard.start()
+    const settled = await guard.settled()
+    guard.close()
+    if (settled.state === 'on') return [ok(`${settled.how} ends the servers of a host that was killed`)]
+    const why = settled.state === 'failed' ? settled.why : 'it did not start'
+    return [warn(offLine(io.platform === 'win32' ? windowsFailure(why) : why))]
   },
 
   policy: async ({ loaded, states }) => {

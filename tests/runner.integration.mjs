@@ -491,7 +491,7 @@ const cases = {
         [`absent: ${NO_BLOCK_REASON}, so the process can connect`]: async () => {
           assert.ok(!process.env.EXPECT_NETWORK_BLOCK, `EXPECT_NETWORK_BLOCK is set, but ${NO_BLOCK_REASON}`)
           const { connect } = await probe()
-          assert.equal(connect, 'allowed', 'a network block works here: update LAYERS, README.md and SECURITY.md')
+          assert.equal(connect, 'allowed', 'a network block works here: update LAYERS, docs/sandbox.md and SECURITY.md')
         },
       }),
 
