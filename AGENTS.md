@@ -160,6 +160,11 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   reporter and writes the summary of each test that failed (runs, fails, rate, first failing run and seed), the budgets of
   `baseline`, and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
   `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
+- `tests/modern-server.mjs`, `modern-http.mjs`, `modern-client.mjs` and `modern-core.mjs` are the raw JSON-RPC peers of the 2026-07-28 revision (issue #154, C0), plain `.mjs`
+  with no SDK: a stdio fake (kinds `modern`, `dual` and the old-server kinds, by argument), an HTTP fake (`startHttp(kind)`, with a record of every
+  request), a raw client with the openings as data (`OPENINGS`, `replay`, Claude Code's two among them), and the engine they share.
+  `tests/modern-peers.test.ts` checks the peers. `tests/conformance.json` is the matrix, one row for each (side, kind, link, flag), `pending` with
+  its PR or `covered` with a test; `tests/conformance.test.ts` keeps a row from being dropped or marked covered with no test.
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake
   servers. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
 

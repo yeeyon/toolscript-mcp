@@ -58,6 +58,12 @@
       "note": "slow, many processes"
     },
     {
+      "target": "tests/modern-peers.test.ts",
+      "count": 20,
+      "box": 3,
+      "note": "raw fake servers, 20 processes, deadlines (C0)"
+    },
+    {
       "target": "tests/childguard.test.ts",
       "count": 10,
       "box": 2,
