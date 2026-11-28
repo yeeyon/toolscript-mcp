@@ -176,7 +176,7 @@
     "differs": [
       {
         "row": "dist/host/broker.js sha256",
-        "reason": "parseEntry reads the protocol of an entry, so legacy and auto links never share a child",
+        "reason": "parseEntry reads the protocol of an entry, so legacy and auto links never share a child (PR 234), and the router knows the 2026-07-28 era (PR 232)",
         "pr": 234
       }
     ]

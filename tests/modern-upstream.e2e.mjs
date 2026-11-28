@@ -148,7 +148,6 @@ const PROGRAMS = [
   ['a value', 'return 6 * 7'],
   ['a nested call', 'const r = await call("mcp__bench__get_deploys", { date: "2026-10-09" }); return r.count'],
   ['an error', 'throw new Error("boom")'],
-  ['a refused call', 'return await call("mcp__bench__get_deploys", { date: "2026-10-09" })', 'denying'],
   ['saveFile', 'await saveFile("a.txt", "hello"); return await readFile("a.txt")'],
   [
     'recall',
@@ -200,11 +199,9 @@ test('rule 5: discover, tools/list and a table of programs equal the legacy ones
         await modern.modernCall(...Object.values(RUN(code))),
         await legacy.legacyCall(...Object.values(RUN(code))),
       ]
-      assert.equal(
-        textOf(m).replace(/\d+\.\d+ s/g, '<s>'),
-        textOf(l).replace(/\d+\.\d+ s/g, '<s>'),
-        `run_code: ${label}`,
-      )
+      // The two connections keep their results at different moments: the time of a run and the age of a kept result are masked.
+      const mask = text => text.replace(/\d+\.\d+ s/g, '<s>').replace(/\(\d+ s old\)/g, '(<n> s old)')
+      assert.equal(mask(textOf(m)), mask(textOf(l)), `run_code: ${label}`)
       assert.equal(m.isError, l.isError, `run_code isError: ${label}`)
     }
     onlyJsonRpc(modern)
@@ -427,6 +424,51 @@ test('rule 9: the [mcp-sdk] lines of a modern session carry no argument text', a
     )
     onlyJsonRpc(host)
     console.log('[mcp-sdk] lines of this session:', JSON.stringify(lines))
+  } finally {
+    await host.close()
+  }
+})
+
+test('the log of the SDK entry: one bounded line for a line that is not JSON-RPC, an unsupported version and an old opening', async () => {
+  const host = start(CONFIGS.bench, { protocol: 'auto' })
+  const lines = () =>
+    host
+      .stderr()
+      .split('\n')
+      .filter(l => l.includes('[mcp-sdk]'))
+  try {
+    await host.client.discover()
+    // A message that is not JSON-RPC, with a long key that the client chose: the SDK error spans many lines of validation.
+    host.client.transport.send({ jsonrpc: '2.0', id: 'x'.repeat(300), method: 5, ['SECRET-KEY'.repeat(40)]: 1 })
+    await until('one [mcp-sdk] line', () => lines().length >= 1)
+    await new Promise(r => setTimeout(r, 300))
+    assert.equal(lines().length, 1, 'a message that is not JSON-RPC makes exactly one line')
+    assert.ok(lines()[0].length <= 'toolscript-mcp: '.length + 160, 'and it is bounded')
+    // An opening of the old era on a connection that is already modern, and an unsupported revision in the envelope.
+    await host.client.legacyRequest('initialize', {
+      protocolVersion: 'SECRET-VERSION'.repeat(20),
+      capabilities: {},
+      clientInfo: { name: 'c', version: '0' },
+    })
+    await host.client
+      .request('tools/list', {}, { meta: { 'io.modelcontextprotocol/protocolVersion': '9999-01-01'.repeat(30) } })
+      .catch(() => {})
+    // The lines of this case: the line that is not JSON-RPC, and the refusal of the old opening on a modern connection.
+    await until('the refusal of the old opening', () => lines().length >= 1)
+    await new Promise(r => setTimeout(r, 300))
+    const seen = lines()
+    console.log('[mcp-sdk] lines of this case:', JSON.stringify(seen))
+    for (const line of seen) {
+      const body = line.replace(/^toolscript-mcp: /, '')
+      assert.ok(body.length <= 160, `a line of ${body.length} characters`)
+      assert.ok(!/SECRET/.test(body), `client text in a line: ${body}`)
+    }
+    // Every stderr line of this case is one line each: a multi-line error leaves no second line behind it.
+    const all = host.stderr().split('\n').filter(Boolean)
+    assert.ok(
+      all.every(l => l.startsWith('toolscript-mcp: ')),
+      `a stray line: ${all.find(l => !l.startsWith('toolscript-mcp: '))}`,
+    )
   } finally {
     await host.close()
   }

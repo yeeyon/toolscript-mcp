@@ -97,8 +97,9 @@ answers `ping`, and fans out `tools/list_changed`. That stays, byte for byte, as
   inside `LINKS_MAX`. Finding of PR 1: the child stamps each stream notification, the first `notifications/subscriptions/acknowledged`
   too, with `_meta["io.modelcontextprotocol/subscriptionId"]`, the JSON-RPC id of the listen request, verbatim. The child sees the
   router id, so PR 11 must map the stamp back to the id that the link sent before it forwards the notification.
-- MRTR: an `input_required` result goes back by id to the link that asked. The router records a hash of its `requestState` for that
-  link (bounded: 64 for each link, 10 minutes). A retry with `inputResponses` whose `requestState` belongs to another link gets
+- MRTR: an `input_required` result goes back by id to the link that asked. The router keeps the `requestState` string itself for that
+  link (bounded: 64 for each link, the oldest goes, each at most 8,192 characters; a longer one is not kept). Changed in PR 11: no 10-minute
+  expiry and no hash, because the router has no clock and no crypto; the child signs and expires its own state. A retry with `inputResponses` whose `requestState` belongs to another link gets
   -32602 and reaches no child. The router never changes `requestState` or `inputResponses`. Phase 4 adds the same rule for a `taskId`.
   Finding of PR 1: `requestState` is a string at the top of the `input_required` result (`{ resultType, inputRequests?, requestState? }`), and
   a retry is a new request that carries `inputResponses` and `requestState` in its params. The progress token stays in
@@ -130,10 +131,13 @@ the connection, and throws the probe instance away when the client falls back to
 time: the kept results of `recall`, the `saveFile` folder and the written files, the learned shapes and their load, the policy and its
 reload, the runs in flight and their stop signal, the downstream links, the Workspace bind and the orphan sweep. The factory only
 builds an instance (`HostServer`) and sets its two handlers, so closing a discarded instance stops no run, closes no child and removes
-no file. Both eras get the same surface (`tools` only, no `resources`, no `extensions`) and the same instructions. Until the next two
-changes of the release, a modern instance asks by `input_required` (P3-1: `elicitInput` throws on a 2026-07-28 request, so `run_code`
-returns the prompt and a sealed `requestState`, the state lives in the host's table and never in the client, and a request whose
-envelope does not declare the form capability gets the refusal for a client that cannot ask), and it has no Workspace: roots/list does not exist in that era, so a modern
+no file. One exception to "no timer": for an instance of the legacy era the factory calls `roots.attach`, which starts its unref'd wait
+for `notifications/initialized` (the roots of the client are asked there). A probe instance is always modern, so a discarded instance
+never holds that timer, and a legacy instance made by `serveStdio` is never discarded. Both eras get the same surface (`tools` only, no
+`resources`, no `extensions`) and the same instructions. Until the next two changes of the release, a modern instance asks by
+`input_required` (P3-1: `elicitInput` throws on a 2026-07-28 request, so `run_code` returns the prompt and a sealed `requestState`, the
+state lives in the host's table and never in the client, and a request whose envelope does not declare the form capability gets the
+refusal for a client that cannot ask), and it has no Workspace: roots/list does not exist in that era, so a modern
 instance hides the Workspace link (it is not listed and a call of it is refused as an unknown server) and the bind, which waits for the
 roots, ends with no Workspace when the first request other than `server/discover` shows the connection is in use. A request of
 `serveStdio` that is not 2026-07-28 and not a legacy opening is answered by the entry itself, with the errors of the SDK: a probe with
