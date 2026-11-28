@@ -1,0 +1,156 @@
+{
+  "ok": {
+    "isError": false,
+    "text": "\"OK:\\\"fine\\\"\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__ok",
+        "decision": "allow",
+        "ok": true
+      }
+    ]
+  },
+  "invalid_params": {
+    "isError": false,
+    "text": "\"ERR:MCP error -32602: golden: invalid params text\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__invalid_params",
+        "decision": "allow",
+        "ok": false,
+        "error": "failed",
+        "class": "validation"
+      }
+    ]
+  },
+  "no_method": {
+    "isError": false,
+    "text": "\"ERR:MCP error -32601: golden: method not found text\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__no_method",
+        "decision": "allow",
+        "ok": false,
+        "error": "failed",
+        "class": "not-found"
+      }
+    ]
+  },
+  "internal": {
+    "isError": false,
+    "text": "\"ERR:MCP error -32603: golden: internal error text\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__internal",
+        "decision": "allow",
+        "ok": false,
+        "error": "failed",
+        "class": "server"
+      }
+    ]
+  },
+  "custom": {
+    "isError": false,
+    "text": "\"ERR:MCP error -31001: golden: custom error text\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__custom",
+        "decision": "allow",
+        "ok": false,
+        "error": "failed",
+        "class": "other"
+      }
+    ]
+  },
+  "is_error": {
+    "isError": false,
+    "text": "\"ERR:golden: the tool failed\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__is_error",
+        "decision": "allow",
+        "ok": false,
+        "error": "tool-error",
+        "class": "other"
+      }
+    ]
+  },
+  "bad_output": {
+    "isError": false,
+    "text": "\"ERR:MCP error -32602: Structured content does not match the tool's output schema: data/n must be number\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__bad_output",
+        "decision": "allow",
+        "ok": false,
+        "error": "failed",
+        "class": "validation"
+      }
+    ]
+  },
+  "not_listed": {
+    "isError": true,
+    "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: no tool \"mcp__g__not_listed\" on the connected server \"g\". Find its tools with search_tools",
+    "calls": [
+      {
+        "tool": "unknown",
+        "decision": "invalid",
+        "ok": false,
+        "error": "invalid"
+      }
+    ]
+  },
+  "stall": {
+    "isError": false,
+    "text": "\"ERR:mcp__g__stall did not answer within the call limit of 1 s and was cancelled\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__stall",
+        "decision": "allow",
+        "ok": false,
+        "error": "timeout"
+      }
+    ]
+  },
+  "die": {
+    "isError": false,
+    "text": "\"ERR:MCP error -32000: Connection closed\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__die",
+        "decision": "allow",
+        "ok": false,
+        "error": "failed",
+        "class": "other"
+      }
+    ]
+  },
+  "cancelled": {
+    "isError": true,
+    "text": "Error: the sandbox exited without a result.\n\nstderr:\nthe sandbox ended with SIGKILL\n",
+    "calls": [
+      {
+        "tool": "mcp__g__stall",
+        "decision": "allow",
+        "ok": false,
+        "error": "unfinished"
+      }
+    ]
+  },
+  "missing": {
+    "state": "its command was not found on PATH: toolscript-golden-no-such-command",
+    "link": "the MCP server \"gone\" is not connected: its command was not found on PATH: toolscript-golden-no-such-command",
+    "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"gone\" is not connected: its command was not found on PATH: toolscript-golden-no-such-command. toolscript-mcp tries again on next use after 60 s"
+  },
+  "first": {
+    "methods": ["initialize", "notifications/initialized", "tools/list", "tools/call"],
+    "initialize": {
+      "protocolVersion": "2025-11-25",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "toolscript-mcp",
+        "version": "0"
+      }
+    }
+  }
+}
