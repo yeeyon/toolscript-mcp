@@ -91,8 +91,6 @@ export type Host = {
 
 /** What the caller hears of a modern connection. */
 export type HostHooks = {
-  /** Called one time, when a modern instance gets a request other than `server/discover`: the connection is in use. */
-  readonly modernInUse?: () => void
   /**
    * The roots of the Workspace (issue #154, P3-2). With them, a modern connection asks the client for its roots at the first call
    * (`input_required`) and the Workspace follows the answer. Without them, a modern connection has no Workspace.
@@ -193,7 +191,6 @@ export const createHost = (
     return fresh
   }
 
-  let modernUsed = false
   // The roots round of a modern connection: only when the config has the Workspace and the caller gave its roots.
   const rootsRound =
     config.workspace !== undefined && hooks.roots !== undefined
@@ -280,12 +277,6 @@ export const createHost = (
       }
     }
 
-    if (era === 'modern')
-      mcp.onRequest = method => {
-        if (method === 'server/discover' || modernUsed) return
-        modernUsed = true
-        hooks.modernInUse?.()
-      }
     onListTools(mcp, () => ({ tools: SERVED.map(registration) }))
     onCallTool(mcp, (req, extra) => {
       const { name, arguments: args = {} } = req.params

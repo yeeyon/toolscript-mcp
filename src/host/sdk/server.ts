@@ -3,11 +3,9 @@
 // handler and answers that method with -32601, as the first SDK did.
 import {
   inputRequired,
-  isJSONRPCRequest,
   ProtocolError,
   ProtocolErrorCode,
   Server,
-  type Transport,
   type CallToolRequest,
   type CallToolResult,
   type InputRequiredResult,
@@ -30,22 +28,6 @@ const BAD_CALL = 'Invalid tools/call request: '
  * client may read that code or text, so the answer is mapped back here, in the hook that the SDK documents for this.
  */
 export class HostServer extends Server {
-  /**
-   * Called with the method of each request that reaches this instance, before it is handled. The host uses it to see that a
-   * modern connection is in use and not only probed: `serveStdio` makes an instance for a `server/discover` probe and
-   * throws it away when the client falls back to `initialize`.
-   */
-  onRequest?: (method: string) => void
-
-  override async connect(transport: Transport): Promise<void> {
-    await super.connect(transport)
-    const inner = transport.onmessage
-    transport.onmessage = (message, extra) => {
-      if (isJSONRPCRequest(message)) this.onRequest?.(message.method)
-      inner?.(message, extra)
-    }
-  }
-
   protected override _wrapHandler(
     method: string,
     handler: (request: JSONRPCRequest, ctx: ServerContext) => Promise<Result>,
