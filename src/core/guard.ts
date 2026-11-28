@@ -76,7 +76,7 @@ const WORD = /^[\p{L}\p{N}_.-]$/u
  * `.toolscript-mcp/hints.bak` and `my.toolscript-mcp/hints` pass. A trailing dot or space on the state folder does not
  * hide the marker. A string with `%` is read again with each `%XX` below `%80` decoded one time.
  */
-export const markerIn = (text: string): string | undefined => markerOf(text) ?? decodedMarker(text)
+export const markerIn = (text: string): string | undefined => markerHit(text)?.marker
 
 // The marker that shows only after the `%XX` decode, or undefined. Decoding gives ASCII only, so a state name that
 // decoding makes needs a decoded letter or `-`. A name that is in the text already is decoded for the boundary around

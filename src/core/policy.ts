@@ -6,6 +6,7 @@
 // parseConfig reads the rules; this file decides with them.
 
 import type { ServerKey } from './config.ts'
+import { GUARD_LINES } from './guard.ts'
 import { splitToolName, type LiteralCall } from './protocol.ts'
 import { toolsOfClass, WORKSPACE_KEY, workspaceClass } from './workspace.ts'
 
@@ -420,16 +421,27 @@ export const checkCall = (
  * `lines` are the lines of a multi-line text that hold a guarded folder, rising: 1 gives `line 306`, 2 to 10 give
  * `lines 12, 40: each names a guarded folder`, and 11 give the first 10 and ` and more`. Only numbers and fixed words.
  */
-export const guardedText = (tool: string, folder: string, at = '', lines: readonly number[] = []): string =>
-  `refused: an argument of ${tool} names ${folder}, a folder that toolscript-mcp guards${where(at, lines)}. A mention in text counts too. No allow rule or approval lifts this. Leave the folder out of the argument, or the person can edit the file or post the text outside run_code.`
+export const guardedText = (tool: string, folder: string, at = '', lines: readonly number[] = []): string => {
+  const text = (kept: number): string =>
+    `refused: an argument of ${tool} names ${folder}, a folder that toolscript-mcp guards${where(at, lines, kept)}. A mention in text counts too. No allow rule or approval lifts this. Leave the folder out of the argument, or the person can edit the file or post the text outside run_code.`
+  // At most 420 characters: a long key path or long numbers keep fewer line numbers, and none if not even one fits.
+  for (let kept = Math.min(lines.length, GUARD_LINES - 1); kept >= 1; kept--) {
+    const full = text(kept)
+    if (full.length <= MAX_REFUSAL) return full
+  }
+  return text(0)
+}
 
-// The parenthesis of a guarded refusal: the key path, then the lines. Nothing else of the argument.
-const where = (at: string, lines: readonly number[]): string => {
+/** The most characters of a guarded refusal. */
+const MAX_REFUSAL = 420
+
+// The parenthesis of a guarded refusal: the key path, then the first `kept` lines. Nothing else of the argument.
+const where = (at: string, lines: readonly number[], kept: number): string => {
   const place = at === '' ? [] : [`in ${at}`]
-  if (lines.length === 0) return place.length === 0 ? '' : ` (${place[0]})`
+  if (kept === 0) return place.length === 0 ? '' : ` (${place[0]})`
   if (lines.length === 1) return ` (${[...place, `line ${lines[0]}`].join(', ')})`
-  const more = lines.length > 10
-  const list = `lines ${lines.slice(0, 10).join(', ')}${more ? ' and more' : ''}`
+  const more = lines.length > kept
+  const list = `lines ${lines.slice(0, kept).join(', ')}${more ? ' and more' : ''}`
   return ` (${[...place, list].join(', ')}: each names a guarded folder)`
 }
 
