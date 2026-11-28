@@ -18,9 +18,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (classifyResult: a discover result with an overlapping version is modern)",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (classifyResult: a discover result with an overlapping version is modern); client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
-      "owner": "10"
+      "owner": "10",
+      "note": "cancel: stdio = a notifications/cancelled message (the peer lists the ids in the echo result, state.cancelled)"
     },
     {
       "side": "downstream",
@@ -40,10 +41,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (classifyResult: a discover result with an overlapping version is modern)",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (classifyResult: a discover result with an overlapping version is modern); client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
       "owner": "10",
-      "note": "the probe runs at the wake of the server"
+      "note": "the probe runs at the wake of the server; cancel: stdio = a notifications/cancelled message (the peer lists the ids in the echo result, state.cancelled)"
     },
     {
       "side": "downstream",
@@ -62,9 +63,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (classifyResult: a discover result with an overlapping version is modern)",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (classifyResult: a discover result with an overlapping version is modern); client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
-      "owner": "12"
+      "owner": "12",
+      "note": "cancel: stdio = a notifications/cancelled message (the peer lists the ids in the echo result, state.cancelled)"
     },
     {
       "side": "downstream",
@@ -83,9 +85,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (the discover is answered first, so the connection is modern)",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (the discover is answered first, so the connection is modern); client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
-      "owner": "10"
+      "owner": "10",
+      "note": "cancel: stdio = a notifications/cancelled message (the peer lists the ids in the echo result, state.cancelled)"
     },
     {
       "side": "downstream",
@@ -105,10 +108,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (the discover is answered first, so the connection is modern)",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (the discover is answered first, so the connection is modern); client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
       "owner": "10",
-      "note": "the probe runs at the wake of the server"
+      "note": "the probe runs at the wake of the server; cancel: stdio = a notifications/cancelled message (the peer lists the ids in the echo result, state.cancelled)"
     },
     {
       "side": "downstream",
@@ -127,9 +130,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (the discover is answered first, so the connection is modern)",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075 (the discover is answered first, so the connection is modern); client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
-      "owner": "12"
+      "owner": "12",
+      "note": "cancel: stdio = a notifications/cancelled message (the peer lists the ids in the echo result, state.cancelled)"
     },
     {
       "side": "downstream",
@@ -875,9 +879,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2075; client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
-      "owner": "10"
+      "owner": "10",
+      "note": "cancel: HTTP = the close of the request, no notification (the peer records it in state.closedEarly, and stops a slow call)"
     },
     {
       "side": "downstream",
@@ -1174,10 +1179,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2135 (the probe classification; auth is the host's)",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2135 (the probe classification; auth is the host's); client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
       "owner": "10",
-      "note": "the record shows the bearer on every request"
+      "note": "the record shows the bearer on every request; cancel: HTTP = the close of the request, no notification (the peer records it in state.closedEarly, and stops a slow call)"
     },
     {
       "side": "downstream",
@@ -1220,10 +1225,10 @@
       "flag": "auto",
       "expect": "modern session",
       "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2135 (the probe classification; auth is the host's)",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2060-2135 (the probe classification; auth is the host's); client dist/public-CvV4ZHkX.mjs:3623 (termination is stream close on HTTP, notifications/cancelled on stdio)",
       "status": "pending",
       "owner": "10",
-      "note": "the record shows an Authorization header that starts with AWS4-HMAC-SHA256 on every request, signed over the mcp-* headers"
+      "note": "the record shows an Authorization header that starts with AWS4-HMAC-SHA256 on every request, signed over the mcp-* headers; cancel: HTTP = the close of the request, no notification (the peer records it in state.closedEarly, and stops a slow call)"
     },
     {
       "side": "downstream",

@@ -80,6 +80,19 @@ describe('modern', () => {
     const echo = text(await c.request('tools/call', { name: 'echo' }))
     assert.equal(echo.args && Object.keys(echo.args).length, 0)
     assert.ok(!c.messages.some(m => m.id === slow.id), 'a cancelled call was answered')
+    // Over stdio a cancel is the notification: the echo result tells the ids that the server saw cancelled.
+    assert.deepEqual(echo.cancelled, [slow.id])
+    // And a client that cancels nothing sees an empty list, on a 2025 session too.
+    const quiet = connectPeer('dual')
+    await quiet.legacyOpen()
+    assert.deepEqual(text(await quiet.legacyRequest('tools/call', { name: 'echo' })).cancelled, [])
+    const legacySlow = quiet.start(
+      'tools/call',
+      { name: 'slow', arguments: { ms: 60_000 } },
+      { legacy: true, ms: 60_000 },
+    )
+    quiet.cancel(legacySlow.id)
+    assert.deepEqual(text(await quiet.legacyRequest('tools/call', { name: 'echo' })).cancelled, [legacySlow.id])
     c.close()
     await c.exited
   })
@@ -475,6 +488,40 @@ describe('the kinds', () => {
       assert.deepEqual(await within(c.exited, 5000, `the exit of ${name}`), { code: 0, signal: null }, name)
     }
     for (const kind of HTTP_KINDS) await withHttp(kind, async server => assert.equal(server.kind, kind))
+  })
+})
+
+describe('the HTTP peer, a cancel is the close of the request', () => {
+  test('an aborted tools/call is recorded as closed early, its slow timer stops, and a finished call is not recorded', async () => {
+    await withHttp('modern', async server => {
+      const stop = new AbortController()
+      const slow = post(
+        server,
+        rpc(11, 'tools/call', { name: 'slow', arguments: { ms: 60_000 } }),
+        modernHeaders('tools/call', 'slow'),
+        {
+          signal: stop.signal,
+        },
+      )
+      slow.catch(() => {})
+      await server.waitFor(r => r.json?.id === 11)
+      assert.equal(server.state.timers.size, 1)
+      stop.abort()
+      assert.deepEqual(await server.waitClosedEarly(r => r.id === 11), { method: 'tools/call', id: 11 })
+      assert.equal(server.state.timers.size, 0)
+      await assert.rejects(slow)
+      // No notification came: over HTTP the close is the cancel, so the engine's cancelled list stays empty.
+      assert.deepEqual(server.state.cancelled, [])
+      // A call that finished is not a close before the answer.
+      await post(server, rpc(12, 'tools/call', { name: 'echo' }), modernHeaders('tools/call', 'echo')).then(r =>
+        r.text(),
+      )
+      assert.deepEqual(server.state.closedEarly, [{ method: 'tools/call', id: 11 }])
+      await assert.rejects(
+        server.waitClosedEarly(r => r.id === 12, 100),
+        /no request closed early within 100 ms/,
+      )
+    })
   })
 })
 

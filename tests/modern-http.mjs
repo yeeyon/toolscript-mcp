@@ -65,6 +65,7 @@ export const startHttp = async kind => {
   const streams = new Set()
   const sockets = new Set()
   const waiters = new Set()
+  const closeWaiters = new Set()
 
   // The server that a 307 points to (probe-307): another origin that records what reaches it, so a leaked bearer shows.
   const other =
@@ -197,9 +198,22 @@ export const startHttp = async kind => {
 
   const bearer = req => /^Bearer\s+\S+/i.test(String(req.headers.authorization ?? ''))
 
+  // A request whose connection closes before its answer is a cancel over HTTP: it is recorded, and its slow timer stops.
+  const watchClose = (res, json) => {
+    if (json?.id === undefined || json.method === 'subscriptions/listen') return
+    res.on('close', () => {
+      if (res.writableFinished) return
+      state.closedEarly.push({ method: json.method, id: json.id })
+      clearTimeout(state.timers.get(json.id))
+      state.timers.delete(json.id)
+      for (const w of [...closeWaiters]) w()
+    })
+  }
+
   const handle = (req, res, body) => {
     const entry = record(req, body)
     const json = entry.json
+    watchClose(res, json)
     if (req.method === 'DELETE') {
       sessions.delete(String(req.headers['mcp-session-id']))
       return reply(res, 200, undefined)
@@ -283,6 +297,23 @@ export const startHttp = async kind => {
           reject(new Error(`no request matched within ${ms} ms`))
         }, ms)
         if (!check()) waiters.add(check)
+      }),
+    /** Resolves with the first request recorded in `state.closedEarly` that `predicate` accepts, or rejects at the deadline. */
+    waitClosedEarly: (predicate = () => true, ms = 5000) =>
+      new Promise((resolve, reject) => {
+        const check = () => {
+          const found = state.closedEarly.find(predicate)
+          if (found === undefined) return false
+          clearTimeout(timer)
+          closeWaiters.delete(check)
+          resolve(found)
+          return true
+        }
+        const timer = setTimeout(() => {
+          closeWaiters.delete(check)
+          reject(new Error(`no request closed early within ${ms} ms`))
+        }, ms)
+        if (!check()) closeWaiters.add(check)
       }),
     control: (control, name) =>
       fetch(`http://127.0.0.1:${port}/__control`, { method: 'POST', body: JSON.stringify({ control, name }) }).then(r =>

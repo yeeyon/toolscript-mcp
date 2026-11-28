@@ -77,7 +77,9 @@ export const baseTools = () => [
 ]
 
 /** The state of one server process (or one HTTP server): its tool list, the ids it saw cancelled, its timers. */
-export const createState = () => ({ tools: baseTools(), cancelled: [], timers: new Map() })
+// `cancelled`: the ids of the notifications/cancelled that came (stdio; `echo` reports them). `closedEarly`: the requests whose
+// HTTP connection closed before the answer, as { method, id } (HTTP: a cancel is the close of the request).
+export const createState = () => ({ tools: baseTools(), cancelled: [], closedEarly: [], timers: new Map() })
 
 /** One connection: its era (undefined until it is pinned), its open listen streams, what a 2025 client told it. */
 export const createConn = () => ({
@@ -112,7 +114,17 @@ const callTool = (state, conn, msg, send, capabilities) => {
     state.timers.set(msg.id, timer)
     return undefined
   }
-  return send(ok(msg.id, text({ args: args ?? {}, pid: process.pid, clientCapabilities: capabilities ?? null })))
+  return send(
+    ok(
+      msg.id,
+      text({
+        args: args ?? {},
+        pid: process.pid,
+        clientCapabilities: capabilities ?? null,
+        cancelled: [...state.cancelled],
+      }),
+    ),
+  )
 }
 
 // A cancel of a request: its timer, or its listen stream, ends with no answer. The ids that were cancelled stay in the state.
