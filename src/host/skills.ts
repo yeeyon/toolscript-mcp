@@ -31,6 +31,22 @@ export type SkillSources = {
 
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
+// Without O_NOFOLLOW (Windows) a link is found by `lstat` before the open. The check that counts is the `fstat` of the open
+// file, the same file that is read: a file swapped for a link, or grown, after the `lstat` is still held to it.
+const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)
+
+// At most SKILL_MAX_FILE_BYTES + 1 bytes from the open file, so a file that grew shows as too long and is never read whole.
+const readCapped = (fd: number): Buffer => {
+  const buffer = Buffer.alloc(SKILL_MAX_FILE_BYTES + 1)
+  let length = 0
+  while (length < buffer.length) {
+    const n = fs.readSync(fd, buffer, length, buffer.length - length, length)
+    if (n === 0) break
+    length += n
+  }
+  return buffer.subarray(0, length)
+}
+
 // One file as text, or undefined with a line on the log. The text is what `readFileSync(file, 'utf8')` gives, so a hash of
 // it is the hash of the bundled list.
 const readText = (dir: string, name: string, log: (line: string) => void): string | undefined => {
@@ -39,15 +55,22 @@ const readText = (dir: string, name: string, log: (line: string) => void): strin
     return undefined
   }
   const file = path.join(dir, name)
+  let fd: number | undefined
   try {
-    const stat = fs.lstatSync(file)
+    if (fs.constants.O_NOFOLLOW === undefined && !fs.lstatSync(file).isFile()) return skip('not a regular file')
+    fd = fs.openSync(file, OPEN_FLAGS)
+    const stat = fs.fstatSync(fd)
     if (!stat.isFile()) return skip('not a regular file')
     if (stat.size > SKILL_MAX_FILE_BYTES) return skip(`more than ${SKILL_MAX_FILE_BYTES} bytes`)
-    const bytes = fs.readFileSync(file)
+    const bytes = readCapped(fd)
     if (bytes.length > SKILL_MAX_FILE_BYTES) return skip(`more than ${SKILL_MAX_FILE_BYTES} bytes`)
     return utf8.decode(bytes)
   } catch (error) {
+    // O_NOFOLLOW makes the open of a link fail with ELOOP.
+    if ((error as NodeJS.ErrnoException).code === 'ELOOP') return skip('not a regular file')
     return skip(error instanceof TypeError ? 'not valid UTF-8' : 'cannot be read')
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
   }
 }
 
