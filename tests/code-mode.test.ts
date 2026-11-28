@@ -982,6 +982,19 @@ describe('output projection', () => {
     assert.ok(!none.includes('one after another'), none)
   })
 
+  test('the footer counts the Workspace calls that did not start apart from the cut ones, with both exact lines', () => {
+    const get = (ref: number): CallRecord => ({ ref, tool: 'mcp__workspace__search', status: 'ok', chars: 10 })
+    const done = { t: 'done', value: '[]', logs: [] } as const
+    const footer = projectionFooter(
+      { calls: [1].map(get), recalls: 0, recalled: [], cut: { search: { cut: 1, notStarted: 2, total: 4 } } },
+      done,
+    )
+    assert.deepEqual(footer.split('\n').slice(-2), [
+      'mcp__workspace__search: 1 of 4 calls stopped early (truncated). Their results are partial: give a narrower path or include, or raise maxMatches.',
+      'mcp__workspace__search: 2 of 4 calls did not start: the calls before them took the time. Put the texts in one query array, run fewer searches at once, or give a narrower path or include.',
+    ])
+  })
+
   test('the footer says which Workspace calls stopped early, list first, before the serial note, in both shapes', () => {
     const get = (ref: number): CallRecord => ({ ref, tool: 'mcp__workspace__search', status: 'ok', chars: 10 })
     const done = { t: 'done', value: '[]', logs: [] } as const

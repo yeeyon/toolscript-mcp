@@ -25,6 +25,7 @@ import {
   parseListInput,
   parsePathInput,
   lowered,
+  queueWaitMs,
   parseSearchInput,
   parseTaskInput,
   parseWriteInput,
@@ -78,6 +79,8 @@ export type ProviderOptions = {
     readonly searchMs?: number
     readonly walkSlots?: number
     readonly searchInFlight?: number
+    /** The call limit in ms (`sandbox.callTimeoutSeconds`): a call waits for a walk slot for less than this. Default 60 s. */
+    readonly callMs?: number
   }
   /** Tests only: shorter lock times. */
   readonly locks?: LockerOptions
@@ -148,6 +151,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     searchMs: LIMITS.searchMs,
     walkSlots: LIMITS.walkSlots,
     searchInFlight: LIMITS.searchInFlight,
+    callMs: 60_000,
     ...options.limits,
   }
   const skip = new Set(options.skip.map(fold))
@@ -175,23 +179,36 @@ export const createProvider = (options: ProviderOptions): Provider => {
    * At most `limits.walkSlots` walks of `list` and `search` run at one time (`LIMITS.walkSlots`). Parallel walks share the file threads and
    * the CPU, and each would run to `searchMs` (issue #160). The others wait in order, and the budget of a walk starts
    * when it runs. A call that is cancelled while it waits fails at once and takes no slot. A slot passes on when a walk
-   * ends for any reason.
+   * ends for any reason. A call that still waits after `queueWaitMs` leaves the queue at that moment, by a timer, takes no
+   * slot later and answers with `unstarted()` (the call limit of the caller would end it soon after).
    */
   const turns: (() => void)[] = []
   let walking = 0
-  const slotted = async <T>(signal: AbortSignal, task: () => Promise<T>): Promise<T> => {
+  const slotted = async <T>(signal: AbortSignal, task: () => Promise<T>, unstarted: () => T): Promise<T> => {
     cancelled(signal)
     if (walking < limits.walkSlots) walking++
-    else
-      await new Promise<void>((go, stop) => {
-        const turn = () => (signal.removeEventListener('abort', quit), go())
-        const quit = () => {
-          turns.splice(turns.indexOf(turn), 1)
-          stop(new WorkspaceError('cancelled', 'the call was cancelled'))
-        }
-        turns.push(turn)
-        signal.addEventListener('abort', quit, { once: true })
-      })
+    else {
+      const waitMs = queueWaitMs(limits.callMs, limits.searchMs)
+      const got =
+        waitMs <= 0
+          ? false
+          : await new Promise<boolean>((go, stop) => {
+              const turn = () => (clearTimeout(timer), signal.removeEventListener('abort', quit), go(true))
+              const quit = () => {
+                clearTimeout(timer)
+                turns.splice(turns.indexOf(turn), 1)
+                stop(new WorkspaceError('cancelled', 'the call was cancelled'))
+              }
+              const timer = setTimeout(() => {
+                signal.removeEventListener('abort', quit)
+                turns.splice(turns.indexOf(turn), 1)
+                go(false)
+              }, waitMs)
+              turns.push(turn)
+              signal.addEventListener('abort', quit, { once: true })
+            })
+      if (!got) return unstarted()
+    }
     try {
       return await task()
     } finally {
@@ -774,12 +791,20 @@ export const createProvider = (options: ProviderOptions): Provider => {
     list: async (args, signal) => {
       const input = parseListInput(args)
       target(input.path, true)
-      return slotted(signal, () => list(input, signal))
+      return slotted(
+        signal,
+        () => list(input, signal),
+        () => ({ entries: [], truncated: true, notStarted: true }),
+      )
     },
     search: async (args, signal) => {
       const input = parseSearchInput(args)
       target(input.path, true)
-      return slotted(signal, () => search(input, signal))
+      return slotted(
+        signal,
+        () => search(input, signal),
+        () => ({ matches: [], truncated: true, filesScanned: 0, skipped: 0, notStarted: true }),
+      )
     },
     read: args => read(parsePathInput(args)),
     stat: args => stat(parsePathInput(args)),

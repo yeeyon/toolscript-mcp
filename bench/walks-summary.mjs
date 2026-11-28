@@ -38,7 +38,18 @@ for (const name of fs.readdirSync(folder).sort()) {
     const n = Number(cells[1])
     const wall = Number(cells[3])
     const cut = Number(cells[5].split('/')[0])
-    const row = forms.get(form) ?? { alone: [], eight: [], eightCut: 0, allCut: 0, passes: new Set() }
+    // The columns after the ratio: calls not started and calls with an error (absent in older outputs).
+    const notStarted = Number((cells[8] ?? '0/0').split('/')[0])
+    const errors = Number((cells[9] ?? '0/0').split('/')[0])
+    const row = forms.get(form) ?? {
+      alone: [],
+      eight: [],
+      eightCut: 0,
+      allCut: 0,
+      notStarted: 0,
+      errors: 0,
+      passes: new Set(),
+    }
     forms.set(form, row)
     row.passes.add(pass)
     if (n === 1) row.alone.push(wall)
@@ -47,16 +58,18 @@ for (const name of fs.readdirSync(folder).sort()) {
       row.eightCut += cut
     }
     row.allCut += cut
+    row.notStarted += notStarted
+    row.errors += errors
   }
 }
 
 const f1 = x => (Number.isNaN(x) ? '-' : x.toFixed(2))
 console.log(
-  '| slots | form | passes | runs of 8 | alone median s | batch of 8 median s | cut calls in batches of 8 | cut calls in all batches |',
+  '| slots | form | passes | runs of 8 | alone median s | batch of 8 median s | cut calls in batches of 8 | cut calls in all batches | not started | errors |',
 )
-console.log('| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |')
+console.log('| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
 for (const [slots, forms] of [...data].sort((a, b) => Number(a[0]) - Number(b[0])))
   for (const [form, r] of forms)
     console.log(
-      `| ${slots} | ${form} | ${r.passes.size} | ${r.eight.length} | ${f1(median(r.alone))} | ${f1(median(r.eight))} | ${r.eightCut} | ${r.allCut} |`,
+      `| ${slots} | ${form} | ${r.passes.size} | ${r.eight.length} | ${f1(median(r.alone))} | ${f1(median(r.eight))} | ${r.eightCut} | ${r.allCut} | ${r.notStarted} | ${r.errors} |`,
     )

@@ -81,6 +81,7 @@ const binding = await bindWorkspace({
   home,
   configFile: path.join(home, 'toolscript.json'),
   log: () => {},
+  callSeconds: 60,
 })
 if (!binding.ok) throw new Error(`Workspace unavailable: ${binding.reason}`)
 const client = new Client({ name: 'walks-bench', version: '0' })
@@ -98,13 +99,21 @@ const batch = async (n, include) => {
         .callTool({ name: 'search', arguments: { query: `needle-${k}`, include } })
         .catch(e => ({ isError: true, content: String(e?.message ?? e) }))
       if (r.isError === true) {
-        // An error is counted as a cut call, and its text is printed once, so a limit that binds is named.
+        // An error (the client timeout `-32001` is one) is counted as an error, apart from the cut and the not started calls.
+        // Its text is printed once, so a limit that binds is named.
         if (!failed.seen) console.log(`call failed: ${JSON.stringify(r.content).slice(0, 300)}`)
         failed.seen = true
-        return { s: (performance.now() - start) / 1000, truncated: true, matches: 0 }
+        return { s: (performance.now() - start) / 1000, error: true, notStarted: false, truncated: false, matches: 0 }
       }
-      const { truncated, matches } = r.structuredContent
-      return { s: (performance.now() - start) / 1000, truncated, matches: matches.length }
+      const { truncated, matches, notStarted } = r.structuredContent
+      // A call that left the queue for the walk slot (`notStarted`) is not a cut walk: it never walked.
+      return {
+        s: (performance.now() - start) / 1000,
+        error: false,
+        notStarted: notStarted === true,
+        truncated: truncated === true && notStarted !== true,
+        matches: matches.length,
+      }
     }),
   )
   return { wall: (performance.now() - began) / 1000, calls }
@@ -117,28 +126,34 @@ console.log(
 await batch(1, []) // warm the file cache once, not counted
 const gate = {}
 for (const [form, include] of FORMS) {
-  console.log(`\n${form}\n| N | run | wall s | each call s (min/max) | cut | matches (min) | wall / (N x alone) |`)
-  console.log('|---|---|---|---|---|---|---|')
+  console.log(
+    `\n${form}\n| N | run | wall s | each call s (min/max) | cut | matches (min) | wall / (N x alone) | not started | errors |`,
+  )
+  console.log('|---|---|---|---|---|---|---|---|---|')
   let alone = 0
   for (const n of SIZES) {
     for (let run = 1; run <= RUNS; run++) {
       const { wall, calls } = await batch(n, include)
       const cut = calls.filter(c => c.truncated).length
+      const notStarted = calls.filter(c => c.notStarted).length
+      const errors = calls.filter(c => c.error).length
       const times = calls.map(c => c.s)
       if (n === 1) alone = (alone * (run - 1) + wall) / run
       const ratio = n === 1 ? '-' : (wall / (n * alone)).toFixed(2)
-      const g = (gate[form] ??= { aloneCut: 0, eightCut: 0 })
+      const g = (gate[form] ??= { aloneCut: 0, eightCut: 0, notStarted: 0, errors: 0 })
       if (n === 1 && cut > 0) g.aloneCut++
       if (n === 8 && cut > 0) g.eightCut++
+      g.notStarted += notStarted
+      g.errors += errors
       console.log(
-        `| ${n} | ${run} | ${f1(wall)} | ${f1(Math.min(...times))}/${f1(Math.max(...times))} | ${cut}/${n} | ${Math.min(...calls.map(c => c.matches))} | ${ratio} |`,
+        `| ${n} | ${run} | ${f1(wall)} | ${f1(Math.min(...times))}/${f1(Math.max(...times))} | ${cut}/${n} | ${Math.min(...calls.map(c => c.matches))} | ${ratio} | ${notStarted}/${n} | ${errors}/${n} |`,
       )
     }
   }
 }
 for (const [form, g] of Object.entries(gate))
   console.log(
-    `gate ${form}: batch of 8 cut in ${g.eightCut}/${RUNS} runs, alone cut in ${g.aloneCut}/${RUNS} runs -> ${g.eightCut >= 2 && g.aloneCut === 0 ? 'OPEN' : 'CLOSED'}`,
+    `gate ${form}: batch of 8 cut in ${g.eightCut}/${RUNS} runs, alone cut in ${g.aloneCut}/${RUNS} runs -> ${g.eightCut >= 2 && g.aloneCut === 0 ? 'OPEN' : 'CLOSED'}; calls not started ${g.notStarted}, calls with an error ${g.errors}`,
   )
 await client.close()
 fs.rmSync(home, { recursive: true, force: true })

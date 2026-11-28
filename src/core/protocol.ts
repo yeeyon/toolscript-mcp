@@ -728,22 +728,34 @@ export type Projection = {
   cut?: { readonly list?: CutCount; readonly search?: CutCount }
 }
 
-export type CutCount = { readonly cut: number; readonly total: number }
+/** `notStarted`: calls that left the queue for a walk slot before they began, counted apart from the cut ones. */
+export type CutCount = { readonly cut: number; readonly total: number; readonly notStarted?: number }
 
 const CUT_HELP = {
   list: 'give a narrower path or include, or a smaller depth.',
   search: 'give a narrower path or include, or raise maxMatches.',
 } as const
 
+const NOT_STARTED_HELP = {
+  list: 'Run fewer lists at once, or give a narrower path or a smaller depth.',
+  search: 'Put the texts in one query array, run fewer searches at once, or give a narrower path or include.',
+} as const
+
 /** One fixed line for each tool with a cut call: two tool names, two counts and fixed words, no text of a reply. */
 const cutLines = (cut: Projection['cut']): string[] =>
   (['list', 'search'] as const).flatMap(name => {
     const count = cut?.[name]
-    return count === undefined || count.cut === 0
-      ? []
-      : [
-          `mcp__workspace__${name}: ${count.cut} of ${count.total} calls stopped early (truncated). Their results are partial: ${CUT_HELP[name]}`,
-        ]
+    if (count === undefined) return []
+    const lines: string[] = []
+    if (count.cut > 0)
+      lines.push(
+        `mcp__workspace__${name}: ${count.cut} of ${count.total} calls stopped early (truncated). Their results are partial: ${CUT_HELP[name]}`,
+      )
+    if ((count.notStarted ?? 0) > 0)
+      lines.push(
+        `mcp__workspace__${name}: ${count.notStarted} of ${count.total} calls did not start: the calls before them took the time. ${NOT_STARTED_HELP[name]}`,
+      )
+    return lines
   })
 
 /**

@@ -5,6 +5,7 @@ import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { queueWaitMs } from '../src/core/workspace.ts'
 import { open, rm, tempDir, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
 const mac = process.platform === 'darwin'
@@ -395,6 +396,160 @@ describe('search with several files in flight', () => {
     assert.equal(rig.bound.provider.inFlight(), 0)
     const again = await rig.call('search', { query: 'hit' })
     assert.equal(again.filesScanned, 12)
+  })
+})
+
+describe('a call that waits too long for its walk slot answers as not started', () => {
+  // callMs 3400 and searchMs 1000 give a queue wait of 400 ms: queueWaitMs = callMs - searchMs - 2000. The held walk
+  // keeps the slot for about that long, so searchMs is longer than the hold.
+  const limits = { searchMs: 1000, callMs: 3400 }
+  const waitMs = 400
+  const pause = (ms: number) => new Promise(r => setTimeout(r, ms))
+  const until = async (ok: () => boolean): Promise<void> => {
+    for (let i = 0; i < 400 && !ok(); i++) await pause(5)
+    assert.ok(ok(), 'the condition did not come true')
+  }
+  const holding = () => {
+    let on = true
+    let held = 0
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    return {
+      hook: async (lookup: string) => {
+        if (on && lookup === 'readdir') {
+          held++
+          await gate
+        }
+      },
+      held: () => held,
+      release: () => {
+        on = false
+        release()
+      },
+    }
+  }
+
+  test('the queue wait is the call limit less the walk budget and 2 s, and 0 for a short limit', () => {
+    assert.equal(queueWaitMs(60_000, 10_000), 48_000)
+    assert.equal(queueWaitMs(5_000, 10_000), 0)
+    assert.equal(queueWaitMs(12_000, 10_000), 0)
+    assert.equal(queueWaitMs(3_400, 1_000), waitMs)
+  })
+
+  test('calls that still wait at the cap answer at once as not started, in order, and open no file', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const h = holding()
+    let opens = 0
+    const rig = await rigOf(t, root, {
+      limits,
+      hook: async lookup => {
+        if (lookup === 'open') opens++
+        await h.hook(lookup)
+      },
+    })
+    if (rig === undefined) return
+    const first = rig.call('search', { query: 'hit' })
+    await until(() => h.held() === 1)
+    const opensBefore = opens
+    const began = performance.now()
+    const answered: string[] = []
+    const second = rig.call('search', { query: 'hit' }).then(r => (answered.push('second'), r))
+    const third = rig.call('list').then(r => (answered.push('third'), r))
+    const [b, c] = await Promise.all([second, third])
+    const took = performance.now() - began
+    assert.ok(took >= waitMs - 30 && took < waitMs + 500, `the cap answered after ${took} ms`)
+    assert.deepEqual(answered, ['second', 'third'])
+    assert.deepEqual(b, { matches: [], truncated: true, filesScanned: 0, skipped: 0, notStarted: true })
+    assert.deepEqual(c, { entries: [], truncated: true, notStarted: true })
+    assert.equal(h.held(), 1, 'a walk of theirs made a lookup')
+    assert.equal(opens, opensBefore, 'a call that did not start opened a file or a folder')
+    h.release()
+    const done = await first
+    assert.equal(done.truncated, false)
+    assert.equal(done.matches.length, 1)
+    assert.ok(!('notStarted' in done))
+    const later = await rig.call('search', { query: 'hit' })
+    assert.equal(later.matches.length, 1)
+    assert.ok(!('notStarted' in later))
+    await until(() => rig.bound.provider.inFlight() === 0)
+  })
+
+  test('a call that waited and got its slot before the cap runs its whole walk and is not marked as not started', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const h = holding()
+    const rig = await rigOf(t, root, { limits, hook: h.hook })
+    if (rig === undefined) return
+    const first = rig.call('search', { query: 'hit' })
+    await until(() => h.held() === 1)
+    const second = rig.call('search', { query: 'hit' })
+    await pause(waitMs - 150)
+    h.release()
+    const [a, b] = await Promise.all([first, second])
+    assert.equal(a.matches.length, 1)
+    assert.equal(b.matches.length, 1)
+    assert.equal(b.truncated, false)
+    assert.ok(!('notStarted' in b))
+  })
+
+  test('a batch that fits gives the same results as one call at a time, with no notStarted key', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit one\n', 'd/b.txt': 'hit two\n', 'd/c.txt': 'nothing\n' })
+    const rig = await rigOf(t, root, { limits })
+    if (rig === undefined) return
+    const args = [{ query: 'hit' }, { query: 'two' }, { query: ['one', 'nothing'] }, { query: 'hit', path: 'd' }]
+    const one: string[] = []
+    for (const a of args) one.push(JSON.stringify(await rig.call('search', a)))
+    const batch = (await Promise.all(args.map(a => rig.call('search', a)))).map(r => JSON.stringify(r))
+    assert.deepEqual(batch, one)
+    for (const text of batch) assert.ok(!text.includes('notStarted'))
+    await until(() => rig.bound.provider.inFlight() === 0)
+  })
+
+  test('a cancel while waiting fails and takes no slot; a call that left by the cap takes none later; the others keep their order', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const h = holding()
+    const rig = await rigOf(t, root, { limits, hook: h.hook })
+    if (rig === undefined) return
+    const first = rig.call('search', { query: 'hit' })
+    await until(() => h.held() === 1)
+    const quit = new AbortController()
+    const cancelled = rig.call('list', {}, quit.signal)
+    const left = rig.call('search', { query: 'hit' })
+    await until(() => rig.bound.provider.inFlight() === 3)
+    quit.abort()
+    await assert.rejects(cancelled)
+    assert.equal((await left).notStarted, true)
+    const order: string[] = []
+    const next = rig.call('search', { query: 'hit' }).then(r => (order.push('next'), r))
+    const last = rig.call('list').then(r => (order.push('last'), r))
+    await until(() => rig.bound.provider.inFlight() === 3)
+    h.release()
+    const [a, n, l] = await Promise.all([first, next, last])
+    assert.equal(a.truncated, false)
+    assert.equal(n.matches.length, 1)
+    assert.ok(!('notStarted' in n))
+    assert.ok(!('notStarted' in l))
+    assert.deepEqual(order, ['next', 'last'])
+    await until(() => rig.bound.provider.inFlight() === 0)
+  })
+
+  test('with a call limit under 12 s a call that must queue answers at once, and a walk alone runs', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const h = holding()
+    const rig = await rigOf(t, root, { limits: { searchMs: 1000, callMs: 3000 }, hook: h.hook })
+    if (rig === undefined) return
+    const alone = rig.call('search', { query: 'hit' })
+    await until(() => h.held() === 1)
+    const began = performance.now()
+    const second = await rig.call('search', { query: 'hit' })
+    assert.equal(second.notStarted, true)
+    assert.ok(performance.now() - began < 500)
+    h.release()
+    assert.equal((await alone).matches.length, 1)
   })
 })
 

@@ -80,3 +80,21 @@ took 5.4 to 7.5 s, 54 to 75 % of `searchMs` (10 s). The time limit binds, not th
 Why 1: two walks on one tree slow each other from about 5.5 s to about 10 s each (wall per call 0.85 to 0.9 of one after
 the other), so they sit on the 10 s edge and a batch is cut. One slot cut no call, but a batch of 8 searches took 51.7 to
 54.5 s and once passed the 60 s request timeout of the client (`-32001`). That queue is a separate finding.
+
+With the queue cap (`notStarted`): run 46126905614, windows, 16000 files, 1 slot, 2 passes of 3 runs, bench head
+c698d1e (callSeconds 60, so a call waits for the slot for 48 s at most). Errors: 0 in every cell, no `-32001`. A search alone took
+8.8 to 9.9 s without an include (this run was slower than 46123206860 above: 5.4 s) and 5.5 to 5.9 s with one.
+
+| Form, batch | wall s (median) | cut | not started | errors |
+| ----------- | --------------- | --- | ----------- | ------ |
+| no include, 1 | 9.0 | 0 | 0 | 0 |
+| no include, 2 | 18 to 20 | 0 to 2 of 2 | 0 | 0 |
+| no include, 4 | 40.0 | 4 of 4 | 0 | 0 |
+| no include, 8 | 50.0 (6 of 6 runs) | 5 of 8 | 3 of 8 | 0 |
+| include, 8 | 37.5 to 49.2 | 0 | 0 | 0 |
+
+A batch of 8 without an include: five walks ran their 10 s (the fifth got its slot at 40 s, before the cap at 48 s), the other three
+answered `notStarted: true` at 48 s, and the wall time was 50 s, under the 60 s limit. Before the cap this batch took 51.7 to 54.5 s
+and once timed out. With an include a batch of 8 took 37.5 to 49.2 s with no cut and no call left in the queue. The columns `not
+started` and `errors` printed as designed, and `bench/walks-summary.mjs` read them (18 not started, 0 errors over 6 runs). The 0
+matches in the `matches (min)` column of the batches of 8 come from the calls that did not start.

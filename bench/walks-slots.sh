@@ -19,7 +19,7 @@ slots() { sed -i "s/walkSlots: [0-9]*,/walkSlots: $1,/" src/core/workspace.ts; g
 slots 1
 node --experimental-strip-types bench/walks.mjs --files "$files" --runs 1 --tree "$tree" 2>&1 | tail -n 30 | tee "$results/warmup.txt"
 pass=0
-for s in 2 1 2 1; do
+for s in ${SLOTS:-2 1 2 1}; do
   pass=$((pass + 1))
   slots "$s"
   {

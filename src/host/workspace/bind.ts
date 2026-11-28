@@ -274,7 +274,7 @@ export const bindWorkspace = async ({
       ...(workspace.gitignore === false && { gitignore: false }),
       windows: platform === 'win32',
       log,
-      ...(limits !== undefined && { limits }),
+      limits: { ...(callSeconds !== undefined && { callMs: callSeconds * 1000 }), ...limits },
       ...(prune === false && { prune: false }),
       ...(listedKinds === false && { listedKinds: false }),
       ...(tasks !== undefined && { tasks }),
