@@ -19,11 +19,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        files: [2500, 5500]
+        os: [windows-latest]
+        # Near the budget: a lone search took about 2.5 s at 5500 files, so 16000 files should take 6 to 8 s of `searchMs` 10 s.
+        files: [16000]
     name: walks ${{ matrix.os }} ${{ matrix.files }} files
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,35 +41,9 @@ jobs:
           { echo "os $RUNNER_OS"; echo "commit $GITHUB_SHA"; } | tee results/results.txt
           cp -a . "$RUNNER_TEMP/app"
           cd "$RUNNER_TEMP/app"
-          bash bench/walks-slots.sh "${{ matrix.files }}" "$GITHUB_WORKSPACE/results" "$RUNNER_TEMP/walks-tree"
+          bash bench/walks-slots.sh "${{ matrix.files }}" "$GITHUB_WORKSPACE/results" "$RUNNER_TEMP/walks-tree" 2
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: walks-results-${{ matrix.os }}-${{ matrix.files }}
-          path: results/
-
-  docker:
-    # A container with a CPU quota of 2: the case that `availableParallelism` must see (issue #180).
-    name: walks docker 2 cpus
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Walks in a container with 2 CPUs
-        run: |
-          mkdir results
-          { echo "os docker"; echo "commit $GITHUB_SHA"; } | tee results/results.txt
-          cp -a . "$RUNNER_TEMP/app"
-          docker run --rm --cpus 2 -v "$RUNNER_TEMP/app:/app" -v "$GITHUB_WORKSPACE/results:/results" -w /app \
-            node:22-bookworm-slim bash bench/walks-slots.sh 2500 /results /tmp/walks-tree
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: walks-results-docker-2cpus
           path: results/

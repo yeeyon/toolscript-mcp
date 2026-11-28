@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # One measurement of the walk slots (issue #180): bench/walks.mjs with 2, 1, 2, 1 slots on one tree.
 # Run it from a COPY of the repo (it changes `walkSlots` in src/core/workspace.ts with sed), as
-#   bench/walks-slots.sh <files> <results dir> <tree dir>
+#   bench/walks-slots.sh <files> <results dir> <tree dir> [runs, default 3]
 # bench.yml runs it on the runner and in a Docker container with --cpus 2.
 set -euo pipefail
 files=$1
 results=$2
 tree=$3
+runs=${4:-3}
 mkdir -p "$results"
 {
   echo "files $files"
@@ -24,7 +25,7 @@ for s in 2 1 2 1; do
   {
     echo
     echo "== pass $pass, walkSlots $s"
-    node --experimental-strip-types bench/walks.mjs --files "$files" --runs 3 --tree "$tree"
+    node --experimental-strip-types bench/walks.mjs --files "$files" --runs "$runs" --tree "$tree"
   } 2>&1 | tee "$results/pass$pass-slots$s.txt" | tee -a "$results/results.txt"
 done
 echo
