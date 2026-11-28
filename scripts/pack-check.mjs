@@ -53,6 +53,13 @@ try {
   for (const f of REQUIRED) assert.ok(files.includes(f), `the package has no ${f}`)
   const extra = files.filter(f => FORBIDDEN.test(f))
   assert.deepEqual(extra, [], 'the package holds files that are not for users')
+  assert.equal(files.length, 16, `the package holds ${files.length} files, not 16`)
+  // The bundle holds one SDK generation: esbuild marks each input file with a comment, and none is a file of the first SDK.
+  const bundle = fs.readFileSync(path.join(ROOT, 'dist', 'host', 'main.js'), 'utf8')
+  assert.ok(
+    !bundle.includes('\n// node_modules/@modelcontextprotocol/sdk/'),
+    'dist/host/main.js holds a file of @modelcontextprotocol/sdk',
+  )
   const tarball = path.join(dest, pack.filename)
   console.log(`packed ${pack.name}@${pack.version}: ${files.length} files, ${pack.size} bytes`)
 
