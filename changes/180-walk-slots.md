@@ -1,0 +1,1 @@
+- Workspace `list` and `search` now run two walks at one time in a session, not one (issue #180), and one on a machine with a single CPU. A batch of 8 `search` calls in a `Promise.all` took 26 % to 41 % less time in a CI bench on Linux and Windows (4 CPUs each), with no call cut.

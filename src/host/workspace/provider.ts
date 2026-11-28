@@ -9,6 +9,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { createHash } from 'node:crypto'
+import os from 'node:os'
 import {
   LIMITS,
   WORKSPACE_TOOLS,
@@ -33,6 +34,7 @@ import {
   planEdits,
   showPath,
   unifiedDiff,
+  walkSlotsFor,
   type Change,
   type DiffInput,
   type EditInput,
@@ -70,7 +72,12 @@ export type ProviderOptions = {
   /** The stderr log. Never holds a path, a name or file content. */
   readonly log: (line: string) => void
   /** Tests only: smaller limits, so a test needs fewer files. */
-  readonly limits?: { readonly searchFiles?: number; readonly listEntries?: number; readonly searchMs?: number }
+  readonly limits?: {
+    readonly searchFiles?: number
+    readonly listEntries?: number
+    readonly searchMs?: number
+    readonly walkSlots?: number
+  }
   /** Tests only: shorter lock times. */
   readonly locks?: LockerOptions
 }
@@ -138,6 +145,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
     searchFiles: LIMITS.searchFiles,
     listEntries: LIMITS.listEntries,
     searchMs: LIMITS.searchMs,
+    // One slot on a machine with one CPU, else LIMITS.walkSlots. Not a count from the cores (issue #180).
+    walkSlots: walkSlotsFor(LIMITS.walkSlots, os.availableParallelism()),
     ...options.limits,
   }
   const skip = new Set(options.skip.map(fold))
@@ -162,7 +171,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   /**
-   * At most `LIMITS.walkSlots` walks of `list` and `search` run at one time. Parallel walks share the file threads and
+   * At most `limits.walkSlots` walks of `list` and `search` run at one time (`LIMITS.walkSlots`, 1 on one CPU). Parallel walks share the file threads and
    * the CPU, and each would run to `searchMs` (issue #160). The others wait in order, and the budget of a walk starts
    * when it runs. A call that is cancelled while it waits fails at once and takes no slot. A slot passes on when a walk
    * ends for any reason.
@@ -171,7 +180,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
   let walking = 0
   const slotted = async <T>(signal: AbortSignal, task: () => Promise<T>): Promise<T> => {
     cancelled(signal)
-    if (walking < LIMITS.walkSlots) walking++
+    if (walking < limits.walkSlots) walking++
     else
       await new Promise<void>((go, stop) => {
         const turn = () => (signal.removeEventListener('abort', quit), go())
