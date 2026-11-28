@@ -17,7 +17,7 @@ mkdir -p "$results"
 slots() { sed -i "s/walkSlots: [0-9]*,/walkSlots: $1,/" src/core/workspace.ts; grep -n "walkSlots" src/core/workspace.ts; }
 # A first pass makes the tree and warms the file cache: its numbers are dropped, so no slot count has the warm cache alone.
 slots 1
-node --experimental-strip-types bench/walks.mjs --files "$files" --runs 1 --tree "$tree" > /dev/null 2>&1
+node --experimental-strip-types bench/walks.mjs --files "$files" --runs 1 --tree "$tree" 2>&1 | tail -n 30 | tee "$results/warmup.txt"
 pass=0
 for s in 2 1 2 1; do
   pass=$((pass + 1))
