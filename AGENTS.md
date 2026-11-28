@@ -44,7 +44,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `brokerwire.ts` holds the key file, the build id (SHA-256 of `broker.js`) and the endpoint name.
   - `broker.ts`: the broker process, built from `brokermain.ts` into `dist/host/broker.js`, a second bundle with Node
     built-ins and `cross-spawn` only. One router (`src/core/mux.ts`) and one child for each share key. The listen is the
-    lock. `TOOLSCRIPT_BROKER_IDLE_MS` (at least 1000) shortens the 10-minute idle time, for tests and the bench. Log:
+    lock. A socket file that refuses a connect is removed only after the same file has refused for `guardMs` (1 s), because
+    a broker between its bind and its listen refuses too (issue #133). `TOOLSCRIPT_BROKER_IDLE_MS` (at least 1000) shortens the 10-minute idle time, for tests and the bench. Log:
     `~/.toolscript-mcp/broker/broker.log`, lifecycle lines only. Frames of the broker to a host start with `MARK`
     (`src/core/broker.ts`), so no server line passes as one (`WIRE` 2). Child stderr goes to the hosts as `stderr`
     frames (rate, backlog and tail limits in `src/core/broker.ts`), never to the log. The caps `LINKS_MAX`,
@@ -137,6 +138,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `memory.mjs`: what N sessions cost in private bytes, processes and start time, with no model and no spend.
     Fixture mode by default; `--config <file>` is real mode, for the owner only. Results in `RESULTS-memory.md`.
     `tests/memory.e2e.mjs` runs its smoke and the hard-kill case.
+  - `broker-race.mjs`: N brokers started at once on a fresh HOME, R rounds, counts the rounds with two brokers at once
+    (issue #133). Linux and macOS; no model and no spend. `--contenders 20 --rounds 300` is the case that reproduced it.
   - `walks.mjs`: N parallel Workspace `search` calls on one tree, in Docker with `--cpus 1` only. Results in `RESULTS-walks.md`.
   - `CODEX.md`: the test plan for the same arms in Codex, and the result of the Codex smoke test. `check.mjs`
     judges an answer of another agent.

@@ -50,6 +50,10 @@ export type BrokerOptions = {
   readonly maxLinks?: number
   readonly maxChildren?: number
   readonly maxUnsent?: number
+  /** How long a socket file must refuse a connect before a starting broker removes it: a test sets it. */
+  readonly guardMs?: number
+  /** A test hook, called once this broker listens, before it checks that its socket file is still at the path. */
+  readonly afterListen?: () => void
 }
 
 export type Broker = {
@@ -158,12 +162,27 @@ export const endTree = (proc: ChildProcess): Promise<void> => {
 const RECOVER_MS = 8000
 /** A lock file older than this is stale whatever its pid says. Recovery takes milliseconds. */
 const LOCK_STALE_MS = 5000
+/**
+ * A socket file that refuses a connect is a dead broker's only when the same file (same device, inode and birth time) has refused for
+ * this long. A broker that has bound its file and not yet called listen refuses too, and that gap lasts microseconds, but
+ * a busy single CPU can stretch it to some tens of milliseconds. The sum for a host that starts after a killed broker: this
+ * guard plus a dial and a listen, about 1.1 s, well under `RECOVER_MS` (8 s), `LOCK_STALE_MS` (5 s, the recovery lock is
+ * held for the guard) and the 10 s that a host polls for a broker.
+ */
+const SOCKET_GUARD_MS = 1000
 
-/** dev and inode of a file as one text, or undefined when there is none. */
+/**
+ * dev, inode and birth time of a file as one text, or undefined when there is none. The inode alone is not an identity:
+ * a file system hands the inode of a file just removed to the next file made (Linux ext4 and overlayfs do it nearly
+ * every time), so a socket file that another broker removed and bound again would look like the one before. The birth
+ * time (statx on Linux, the file system on macOS) differs, and a hard link or a chmod does not change it.
+ * Where the file system gives no birth time, statx reports 0 and the id is dev:ino as before, so the guard is then the
+ * only protection.
+ */
 const fileId = (file: string): string | undefined => {
   try {
     const info = fs.statSync(file, { bigint: true })
-    return `${info.dev}:${info.ino}`
+    return `${info.dev}:${info.ino}:${info.birthtimeNs}`
   } catch {
     return undefined
   }
@@ -245,27 +264,46 @@ const dial = (endpoint: string): Promise<'alive' | 'stale' | 'gone'> =>
 /**
  * The listen found a socket file at the path. One contender at a time probes it, removes it if nobody answers and
  * listens, under a lock file. The others wait and dial again, so a socket that the first one bound is never removed.
- * Returns true when this broker now listens.
+ * A file that refuses a connect is removed only after the same file has refused for `guardMs` (see `SOCKET_GUARD_MS`):
+ * the broker that made it may be between its bind and its listen. Returns true when this broker now listens.
  */
-const recoverSocket = async (endpoint: string, listen: () => Promise<void>): Promise<boolean> => {
+const recoverSocket = async (endpoint: string, listen: () => Promise<void>, guardMs: number): Promise<boolean> => {
   const lockFile = `${endpoint}.lock`
   const end = Date.now() + RECOVER_MS
+  const nap = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
   while (Date.now() < end) {
     const lock = takeLock(lockFile)
     if (lock === undefined) {
-      await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 30))
+      await nap(20 + Math.random() * 30)
       if ((await dial(endpoint)) === 'alive') return false
       continue
     }
     try {
-      const state = await dial(endpoint)
-      if (state === 'alive') return false
-      if (state === 'stale') fs.rmSync(endpoint, { force: true })
-      try {
-        await listen()
-        return true
-      } catch {
-        return false
+      // The file that refused first, and when. Another file at the path starts the count again.
+      let refused: { readonly id: string; readonly at: number } | undefined
+      for (;;) {
+        const state = await dial(endpoint)
+        if (state === 'alive') return false
+        if (state === 'stale') {
+          const id = fileId(endpoint)
+          if (id !== undefined) {
+            if (refused?.id !== id) refused = { id, at: Date.now() }
+            if (Date.now() - refused.at < guardMs) {
+              if (Date.now() >= end) return false
+              await nap(Math.min(25, guardMs))
+              continue
+            }
+            // The id was read in this tick, and only the holder of the recovery lock removes this file, so what is removed is the
+            // file that refused for the guard.
+            fs.rmSync(endpoint, { force: true })
+          }
+        }
+        try {
+          await listen()
+          return true
+        } catch {
+          return false
+        }
       }
     } finally {
       dropLock(lockFile, lock)
@@ -340,6 +378,8 @@ export const startBroker = async ({
   maxLinks = LINKS_MAX,
   maxChildren = CHILDREN_MAX,
   maxUnsent = UNSENT_MAX,
+  guardMs = SOCKET_GUARD_MS,
+  afterListen,
 }: BrokerOptions): Promise<Broker | undefined> => {
   const dir = brokerFolder(home)
   privateFolder(dir)
@@ -721,6 +761,8 @@ export const startBroker = async ({
   }
 
   const server = net.createServer(onConnection)
+  // The file that this server bound, read in the same tick as the bind (see `listen`).
+  let bound: string | undefined
   const listen = (): Promise<void> =>
     new Promise((resolve, reject) => {
       server.once('error', reject)
@@ -728,6 +770,9 @@ export const startBroker = async ({
         server.off('error', reject)
         resolve()
       })
+      // The bind and the listen of a path run inside the call, and an EADDRINUSE comes on the next tick. So a success
+      // leaves this server's own file at the path now, and a later swap of that file by another broker is seen against it.
+      bound = process.platform === 'win32' ? undefined : fileId(endpoint)
     })
   try {
     if (process.platform !== 'win32' && (await adoptKept(endpoint))) return undefined
@@ -735,14 +780,13 @@ export const startBroker = async ({
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err
     // Windows pipes vanish with their process, so a taken name means a broker is there.
-    if (process.platform === 'win32' || !(await recoverSocket(endpoint, listen))) return undefined
+    if (process.platform === 'win32' || !(await recoverSocket(endpoint, listen, guardMs))) return undefined
   }
-  // The inode of the socket file this broker bound: at the close, a file at the path that is not this one is another
-  // broker's, and stays.
-  const mine = process.platform === 'win32' ? undefined : fileId(endpoint)
+  // `bound` is the id (device, inode, birth time) read at the bind: at the close, a file at the path that is not this one
+  // is another broker's, and stays.
   const closeServer = (): void => {
-    const now = mine === undefined ? undefined : fileId(endpoint)
-    if (now === undefined || now === mine) return void server.close()
+    const now = bound === undefined ? undefined : fileId(endpoint)
+    if (now === undefined || now === bound) return void server.close()
     // The close of a pipe server unlinks the path whoever bound it, so the other broker's file is linked aside and back.
     // What remains: for the two calls between the unlink and the relink (microseconds) the path does not exist, and a
     // host that dials then gets ENOENT (it dials once more before it starts a broker). A kill inside it leaves the
@@ -759,6 +803,14 @@ export const startBroker = async ({
       fs.linkSync(aside, endpoint)
     } catch {}
     fs.rmSync(aside, { force: true })
+  }
+  afterListen?.()
+  // A broker that lost its name between the bind and here (another broker removed its file) serves nobody by name: it
+  // leaves at once, and the file at the path is the other broker's.
+  if (bound !== undefined && fileId(endpoint) !== bound) {
+    closeServer()
+    for (const socket of sockets) socket.destroy()
+    return undefined
   }
   log(`start pid ${process.pid}`)
   log('listen')
