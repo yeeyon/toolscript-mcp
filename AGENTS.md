@@ -145,8 +145,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `RESULTS-codemode.md`. `spend.mjs` holds its spend cap. `arms.mjs` holds the pure parts of the 1.1.0 regression bench (no pty,
     no spend; `tests/bench-arms.test.ts`): the arms `toolscript-1.0.5` (the build of `--base`), `toolscript-legacy` (the build of
     `--head` with `TOOLSCRIPT_PROTOCOL=legacy`) and `toolscript` (`--head`, no variable), the check of the builds, the fields that
-    each row names (version, `main.js` SHA-256, variables, first method, from `$BENCH_LOG.first` of `fake-server.mjs`), `--dry-run`
-    and the pass rule of the release run. A build is a folder with `dist/host/main.js` and `package.json`.
+    each row names (version, `main.js` and `runtime/runner.mjs` SHA-256, variables, first method, from `$BENCH_LOG.first` of
+    `fake-server.mjs`), `--dry-run` (with its estimate against the cap) and the pass rule of the release run (per-task ratio of
+    medians, a verdict only with warm runs in all three arms). A build is a folder with `dist/host/main.js`, `runtime/runner.mjs`
+    and `package.json`; `--base` must not equal `--head` and warns when it is not the published 1.0.5 (`PINNED_105`). The order
+    rotates the start arm each rep. The pty has no `CLAUDE*` and no `TOOLSCRIPT_*` variable, each arm has a cwd name of one
+    width, and each toolscript run has its own fresh HOME (set on the MCP entry), so learned shapes never cross arms.
   - `memory.mjs`: what N sessions cost in private bytes, processes and start time, with no model and no spend.
     Fixture mode by default; `--config <file>` is real mode, for the owner only. Results in `RESULTS-memory.md`.
     `tests/memory.e2e.mjs` runs its smoke and the hard-kill case.

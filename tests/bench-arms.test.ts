@@ -10,11 +10,16 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  PINNED_105,
   buildFields,
   buildLines,
   buildOfArm,
+  childEnv,
+  cwdSlug,
+  entryEnv,
   envOfArm,
   firstMethodOf,
+  homeEnv,
   jobsOf,
   passRule,
   readBuild,
@@ -33,6 +38,8 @@ const fakeBuild = (name: string, version: string, text: string) => {
   const root = path.join(dir, name)
   fs.mkdirSync(path.join(root, 'dist', 'host'), { recursive: true })
   fs.writeFileSync(path.join(root, 'dist', 'host', 'main.js'), text)
+  fs.mkdirSync(path.join(root, 'runtime'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'runtime', 'runner.mjs'), `runner of ${text}`)
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'toolscript-mcp', version }))
   return root
 }
@@ -68,12 +75,14 @@ describe('the arm table', () => {
     assert.deepEqual(buildFields('toolscript-legacy', builds, 'initialize'), {
       version: '1.1.0',
       mainSha256: sha('head main'),
+      runnerSha256: sha('runner of head main'),
       variables: { TOOLSCRIPT_PROTOCOL: 'legacy' },
       firstMethod: 'initialize',
     })
     assert.deepEqual(buildFields('toolscript-1.0.5', builds, undefined), {
       version: '1.0.5',
       mainSha256: sha('base main'),
+      runnerSha256: sha('runner of base main'),
       variables: {},
       firstMethod: null,
     })
@@ -115,7 +124,7 @@ describe('the arm table', () => {
     assert.match(
       text,
       new RegExp(
-        `- toolscript-1.0.5: version 1.0.5, main.js SHA-256 ${sha('base main')}, variables none, first method sent initialize`,
+        `- toolscript-1.0.5: version 1.0.5, main.js SHA-256 ${sha('base main')}, runner.mjs SHA-256 ${sha('runner of base main')}, variables none, first method sent initialize`,
       ),
     )
     assert.match(text, /- toolscript-legacy: version 1.1.0, .*variables TOOLSCRIPT_PROTOCOL=legacy/)
@@ -156,6 +165,7 @@ describe('the builds', () => {
       resolveBuilds({ armIds: ['direct', 'codemode'], head: undefined, base: undefined, repo: path.join(dir, 'gone') }),
       {
         errors: [],
+        warnings: [],
         builds: {},
       },
     )
@@ -164,6 +174,78 @@ describe('the builds', () => {
       resolveBuilds({ armIds: ['toolscript'], head: undefined, base: undefined, repo: good }).builds.head?.dir,
       good,
     )
+  })
+
+  test('a build with no runtime/runner.mjs is an error', () => {
+    const noRunner = fakeBuild('no-runner', '1.0.5', 'x')
+    fs.rmSync(path.join(noRunner, 'runtime'), { recursive: true })
+    assert.match(readBuild(noRunner).error, /has no runtime\/runner\.mjs/)
+  })
+
+  test('a base whose main.js is the head main.js ends the command: the comparison would be void', () => {
+    const a = fakeBuild('same-a', '1.1.0', 'one text')
+    const b = fakeBuild('same-b', '1.0.5', 'one text')
+    const r = resolveBuilds({ armIds: ['toolscript-1.0.5', 'toolscript'], head: a, base: b, repo: a })
+    assert.equal(r.errors.length, 1)
+    assert.match(r.errors[0]!, /^--base and --head hold the same dist\/host\/main\.js \(SHA-256 [0-9a-f]{64}\)/)
+  })
+
+  test('a base that is not the published 1.0.5 warns once; the published bytes do not', () => {
+    const head = fakeBuild('warn-head', '1.1.0', 'head text')
+    const other = fakeBuild('warn-base', '1.0.5', 'local build')
+    const warned = resolveBuilds({ armIds: ['toolscript-1.0.5'], head, base: other, repo: head })
+    assert.deepEqual(warned.errors, [])
+    assert.equal(warned.warnings.length, 1)
+    assert.match(warned.warnings[0]!, /^WARN --base: dist\/host\/main\.js and runtime\/runner\.mjs of .*warn-base/)
+    assert.ok(warned.warnings[0]!.includes(PINNED_105.mainSha256))
+    assert.match(PINNED_105.mainSha256, /^[0-9a-f]{64}$/)
+    assert.match(PINNED_105.runnerSha256, /^[0-9a-f]{64}$/)
+  })
+})
+
+describe('what the child of an arm sees', () => {
+  test('the pty environment has no CLAUDE* and no TOOLSCRIPT_*, whatever the case', () => {
+    const env = childEnv(
+      {
+        PATH: '/bin',
+        CLAUDECODE: '1',
+        claude_code_effort: 'x',
+        TOOLSCRIPT_PROTOCOL: 'modern',
+        toolscript_lazy: '0',
+        TOOLSCRIPT_CHILD_GUARD: '1',
+        KEEP: 'y',
+      },
+      { codeMode: false, bash: 'C:/bash.exe' },
+    )
+    assert.deepEqual(env, { PATH: '/bin', KEEP: 'y', CLAUDE_CODE_GIT_BASH_PATH: 'C:/bash.exe' })
+    assert.equal(childEnv({}, { codeMode: true, bash: 'b' }).CLAUDE_CODE_EXPERIMENTAL_CODE_MODE, '1')
+  })
+
+  test('every toolscript entry has the same keys, with a fresh home and no variable but its own', () => {
+    const home = path.join(dir, 'run', 'home')
+    assert.deepEqual(homeEnv(home), {
+      HOME: home,
+      USERPROFILE: home,
+      APPDATA: path.join(home, 'AppData', 'Roaming'),
+    })
+    assert.deepEqual(entryEnv('toolscript', home), homeEnv(home))
+    assert.deepEqual(entryEnv('toolscript-1.0.5', home), homeEnv(home))
+    assert.deepEqual(entryEnv('toolscript-legacy', home), { TOOLSCRIPT_PROTOCOL: 'legacy', ...homeEnv(home) })
+  })
+
+  test('the cwd of every arm has the same length', () => {
+    const all = [
+      'direct',
+      'codemode',
+      'toolscript',
+      'toolscript-legacy',
+      'toolscript-1.0.5',
+      'direct-lean',
+      'toolscript-lean',
+    ]
+    const slugs = all.map(a => cwdSlug(a, all))
+    assert.equal(new Set(slugs).size, all.length)
+    assert.equal(new Set(slugs.map(s => s.length)).size, 1)
   })
 })
 
@@ -196,17 +278,28 @@ describe('the dry run', () => {
     assert.equal(r.status, 0, r.stderr)
     assert.match(
       r.stdout,
-      /toolscript-1\.0\.5: build .*dry-base, version 1\.0\.5, main\.js SHA-256 [0-9a-f]{64}, variables none/,
+      /toolscript-1\.0\.5: build .*dry-base, version 1\.0\.5, main\.js SHA-256 [0-9a-f]{64}, runner\.mjs SHA-256 [0-9a-f]{64}, variables none/,
     )
     assert.ok(r.stdout.includes(sha('dry base')) && r.stdout.includes(sha('dry head')))
     assert.match(r.stdout, /toolscript-legacy: .*version 1\.1\.0, .*variables TOOLSCRIPT_PROTOCOL=legacy/)
     assert.match(r.stdout, /tasks: logs, ticket/)
     assert.match(r.stdout, /runs to do: 12/)
-    // The order: arms alternate inside a task, and flip every rep.
+    assert.ok(r.stdout.includes(sha('runner of dry base')) && r.stdout.includes('runner.mjs SHA-256'))
+    // The base is not the published 1.0.5, so one WARN line on stderr.
+    assert.equal(
+      r.stderr
+        .trim()
+        .split('\n')
+        .filter(l => l.startsWith('WARN --base')).length,
+      1,
+    )
+    // The order: arms alternate inside a task, and the start arm moves one place each rep.
     const order = [...r.stdout.matchAll(/^\s*\d+\. (\S+)$/gm)].map(m => m[1])
     assert.deepEqual(order.slice(0, 3), ['logs-toolscript-1.0.5-1', 'logs-toolscript-legacy-1', 'logs-toolscript-1'])
-    assert.deepEqual(order.slice(6, 9), ['logs-toolscript-2', 'logs-toolscript-legacy-2', 'logs-toolscript-1.0.5-2'])
+    assert.deepEqual(order.slice(6, 9), ['logs-toolscript-legacy-2', 'logs-toolscript-2', 'logs-toolscript-1.0.5-2'])
     assert.match(r.stdout, /spent so far \$0\.0000, cap \$0\.5/)
+    // 12 runs with no saved run: 0.25 USD each, over the cap of 0.5.
+    assert.match(r.stdout, /estimate of the 12 planned runs \$3\.0000, total \$3\.0000 against the cap \$0\.5: OVER/)
     assert.ok(!fs.existsSync(path.join(dir, 'out')), 'a dry run makes no folder')
   })
 
@@ -226,6 +319,19 @@ describe('the dry run', () => {
       jobs.map((j: { task: { id: string }; arm: string; rep: number }) => `${j.task.id}-${j.arm}-${j.rep}`),
       ['t1-a-1', 't1-b-1', 't2-a-1', 't2-b-1', 't1-b-2', 't1-a-2', 't2-b-2', 't2-a-2'],
     )
+  })
+
+  test('with three arms each arm leads once in three reps and stands in each place once (a Latin square)', () => {
+    const arms = ['a', 'b', 'c']
+    const jobs = jobsOf({ tasks: [{ id: 't' }], armIds: arms, reps: 3 }) as { arm: string; rep: number }[]
+    const orders = [1, 2, 3].map(rep => jobs.filter(j => j.rep === rep).map(j => j.arm))
+    assert.deepEqual(orders, [
+      ['a', 'b', 'c'],
+      ['b', 'c', 'a'],
+      ['c', 'a', 'b'],
+    ])
+    assert.deepEqual(orders.map(o => o[0]).sort(), arms)
+    for (let place = 0; place < 3; place++) assert.deepEqual(orders.map(o => o[place]).sort(), arms)
   })
 })
 
@@ -248,6 +354,8 @@ describe('the estimate of a new arm', () => {
 describe('the pass rule of the release run', () => {
   const run = (arm: string, extra: Record<string, unknown> = {}) => ({
     arm,
+    task: 't1',
+    version: '1.1.0',
     correct: true,
     cold: false,
     freshInput: 100,
@@ -276,21 +384,82 @@ describe('the pass rule of the release run', () => {
     assert.equal(passRule(three({ failedTools: { [TOOL.search_tools]: 1 } })).pass, true)
   })
 
-  test('a wrong answer in a toolscript arm fails it, a cold run and an error row are left out, codemode is not judged', () => {
+  test('a wrong answer fails its arm, cold runs count for correctness, an error row and codemode are left out of the limits', () => {
     assert.equal(passRule([...three(), run('toolscript', { correct: false })]).pass, false)
-    assert.equal(passRule([...three(), run('toolscript', { correct: false, cold: true })]).pass, true)
+    // A wrong answer in a cold run is still a wrong answer.
+    assert.equal(passRule([...three(), run('toolscript', { correct: false, cold: true })]).pass, false)
+    assert.equal(passRule([...three(), run('toolscript-1.0.5', { correct: false, cold: true })]).pass, false)
+    // A cold run is left out of the token limits.
+    assert.equal(passRule([...three(), run('toolscript', { cold: true, cacheRead: 1e9 })]).pass, true)
     assert.equal(passRule([...three(), { arm: 'toolscript', error: 'x', costUsd: 0 }]).pass, true)
     assert.equal(passRule([...three(), run('codemode', { correct: false, freshInput: 1e9 })]).pass, true)
     const text = passRule(three()).lines.join('\n')
     assert.match(
       text,
-      /PASS toolscript-legacy against toolscript-1\.0\.5: median total input tokens 10000 against 10000 \(0\.00 %, limit \+2 %\)/,
+      /PASS toolscript-legacy against toolscript-1\.0\.5: total input tokens, median over 1 tasks of the per-task ratio of medians 0\.00 % \(limit \+2 %\)/,
     )
     assert.match(text, /PASS toolscript against toolscript-legacy: failed run_code calls 0 against 0/)
   })
 
-  test('with fewer than two of the three arms there is no verdict and no lines (an older results folder)', () => {
-    assert.deepEqual(passRule([run('toolscript'), run('direct')]), { lines: [], pass: undefined })
+  test('the release verdict needs all three arms with warm runs: no verdict, and a line that names the missing arm', () => {
+    const errored = [
+      ...three().filter(r => r.arm !== 'toolscript'),
+      ...[1, 2, 3].map(() => ({ arm: 'toolscript', task: 't1', error: 'screen', costUsd: 0.1 })),
+    ]
+    let rule = passRule(errored)
+    assert.equal(rule.pass, undefined)
+    assert.match(rule.lines.join('\n'), /- NO VERDICT: toolscript has no warm run \(0 finished, 0 cold, 3 errored\)/)
+    const coldOnly = [
+      ...three().filter(r => r.arm !== 'toolscript'),
+      ...[1, 2, 3].map(() => run('toolscript', { cold: true })),
+    ]
+    rule = passRule(coldOnly)
+    assert.equal(rule.pass, undefined)
+    assert.match(rule.lines.join('\n'), /- NO VERDICT: toolscript has no warm run \(3 finished, 3 cold, 0 errored\)/)
+    // Its cold runs were still counted for correctness, so a wrong one is a FAIL and not a silent drop.
+    assert.equal(passRule([...coldOnly, run('toolscript', { cold: true, correct: false })]).pass, false)
+    // A missing base arm too, and a limit that already failed stays a failure.
+    assert.equal(passRule(three().filter(r => r.arm !== 'toolscript-1.0.5')).pass, undefined)
+    assert.equal(passRule([...errored, run('toolscript-legacy', { correct: false })]).pass, false)
+  })
+
+  test('the limits are judged task by task: the median over tasks of the ratio of medians', () => {
+    // Task `big` is 10 times the size of task `small`. One median over all runs would follow `big` alone.
+    const rowsOf = (arm: string, task: string, scale: number, n = 3) =>
+      Array.from({ length: n }, () =>
+        run(arm, {
+          task,
+          cacheRead: 9000 * scale,
+          freshInput: 100 * scale,
+          cacheWrite: 900 * scale,
+          firstCallInput: 5000,
+        }),
+      )
+    const build = (legacySmall: number, legacyBig: number) => [
+      ...rowsOf('toolscript-1.0.5', 'small', 1),
+      ...rowsOf('toolscript-1.0.5', 'big', 10),
+      ...rowsOf('toolscript-legacy', 'small', legacySmall),
+      ...rowsOf('toolscript-legacy', 'big', legacyBig),
+      ...rowsOf('toolscript', 'small', legacySmall),
+      ...rowsOf('toolscript', 'big', legacyBig),
+    ]
+    assert.equal(passRule(build(1, 10)).pass, true)
+    // Two tasks: the median of two ratios is their mean, so +3 % on one task and 0 % on the other is +1.5 %, and +5 % is +2.5 %.
+    assert.equal(passRule(build(1.03, 10)).pass, true)
+    assert.equal(passRule(build(1.05, 10)).pass, false)
+    assert.match(
+      passRule(build(1.05, 10)).lines.join('\n'),
+      /FAIL toolscript-legacy against toolscript-1\.0\.5: total input tokens, median over 2 tasks/,
+    )
+    // A task that only one arm has warm runs for is left out of that pair's ratio.
+    const lone = [...build(1, 10), ...rowsOf('toolscript-legacy', 'extra', 1000)]
+    assert.equal(passRule(lone).pass, true)
+  })
+
+  test('an older results folder, where no toolscript row names its build, has no verdict and no lines', () => {
+    const old = (arm: string) => ({ ...run(arm), version: undefined })
+    assert.deepEqual(passRule([old('toolscript'), old('direct')]), { lines: [], pass: undefined })
+    assert.deepEqual(passRule([old('toolscript'), old('toolscript-lean')]), { lines: [], pass: undefined })
     assert.deepEqual(passRule([]), { lines: [], pass: undefined })
   })
 })

@@ -38,8 +38,10 @@ import {
   buildFields,
   buildLines,
   buildOfArm,
+  childEnv,
+  cwdSlug,
   dryRunPlan,
-  envOfArm,
+  entryEnv,
   firstMethodOf,
   jobsOf,
   passRule,
@@ -111,7 +113,9 @@ if (opts.help) {
 }
 
 const ROOT = path.resolve(opts.root ?? 'C:/tsbench')
-const cwdOf = arm => path.join(ROOT, arm, 'cwd')
+// A fixed-width folder name for each arm (arm00, arm01...), so every arm's cwd path has the same length and no arm gets
+// fewer prompt tokens from it. The order of ARMS below is the number: never reorder it between runs that are compared.
+const cwdOf = arm => path.join(ROOT, cwdSlug(arm, Object.keys(ARMS)), 'cwd')
 
 const benchServer = log => ({ command: 'node', args: [FAKE_SERVER], env: { BENCH_LOG: log } })
 const BENCH_TOOLS = ['search_messages', 'list_issues', 'query_logs', 'create_ticket', 'get_deploys']
@@ -133,7 +137,11 @@ function toolscriptArm(arm) {
           policy: [{ match: 'mcp__bench__*', action: 'allow' }],
         }),
       )
-      return { toolscript: toolscriptEntry(builds[buildOfArm(arm)], config, envOfArm(arm)) }
+      // A fresh HOME for each run (the same keys for every arm): toolscript saves the shapes of results and the tool lists
+      // under ~/.toolscript-mcp/learned, and what one arm saved must not reach another arm.
+      const home = path.join(dir, 'home')
+      fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true })
+      return { toolscript: toolscriptEntry(builds[buildOfArm(arm)], config, entryEnv(arm, home)) }
     },
     allowed: ['mcp__toolscript__run_code', 'mcp__toolscript__search_tools', ...FILE_TOOLS],
   }
@@ -328,11 +336,9 @@ const projectDir = cwd => path.join(PROJECTS, cwd.replace(/[^a-zA-Z0-9]/g, '-'))
 // turn in the transcript, copy the transcript, exit.
 const drive = async ({ term: { pty, Terminal }, bash, arm, argv, prompt, dir }) => {
   const cwd = cwdOf(arm)
-  const env = { ...process.env }
-  // The parent session's variables would leak into the child: session ids, the messaging socket, effort.
-  for (const k of Object.keys(env)) if (/^CLAUDE/i.test(k)) delete env[k]
-  if (ARMS[arm].codeMode) env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
-  env.CLAUDE_CODE_GIT_BASH_PATH = bash
+  // The parent session's CLAUDE* variables would leak into the child (session ids, the messaging socket, effort), and so
+  // would the operator's TOOLSCRIPT_* (protocol, lazy, child guard) into every arm while the row says "variables none".
+  const env = childEnv(process.env, { codeMode: ARMS[arm].codeMode, bash })
   const term = new Terminal({ cols: 160, rows: 50, allowProposedApi: true })
   const child = pty.spawn('claude.exe', argv, {
     name: 'xterm-256color',
@@ -538,7 +544,7 @@ const report = all => {
     for (const r of wrong)
       console.log(`- ${r.task}-${r.arm}-${r.rep}: ${scrubHome(r.answer).replace(/\s+/g, ' ').slice(0, 300)}`)
   }
-  const rule = passRule(rows)
+  const rule = passRule(all)
   if (rule.lines.length > 0) console.log(`\n${rule.lines.join('\n')}`)
 }
 
@@ -568,6 +574,7 @@ const remeasure = (dir, saved) =>
       ...(r.version !== undefined && {
         version: r.version,
         mainSha256: r.mainSha256,
+        runnerSha256: r.runnerSha256,
         variables: r.variables,
         firstMethod: r.firstMethod,
       }),
@@ -604,13 +611,14 @@ if (resolved.errors.length > 0) {
   for (const line of resolved.errors) console.error(scrubHome(line))
   process.exit(2)
 }
+for (const line of resolved.warnings) console.error(scrubHome(line))
 builds = resolved.builds
 const out = path.resolve(opts.out ?? path.join(ROOT, 'runs', new Date().toISOString().replace(/[:.]/g, '-')))
 const resultsFile = path.join(out, 'results.jsonl')
 const done = fs.existsSync(resultsFile) ? readJsonl(resultsFile) : []
 let spent = spentSoFar(done, extraSpent)
 
-// Arms alternate inside each task, and their order flips every rep, so drift in load and cache hits all arms.
+// Arms alternate inside each task, and the arm that starts moves one place each rep, so drift in load and cache hits all arms.
 const jobs = jobsOf({ tasks: TASKS.filter(t => taskIds.includes(t.id)), armIds, reps })
 // A run that failed counts toward the spend, and runs again.
 const todo = jobs.filter(
@@ -624,6 +632,7 @@ if (opts['dry-run']) {
     tasks: TASKS.filter(t => taskIds.includes(t.id)),
     reps,
     todo,
+    rows: done,
     spent,
     maxSpend,
     model,

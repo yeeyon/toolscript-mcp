@@ -12,6 +12,17 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { estimate } from './spend.mjs'
+
+/**
+ * SHA-256 of dist/host/main.js and runtime/runner.mjs of the published toolscript-mcp@1.0.5 tarball (`npm pack`, extracted in a
+ * new empty folder, hashed, never run). A --base that differs gets one WARN line: a local build of the tag can differ in the
+ * paths that its comments hold, and then the person checks that it is the build that they mean.
+ */
+export const PINNED_105 = {
+  mainSha256: 'bafac269650da58154a48d7ff9c147331784749cbf90a83212e460439b72c348',
+  runnerSha256: '2f4069061b990fdf3de9ea26c954fad97a4b293e4b61646efbac29173317c47a',
+}
 
 /** `build`: which of the two folders the arm runs. `env`: the variables on the MCP entry, and nothing else differs. */
 export const TOOLSCRIPT_ARMS = {
@@ -24,11 +35,18 @@ export const buildOfArm = arm =>
   arm === 'toolscript-1.0.5' ? 'base' : arm.startsWith('toolscript') ? 'head' : undefined
 export const envOfArm = arm => TOOLSCRIPT_ARMS[arm]?.env ?? {}
 
-/** The build in `dir`: its main.js, the version of its package.json and the SHA-256 of its main.js. Or the reason it is not one. */
+const sha256Of = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+
+/**
+ * The build in `dir`: its main.js, the version of its package.json and the SHA-256 of its main.js and of runtime/runner.mjs
+ * (the sandbox, which main.js starts and does not bundle). Or the reason it is not one.
+ */
 export const readBuild = dir => {
   const root = path.resolve(dir)
   const main = path.join(root, 'dist', 'host', 'main.js')
+  const runner = path.join(root, 'runtime', 'runner.mjs')
   if (!fs.existsSync(main)) return { error: `${root} has no dist/host/main.js` }
+  if (!fs.existsSync(runner)) return { error: `${root} has no runtime/runner.mjs` }
   let version
   try {
     version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version
@@ -40,16 +58,19 @@ export const readBuild = dir => {
     dir: root,
     main,
     version,
-    sha256: crypto.createHash('sha256').update(fs.readFileSync(main)).digest('hex'),
+    sha256: sha256Of(main),
+    runnerSha256: sha256Of(runner),
   }
 }
 
 /**
- * The builds that `armIds` need, or the one line of each error (it names the flag). `head` defaults to `repo`. An arm whose
- * build is missing ends the command before any run.
+ * The builds that `armIds` need, or the one line of each error (it names the flag), and the WARN lines. `head` defaults to
+ * `repo`. An arm whose build is missing ends the command before any run, and so does a base whose main.js is the head's (the
+ * comparison would be void). A base that is not the published 1.0.5 only warns.
  */
 export const resolveBuilds = ({ armIds, head, base, repo }) => {
   const errors = []
+  const warnings = []
   const builds = {}
   const need = new Set(armIds.map(buildOfArm).filter(Boolean))
   if (need.has('head')) {
@@ -66,8 +87,44 @@ export const resolveBuilds = ({ armIds, head, base, repo }) => {
       else builds.base = b
     }
   }
-  return { errors, builds }
+  if (builds.head && builds.base && builds.head.sha256 === builds.base.sha256)
+    errors.push(
+      `--base and --head hold the same dist/host/main.js (SHA-256 ${builds.base.sha256}): the comparison would be void`,
+    )
+  if (builds.base) {
+    const differs = [
+      builds.base.sha256 !== PINNED_105.mainSha256 && 'dist/host/main.js',
+      builds.base.runnerSha256 !== PINNED_105.runnerSha256 && 'runtime/runner.mjs',
+    ].filter(Boolean)
+    if (differs.length > 0)
+      warnings.push(
+        `WARN --base: ${differs.join(' and ')} of ${builds.base.dir} (version ${builds.base.version}) differ from the published toolscript-mcp@1.0.5 (main.js SHA-256 ${PINNED_105.mainSha256})`,
+      )
+  }
+  return { errors, warnings, builds }
 }
+
+/** The environment of the Claude Code pty: the operator's, with no CLAUDE* (session ids, socket, effort) and no TOOLSCRIPT_* (the row says what is set). */
+export const childEnv = (env, { codeMode, bash }) => {
+  const out = { ...env }
+  for (const k of Object.keys(out)) if (/^(CLAUDE|TOOLSCRIPT_)/i.test(k)) delete out[k]
+  if (codeMode) out.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
+  out.CLAUDE_CODE_GIT_BASH_PATH = bash
+  return out
+}
+
+/** The home of toolscript in one run: a fresh folder, so the shapes and tool lists that one arm learns never reach another. */
+export const homeEnv = home => ({
+  HOME: home,
+  USERPROFILE: home,
+  APPDATA: path.join(home, 'AppData', 'Roaming'),
+})
+
+/** The variables on the MCP entry of an arm: its own variable (none for `toolscript`) and the fresh home, the same keys for all. */
+export const entryEnv = (arm, home) => ({ ...envOfArm(arm), ...homeEnv(home) })
+
+/** The cwd name of an arm: a fixed width, so no arm's prompt holds fewer path characters than another's. */
+export const cwdSlug = (arm, allArms) => `arm${String(allArms.indexOf(arm)).padStart(2, '0')}`
 
 /** The entry of toolscript in an MCP config: the build's main.js, the arm's config file and its variables only. */
 export const toolscriptEntry = (build, configFile, env) => ({
@@ -94,6 +151,7 @@ export const buildFields = (arm, builds, firstMethod) => {
   return {
     version: build.version,
     mainSha256: build.sha256,
+    runnerSha256: build.runnerSha256,
     variables: envOfArm(arm),
     firstMethod: firstMethod ?? null,
   }
@@ -115,9 +173,11 @@ export const buildLines = rows => {
             .join(' '),
     )
     lines.push(
-      `- ${arm}: version ${uniq('version').join(', ')}, main.js SHA-256 ${uniq('mainSha256').join(', ')}, variables ${variables.join('; ')}, first method sent ${uniq(
-        'firstMethod',
+      `- ${arm}: version ${uniq('version').join(', ')}, main.js SHA-256 ${uniq('mainSha256').join(', ')}, runner.mjs SHA-256 ${uniq(
+        'runnerSha256',
       )
+        .map(h => h ?? 'none')
+        .join(', ')}, variables ${variables.join('; ')}, first method sent ${uniq('firstMethod')
         .map(m => m ?? 'none')
         .join(', ')}`,
     )
@@ -125,16 +185,22 @@ export const buildLines = rows => {
   return [...lines, '']
 }
 
-/** The jobs in the order that the bench runs them: arms alternate inside a task, and the order flips every rep. */
+/**
+ * The jobs in the order that the bench runs them: arms alternate inside a task, and the arm that starts moves one place each
+ * rep (a Latin square: with as many reps as arms, each arm leads equally often and stands in each place equally often).
+ */
 export const jobsOf = ({ tasks, armIds, reps }) => {
   const jobs = []
-  for (let rep = 1; rep <= reps; rep++)
-    for (const task of tasks) for (const arm of rep % 2 ? armIds : [...armIds].reverse()) jobs.push({ task, arm, rep })
+  for (let rep = 1; rep <= reps; rep++) {
+    const start = (rep - 1) % armIds.length
+    const order = [...armIds.slice(start), ...armIds.slice(0, start)]
+    for (const task of tasks) for (const arm of order) jobs.push({ task, arm, rep })
+  }
   return jobs
 }
 
-/** The dry run: what would run, with no Claude Code started and nothing spent. Lines, or the errors of the builds. */
-export const dryRunPlan = ({ armIds, builds, tasks, reps, todo, spent, maxSpend, model }) => {
+/** The dry run: what would run, with no Claude Code started and nothing spent. Lines, or the errors of the builds. `rows`: the saved runs. */
+export const dryRunPlan = ({ armIds, builds, tasks, reps, todo, rows = [], spent, maxSpend, model }) => {
   const lines = [`dry run: no Claude Code is started and nothing is spent. Model ${model}.`, '', 'arms:']
   for (const arm of armIds) {
     const kind = buildOfArm(arm)
@@ -146,12 +212,18 @@ export const dryRunPlan = ({ armIds, builds, tasks, reps, todo, spent, maxSpend,
     lines.push(
       b === undefined
         ? `- ${arm}`
-        : `- ${arm}: build ${b.dir}, version ${b.version}, main.js SHA-256 ${b.sha256}, variables ${vars}`,
+        : `- ${arm}: build ${b.dir}, version ${b.version}, main.js SHA-256 ${b.sha256}, runner.mjs SHA-256 ${b.runnerSha256}, variables ${vars}`,
     )
   }
   lines.push('', `tasks: ${tasks.map(t => t.id).join(', ')}`, `reps: ${reps}`, `runs to do: ${todo.length}`, 'order:')
   for (const [i, j] of todo.entries()) lines.push(`${String(i + 1).padStart(3)}. ${j.task.id}-${j.arm}-${j.rep}`)
-  lines.push('', `spent so far $${spent.toFixed(4)}, cap $${maxSpend}`)
+  // The estimate of each planned run from the saved runs (bench/spend.mjs); the real run updates it as runs finish.
+  const planned = todo.reduce((n, j) => n + estimate(rows, j.arm, j.task.id), 0)
+  lines.push(
+    '',
+    `spent so far $${spent.toFixed(4)}, cap $${maxSpend}`,
+    `estimate of the ${todo.length} planned runs $${planned.toFixed(4)}, total $${(spent + planned).toFixed(4)} against the cap $${maxSpend}${spent + planned > maxSpend ? ': OVER, the run would stop early' : ''}`,
+  )
   return lines
 }
 
@@ -170,50 +242,79 @@ const failedRunCode = r => r.failedTools?.mcp__toolscript__run_code ?? 0
 export const LIMIT = 1.02
 
 /**
- * The pass rule of the release run, on warm runs (`cold` false) and no error: every toolscript arm correct in every run;
- * toolscript-legacy against toolscript-1.0.5, and toolscript against toolscript-legacy, within +2 % on the median total
- * input and the median first-call input, and no more failed run_code calls. `codemode` is reported, not judged. Gives the
- * lines and `pass` (undefined when an arm that the rule needs has no warm run).
+ * The ratio of one metric, task by task: the median over the tasks of (median of `head` on the task / median of `base` on
+ * the task), only on tasks where both have rows. Tasks differ a lot in size, so one median over all runs would move with
+ * which cold runs are left out.
+ */
+const taskRatio = (headRows, baseRows, f) => {
+  const ratios = []
+  for (const task of new Set(headRows.map(r => r.task))) {
+    const [h, b] = [headRows, baseRows].map(rs => rs.filter(r => r.task === task).map(f))
+    if (h.length > 0 && b.length > 0) ratios.push(median(h) / median(b))
+  }
+  return { ratio: median(ratios), tasks: ratios.length }
+}
+
+const RELEASE_ARMS = ['toolscript-1.0.5', 'toolscript-legacy', 'toolscript']
+
+/**
+ * The pass rule of the release run. Every toolscript arm correct in every run that finished (cold runs too); then, on warm
+ * runs, toolscript-legacy against toolscript-1.0.5 and toolscript against toolscript-legacy: the median over tasks of the
+ * per-task ratio of medians within +2 % on the total input and on the first-call input, and no more failed run_code calls
+ * (all finished runs). `codemode` is reported, not judged. The verdict needs all three arms with warm runs, and each pair
+ * with a task that both have: else `pass` is undefined and a line names what is missing. `pass` is false when a limit fails.
+ * With no toolscript row that names its build (`version`), an older results folder: no lines.
  */
 export const passRule = rows => {
-  const warm = rows.filter(r => r.error === undefined && !r.cold)
-  const of = arm => warm.filter(r => r.arm === arm)
-  const arms = ['toolscript-1.0.5', 'toolscript-legacy', 'toolscript']
-  const present = arms.filter(a => of(a).length > 0)
-  if (present.length < 2) return { lines: [], pass: undefined }
+  if (!rows.some(r => RELEASE_ARMS.includes(r.arm) && r.version !== undefined)) return { lines: [], pass: undefined }
+  const ran = rows.filter(r => r.error === undefined)
+  const warm = ran.filter(r => !r.cold)
+  const of = (rs, arm) => rs.filter(r => r.arm === arm)
   const results = []
-  for (const arm of present) {
-    const wrong = of(arm).filter(r => !r.correct).length
-    results.push({ ok: wrong === 0, text: `${arm}: ${of(arm).length - wrong}/${of(arm).length} correct` })
+  const gaps = []
+  for (const arm of RELEASE_ARMS) {
+    const wrong = of(ran, arm).filter(r => !r.correct).length
+    if (of(ran, arm).length > 0)
+      results.push({
+        ok: wrong === 0,
+        text: `${arm}: ${of(ran, arm).length - wrong}/${of(ran, arm).length} correct (cold runs too)`,
+      })
+    if (of(warm, arm).length === 0)
+      gaps.push(
+        `${arm} has no warm run (${of(ran, arm).length} finished, ${of(ran, arm).filter(r => r.cold).length} cold, ${of(rows, arm).length - of(ran, arm).length} errored)`,
+      )
   }
   for (const [head, base] of [
     ['toolscript-legacy', 'toolscript-1.0.5'],
     ['toolscript', 'toolscript-legacy'],
   ]) {
-    if (!present.includes(head) || !present.includes(base)) continue
+    if (of(warm, head).length === 0 || of(warm, base).length === 0) continue
     for (const [name, f] of [
-      ['median total input tokens', totalInput],
-      ['median first-call input tokens', r => r.firstCallInput],
+      ['total input tokens', totalInput],
+      ['first-call input tokens', r => r.firstCallInput],
     ]) {
-      const [h, b] = [median(of(head).map(f)), median(of(base).map(f))]
+      const { ratio, tasks } = taskRatio(of(warm, head), of(warm, base), f)
+      if (tasks === 0) {
+        gaps.push(`${head} and ${base} have no task with warm runs in both`)
+        break
+      }
       results.push({
-        ok: h <= b * LIMIT,
-        text: `${head} against ${base}: ${name} ${Math.round(h)} against ${Math.round(b)} (${(((h - b) / b) * 100).toFixed(2)} %, limit +2 %)`,
+        ok: ratio <= LIMIT,
+        text: `${head} against ${base}: ${name}, median over ${tasks} tasks of the per-task ratio of medians ${((ratio - 1) * 100).toFixed(2)} % (limit +2 %)`,
       })
     }
-    const [h, b] = [
-      of(head).reduce((n, r) => n + failedRunCode(r), 0),
-      of(base).reduce((n, r) => n + failedRunCode(r), 0),
-    ]
+    const [h, b] = [of(ran, head), of(ran, base)].map(rs => rs.reduce((n, r) => n + failedRunCode(r), 0))
     results.push({ ok: h <= b, text: `${head} against ${base}: failed run_code calls ${h} against ${b}` })
   }
+  const failed = results.some(r => !r.ok)
   return {
     lines: [
       '### Pass rule of the 1.1.0 release run (warm runs; codemode is reported, not judged)',
       '',
       ...results.map(r => `- ${r.ok ? 'PASS' : 'FAIL'} ${r.text}`),
+      ...[...new Set(gaps)].map(g => `- NO VERDICT: ${g}`),
       '',
     ],
-    pass: results.every(r => r.ok),
+    pass: failed ? false : gaps.length > 0 ? undefined : true,
   }
 }
