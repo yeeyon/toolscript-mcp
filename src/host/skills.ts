@@ -32,7 +32,7 @@ export type SkillSources = {
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 // Without O_NOFOLLOW (Windows) the open follows a link, so `lstat` finds a link before the open, and the open file must be
-// the same file (`dev` and `ino`): a file swapped for a link after the `lstat` is skipped. The type and the size are checked
+// the same file (`dev` and `ino`): a file swapped for a link, or replaced, after the `lstat` is skipped. The type and the size are checked
 // on the open file, the same file that is read, so a file that grew after a check is still held to the cap.
 const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)
 
@@ -63,7 +63,8 @@ const readText = (dir: string, name: string, log: (line: string) => void): strin
     fd = fs.openSync(file, OPEN_FLAGS)
     const stat = fs.fstatSync(fd, { bigint: true })
     if (!stat.isFile()) return skip('not a regular file')
-    if (before !== undefined && (before.dev !== stat.dev || before.ino !== stat.ino)) return skip('not a regular file')
+    if (before !== undefined && (before.dev !== stat.dev || before.ino !== stat.ino))
+      return skip('changed while it was read')
     if (stat.size > BigInt(SKILL_MAX_FILE_BYTES)) return skip(`more than ${SKILL_MAX_FILE_BYTES} bytes`)
     const bytes = readCapped(fd)
     if (bytes.length > SKILL_MAX_FILE_BYTES) return skip(`more than ${SKILL_MAX_FILE_BYTES} bytes`)
