@@ -281,7 +281,7 @@ describe('roots', () => {
   const asked = async (capabilities: object, answer: (m: Msg) => Msg | 'none', waitMs = 5_000) => {
     const s = await open()
     const roots = createRoots({ log: () => {}, waitMs })
-    roots.attach(s.served.server.server)
+    roots.attach(s.served.server)
     await s.initialize(capabilities)
     assert.equal(s.peer.inbox.length, 0, 'no roots/list before notifications/initialized')
     s.peer.send({ method: 'notifications/initialized' })
