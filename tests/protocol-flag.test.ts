@@ -111,6 +111,16 @@ describe('the switch in the environment', () => {
       'TOOLSCRIPT_LEGACY_SERVERS names no server of the config: 3 items that are not server keys',
     )
     assert.equal(line('nope,a b'), 'TOOLSCRIPT_LEGACY_SERVERS names no server of the config: nope, and 1 more')
+    // A key-shaped item of more than 64 characters is counted, never printed; one of 64 is named.
+    const long = 'k'.repeat(100_000)
+    assert.equal(line(`nope,${long}`), 'TOOLSCRIPT_LEGACY_SERVERS names no server of the config: nope, and 1 more')
+    assert.equal(line(long), 'TOOLSCRIPT_LEGACY_SERVERS names no server of the config: 1 item that is not a server key')
+    assert.ok((line(long) ?? '').length < 200)
+    assert.equal(line('k'.repeat(64)), `TOOLSCRIPT_LEGACY_SERVERS names no server of the config: ${'k'.repeat(64)}`)
+    assert.equal(
+      line('k'.repeat(65)),
+      'TOOLSCRIPT_LEGACY_SERVERS names no server of the config: 1 item that is not a server key',
+    )
     for (const list of ['nope', 'a b,c/d', twelve.join(',')])
       assert.ok(load({ ...auto, TOOLSCRIPT_LEGACY_SERVERS: list }).ok)
     assert.equal(unknownLegacyLine(undefined), undefined)
@@ -152,7 +162,7 @@ describe('the entry and the share key', () => {
   const at = { home: '/home', folder: '/work' }
 
   test('the share text and the entry frame of a legacy link are the bytes of 1.0.5', () => {
-    // Recorded at base (v1.0.5): the golden of both.
+    // The output of the v1.0.5 code: the golden of both.
     assert.equal(shareText(keyed, server, { A: '1' }, at), '["toolscript-share","cmd",["a"],[["A","1"]],"/work"]')
     const legacy: Entry = { command: 'cmd', args: ['a'], env: { A: '1' }, folder: '/work' }
     assert.equal(entryFrame(legacy), '{"t":"entry","command":"cmd","args":["a"],"env":{"A":"1"},"folder":"/work"}\n')

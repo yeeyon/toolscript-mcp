@@ -221,7 +221,9 @@ export const unknownLegacyLine = (protocol: ProtocolSwitch | undefined): string 
   const names =
     unknown.keys.length > 0
       ? unknown.keys.join(', ') + (unknown.more > 0 ? `, and ${unknown.more} more` : '')
-      : `${unknown.more} ${unknown.more === 1 ? 'item' : 'items'} that are not server keys`
+      : unknown.more === 1
+        ? '1 item that is not a server key'
+        : `${unknown.more} items that are not server keys`
   return `TOOLSCRIPT_LEGACY_SERVERS names no server of the config: ${names}`
 }
 
@@ -670,6 +672,8 @@ const parseLazy = (env: Env, errors: string[]): boolean => {
 
 /** The most unknown items that the stderr line names. */
 const UNKNOWN_SHOWN = 10
+/** The longest unknown item that the line names: a longer one is counted, so the line stays short. */
+const UNKNOWN_ITEM_MAX = 64
 
 /**
  * `TOOLSCRIPT_PROTOCOL` (legacy or auto; empty is unset) and `TOOLSCRIPT_LEGACY_SERVERS` (a comma list of server keys).
@@ -692,7 +696,8 @@ const parseProtocol = (env: Env, known: ReadonlySet<string>, errors: string[]): 
     if (item === '' || seen.has(item)) continue
     seen.add(item)
     if (known.has(item) || item === WORKSPACE_KEY) legacy.add(item)
-    else if (serverKey(item) !== undefined && keys.length < UNKNOWN_SHOWN) keys.push(item)
+    else if (serverKey(item) !== undefined && item.length <= UNKNOWN_ITEM_MAX && keys.length < UNKNOWN_SHOWN)
+      keys.push(item)
     else more++
   }
   return { value, source, legacy, unknown: { keys, more } }

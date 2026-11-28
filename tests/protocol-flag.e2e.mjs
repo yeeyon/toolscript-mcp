@@ -212,6 +212,20 @@ const startHttp = async () => {
 
 // --- case 1 and 2: the same bytes in every mode, and what a downstream server may not ask ----------------------------------
 
+/** The version of toolscript-mcp in the clientInfo of a first message, which a release changes. */
+const maskVersion = text => text.replace(/(toolscript-mcp\\?",\\?"version\\?":\\?")[^"\\]*/, '$1<version>')
+const PINNED_STDIO =
+  '{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"toolscript-mcp","version":"<version>"}},"jsonrpc":"2.0","id":0}'
+// A shared child gets the initialize of the broker, not the one of the host.
+const PINNED_SHARED =
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"toolscript-mcp-broker","version":"1"}}}'
+const PINNED_FIRSTS = {
+  direct: PINNED_STDIO,
+  lazy: PINNED_STDIO,
+  shared: PINNED_SHARED,
+  web: '{"method":"POST","url":"/mcp","accept":"application/json, text/event-stream","type":"application/json","body":"{\\"method\\":\\"initialize\\",\\"params\\":{\\"protocolVersion\\":\\"2025-11-25\\",\\"capabilities\\":{},\\"clientInfo\\":{\\"name\\":\\"toolscript-mcp\\",\\"version\\":\\"<version>\\"}},\\"jsonrpc\\":\\"2.0\\",\\"id\\":0}"}',
+}
+
 const MODES = [
   ['unset', {}],
   ['legacy', { TOOLSCRIPT_PROTOCOL: 'legacy' }],
@@ -282,6 +296,10 @@ const bytesCase = async () => {
       await until('the broker to end', () => brokersAlive(home).length === 0)
     }
     const [base, ...rest] = out
+    // The unset row is pinned to what 1.0.5 sends (the text below is the output of the v1.0.5 build, recorded once with
+    // TOOLSCRIPT_E2E_MAIN set to its dist/host/main.js). Only the version of toolscript-mcp is masked.
+    for (const [key, text] of Object.entries(base.firsts))
+      assert.equal(maskVersion(text), PINNED_FIRSTS[key], `the unset row's first message of ${key} differs from 1.0.5`)
     for (const row of rest) {
       assert.deepEqual(
         row.hashes,
