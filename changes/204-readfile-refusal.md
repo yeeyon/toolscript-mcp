@@ -1,1 +1,0 @@
-- The refusal of `readFile` for a path that `saveFile` did not write now names the next step (issue #204): put the text in the program as a string literal, and, when the built-in Workspace is on, read a file inside the Workspace root with `mcp__workspace__read`. The text is the same for every refused path, and `readFile` reads no more than before.
