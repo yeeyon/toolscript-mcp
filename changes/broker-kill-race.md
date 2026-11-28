@@ -1,0 +1,1 @@
+- A session that connected to a broker in the moment the broker was being killed no longer fails with "the peer did not answer the handshake": a peer that closes before it sends anything is dialled again (a new broker starts once), within the same 10 s, and a peer that closes after the handshake began gets its own reason ("closed the connection").

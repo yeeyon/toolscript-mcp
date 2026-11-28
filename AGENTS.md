@@ -40,7 +40,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `brokerlink.ts`: the host side of sharing (issue #63): `entryOf` (the entry of a server with its `PATH` resolved),
     `openLink` (find or start the broker, the mutual proof of the key, the entry) and `BrokerTransport`, an SDK
     `Transport` over one connection. `downstream.ts` uses it for a shared or per-folder server when sharing is on. A
-    broker that cannot be reached fails the link with a reason (decision 024): it starts no direct child.
+    broker that cannot be reached fails the link with a reason (decision 024): it starts no direct child. A peer that closes before it sends one line is a broker that was killed a moment ago: `openLink` dials again on the same 10 s clock (one start of a broker for the whole link), and a silent or wrong peer is never taken for a dead one.
     `brokerwire.ts` holds the key file, the build id (SHA-256 of `broker.js`) and the endpoint name.
   - `broker.ts`: the broker process, built from `brokermain.ts` into `dist/host/broker.js`, a second bundle with Node
     built-ins and `cross-spawn` only. One router (`src/core/mux.ts`) and one child for each share key. The listen is the
