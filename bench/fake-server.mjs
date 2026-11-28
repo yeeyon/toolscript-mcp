@@ -1,5 +1,5 @@
 // A fake MCP server (stdio, JSON-RPC lines) for the token and cost bench.
-// Every tools/call is appended to $BENCH_LOG as one JSON line.
+// Every tools/call is appended to $BENCH_LOG as one JSON line. The first method that arrives goes to $BENCH_LOG.first.
 //
 //   BENCH_LOG=/tmp/calls.jsonl node bench/fake-server.mjs
 
@@ -9,6 +9,7 @@ import { DEPLOYS, ISSUES, MESSAGES, logsText } from './data.mjs'
 
 const LOG = process.env.BENCH_LOG
 let tickets = 0
+let firstSeen = false
 
 const obj = (properties, required = []) => ({ type: 'object', properties, required })
 const TOOLS = [
@@ -96,6 +97,12 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     msg = JSON.parse(line)
   } catch {
     return
+  }
+  // The first method that a client sends, once, in `$BENCH_LOG.first`: the bench reads it as the protocol that a toolscript arm
+  // opened with (`initialize` or `server/discover`). It is not in the call log, which holds tools/call only.
+  if (LOG && !firstSeen) {
+    firstSeen = true
+    fs.writeFileSync(`${LOG}.first`, `${JSON.stringify({ method: msg.method })}\n`)
   }
   if (msg.id === undefined) return // a notification
   const reply = result => send({ jsonrpc: '2.0', id: msg.id, result })
