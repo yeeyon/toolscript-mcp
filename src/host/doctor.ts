@@ -24,6 +24,7 @@ import {
   ok,
   policyFindings,
   serverFinding,
+  protocolFindings,
   shareFindings,
   staleStoreKeys,
   taskEndFinding,
@@ -280,6 +281,8 @@ const CHECKS: Record<CheckName, (c: Context) => Promise<readonly Finding[]>> = {
       ...(io.platform === 'win32' ? [workspaceAclFinding(await readAcl(root))] : []),
     ]
   },
+
+  protocol: async ({ loaded }) => (loaded.ok ? protocolFindings(loaded.config) : []),
 
   share: async ({ loaded }) => (loaded.ok ? shareFindings(loaded.config) : []),
 

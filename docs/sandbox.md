@@ -31,6 +31,10 @@ code. Read [SECURITY.md](../SECURITY.md).
 - If an HTTP server restarts or loses the session, one call to it can fail. The next use of the server connects
   again. toolscript-mcp sees a lost session in a 404, or in a 400 with a session error text of the MCP TypeScript
   SDK. If a server answers a lost session with a different 400, restart toolscript-mcp.
+- A downstream server cannot ask for roots, for input from the person, or for a model answer. If a server sends
+  `roots/list`, `elicitation/create` or `sampling/createMessage` during a call, it gets the error -32601 (method not
+  found). This holds for a direct server and for a shared server. The call of the program goes on or fails with the text
+  of the server.
 - Programs cannot read MCP resources. `resources()` and `readResource()` answer that they are not available.
 - A program gets each image, audio or binary resource of a result as a file, not as data. A `run_code` result shows
   at most 4 images. See [Non-text results](configuration.md#non-text-results).

@@ -189,6 +189,40 @@ export type Config = {
   readonly share: { readonly on: boolean; readonly source: 'default' | 'config' | 'env' }
   /** The lazy switch: false only with `TOOLSCRIPT_LAZY=0`, which turns every lazy start off (decision 028). */
   readonly lazy: boolean
+  /**
+   * The protocol switch (#154, PR 9): the environment only, never a config key, because 1.0.5 refuses a config with an
+   * unknown key. Absent means `legacy` (a config built by hand, as in tests). It changes no wire yet: it only keys sharing.
+   */
+  readonly protocol?: ProtocolSwitch
+}
+
+/** The revision a link may use: `legacy` is the 2025 protocol only, `auto` may use 2026-07-28. */
+export type Protocol = 'legacy' | 'auto'
+
+/**
+ * `TOOLSCRIPT_PROTOCOL` as parsed, and `TOOLSCRIPT_LEGACY_SERVERS`: the server keys that stay on `legacy` whatever the host
+ * value is, and the items that name no server (only key-shaped ones, at most 10, and a count of the rest).
+ */
+export type ProtocolSwitch = {
+  readonly value: Protocol
+  readonly source: 'default' | 'env'
+  readonly legacy: ReadonlySet<string>
+  readonly unknown: { readonly keys: readonly string[]; readonly more: number }
+}
+
+/** The protocol of the link of server `key`: `legacy` when the key is in the list, else the host value. */
+export const protocolOf = (protocol: ProtocolSwitch | undefined, key: string): Protocol =>
+  protocol === undefined || protocol.legacy.has(key) ? 'legacy' : protocol.value
+
+/** The one stderr line for `TOOLSCRIPT_LEGACY_SERVERS` items that name no server, or undefined. Server-key forms only. */
+export const unknownLegacyLine = (protocol: ProtocolSwitch | undefined): string | undefined => {
+  const unknown = protocol?.unknown
+  if (unknown === undefined || (unknown.keys.length === 0 && unknown.more === 0)) return undefined
+  const names =
+    unknown.keys.length > 0
+      ? unknown.keys.join(', ') + (unknown.more > 0 ? `, and ${unknown.more} more` : '')
+      : `${unknown.more} ${unknown.more === 1 ? 'item' : 'items'} that are not server keys`
+  return `TOOLSCRIPT_LEGACY_SERVERS names no server of the config: ${names}`
 }
 
 /** The time limit of a run without `sandbox.timeoutSeconds`, and the least it can be, as in the plugin. */
@@ -634,6 +668,36 @@ const parseLazy = (env: Env, errors: string[]): boolean => {
   return true
 }
 
+/** The most unknown items that the stderr line names. */
+const UNKNOWN_SHOWN = 10
+
+/**
+ * `TOOLSCRIPT_PROTOCOL` (legacy or auto; empty is unset) and `TOOLSCRIPT_LEGACY_SERVERS` (a comma list of server keys).
+ * No text repeats a bad value. An item that names no server is never an error: it is counted for one stderr line.
+ */
+const parseProtocol = (env: Env, known: ReadonlySet<string>, errors: string[]): ProtocolSwitch => {
+  const raw = env.TOOLSCRIPT_PROTOCOL
+  let value: Protocol = 'legacy'
+  let source: ProtocolSwitch['source'] = 'default'
+  if (raw === 'legacy' || raw === 'auto') {
+    value = raw
+    source = 'env'
+  } else if (raw !== undefined && raw !== '') errors.push('TOOLSCRIPT_PROTOCOL: must be legacy or auto')
+  const legacy = new Set<string>()
+  const keys: string[] = []
+  let more = 0
+  const seen = new Set<string>()
+  for (const part of (env.TOOLSCRIPT_LEGACY_SERVERS ?? '').split(',')) {
+    const item = part.trim()
+    if (item === '' || seen.has(item)) continue
+    seen.add(item)
+    if (known.has(item) || item === WORKSPACE_KEY) legacy.add(item)
+    else if (serverKey(item) !== undefined && keys.length < UNKNOWN_SHOWN) keys.push(item)
+    else more++
+  }
+  return { value, source, legacy, unknown: { keys, more } }
+}
+
 const parseServer = (
   raw: unknown,
   path: string,
@@ -901,6 +965,7 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
         })
     }
   const lazy = parseLazy(env, errors)
+  const protocol = parseProtocol(env, new Set<string>(servers.keys()), errors)
 
   return errors.length > 0
     ? { ok: false, errors }
@@ -916,6 +981,7 @@ export const parseConfig = (text: string, env: Env, execPath: string, platform: 
           log,
           share,
           lazy,
+          protocol,
         },
       }
 }

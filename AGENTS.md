@@ -160,6 +160,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   reporter and writes the summary of each test that failed (runs, fails, rate, first failing run and seed), the budgets of
   `baseline`, and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
   `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
+- The protocol switch (#154, PR 9) is two environment variables and never a config key (1.0.5 refuses an unknown key, and turns an
+  entry with one into an invalid server): `TOOLSCRIPT_PROTOCOL=legacy|auto` (default `legacy`) and `TOOLSCRIPT_LEGACY_SERVERS=<key>,<key>`
+  (servers that stay on `legacy`). `parseProtocol` in `src/core/config.ts` reads them into `Config.protocol`, and `protocolOf` gives the
+  value of one link. It changes no wire yet: only an `auto` link writes `protocol` in its broker entry frame and share key, so a
+  `legacy` and an `auto` link never share a child. `legacy` has the bytes of 1.0.5. `doctor` prints a `protocol` line only when a
+  variable is set. Tests: `tests/protocol-flag.test.ts` and `tests/protocol-flag.e2e.mjs` (it needs `tests/first-message-server.mjs`).
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake
   servers. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
 
@@ -170,6 +176,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `node tests/bridge.e2e.mjs` runs one program through the real `claude mcp serve` bridge (Grep, Read, Edit, a shell test run)
   and the missing-binary case. It needs `claude` on PATH, else it prints one line and exits 0. It is not in `npm test`.
 - `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
+- `node tests/protocol-flag.e2e.mjs` runs the built server with `TOOLSCRIPT_PROTOCOL` unset, `legacy` and `auto`: the same first message
+  and hashes for a direct, a lazy, a shared and an HTTP link, the answers to what a downstream server may not ask, and the child count
+  of a shared server. Run `npm run build` first.
 - After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
 - `node scripts/start-time.mjs` measures the start, from the spawn to the `tools/list` reply. Run `npm run build` first.
 

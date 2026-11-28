@@ -46,6 +46,12 @@
       "note": "6 hosts at once (#133): the real proof is cpu1"
     },
     {
+      "target": "tests/protocol-flag.e2e.mjs",
+      "count": 3,
+      "box": 2,
+      "note": "the protocol switch: 2 cases, about 38 s a run, 10 processes (PR 9)"
+    },
+    {
       "target": "tests/lazy.e2e.mjs",
       "count": 30,
       "box": 3,
