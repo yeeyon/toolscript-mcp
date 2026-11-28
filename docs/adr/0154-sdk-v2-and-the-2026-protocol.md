@@ -53,7 +53,13 @@ the MCP clients page (URLs in section 7). `npm run check` resolves the relative 
 - `ReadBuffer`, `serializeMessage` and `deserializeMessage` (childtransport.ts, brokerlink.ts) become a small line codec of our own in
   `src/core`: the broker already splits lines itself. Finding of PR 1: these three names, and `OAuthError`, are found in the export list
   of `@modelcontextprotocol/client@2.4.0` (`dist/index.d.mts`, line 2530), so v2 does not make them private. PR 3 keeps its cut and
-  decides whether the own codec is still worth it.
+  decides whether the own codec is still worth it. Outcome of PR 3: it was worth it, for a different reason. v2's reader was not
+  compared with v1's (cap, `\r`, empty line), and a silent difference there ends real servers. `src/core/codec.ts` owns the framing
+  of a direct child (bytes to lines, the 10 MB cap in bytes, the send line), and `tests/codec.test.ts` compares it with the SDK's
+  `ReadBuffer` on the same bytes, so any SDK can be compared with it. The check that a line is a JSON-RPC message stays the SDK's
+  `deserializeMessage`, which the codec takes as a parameter. `brokerlink.ts` keeps `lineSplitter`: it works on text, counts
+  characters and skips blank lines, and the direct path does none of these. The two framers stay two. A finding, not fixed in PR 3:
+  a blank stdout line closes a direct child (the check throws, and the transport closes) but not a shared one (the splitter skips it).
 - Known breaks to absorb, with their source:
 
 | Name or behaviour | Status | Source |
@@ -356,8 +362,9 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
    `mcp.server.getClientCapabilities()` and `elicitInput` (`server.ts`), `oninitialized`, `onclose` and `listRoots`
    (`workspace/roots.ts`), and `client.listTools` (`downstream.ts`). PR 7 leaves the callers alone only if `onCallTool`
    hands them a v1-shaped `extra` built from the v2 ctx.
-3. Own line codec in `src/core` for childtransport.ts and brokerlink.ts. No behaviour change.
-4. Test seam: the tests take the SDK through one helper file. Done: `tests/sdk.mjs` re-exports the SDK v1 names that the tests use (and `ReadBuffer` for `tests/codec.test.ts`), imports the package and never `src/host/sdk/`, so from PR 5 to PR 7 the test peers stay on v1 while the host moves. PR 8 moves them by a change to that file. The raw-text check covers `tests/`, `bench/`, `demo/`, `scripts/` and `plugin/` too, with two named exceptions (`tests/code.check.mjs`, and the reference servers `@modelcontextprotocol/server-*` that tests name as sample config data), and fails when `src/`, `runtime/` or `demo/` import from `tests/`.
+3. Own line codec in `src/core` for childtransport.ts and brokerlink.ts. No behaviour change. Done, narrower than the title: the
+   framing of `childtransport.ts` only (`src/core/codec.ts`), the SDK check passed in, `lineSplitter` untouched. See section 3.
+4. Test seam: the tests take the SDK through one helper file. Done: `tests/sdk.mjs` re-exports the SDK v1 names that the tests use (and `ReadBuffer`, `deserializeMessage` and `serializeMessage` for `tests/codec.test.ts`), imports the package and never `src/host/sdk/`, so from PR 5 to PR 7 the test peers stay on v1 while the host moves. PR 8 moves them by a change to that file. The raw-text check covers `tests/`, `bench/`, `demo/`, `scripts/` and `plugin/` too, with two named exceptions (`tests/code.check.mjs`, and the reference servers `@modelcontextprotocol/server-*` that tests name as sample config data), and fails when `src/`, `runtime/` or `demo/` import from `tests/`.
 5. v2 packages beside v1 (lockfile and pack review); the downstream client side on `@modelcontextprotocol/client`, legacy only; the
    error mapping and the unknown-tool text.
 6. OAuth and login on the v2 client auth, with `iss` validation. SigV4 header test.

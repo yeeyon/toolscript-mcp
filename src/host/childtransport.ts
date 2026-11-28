@@ -6,14 +6,18 @@
 
 import type { ChildProcess } from 'node:child_process'
 import { PassThrough } from 'node:stream'
-import { ReadBuffer, getDefaultEnvironment, serializeMessage } from './sdk/transport.ts'
+import { deserializeMessage, getDefaultEnvironment } from './sdk/transport.ts'
 import type { JSONRPCMessage, Transport } from './sdk/transport.ts'
 import crossSpawn from 'cross-spawn'
 import { STOP_WAIT_MS } from '../core/broker.ts'
+import { FrameReader, frameOf } from '../core/codec.ts'
 import { spawnCode, spawnReason, trustedSpawnError } from '../core/spawn.ts'
 import { endTree } from './broker.ts'
 import type { Guard } from './childguard.ts'
 import { findCommand, type FindCommand } from './commandfind.ts'
+
+/** The text of the bytes, as the SDK reader decodes a line: with U+FFFD for a bad byte, and a BOM kept. */
+const utf8 = (bytes: Uint8Array): string => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString()
 
 /**
  * The same time at the shutdown of the host: the client of the host waits about 2 s after it ends our stdin, then kills
@@ -51,7 +55,7 @@ export class ChildTransport implements Transport {
   /** Called at each message that goes or comes: the host sets the idle clock back. */
   onactivity?: () => void
   readonly #params: ChildParams
-  readonly #buffer = new ReadBuffer()
+  readonly #buffer = new FrameReader<JSONRPCMessage>(deserializeMessage, utf8)
   readonly #stderr = new PassThrough()
   readonly #open = new Set<string | number>()
   #proc: ChildProcess | undefined
@@ -124,7 +128,7 @@ export class ChildTransport implements Transport {
         try {
           this.#buffer.append(chunk)
           for (;;) {
-            const message = this.#buffer.readMessage()
+            const message = this.#buffer.read()
             if (message === null) break
             this.#seen(message)
             this.onmessage?.(message)
@@ -161,7 +165,7 @@ export class ChildTransport implements Transport {
         }
       }
       this.onactivity?.()
-      if (stdin.write(serializeMessage(message))) resolve()
+      if (stdin.write(frameOf(message))) resolve()
       else stdin.once('drain', resolve)
     })
   }
