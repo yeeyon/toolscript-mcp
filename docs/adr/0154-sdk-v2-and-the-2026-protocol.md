@@ -159,7 +159,7 @@ Notes. All five Claude Code sources are `https://code.claude.com/docs/en/mcp`, r
 - (d) "MCP skills are in public beta and require Claude Code v2.1.331 or later."
 - (e) "The server is an HTTP, stdio, or claude.ai connector server connected on protocol revision 2026-07-28." and "Terminal CLI sessions,
   Agent SDK sessions, and GitHub Actions runs have them on v2.1.304 or later".
-- (f) `https://developers.openai.com/codex/mcp`, read 2026-11-28: the page does not mention the revision 2026-07-28, `list_changed`,
+- (f) `https://developers.openai.com/codex/mcp` (it redirects to `learn.chatgpt.com`), read 2026-11-28: the page does not mention the revision 2026-07-28, `list_changed`,
   Tasks or MCP skills. The Codex rows of this repo are `bench/CODEX.md` (0.171.0, manual smoke test) and `docs/workspace.md` (0.172.0): neither
   records the era.
 - (g) `tests/*.test.ts` and `tests/*.e2e.mjs` use the SDK 1.32.2 client against our server. None of them tests the modern era.
@@ -169,7 +169,9 @@ of the toolscript arms correct; the runtime of Claude Code and the era were not 
 PR 13 and the release: Claude Code states that on its v2 runtime it asks stdio servers for the newer revision by default ("Claude Code
 asks stdio servers for that revision by default", and "A channel server that doesn't support that revision connects on the earlier
 handshake"). So today a probe may already reach our v1 stdio server. Its answer to `server/discover` is not verified in a test of this repo.
-The setting that keeps a client on the earlier handshake is `MCP_PROTOCOL_NEGOTIATION=legacy` (same page).
+The setting that keeps a client on the earlier handshake is `MCP_PROTOCOL_NEGOTIATION=legacy` (same page). The same page also says "Claude Code connects to every other server as v1 does."
+
+The extension matrix of the MCP site (`https://modelcontextprotocol.io/extensions/client-matrix`, read 2026-11-28) marks ChatGPT Skills "Partial" and leaves the cells of the other clients blank. It does not say what blank means, and no row names the protocol era, MRTR or `listen`: it changes no cell above. The announcement (`https://blog.modelcontextprotocol.io/posts/2026-07-28/`, read 2026-11-28) says "All four Tier 1 SDKs speak 2026-07-28 as of today" (stated).
 
 Downstream, servers of our tests and the demo:
 
@@ -204,16 +206,17 @@ pair, never on a number of another day. Laptop numbers are a second reference on
 
 | Metric | Value at REF | Unit | Source (command or run) | Date | Spread | Budget |
 |---|---|---|---|---|---|---|
-| Start, spawn to `tools/list` reply, head, each OS and Node of the run | pending the Actions run | ms | `baseline` profile, REF against `v1.0.4` | pending | pending | +10% or +50 ms |
-| Host private bytes, head, each OS and Node of the run | pending the Actions run | MB | same run | pending | pending | +10 MB a host |
-| Sharing saving | pending the Actions run | MB | same run, memory rows | pending | pending | modern child: the same saving as legacy |
+| Start, `tools/list` reply, median, head at REF (base `v1.0.4` in brackets), Node 24 | Windows 150.5 (154.0); Ubuntu 158.5 (154.5); macOS 156.0 (214.0) | ms | `baseline` profile, run 46130315779 (https://github.com/yeeyon/toolscript-mcp/actions/runs/46130315779), jobs 140933837726, 140933837802, 140933837708; head at REF, base at the tag `v1.0.4`, built and measured in turns on one runner | 2026-11-28 | the job summary prints one median for each side, not a range | +10% or +50 ms |
+| Host private bytes, head, each OS | pending a new run: not measured in run 46130315779 (Windows and Ubuntu: "FAIL (not measured)", a bug of the stress script, which is fixed apart; macOS: the system has no private memory number for a process) | MB | same run | | | +10 MB a host |
+| Sharing saving | pending the same new run, same reason | MB | same run | | | modern child: the same saving as legacy |
+| Bytes of the `baseline` profile, head (base in brackets), same run | `tools/list` 2849 (2862); instructions 296 (296); `search_tools` 233 (790) | bytes | same run, all three OS print the same | 2026-11-28 | exact | 0 on legacy |
 | Start, "laptop" second reference | no number recorded | | `node scripts/start-time.mjs` was not run in PR 1 | | | |
 | Host private bytes, "laptop" | 61.1 (60.7 to 61.3), fixture, commit 028435a; 66.7, owner config, commit 726eab2 | MB a host | `bench/RESULTS-memory.md` (2026-11-21, 2026-11-22) | 2026-11-21, 2026-11-22 | as listed | |
 | Windows session, "laptop" | 121.0 idle, guard off, 1 session | MB | `bench/RESULTS-memory.md`, "Child guard on Windows" (commit 2818203) | 2026-11-27 | one run | |
-| Package, packed size | 382,836 | bytes | `npm pack --dry-run --json` after `npm ci && npm run build`, REF, Windows 11, Node 22.23.3 | 2026-11-28 | one build | +25% (478,545 bytes), each new dependency named |
+| Package, packed size | 382,836 | bytes | `npm pack --dry-run --json` after `npm ci && npm run build`, REF, Windows 11, Node 22.23.3. The same run 46130315779 gives 382,836 (Windows), 382,837 (Ubuntu, macOS) at head and 387,319 / 387,320 at `v1.0.4` | 2026-11-28 | one build; 1 byte apart between systems | +25% (478,545 bytes), each new dependency named |
 | Package, unpacked size | 1,647,215 | bytes | same | 2026-11-28 | one build | +25% |
 | Package, file count | 16 | files | same | 2026-11-28 | one build | |
-| `dist/host/main.js` | 1,488,784 | bytes | same (`files[].size`) | 2026-11-28 | one build | +25% |
+| `dist/host/main.js` | 1,488,784 | bytes | same (`files[].size`). Run 46130315779: 1,488,784 at head on all three OS, 1,426,742 at `v1.0.4` | 2026-11-28 | one build | +25% |
 | `dist/host/broker.js` | 80,510 | bytes | same | 2026-11-28 | one build | +25% |
 | Tokens and cost, toolscript arm | 30 of 30 correct; median 56,972 input tokens, mean 70,537 (54,865 to 122,328); mean cost 0.0024 USD (median 0.0021) | tokens, USD | `bench/RESULTS.md` rerun of #89 and `bench/rerun-2026-11-27/headless-report.txt`, Claude Code 2.1.332, Haiku 5.5, 6 tasks, 5 reps | 2026-11-27 | min to max as listed | 30 of 30, tokens +2% |
 | Registration, first-call input of the toolscript arm | 18,052 | tokens | same report, "first-call input" (min 18,037, max 18,063) | 2026-11-27 | as listed | tokens +2% |
@@ -246,6 +249,8 @@ Rule: a v2 PR changes 0 of these bytes. A feature PR that changes them records t
 |---|---|---|---|---|
 | empty: `{"mcpServers":{}}` | 2849 | `a158f339e944a5fa7387b5ce38005b4955fa12a5670d4ef29639e2951d59a420` | 286 | `3c677dd15356ec0047d4fb6716bea6d6a39080f396b37ab5219c2cbf84542f84` |
 | demo: one server `demo` at `demo/server.mjs` | 2849 | `a158f339e944a5fa7387b5ce38005b4955fa12a5670d4ef29639e2951d59a420` | 292 | `59c786973984b1a9d194a2ad7560c38bcc5713965bb6acf05c00a581af4247c0` |
+
+The run 46130315779 prints 296 instructions bytes at REF and at `v1.0.4`: its stress script uses its own config, so the number differs from the two rows above, which use the configs named there. A later PR compares like with like, with the same config on both sides. The `tools/list` bytes of that run are 2849 at REF and 2862 at `v1.0.4`: the 13 bytes are the change of #212 (section 9, tokens and cost).
 
 The command, on 2026-11-28 after `npm ci && npm run build` at REF on Windows 11 with Node 22.23.3. The script is saved as
 `hash.mjs` in a temp folder, outside the repo. The two configs and an empty home are in temp folders too. The hash is of
@@ -314,7 +319,7 @@ stays possible as cut.
 |---|---|---|
 | Do the three packages exist at 2.4.0 with the dependencies of section 1? | Yes. The dependency list is longer than the draft said (section 1). | `npm view @modelcontextprotocol/<client,server,core>@2.4.0` |
 | Does the `serveStdio` factory run one time or for each request? | One time for each connection, plus one time for a `server/discover` probe instance that is discarded if the client falls back to `initialize`. The factory gets `ctx.era` (`'legacy'` or `'modern'`). A factory must therefore have no side effect that matters twice. | server 2.4.0 `dist/createMcpHandler-DzlXH0KL.d.mts:193` to 209 and `dist/stdio.d.mts` |
-| Does one stdio server answer both eras? | The same factory serves both eras, but one connection is pinned to the era of its opening exchange: "the opening exchange selects the era, ONE instance from the factory is pinned for the connection lifetime". A 2025 opening is served by default (`legacy: 'serve'`) or refused (`'reject'`). So one child, which has one connection to the router, has one era. This is the rule of section 4. | server 2.4.0 `dist/stdio.d.mts` (`ServeStdioOptions`, `serveStdio`) |
+| Does one stdio server answer both eras? | The same factory serves both eras, but one connection is pinned to the era of its opening exchange: "the opening exchange selects the era, ONE instance from the factory is pinned for the connection lifetime". A 2025 opening is served by default (`legacy: 'serve'`) or refused (`'reject'`). So one child, which has one connection to the router, has one era. This is the rule of section 4. The spec page says the same for the process: "A dual-era server MAY serve both eras concurrently on the same endpoint or process." (stated, not verified). On stdio a client must "probe with server/discover and fall back on any error that is not a recognized modern error". | server 2.4.0 `dist/stdio.d.mts` (`ServeStdioOptions`, `serveStdio`); `https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning` |
 | How does a `subscriptions/listen` notification name its stream on stdio? | `_meta["io.modelcontextprotocol/subscriptionId"]` holds the JSON-RPC id of the listen request, verbatim, on every notification of the stream and on the first `notifications/subscriptions/acknowledged`. The graceful end result carries it too. | core 2.4.0 `dist/internal.d.mts:44` to 54 and `dist/schemas-DBHuY3cl.d.mts:1637` to 1660 |
 | Where do `requestState` and the progress token sit? | `requestState` is at the top of an `input_required` result and in the params of the retried request, with `inputResponses`. The progress token is `params._meta.progressToken`, a string or a number. | server 2.4.0 `dist/mcp-BCJHyo7l.d.mts:685` to 711 and 1003 to 1016; core 2.4.0 `dist/schemas-DBHuY3cl.d.mts:39` |
 
