@@ -142,7 +142,11 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `run.mjs`: direct MCP tools against toolscript-mcp in headless Claude Code, and the arm `both`, which lists both
     and counts how often the model picks `run_code`. `--dry-run` starts no run. Results in `RESULTS.md`.
   - `interactive.mjs`: direct tools, Claude Code Code Mode and toolscript-mcp in the interactive TUI. Results in
-    `RESULTS-codemode.md`. `spend.mjs` holds its spend cap.
+    `RESULTS-codemode.md`. `spend.mjs` holds its spend cap. `arms.mjs` holds the pure parts of the 1.1.0 regression bench (no pty,
+    no spend; `tests/bench-arms.test.ts`): the arms `toolscript-1.0.5` (the build of `--base`), `toolscript-legacy` (the build of
+    `--head` with `TOOLSCRIPT_PROTOCOL=legacy`) and `toolscript` (`--head`, no variable), the check of the builds, the fields that
+    each row names (version, `main.js` SHA-256, variables, first method, from `$BENCH_LOG.first` of `fake-server.mjs`), `--dry-run`
+    and the pass rule of the release run. A build is a folder with `dist/host/main.js` and `package.json`.
   - `memory.mjs`: what N sessions cost in private bytes, processes and start time, with no model and no spend.
     Fixture mode by default; `--config <file>` is real mode, for the owner only. Results in `RESULTS-memory.md`.
     `tests/memory.e2e.mjs` runs its smoke and the hard-kill case.

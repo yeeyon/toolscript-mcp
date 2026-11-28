@@ -6,6 +6,11 @@
 //   node bench/interactive.mjs --reps 3 --max-spend 5 --spent 0.11
 //   node bench/interactive.mjs --reps 1 --tasks ticket --arms codemode
 //   node bench/interactive.mjs --report <out dir>
+//   node bench/interactive.mjs --dry-run --base <1.0.5 dir> --arms toolscript-1.0.5,toolscript-legacy,toolscript
+//
+// The 1.1.0 regression bench: the arms toolscript-1.0.5 (the build of --base), toolscript-legacy (the build of --head with
+// TOOLSCRIPT_PROTOCOL=legacy) and toolscript (the build of --head, no variable). A build is a folder with dist/host/main.js and
+// package.json. Each row names what ran: version, SHA-256 of main.js, the variables and the first method sent (bench/arms.mjs).
 //
 // Code Mode exists only in the interactive TUI, so this script drives `claude` in a pseudo-terminal
 // (node-pty) and reads the screen through @xterm/headless. Neither is a dependency of this repo:
@@ -29,6 +34,18 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import {
+  buildFields,
+  buildLines,
+  buildOfArm,
+  dryRunPlan,
+  envOfArm,
+  firstMethodOf,
+  jobsOf,
+  passRule,
+  resolveBuilds,
+  toolscriptEntry,
+} from './arms.mjs'
 import { TASKS } from './data.mjs'
 import { forgetRuns } from './forget.mjs'
 import { scrubHome } from './scrub.mjs'
@@ -36,7 +53,6 @@ import { estimate, spentSoFar } from './spend.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const FAKE_SERVER = path.join(REPO, 'bench', 'fake-server.mjs')
-const TOOLSCRIPT = path.join(REPO, 'dist', 'host', 'main.js')
 const PROJECTS = path.join(os.homedir(), '.claude', 'projects')
 
 // USD per million tokens. Source: the claude-api skill of Claude Code 2.1.325 (model table, and
@@ -48,9 +64,12 @@ const PRICES = {
 }
 
 const USAGE = `usage: node bench/interactive.mjs [--reps N] [--max-spend USD] [--spent USD] [--model NAME]
-       [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,codemode,toolscript,direct-lean,toolscript-lean]
-       [--root DIR] [--pty-dir DIR] [--bash PATH] [--out DIR]
+       [--tasks ${TASKS.map(t => t.id).join(',')}]
+       [--arms direct,codemode,toolscript,toolscript-legacy,toolscript-1.0.5,direct-lean,toolscript-lean]
+       [--head DIR] [--base DIR] [--dry-run] [--root DIR] [--pty-dir DIR] [--bash PATH] [--out DIR]
        node bench/interactive.mjs --report DIR
+--head and --base name a build: a folder with dist/host/main.js and package.json (default head: this repo; the arm
+toolscript-1.0.5 needs --base). --dry-run starts no Claude Code and spends nothing: it prints the arms, the tasks and the order.
 Each run starts interactive Claude Code and costs money. Before each run, the bench adds the most that a
 run of the same arm and task has cost so far, and stops when that passes --max-spend (default 5). This is an
 estimate: one run can cost more, so the total can pass the cap. The spend counts the saved runs of --out.
@@ -78,6 +97,9 @@ try {
       bash: { type: 'string' },
       out: { type: 'string' },
       report: { type: 'string' },
+      head: { type: 'string' },
+      base: { type: 'string' },
+      'dry-run': { type: 'boolean' },
     },
   }).values
 } catch (err) {
@@ -96,6 +118,27 @@ const BENCH_TOOLS = ['search_messages', 'list_issues', 'query_logs', 'create_tic
 const FILE_TOOLS = ['Read', 'Grep', 'Glob']
 // The lean host (#4, #89): `--tools ""`, so Claude Code lists none of its built-in tools.
 
+// The builds of toolscript that the chosen arms run (--head, --base), resolved before any run (bench/arms.mjs).
+let builds = {}
+// One toolscript arm: the build and the one variable of bench/arms.mjs, the config and the allowed tools shared by all three.
+function toolscriptArm(arm) {
+  return {
+    codeMode: false,
+    servers: ({ dir, log }) => {
+      const config = path.join(dir, 'toolscript.json')
+      fs.writeFileSync(
+        config,
+        JSON.stringify({
+          mcpServers: { bench: benchServer(log) },
+          policy: [{ match: 'mcp__bench__*', action: 'allow' }],
+        }),
+      )
+      return { toolscript: toolscriptEntry(builds[buildOfArm(arm)], config, envOfArm(arm)) }
+    },
+    allowed: ['mcp__toolscript__run_code', 'mcp__toolscript__search_tools', ...FILE_TOOLS],
+  }
+}
+
 // What each arm puts in front of the model. `allowed` is the whole --allowedTools list.
 const ARMS = {
   direct: {
@@ -108,21 +151,10 @@ const ARMS = {
     servers: ({ log }) => ({ bench: benchServer(log) }),
     allowed: [...BENCH_TOOLS.map(t => `mcp__bench__${t}`), 'REPL', ...FILE_TOOLS],
   },
-  toolscript: {
-    codeMode: false,
-    servers: ({ dir, log }) => {
-      const config = path.join(dir, 'toolscript.json')
-      fs.writeFileSync(
-        config,
-        JSON.stringify({
-          mcpServers: { bench: benchServer(log) },
-          policy: [{ match: 'mcp__bench__*', action: 'allow' }],
-        }),
-      )
-      return { toolscript: { command: 'node', args: [TOOLSCRIPT, '--config', config] } }
-    },
-    allowed: ['mcp__toolscript__run_code', 'mcp__toolscript__search_tools', ...FILE_TOOLS],
-  },
+  toolscript: toolscriptArm('toolscript'),
+  // The head build with TOOLSCRIPT_PROTOCOL=legacy, and the build of --base: the same config, policy and tools as `toolscript`.
+  'toolscript-legacy': toolscriptArm('toolscript-legacy'),
+  'toolscript-1.0.5': toolscriptArm('toolscript-1.0.5'),
   'direct-lean': {
     lean: true,
     codeMode: false,
@@ -450,6 +482,8 @@ const report = all => {
   )
   console.log(`total spend: $${all.reduce((n, r) => n + r.costUsd, 0).toFixed(4)}`)
   console.log(`models: ${[...new Set(rows.flatMap(r => r.models))].join(', ')}`)
+  const ran = buildLines(rows)
+  if (ran.length > 0) console.log(`\n${scrubHome(ran.join('\n'))}`)
   console.log(`\n### Warm runs per arm: mean / median / min-max\n`)
   console.log(`| metric | ${arms.join(' | ')} |`)
   console.log(`|---|${arms.map(() => '---:').join('|')}|`)
@@ -504,6 +538,8 @@ const report = all => {
     for (const r of wrong)
       console.log(`- ${r.task}-${r.arm}-${r.rep}: ${scrubHome(r.answer).replace(/\s+/g, ' ').slice(0, 300)}`)
   }
+  const rule = passRule(rows)
+  if (rule.lines.length > 0) console.log(`\n${rule.lines.join('\n')}`)
 }
 
 // --- main -------------------------------------------------------------------------------------------
@@ -528,6 +564,13 @@ const remeasure = (dir, saved) =>
         seconds: r.seconds,
       }),
       accepted: r.accepted,
+      // What ran is not in the transcript: it comes from the saved row (rows of older runs have none of it).
+      ...(r.version !== undefined && {
+        version: r.version,
+        mainSha256: r.mainSha256,
+        variables: r.variables,
+        firstMethod: r.firstMethod,
+      }),
     }
   })
 
@@ -555,25 +598,44 @@ if (!Object.entries(PRICES).some(([id, p]) => id === model || p.alias === model)
 const taskIds = opts.tasks?.split(',') ?? TASKS.map(t => t.id)
 const armIds = (opts.arms ?? 'direct,codemode,toolscript').split(',')
 for (const a of armIds) if (!ARMS[a]) throw new Error(`unknown arm ${a}`)
-const term = loadPty(path.resolve(opts['pty-dir'] ?? path.join(os.tmpdir(), 'ptytry')))
-const bash = findBash(opts.bash)
-if (!bash) throw new Error('no Git Bash found: Code Mode on Windows needs it, pass --bash')
+// The builds of the toolscript arms: a missing one ends the command before any run, with one line that names the flag.
+const resolved = resolveBuilds({ armIds, head: opts.head, base: opts.base, repo: REPO })
+if (resolved.errors.length > 0) {
+  for (const line of resolved.errors) console.error(scrubHome(line))
+  process.exit(2)
+}
+builds = resolved.builds
 const out = path.resolve(opts.out ?? path.join(ROOT, 'runs', new Date().toISOString().replace(/[:.]/g, '-')))
-fs.mkdirSync(out, { recursive: true })
 const resultsFile = path.join(out, 'results.jsonl')
 const done = fs.existsSync(resultsFile) ? readJsonl(resultsFile) : []
 let spent = spentSoFar(done, extraSpent)
-for (const a of armIds) fs.mkdirSync(cwdOf(a), { recursive: true })
 
 // Arms alternate inside each task, and their order flips every rep, so drift in load and cache hits all arms.
-const jobs = []
-for (let rep = 1; rep <= reps; rep++)
-  for (const task of TASKS.filter(t => taskIds.includes(t.id)))
-    for (const arm of rep % 2 ? armIds : [...armIds].reverse()) jobs.push({ task, arm, rep })
+const jobs = jobsOf({ tasks: TASKS.filter(t => taskIds.includes(t.id)), armIds, reps })
 // A run that failed counts toward the spend, and runs again.
 const todo = jobs.filter(
   j => !done.some(r => r.error === undefined && r.task === j.task.id && r.arm === j.arm && r.rep === j.rep),
 )
+if (opts['dry-run']) {
+  // No pty, no Claude Code, no folder made: only the plan.
+  const plan = dryRunPlan({
+    armIds,
+    builds,
+    tasks: TASKS.filter(t => taskIds.includes(t.id)),
+    reps,
+    todo,
+    spent,
+    maxSpend,
+    model,
+  })
+  console.log(scrubHome(plan.join('\n')))
+  process.exit(0)
+}
+const term = loadPty(path.resolve(opts['pty-dir'] ?? path.join(os.tmpdir(), 'ptytry')))
+const bash = findBash(opts.bash)
+if (!bash) throw new Error('no Git Bash found: Code Mode on Windows needs it, pass --bash')
+fs.mkdirSync(out, { recursive: true })
+for (const a of armIds) fs.mkdirSync(cwdOf(a), { recursive: true })
 const rows = [...done]
 console.log(`${todo.length} runs to do into ${scrubHome(out)}; spent so far $${spent.toFixed(4)}, cap $${maxSpend}`)
 
@@ -634,7 +696,14 @@ for (const [i, { task, arm, rep }] of todo.entries()) {
   const main = readJsonl(path.join(saved, result.mainName))
   const all = files.flatMap(readJsonl)
   const calls = fs.existsSync(log) ? readJsonl(log) : []
-  const row = { ...measure({ task, arm, rep, main, all, calls, seconds: result.seconds }), accepted: result.accepted }
+  // What ran: the build's version and main.js hash, the variables on the entry, and the first method that the server saw.
+  const firstFile = `${log}.first`
+  const first = firstMethodOf(fs.existsSync(firstFile) ? fs.readFileSync(firstFile, 'utf8') : '')
+  const row = {
+    ...measure({ task, arm, rep, main, all, calls, seconds: result.seconds }),
+    accepted: result.accepted,
+    ...buildFields(arm, builds, first),
+  }
   for (const removed of forgetRuns([cwdOf(arm)])) console.log(`removed ${scrubHome(removed)}`)
   rows.push(row)
   spent += row.costUsd

@@ -1,5 +1,37 @@
 # Bench results: direct MCP tools, Claude Code Code Mode and toolscript-mcp
 
+## 1.1.0 regression bench
+
+The release run of 1.1.0 fills this section (PR 14). It compares toolscript 1.0.5, the head build on `legacy` and the head
+build on its default, beside Code Mode, on the 6 tasks of `bench/data.mjs`. No Skills arm and no trap tasks (issue #229).
+
+- Command of the release run:
+  `node bench/interactive.mjs --model haiku --reps 3 --max-spend 7 --base <1.0.5 dir> [--head <candidate dir>] --arms codemode,toolscript-1.0.5,toolscript-legacy,toolscript`.
+  6 tasks, 3 reps, 4 arms: 72 runs, one at a time. A build is a folder with `dist/host/main.js` and `package.json`.
+- The arms: `toolscript-1.0.5` runs the build of `--base`, `toolscript-legacy` the head build with `TOOLSCRIPT_PROTOCOL=legacy`
+  in the `env` of its MCP entry, and `toolscript` the head build with no variable. Config, policy and allowed tools are the same.
+  Each saved row names what ran: the `version` of the build, the SHA-256 of its `main.js`, the variables on its entry and the
+  first method that the fake server saw (`initialize` or `server/discover`). The report prints them once for each arm.
+- The release run passes when, on warm runs, every toolscript arm is correct in every run, and `toolscript-legacy` against
+  `toolscript-1.0.5` and `toolscript` against `toolscript-legacy` each stay within +2 % on the median total input tokens and the
+  median first-call input, with no more failed `run_code` calls. `codemode` is reported, not judged. The report prints the verdict.
+  No task and no prompt is tuned after a run.
+- Date, system, Node, Claude Code version, model, each arm's version, hash and variables, the spend and the tables go here
+  after the run.
+
+### Smoke of the arms (2026-11-29, before the release run)
+
+- Windows 11, Node v22.23.3, Claude Code 2.1.332 (interactive TUI). `--model haiku`, which ran as `claude-haiku-5-5`.
+- Command: `node bench/interactive.mjs --model haiku --reps 1 --tasks ticket --max-spend 0.50 --base <1.0.5 build> --arms toolscript-1.0.5,toolscript-legacy,toolscript`.
+  3 runs, 3 correct, spend $0.0162. The head was main at `179c0db` plus this change, built with `npm run build`.
+- `toolscript-1.0.5`: version 1.0.5, `main.js` SHA-256 `bafac269650da58154a48d7ff9c147331784749cbf90a83212e460439b72c348`
+  (the build of tag `v1.0.5`), no variable, first method `initialize`. This run was cold and is left out of the tables.
+- `toolscript-legacy`: version 1.0.5, SHA-256 `34f6a05b1950ebde1c6b16acc814a2debd7de1513e156ef33b63130e4e96ccf2`,
+  `TOOLSCRIPT_PROTOCOL=legacy`, first method `initialize`.
+- `toolscript`: the same build and hash, no variable, first method `initialize`. The head is still version 1.0.5, and its default
+  is still `legacy`, so the two head arms are the same here. They differ only after the default changes.
+- The smoke is a check of the arms, not a result: one task, one rep.
+
 ## Rerun for issue #89 (2026-11-28)
 
 The numbers in this section replace the ones in the earlier run below. The earlier run is kept as it was, with its commit.
