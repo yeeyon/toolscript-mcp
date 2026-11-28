@@ -430,7 +430,7 @@ describe('the walk slots (issue #160)', () => {
     const root = tree(t)
     write(root, { 'a.txt': 'hit\n' })
     const h = holding()
-    const rig = await rigOf(t, root, { hook: h.hook, limits: { searchMs } })
+    const rig = await rigOf(t, root, { hook: h.hook, limits: { searchMs, walkSlots: 1 } })
     if (rig === undefined) return
     const walks = [1, 2].map(() => rig.call('search', { query: 'hit' }))
     await until(() => h.held() === 1)
@@ -449,7 +449,7 @@ describe('the walk slots (issue #160)', () => {
     const root = tree(t)
     write(root, { 'a.txt': 'hit\n' })
     const h = holding()
-    const rig = await rigOf(t, root, { hook: h.hook })
+    const rig = await rigOf(t, root, { hook: h.hook, limits: { walkSlots: 1 } })
     if (rig === undefined) return
     const walks = [rig.call('list')]
     await until(() => h.held() === 1)
@@ -471,7 +471,7 @@ describe('the walk slots (issue #160)', () => {
     const root = tree(t)
     write(root, { 'a.txt': 'hit\n' })
     const h = holding()
-    const rig = await rigOf(t, root, { hook: h.hook })
+    const rig = await rigOf(t, root, { hook: h.hook, limits: { walkSlots: 1 } })
     if (rig === undefined) return
     const walk = rig.call('list')
     await until(() => h.held() === 1)
@@ -490,6 +490,25 @@ describe('the walk slots (issue #160)', () => {
     for (let i = 0; i < 5; i++) assert.match(await rig.fail('list', { path: 'missing' }), /./)
     assert.equal((await rig.call('search', { query: 'hit' })).matches.length, 1)
   })
+
+  test('with 2 slots two walks run together and the third waits (issue #180)', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    const h = holding()
+    const rig = await rigOf(t, root, { hook: h.hook, limits: { searchMs, walkSlots: 2 } })
+    if (rig === undefined) return
+    const walks = [1, 2, 3].map(() => rig.call('search', { query: 'hit' }))
+    await until(() => h.held() === 2)
+    await pause(searchMs + 100)
+    assert.equal(h.held(), 2, 'the third walk made a lookup while both slots were held')
+    assert.equal(rig.bound.provider.inFlight(), 3)
+    h.release()
+    // The two held walks ran past their own budget while held. The third waited, and its budget starts at its slot.
+    const [, , third] = await Promise.all(walks)
+    assert.equal(third.truncated, false, 'the walk that waited was cut')
+    assert.equal(third.matches.length, 1)
+  })
+
   test('a search that took its last match walks no sibling folder, at any number in flight', async t => {
     const root = tree(t)
     const sub = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`b/s${i}/f.dat`, 'nothing\n']))
