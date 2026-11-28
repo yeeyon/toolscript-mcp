@@ -457,7 +457,28 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
      other headers with the recording of base. This replaces a fixed clock: the signature covers only `content-type`, `host` and `x-amz-*`, so re-deriving it from what the fake received proves the covered headers more directly (accepted deviation from the bar's fixed-clock test).
    - Refresh under the lock is unchanged: the refresh request body is still a `URLSearchParams` at `fetchWithinOrigin`, `src/core/lock.ts` and
      `oauthlock.ts` have 0 changed lines, and `oauth-lock*.test.ts`, `oauthlock.test.ts` and `oauth.test.ts` pass unchanged on the v2 flow.
-7. The server side (server.ts, main.ts, the Workspace provider and roots) on `@modelcontextprotocol/server`.
+7. The server side (server.ts, main.ts, the Workspace provider and roots) on `@modelcontextprotocol/server`. Done (PR 7), legacy era only, no model-facing change.
+   - `src/host/sdk/server.ts` names `@modelcontextprotocol/server` 2.4.0 (exact, dev dependency; the lockfile gains that one package).
+     No file of `src/` imports the first SDK; `tests/code.check.mjs` refuses it there, with a row for each v1 path. The test peers stay
+     on v1 (`tests/sdk.mjs`) until PR 8.
+   - `onListTools` and `onCallTool` take the v2 form and hand the caller `signal` and `requestId` from `ctx.mcpReq`. `getClientCapabilities`,
+     `elicitInput` (with `relatedRequestId`), `oninitialized`, `onclose` and `listRoots` keep their names on the v2 `Server`: no cast.
+   - The session server is `HostServer`, a `Server` and no longer an `McpServer` (the host never used its tool registry). A hand-made
+     instance lists no 2026 revision, so it installs no `server/discover` handler: the probe is answered -32601 and Claude Code falls back to
+     `initialize`. Two differences that a raw client saw, and the fix of each: (1) `McpServer` of v1 declared `tools.listChanged: true`, so
+     `HostServer` declares it by hand; (2) v2 answers a `tools/call` request that fails its schema with -32602 and a text that starts with
+     `Invalid tools/call request: `, where v1 gave -32603 and the issues alone. `HostServer` overrides the documented protected hook
+     `_wrapHandler` and maps it back.
+   - Golden: `tests/upstream-golden.test.ts` (raw JSON-RPC peer, no SDK client), recorded at the PR 6 head before the change and unchanged
+     after it, byte for byte, key order included. `initialize` for six versions, the plain requests, the `server/discover` probe (in process
+     and over `dist/host/main.js`), the ask (accept, decline, cancel, a bad action, an empty result, an error; the 10-minute timeout is not
+     waited for, the cancelled run covers "no answer"), roots, a cancelled run, an id in flight twice and a peer that closes mid-run.
+     `inputRequired.legacyShim` changes nothing, so it stays at its default. No `[mcp-sdk]` line reaches stderr in these cases.
+   - Size against PR 6 (`ecaf4e5`, Windows, Node 22): `main.js` 2116508 to 2047428 bytes, packed 515483 to 508024, unpacked 2298543 to
+     2233146, 16 files, `broker.js` SHA-256 unchanged (`8e677c76...`). Bytes in `main.js` by part: the v1 SDK (160 KB), its `ajv` (212 KB),
+     `fast-uri`, `zod-to-json-schema` and a part of `zod` (332 to 213 KB) are gone; the server adds `ajv` 289 KB, `src` 189 KB, `mcp` 49 KB and
+     `stdio` 3 KB. The client and the server each hold an `ajv` of 289 KB: one validator could serve both (the `jsonSchemaValidator` option
+     of the server); measured here, not applied. PR 8 takes it.
 8. Remove SDK v1, re-measure section 9, update the bench results.
 9. The flag: `TOOLSCRIPT_PROTOCOL` and the config key, default `legacy`, in the entry frame and the share key, with the documented
    list of unsupported methods (#93 part 1). `auto` does nothing yet.

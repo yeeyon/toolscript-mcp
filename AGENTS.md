@@ -54,7 +54,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     broken by rename (`takeLock`), and a socket left by a kill is linked back or swept at the next start. `doctor`
     names the way out for a taken name and reads the Windows access rules of the broker folder (never the server).
     `scripts/broker-proc.mjs` is how `scripts/start-time.mjs` checks a pid before it ends the broker.
-  - `server.ts`: the SDK `McpServer`, with a handler for each tool in `SERVED`, the approval prompt (elicitation),
+  - `server.ts`: `HostServer` (a v2 `Server`, legacy era, built in `sdk/server.ts`), with a handler for each tool in `SERVED`, the approval prompt (elicitation),
     the policy read again at each run (a looser one waits for the person or a restart) and the runs in flight, which
     `main.ts` stops at shutdown.
   - `run.ts`: one `run_code` call: the check before a run, the policy, the sandbox, the nested calls, saveFile,
@@ -177,8 +177,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 ## Rules
 - Read `CODING_STANDARDS.md` before a change to code, tests or model-facing text.
 - Only `src/host/sdk/` imports the MCP SDK. Callers import from its files (`client.ts`, `server.ts`, `transport.ts`,
-  `auth.ts`, `errors.ts`; no barrel). A stdio, shared or Workspace link has the v2 `@modelcontextprotocol/client` (legacy era); an HTTP link and
-  `login` are on it too (PR 6); only the server side is still v1. Nothing outside the folder asks which one a client is. The tests and `bench/walks.mjs` import the SDK only through `tests/sdk.mjs` (the SDK package
+  `auth.ts`, `errors.ts`; no barrel). The host is on SDK v2 in the legacy era: `@modelcontextprotocol/client` for every
+  link and `login`, `@modelcontextprotocol/server` for the server, the Workspace provider and roots (PR 7). No file of `src/` imports the
+  first SDK, and nothing outside the folder reads `ctx.mcpReq`. The tests and `bench/walks.mjs` import the SDK only through `tests/sdk.mjs` (the SDK package
   itself, never `src/host/sdk/`, so the test peers stay on v1 while the host moves). `tests/code.check.mjs` enforces both (issue #154).
 - Never weaken a sandbox layer to make a test pass.
 - stdout carries only MCP JSON-RPC. Log to stderr.
