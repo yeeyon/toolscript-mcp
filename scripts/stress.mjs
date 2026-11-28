@@ -370,9 +370,24 @@ export const median = list => {
  */
 export const measuresMemory = platform => platform === 'win32' || platform === 'linux'
 
-/** The idle sample of 6 hosts in the JSON of bench/memory.mjs, in bytes: private bytes, else the private memory of Linux. */
+/**
+ * The idle sample of 6 hosts in the JSON of bench/memory.mjs, in bytes: private bytes, else the private memory of Linux. Null
+ * unless the round is healthy: 6 sessions that all started (the bench did not stop early on free RAM), each with every
+ * server connected. A smaller process total divided by 6 would look like a saving.
+ */
 export const hostBytes = data => {
-  const idle = data?.rounds?.find(r => r.count === 6)?.samples?.idle
+  const round = data?.rounds?.find(r => r.count === 6)
+  const sessions = round?.sessions
+  const healthy =
+    Array.isArray(sessions) &&
+    sessions.length === 6 &&
+    round.stoppedAt === undefined &&
+    sessions.every(
+      x =>
+        x.ok === true && Array.isArray(x.failed) && x.failed.length === 0 && !x.connectTimeout && x.error === undefined,
+    )
+  if (!healthy) return null
+  const idle = round.samples?.idle
   const total = idle?.privateBytes ?? idle?.workingSetPrivate
   return typeof total === 'number' ? total : null
 }
@@ -502,6 +517,25 @@ const hostMb = (dir, share, tmp) => {
   }
 }
 
+const NO_TEXT = { instructionBytes: null, listBytes: null, searchBytes: null }
+
+/**
+ * The bytes of the three replies, each null when its reply is not a real one: no instructions string, no tool in the list, an
+ * RPC error, an isError result or no text in the search result. A broken reply is a failed row, never a small number.
+ */
+export const checkedBytes = (init, list, search) => {
+  const bytes = value => Buffer.byteLength(JSON.stringify(value))
+  const searchOk =
+    !search?.error && search?.result?.isError !== true && typeof search?.result?.content?.[0]?.text === 'string'
+  return {
+    instructionBytes:
+      !init?.error && typeof init?.result?.instructions === 'string' ? bytes(init.result.instructions) : null,
+    listBytes:
+      !list?.error && Array.isArray(list?.result?.tools) && list.result.tools.length > 0 ? bytes(list.result) : null,
+    searchBytes: searchOk ? bytes(search.result) : null,
+  }
+}
+
 /** The bytes the model pays for: the instructions, tools/list and a search_tools result, on the bench fake server. */
 export const textBytes = async dir => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stress-bytes-'))
@@ -535,7 +569,11 @@ export const textBytes = async dir => {
     new Promise((resolve, reject) => {
       const mine = ++id
       const timer = setTimeout(() => reject(new Error(method + ' timed out')), 60_000)
-      waiting.set(mine, msg => (clearTimeout(timer), resolve(msg)))
+      waiting.set(mine, msg => {
+        clearTimeout(timer)
+        if (msg.error) reject(new Error(method + ' returned an error'))
+        else resolve(msg)
+      })
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: mine, method, params }) + '\n')
     })
   try {
@@ -547,12 +585,7 @@ export const textBytes = async dir => {
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
     const list = await ask('tools/list', {})
     const search = await ask('tools/call', { name: 'search_tools', arguments: { query: '' } })
-    const bytes = value => Buffer.byteLength(JSON.stringify(value ?? null))
-    return {
-      instructionBytes: bytes(init.result?.instructions),
-      listBytes: bytes(list.result),
-      searchBytes: bytes(search.result),
-    }
+    return checkedBytes(init, list, search)
   } finally {
     child.stdin.end()
     await endTree(child)
@@ -608,7 +641,7 @@ export const baseline = async (baseDir, headDir, out, deadline = Infinity) => {
   const result = {}
   for (const key of ['base', 'head']) {
     const g = gather(samples[key], dirs[key], tmp)
-    result[key] = { ...g, ...(await textBytes(dirs[key])) }
+    result[key] = { ...g, ...(await textBytes(dirs[key]).catch(() => NO_TEXT)) }
   }
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
   baselineEnd = Infinity

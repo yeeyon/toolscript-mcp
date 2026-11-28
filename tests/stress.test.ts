@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import {
   anyFailed,
   cell,
+  checkedBytes,
   decode,
   hostBytes,
   judge,
@@ -399,6 +400,14 @@ describe('the profiles', () => {
   })
 })
 
+const sessions = (n: number) => Array.from({ length: n }, () => ({ ok: true, failed: [], connected: ['bench1'] }))
+const data = (idle: object, round: object = {}) => ({
+  rounds: [
+    { count: 1, sessions: sessions(1), samples: { idle: { privateBytes: 1 } } },
+    { count: 6, sessions: sessions(6), samples: { idle }, ...round },
+  ],
+})
+
 describe('the baseline budgets', () => {
   const same = {
     startMs: 400,
@@ -467,16 +476,52 @@ describe('the baseline budgets', () => {
   })
 
   test('the host memory comes from private bytes, or from the private memory of Linux', () => {
-    const data = (idle: object) => ({
-      rounds: [
-        { count: 1, samples: { idle: { privateBytes: 1 } } },
-        { count: 6, samples: { idle } },
-      ],
-    })
     assert.equal(hostBytes(data({ privateBytes: 600, workingSetPrivate: 5 })), 600)
     assert.equal(hostBytes(data({ privateBytes: null, workingSetPrivate: 480 })), 480)
     assert.equal(hostBytes(data({ privateBytes: null, workingSetPrivate: null })), null)
     assert.equal(hostBytes({}), null)
+  })
+
+  test('a round that is not 6 healthy sessions gives no host memory, so its row fails', () => {
+    const idle = { privateBytes: 600 }
+    assert.equal(hostBytes(data(idle, { sessions: sessions(5) })), null, 'fewer than 6 sessions')
+    assert.equal(hostBytes(data(idle, { stoppedAt: 4 })), null, 'the bench stopped on free RAM')
+    for (const bad of [
+      { ok: false, error: 'exited' },
+      { failed: ['bench2'] },
+      { connectTimeout: true },
+      { failed: undefined },
+    ]) {
+      const list = sessions(6)
+      list[3] = { ...list[3], ...bad }
+      assert.equal(hostBytes(data(idle, { sessions: list })), null, JSON.stringify(bad))
+    }
+    const rows = judge({ ...same, hostMb: 80 }, { ...same, hostMb: hostBytes(data(idle, { sessions: sessions(5) })) })
+    assert.equal(rows.find(r => r.metric.startsWith('host memory'))!.ok, false)
+  })
+
+  test('a search or list reply that is an error, an isError result or empty gives no bytes, so its row fails', () => {
+    const init = { result: { instructions: 'use run_code' } }
+    const list = { result: { tools: [{ name: 'run_code' }] } }
+    const search = { result: { content: [{ type: 'text', text: 'tools' }] } }
+    const good = checkedBytes(init, list, search)
+    assert.ok(good.instructionBytes! > 0 && good.listBytes! > 0 && good.searchBytes! > 0)
+    const rpcError = { error: { code: -32603, message: 'boom' } }
+    assert.equal(checkedBytes(init, list, rpcError).searchBytes, null)
+    assert.equal(
+      checkedBytes(init, list, { result: { isError: true, content: [{ type: 'text', text: 'failed' }] } }).searchBytes,
+      null,
+    )
+    assert.equal(checkedBytes(init, list, { result: { content: [] } }).searchBytes, null)
+    assert.equal(checkedBytes(init, list, undefined).searchBytes, null)
+    assert.equal(checkedBytes(rpcError, list, search).instructionBytes, null)
+    assert.equal(checkedBytes({ result: {} }, list, search).instructionBytes, null)
+    assert.equal(checkedBytes(init, { result: { tools: [] } }, search).listBytes, null)
+    const row = judge(same, { ...same, searchBytes: checkedBytes(init, list, rpcError).searchBytes }).find(r =>
+      r.metric.startsWith('search_tools'),
+    )!
+    assert.equal(row.ok, false)
+    assert.match(renderBaseline([row]), /FAIL \(not measured\)/)
   })
 
   test('the macOS memory rows are left out with a reason, and a lost number on Linux or Windows fails', () => {
