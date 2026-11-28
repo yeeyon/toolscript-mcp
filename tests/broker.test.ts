@@ -424,7 +424,7 @@ describe('attach and routing', () => {
     assert.equal(await startBroker({ home: rig.home, idleMs: 600_000, file: rig.file }), undefined)
   })
 
-  describe('a stale socket file', { skip: process.platform === 'win32' }, () => {
+  describe('a stale socket file', { skip: process.platform === 'win32' && 'pipes vanish with their process' }, () => {
     const dials = (endpoint: string): Promise<boolean> =>
       new Promise(resolve => {
         const probe = net.connect(endpoint)
@@ -561,6 +561,26 @@ describe('attach and routing', () => {
       closers.push(() => broker.stop())
       assert.ok(Date.now() - started >= guardMs - 30, 'it waited for the guard')
       assert.ok(await dials(endpoint), 'the file that refused is replaced by one that answers')
+    })
+
+    test('a different refusing file that replaces the first one is kept for a full guard from its own first refusal', async () => {
+      const { home, file, endpoint } = await stale('build replaced')
+      const guardMs = 800
+      const run = startBroker({ home, idleMs: 600_000, file, guardMs })
+      await nap(guardMs / 2)
+      // File B takes the path at half the guard of file A: the count starts again.
+      // It is made beside the path and renamed over file A, so the path is never empty for the broker.
+      const spare = endpoint + '.b'
+      await staleSocket(spare)
+      const swapped = Date.now()
+      fs.renameSync(spare, endpoint)
+      // The guard of file A would end at half the guard from now. File B refuses first after that, so it is removed
+      // no earlier than a full guard after it.
+      const broker = await run
+      assert.ok(broker, 'after its own guard the broker listens')
+      closers.push(() => broker.stop())
+      assert.ok(Date.now() - swapped >= guardMs - 30, 'file B refused for a full guard')
+      assert.ok(await dials(endpoint))
     })
 
     test('a young file that turns into a live broker within the guard is left alone, and the starting broker does not start', async () => {
@@ -782,7 +802,7 @@ describe('child stderr, forged frames and the caps', () => {
   test(
     'a dead socket file of another build is removed by the next broker, and a live or a young one is not',
     {
-      skip: process.platform === 'win32',
+      skip: process.platform === 'win32' && 'pipes vanish with their process',
     },
     async () => {
       const live = await startRig(600_000, 'build live')

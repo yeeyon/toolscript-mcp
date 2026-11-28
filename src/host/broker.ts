@@ -176,6 +176,8 @@ const SOCKET_GUARD_MS = 1000
  * a file system hands the inode of a file just removed to the next file made (Linux ext4 and overlayfs do it nearly
  * every time), so a socket file that another broker removed and bound again would look like the one before. The birth
  * time (statx on Linux, the file system on macOS) differs, and a hard link or a chmod does not change it.
+ * Where the file system gives no birth time, statx reports 0 and the id is dev:ino as before, so the guard is then the
+ * only protection.
  */
 const fileId = (file: string): string | undefined => {
   try {
@@ -291,7 +293,8 @@ const recoverSocket = async (endpoint: string, listen: () => Promise<void>, guar
               await nap(Math.min(25, guardMs))
               continue
             }
-            // The id was read in this tick: nothing runs between it and the remove.
+            // The id was read in this tick, and only the holder of the recovery lock removes this file, so what is removed is the
+            // file that refused for the guard.
             fs.rmSync(endpoint, { force: true })
           }
         }
@@ -779,12 +782,11 @@ export const startBroker = async ({
     // Windows pipes vanish with their process, so a taken name means a broker is there.
     if (process.platform === 'win32' || !(await recoverSocket(endpoint, listen, guardMs))) return undefined
   }
-  // The inode of the socket file this broker bound: at the close, a file at the path that is not this one is another
-  // broker's, and stays.
-  const mine = bound
+  // `bound` is the id (device, inode, birth time) read at the bind: at the close, a file at the path that is not this one
+  // is another broker's, and stays.
   const closeServer = (): void => {
-    const now = mine === undefined ? undefined : fileId(endpoint)
-    if (now === undefined || now === mine) return void server.close()
+    const now = bound === undefined ? undefined : fileId(endpoint)
+    if (now === undefined || now === bound) return void server.close()
     // The close of a pipe server unlinks the path whoever bound it, so the other broker's file is linked aside and back.
     // What remains: for the two calls between the unlink and the relink (microseconds) the path does not exist, and a
     // host that dials then gets ENOENT (it dials once more before it starts a broker). A kill inside it leaves the
@@ -805,7 +807,7 @@ export const startBroker = async ({
   afterListen?.()
   // A broker that lost its name between the bind and here (another broker removed its file) serves nobody by name: it
   // leaves at once, and the file at the path is the other broker's.
-  if (mine !== undefined && fileId(endpoint) !== mine) {
+  if (bound !== undefined && fileId(endpoint) !== bound) {
     closeServer()
     for (const socket of sockets) socket.destroy()
     return undefined
