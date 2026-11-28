@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url'
 import {
   anyFailed,
   decode,
+  hostBytes,
   judge,
+  measuresMemory,
   median,
   newestTag,
   parseJunit,
@@ -19,8 +21,10 @@ import {
   renderSummary,
   runProfile,
   runTarget,
+  SYSTEMS,
   summarize,
 } from '../scripts/stress.mjs'
+import { readTable } from '../bench/memory.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'stress-test-')))
@@ -279,6 +283,19 @@ describe('the profiles', () => {
     assert.ok(config.cpu1.find((e: { target: string }) => e.target === 'bench/broker-race.mjs').optional)
   })
 
+  test('the boxes of each profile fit the deadline of the workflow with 5 minutes to spare', () => {
+    const yml = fs.readFileSync(path.join(REPO, '.github', 'workflows', 'stress.yml'), 'utf8')
+    const deadlines = [...yml.matchAll(/--deadline (\d+)/g)].map(m => Number(m[1]))
+    assert.ok(deadlines.length >= 5)
+    const profileDeadline = Math.min(...deadlines.filter(d => d >= 45))
+    assert.equal(profileDeadline, 45, 'the profile steps use --deadline 45')
+    for (const name of Object.keys(config)) {
+      const minutes = profileOf(config, name).reduce((n, e) => n + (e.box ?? (e.timeout ?? 600) / 60), 0)
+      assert.ok(minutes <= profileDeadline - 5, name + ' needs ' + minutes + ' min')
+    }
+    assert.ok(deadlines.includes(40), 'the baseline has its own deadline')
+  })
+
   test('a profile that is missing or has a bad entry is refused', () => {
     assert.throws(() => profileOf(config, 'nope'), /no profile nope/)
     assert.throws(() => profileOf({ x: [{ target: 'a' }] }, 'x'), /a bad entry/)
@@ -419,6 +436,44 @@ describe('the baseline budgets', () => {
     assert.equal(verdict({ packBytes: 250_000 }, 'npm pack'), true)
     assert.equal(verdict({ packBytes: 250_001 }, 'npm pack'), false)
     assert.equal(verdict({ mainBytes: 1_750_001 }, 'dist/host'), false)
+  })
+
+  test('each system of the baseline plan can produce every row that it judges', async () => {
+    const platform = { 'ubuntu-latest': 'linux', 'macos-latest': 'darwin', 'windows-latest': 'win32' } as const
+    for (const runner of SYSTEMS) {
+      const rows = judge(same, same, { memory: measuresMemory(platform[runner]) })
+      assert.ok(
+        rows.every(r => r.ok),
+        runner,
+      )
+      assert.equal(rows.filter(r => 'skipped' in r).length, runner === 'macos-latest' ? 2 : 0, runner)
+    }
+    // The premise, checked on the system that runs this test: where a number is judged, memory.mjs reads one.
+    const own = (await readTable()).find((p: { pid: number }) => p.pid === process.pid)
+    assert.ok(own, 'the process table has this process')
+    const number = typeof own.pb === 'number' || typeof own.ws === 'number'
+    assert.equal(number, measuresMemory(process.platform))
+  })
+
+  test('the host memory comes from private bytes, or from the private memory of Linux', () => {
+    const data = (idle: object) => ({
+      rounds: [
+        { count: 1, samples: { idle: { privateBytes: 1 } } },
+        { count: 6, samples: { idle } },
+      ],
+    })
+    assert.equal(hostBytes(data({ privateBytes: 600, workingSetPrivate: 5 })), 600)
+    assert.equal(hostBytes(data({ privateBytes: null, workingSetPrivate: 480 })), 480)
+    assert.equal(hostBytes(data({ privateBytes: null, workingSetPrivate: null })), null)
+    assert.equal(hostBytes({}), null)
+  })
+
+  test('the macOS memory rows are left out with a reason, and a lost number on Linux or Windows fails', () => {
+    const lost = { ...same, hostMb: null, sharedSavingMb: null }
+    assert.equal(judge(lost, lost, { memory: true }).filter(r => !r.ok).length, 2)
+    const rows = judge(lost, lost, { memory: false })
+    assert.ok(rows.every(r => r.ok))
+    assert.match(renderBaseline(rows), /\| not judged: this system has no private memory number for a process \|/)
   })
 
   test('a metric that was not measured is n/a and fails: it never passes silently', () => {

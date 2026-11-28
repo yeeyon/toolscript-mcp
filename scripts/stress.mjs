@@ -359,8 +359,25 @@ export const median = list => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
 }
 
-/** The budgets: a value of head against base. `null` on either side is n/a: a metric that was not measured fails, it never passes silently. */
-export const judge = (base, head) => {
+/**
+ * Whether bench/memory.mjs reads a private memory number for each process on this system: Windows (private bytes) and Linux
+ * (smaps Private + Swap). macOS has none, `ps` has no such column. The two memory rows are then not judged, and say why.
+ */
+export const measuresMemory = platform => platform === 'win32' || platform === 'linux'
+
+/** The idle sample of 6 hosts in the JSON of bench/memory.mjs, in bytes: private bytes, else the private memory of Linux. */
+export const hostBytes = data => {
+  const idle = data?.rounds?.find(r => r.count === 6)?.samples?.idle
+  const total = idle?.privateBytes ?? idle?.workingSetPrivate
+  return typeof total === 'number' ? total : null
+}
+
+/**
+ * The budgets: a value of head against base. `null` on either side is n/a: a metric that was not measured fails, it never
+ * passes silently. `memory: false` (a system with no private memory number, see measuresMemory) leaves out the two memory
+ * rows with the reason, and they do not fail.
+ */
+export const judge = (base, head, { memory = true } = {}) => {
   const rows = []
   const row = (metric, b, h, budget, ok, unit) =>
     rows.push({
@@ -372,6 +389,19 @@ export const judge = (base, head) => {
       ok: b === null || h === null ? false : ok(b, h),
       na: b === null || h === null,
     })
+  const memoryRow = (...args) =>
+    memory
+      ? row(...args)
+      : rows.push({
+          metric: args[0],
+          base: null,
+          head: null,
+          budget: args[3],
+          unit: args[5],
+          ok: true,
+          na: false,
+          skipped: 'not judged: this system has no private memory number for a process',
+        })
   row(
     'start: tools/list ms (median)',
     base.startMs,
@@ -380,8 +410,15 @@ export const judge = (base, head) => {
     (b, h) => h <= b + Math.max(b * 0.1, 50),
     'ms',
   )
-  row('host memory MB (6 hosts, private bytes a host)', base.hostMb, head.hostMb, '+10 MB', (b, h) => h <= b + 10, 'MB')
-  row(
+  memoryRow(
+    'host memory MB (6 hosts, private memory a host)',
+    base.hostMb,
+    head.hostMb,
+    '+10 MB',
+    (b, h) => h <= b + 10,
+    'MB',
+  )
+  memoryRow(
     'sharing: MB saved a host',
     base.sharedSavingMb,
     head.sharedSavingMb,
@@ -412,7 +449,7 @@ export const renderBaseline = rows => {
           show(r.base, r.unit),
           show(r.head, r.unit),
           r.budget,
-          r.na ? 'FAIL (not measured)' : r.ok ? 'pass' : 'FAIL',
+          r.skipped ? r.skipped : r.na ? 'FAIL (not measured)' : r.ok ? 'pass' : 'FAIL',
         ].join(' | ') +
         ' |',
     ),
@@ -421,15 +458,21 @@ export const renderBaseline = rows => {
   ].join('\n')
 }
 
-const runNode = (args, cwd, env = {}, timeout = 600_000) =>
-  spawnSync(process.execPath, args, {
+/** The end of the baseline (a performance.now() time): each call below has at most 300 s, and none starts after it. */
+let baselineEnd = Infinity
+
+const runNode = (args, cwd, env = {}) => {
+  const left = baselineEnd - performance.now()
+  if (left <= 0) return { stdout: '', status: null }
+  return spawnSync(process.execPath, args, {
     cwd,
     env: { ...process.env, ...env },
     encoding: 'utf8',
-    timeout,
+    timeout: Math.min(300_000, left),
     windowsHide: true,
     maxBuffer: 64 * MB,
   })
+}
 
 /** The median tools/list time of `runs` starts, from the output of scripts/start-time.mjs. */
 const startMs = (dir, runs) => {
@@ -438,7 +481,7 @@ const startMs = (dir, runs) => {
   return m === null ? null : Number(m[1])
 }
 
-/** Private bytes of each host at 6 hosts idle, in MB, from bench/memory.mjs. Null where the system does not measure it. */
+/** Private memory of each host at 6 hosts idle, in MB, from bench/memory.mjs. Null when the run lost the number. */
 const hostMb = (dir, share, tmp) => {
   const file = path.join(tmp, 'mem-' + Math.random().toString(36).slice(2) + '.json')
   runNode(
@@ -447,10 +490,8 @@ const hostMb = (dir, share, tmp) => {
     share ? { TOOLSCRIPT_SHARE: '1' } : { TOOLSCRIPT_SHARE: '' },
   )
   try {
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
-    const round = data.rounds.find(r => r.count === 6)
-    const total = round?.samples?.idle?.privateBytes
-    return typeof total === 'number' ? total / 6 / MB : null
+    const total = hostBytes(JSON.parse(fs.readFileSync(file, 'utf8')))
+    return total === null ? null : total / 6 / MB
   } catch {
     return null
   }
@@ -521,6 +562,7 @@ const packBytes = dir => {
     encoding: 'utf8',
     shell: process.platform === 'win32',
     windowsHide: true,
+    timeout: 120_000,
     maxBuffer: 64 * MB,
   })
   try {
@@ -541,7 +583,9 @@ const gather = (samples, dir, tmp) => ({
   tmp,
 })
 
-export const baseline = async (baseDir, headDir, out) => {
+/** `deadline`: a performance.now() time after which no measurement starts. What it leaves out is n/a, so the row fails. */
+export const baseline = async (baseDir, headDir, out, deadline = Infinity) => {
+  baselineEnd = deadline
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stress-baseline-'))
   const samples = { base: { start: [], mem: [], shared: [] }, head: { start: [], mem: [], shared: [] } }
   const dirs = { base: baseDir, head: headDir }
@@ -562,7 +606,8 @@ export const baseline = async (baseDir, headDir, out) => {
     result[key] = { ...g, ...(await textBytes(dirs[key])) }
   }
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
-  const rows = judge(result.base, result.head)
+  baselineEnd = Infinity
+  const rows = judge(result.base, result.head, { memory: measuresMemory(process.platform) })
   fs.mkdirSync(out, { recursive: true })
   fs.writeFileSync(path.join(out, 'baseline.json'), JSON.stringify({ result, rows }, null, 2))
   return rows
@@ -742,7 +787,7 @@ const main = async () => {
   }
   if (command === 'baseline') {
     if (!values.base || !values.head) throw new Error('baseline needs --base and --head')
-    const rows = await baseline(path.resolve(values.base), path.resolve(values.head), values.out)
+    const rows = await baseline(path.resolve(values.base), path.resolve(values.head), values.out, options.deadline)
     publish(renderBaseline(rows))
     process.exit(rows.some(r => !r.ok) ? 1 : 0)
   }
