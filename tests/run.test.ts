@@ -1349,19 +1349,30 @@ describe('calls of one tool one after another', () => {
 
   test('a Promise.all after a large reply inside the scan limits stays fast', async () => {
     const batch =
-      'const t = Date.now()\nawait Promise.all(Array.from({ length: 50 }, (_, i) => call("mcp__f__sized", { i, n: Array.from({ length: 15 }, (_, j) => Number("1".repeat(j + 2))) })))\nreturn Date.now() - t'
+      'const t = Date.now()\nawait Promise.all(Array.from({ length: 100 }, (_, i) => call("mcp__f__sized", { i, n: Array.from({ length: 15 }, (_, j) => Number("1".repeat(j + 2))) })))\nreturn Date.now() - t'
     // The same 50 calls with no large reply before them: what this runner takes for them. The bound is relative to it, so a
-    // slow or busy runner cannot fail the test, and a host that scans the large reply for each call still does.
-    const base = await setup().run(batch)
-    assert.equal(base.isError, false, base.text)
-    const r = await setup().run(`await call("mcp__f__sized", {})\n${batch}`)
-    assert.equal(r.isError, false, r.text)
+    // slow or busy runner cannot fail the test, and a host that scans the large reply for each call still does. One sample
+    // of each side let runner noise decide the test, so the two sides run three times each, interleaved, and the bound
+    // compares their least times: the least time is the estimate of the floor that noise only raises.
+    const samples = async (code: string): Promise<number> => {
+      // A gap of a minute puts every call inside the window of the scan, so a host that scans the reply for each call
+      // pays for 100 scans of about 10 ms, and a host that scans once pays for one.
+      const done = await setup({ serialLimits: { gapMs: 60_000 } }).run(code)
+      assert.equal(done.isError, false, done.text)
+      return Number(/^\d+/.exec(done.text)?.[0])
+    }
+    const base: number[] = []
+    const after: number[] = []
+    for (let round = 0; round < 3; round++) {
+      base.push(await samples(batch))
+      after.push(await samples(`await call("mcp__f__sized", {})\n${batch}`))
+    }
     // The reply and the 16 new values are inside the scan limits, and one scan takes about 10 ms. The host scans for
-    // the first call sent after the reply only. Without that rule, the scans still stop within the 200 ms gap, so this
-    // test cannot see that rule: it bounds the whole cost.
-    const baseMs = Number(/^\d+/.exec(base.text)?.[0])
-    const ms = Number(/^\d+/.exec(r.text)?.[0])
-    assert.ok(ms < baseMs * 3 + 500, `${r.text} ms after the large reply, ${base.text} ms without it`)
+    // the first call sent after the reply only. With the gap of a minute, a host without that rule scans for each of
+    // the 100 calls, about a second more, which the bound catches.
+    const baseMs = Math.min(...base)
+    const ms = Math.min(...after)
+    assert.ok(ms < baseMs * 3 + 500, `${after.join(', ')} ms after the large reply, ${base.join(', ')} ms without it`)
   })
 })
 

@@ -97,8 +97,9 @@ answers `ping`, and fans out `tools/list_changed`. That stays, byte for byte, as
   inside `LINKS_MAX`. Finding of PR 1: the child stamps each stream notification, the first `notifications/subscriptions/acknowledged`
   too, with `_meta["io.modelcontextprotocol/subscriptionId"]`, the JSON-RPC id of the listen request, verbatim. The child sees the
   router id, so PR 11 must map the stamp back to the id that the link sent before it forwards the notification.
-- MRTR: an `input_required` result goes back by id to the link that asked. The router records a hash of its `requestState` for that
-  link (bounded: 64 for each link, 10 minutes). A retry with `inputResponses` whose `requestState` belongs to another link gets
+- MRTR: an `input_required` result goes back by id to the link that asked. The router keeps the `requestState` string itself for that
+  link (bounded: 64 for each link, the oldest goes, each at most 8,192 characters; a longer one is not kept). Changed in PR 11: no 10-minute
+  expiry and no hash, because the router has no clock and no crypto; the child signs and expires its own state. A retry with `inputResponses` whose `requestState` belongs to another link gets
   -32602 and reaches no child. The router never changes `requestState` or `inputResponses`. Phase 4 adds the same rule for a `taskId`.
   Finding of PR 1: `requestState` is a string at the top of the `input_required` result (`{ resultType, inputRequests?, requestState? }`), and
   a retry is a new request that carries `inputResponses` and `requestState` in its params. The progress token stays in
