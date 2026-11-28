@@ -417,9 +417,21 @@ export const checkCall = (
  * Why a call was refused because its arguments name a guarded folder. One fixed shape: it names the tool, the folder
  * and the key path of the argument (`edits[0].new`), never the argument itself. A mention in text counts, so it says
  * so. No allow rule or approval lifts it: the next step is to leave the folder out, or the person's edit or post.
+ * `lines` are the lines of a multi-line text that hold a guarded folder, rising: 1 gives `line 306`, 2 to 10 give
+ * `lines 12, 40: each names a guarded folder`, and 11 give the first 10 and ` and more`. Only numbers and fixed words.
  */
-export const guardedText = (tool: string, folder: string, at = ''): string =>
-  `refused: an argument of ${tool} names ${folder}, a folder that toolscript-mcp guards${at === '' ? '' : ` (in ${at})`}. A mention in text counts too. No allow rule or approval lifts this. Leave the folder out of the argument, or the person can edit the file or post the text outside run_code.`
+export const guardedText = (tool: string, folder: string, at = '', lines: readonly number[] = []): string =>
+  `refused: an argument of ${tool} names ${folder}, a folder that toolscript-mcp guards${where(at, lines)}. A mention in text counts too. No allow rule or approval lifts this. Leave the folder out of the argument, or the person can edit the file or post the text outside run_code.`
+
+// The parenthesis of a guarded refusal: the key path, then the lines. Nothing else of the argument.
+const where = (at: string, lines: readonly number[]): string => {
+  const place = at === '' ? [] : [`in ${at}`]
+  if (lines.length === 0) return place.length === 0 ? '' : ` (${place[0]})`
+  if (lines.length === 1) return ` (${[...place, `line ${lines[0]}`].join(', ')})`
+  const more = lines.length > 10
+  const list = `lines ${lines.slice(0, 10).join(', ')}${more ? ' and more' : ''}`
+  return ` (${[...place, list].join(', ')}: each names a guarded folder)`
+}
 
 // Why `*` or `mcp__*__Bash` does not allow a tool of the bridge `bridge`.
 const bridgeRule = (bridge: string): string =>

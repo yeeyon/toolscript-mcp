@@ -691,3 +691,115 @@ describe('the gaps of issue 107', () => {
     assert.equal(await hit({ p: '\\\\fake-host\\share\\a.png' }, fake(), PROJECT, true), undefined)
   })
 })
+
+describe('guardFind: the lines of a multi-line text that hold a guarded folder', () => {
+  const SCHEMA = { properties: { content: {}, path: {} } }
+  const lines = async (content: unknown) =>
+    (
+      await guardFind(
+        { content },
+        {
+          home: HOME,
+          cwd: PROJECT,
+          list: LIST,
+          forms: () => resolveGuarded(LIST, fake().realpath),
+          realpath: fake().realpath,
+          schema: SCHEMA,
+          windows: false,
+        },
+      )
+    )?.lines
+  const FUNCTIONS = GUARD_MARKERS[1]!
+  // `n` lines of filler, then `target` on the next line.
+  const after = (n: number, target: string, eol = '\n', filler = 'plain text') =>
+    `${Array.from({ length: n }, () => filler).join(eol)}${n > 0 ? eol : ''}${target}`
+
+  test('the fold of the text check keeps the line: each fold alone and all together, with each kind of line break', async () => {
+    const folds: Record<string, [string, string]> = {
+      plain: ['see ~/' + MARK, 'plain text'],
+      backslash: ['see ~\\' + MARK.replace('/', '\\'), 'plain text'],
+      doubled: ['see ~//' + MARK.replace('/', '//'), 'plain text'],
+      dotted: ['see ~/' + MARK.replace('/', '/./'), 'plain text'],
+      tail: ['see ~/' + MARK.replace('/', '. /'), 'plain text'],
+      upper: ['see ~/' + MARK.toUpperCase(), 'plain text'],
+      sharpS: ['see ~/' + MARK, 'Straẞe ß İ ̇ end'],
+      combining: ['see ~/' + MARK, 'é å ö é'],
+      all: ['see ~\\\\' + '.TOOLSCRIPT-MCP. \\.\\HINTS', 'Straẞe é ß'],
+    }
+    for (const [name, [target, filler]] of Object.entries(folds)) {
+      for (const eol of ['\n', '\r\n']) {
+        for (const n of [1, 4]) {
+          assert.deepEqual(await lines(after(n, target, eol, filler)), [n + 1], `${name} ${JSON.stringify(eol)} ${n}`)
+        }
+      }
+    }
+    // A lone `\r` is no line break: the match is on line 2, after the one `\n`.
+    assert.deepEqual(await lines(`a\rb\rc\nsee ~/${MARK}`), [2])
+    assert.deepEqual(await lines(`a\r\r\r\nsee ~/${MARK} x\r\n`), [2])
+  })
+
+  test('one line, several lines, and a line that holds two marks are listed in rising order', async () => {
+    assert.deepEqual(await lines(after(305, `see ~/${MARK}`)), [306])
+    const text = ['a', `~/${MARK}`, 'b', `x ~/${MARK} y ~/${MARK}`, 'c', 'd', `~/${MARK}`].join('\n')
+    assert.deepEqual(await lines(text), [2, 4, 7])
+  })
+
+  test('the lines cover every guarded folder, and the folder that the refusal names stays the first in the list', async () => {
+    const text = [`a ~/${FUNCTIONS}`, 'b', `~/${MARK}`, `~/${GUARD_MARKERS.at(-1)}`].join('\n')
+    const found = await guardFind(
+      { content: text },
+      {
+        home: HOME,
+        cwd: PROJECT,
+        list: LIST,
+        forms: () => resolveGuarded(LIST, fake().realpath),
+        realpath: fake().realpath,
+        windows: false,
+      },
+    )
+    assert.equal(found?.label, `~/${MARK}`)
+    assert.deepEqual(found?.lines, [1, 3, 4])
+  })
+
+  test('11 or more lines keep the first 11 for the cap, in rising order', async () => {
+    const text = Array.from({ length: 25 }, (_, i) => (i % 2 === 0 ? `~/${MARK}` : 'x')).join('\n')
+    assert.deepEqual(await lines(text), [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21])
+    const ten = Array.from({ length: 10 }, () => `~/${MARK}`).join('\n')
+    assert.deepEqual(await lines(ten), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    // Marks of another folder that come first do not push the first marker's lines out of order.
+    const mixed = Array.from({ length: 30 }, (_, i) => `~/${i % 3 === 0 ? MARK : FUNCTIONS}`).join('\n')
+    assert.deepEqual(await lines(mixed), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+  })
+
+  test('a mark inside a word on another line is not listed', async () => {
+    assert.deepEqual(await lines(`my${MARK}\nsee ~/${MARK}\nmy-${MARK}\nx_${MARK}\n${MARK}`), [2, 5])
+  })
+
+  test('a string with no line to give has none: a match after the decode, one line, a path, a non-string', async () => {
+    const encoded = `~/.toolscript-mcp%2Fhints`
+    assert.equal(await lines(`a\n${encoded}`), undefined)
+    assert.notEqual(markerIn(`a\n${encoded}`), undefined)
+    // A plain match and an encoded one: the plain lines only.
+    assert.deepEqual(await lines(`${encoded}\nb\n~/${MARK}`), [3])
+    assert.equal(await lines(`see ~/${MARK}`), undefined)
+    assert.equal(await lines(`/home/u/${MARK}/x.md`), undefined)
+    assert.equal(await lines(42), undefined)
+    assert.equal(await lines(['plain']), undefined)
+    assert.equal(await lines(`a\n${MARK.slice(0, -2)}`), undefined)
+  })
+
+  test('the result has no lines key when none is known', async () => {
+    const found = await guardFind(
+      { content: `see ~/${MARK}` },
+      {
+        home: HOME,
+        cwd: PROJECT,
+        list: LIST,
+        forms: () => resolveGuarded(LIST, fake().realpath),
+        realpath: fake().realpath,
+        windows: false,
+      },
+    )
+    assert.deepEqual(found, { label: `~/${MARK}`, at: '…' })
+  })
+})

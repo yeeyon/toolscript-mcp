@@ -76,13 +76,37 @@ const WORD = /^[\p{L}\p{N}_.-]$/u
  * `.toolscript-mcp/hints.bak` and `my.toolscript-mcp/hints` pass. A trailing dot or space on the state folder does not
  * hide the marker. A string with `%` is read again with each `%XX` below `%80` decoded one time.
  */
-export const markerIn = (text: string): string | undefined =>
-  markerOf(text) ??
-  // Decoding gives ASCII only, so a state name that decoding makes needs a decoded letter or `-`. A name that is in the
-  // text already is decoded for the boundary around it. Other text with `%` cannot gain a marker.
-  (text.includes('%') && (foldCase(text).includes(STATE_NAME) || /%(?:[4-7][0-9a-f]|2d)/i.test(text))
+export const markerIn = (text: string): string | undefined => markerOf(text) ?? decodedMarker(text)
+
+// The marker that shows only after the `%XX` decode, or undefined. Decoding gives ASCII only, so a state name that
+// decoding makes needs a decoded letter or `-`. A name that is in the text already is decoded for the boundary around
+// it. Other text with `%` cannot gain a marker.
+const decodedMarker = (text: string): string | undefined =>
+  text.includes('%') && (foldCase(text).includes(STATE_NAME) || /%(?:[4-7][0-9a-f]|2d)/i.test(text))
     ? markerOf(decodeOnce(text))
-    : undefined)
+    : undefined
+
+/** The most lines that a refusal lists for one string: 10 and one more, to tell that there are more. */
+export const GUARD_LINES = 11
+
+/** A marker that a string holds, and the lines of the string where a marker of the list stands (see `markerHit`). */
+export type MarkerHit = { readonly marker: string; readonly lines: readonly number[] }
+
+/**
+ * `markerIn` with the line numbers of the match, for the refusal. `lines` has at most GUARD_LINES numbers in rising
+ * order, each a line (1 + the `\n` before it) that holds a marker of the list at a name boundary, not only the marker
+ * that `marker` names. It is empty for a string with no `\n` and for a match that shows only after the `%XX` decode
+ * (a decoded `%0A` adds a line). The folds of `markerOf` add and remove no `\n`, so the count on the folded text is the
+ * count on the text as written.
+ */
+export const markerHit = (text: string): MarkerHit | undefined => {
+  const found = scan(text)
+  if (found !== undefined) {
+    return { marker: found.marker, lines: text.includes('\n') ? linesOf(found.folded) : [] }
+  }
+  const marker = decodedMarker(text)
+  return marker === undefined ? undefined : { marker, lines: [] }
+}
 
 const STATE = GUARD_MARKERS[0]!.slice(0, GUARD_MARKERS[0]!.indexOf('/'))
 const STATE_NAME = STATE.slice(1)
@@ -99,7 +123,17 @@ for (let code = 0; code < 0x80; code++) {
 // Each `%XX` below `%80` decoded one time. A bad sequence such as `%zz` or `%E0%` stays as written and throws nothing.
 const decodeOnce = (text: string): string => text.replace(/%[0-7][0-9a-fA-F]/g, escape => ESCAPES[escape]!)
 
-const markerOf = (text: string): string | undefined => {
+const markerOf = (text: string): string | undefined => scan(text)?.marker
+
+// A marker at `at` in `folded` counts at a name boundary only (the rule of `markerIn`).
+const atBoundary = (folded: string, marker: string, at: number): boolean => {
+  let end = at + marker.length
+  while (folded.charAt(end) === '.') end++
+  return !WORD.test(at > 0 ? folded.charAt(at - 1) : '') && !WORD.test(folded.charAt(end))
+}
+
+// The first marker at a name boundary, with the folded text that the lines count on, or undefined.
+const scan = (text: string): { marker: string; folded: string } | undefined => {
   // Every marker holds the name of the state folder, and the steps after the fold change no letter: a text without
   // the name has no marker, so the cheap fold runs first and the separator steps run only for a text that has it.
   const cased = foldCase(text)
@@ -111,12 +145,32 @@ const markerOf = (text: string): string | undefined => {
     .replace(STATE_TAIL, STATE)
   for (const marker of GUARD_MARKERS) {
     for (let at = folded.indexOf(marker); at >= 0; at = folded.indexOf(marker, at + 1)) {
-      let end = at + marker.length
-      while (folded.charAt(end) === '.') end++
-      if (!WORD.test(at > 0 ? folded.charAt(at - 1) : '') && !WORD.test(folded.charAt(end))) return marker
+      if (atBoundary(folded, marker, at)) return { marker, folded }
     }
   }
   return undefined
+}
+
+// The lines of the folded text that hold a marker at a name boundary, rising, at most GUARD_LINES. One pass for each
+// marker: the `\n` are counted forward one time and the scan of a marker stops at GUARD_LINES lines, so the first
+// GUARD_LINES of all markers are the first GUARD_LINES of the union.
+const linesOf = (folded: string): number[] => {
+  const found = new Set<number>()
+  for (const marker of GUARD_MARKERS) {
+    let line = 1
+    let last = 0
+    let kept = 0
+    let nl = folded.indexOf('\n')
+    for (let at = folded.indexOf(marker); at >= 0 && kept < GUARD_LINES; at = folded.indexOf(marker, at + 1)) {
+      if (!atBoundary(folded, marker, at)) continue
+      for (; nl >= 0 && nl < at; nl = folded.indexOf('\n', nl + 1)) line++
+      if (line === last) continue
+      found.add(line)
+      last = line
+      kept++
+    }
+  }
+  return [...found].sort((a, b) => a - b).slice(0, GUARD_LINES)
 }
 
 // A scheme of 2 or more characters, then `//` or a word (`data:text/plain`): not a path. `C:a` and `C:\a` are drives.
@@ -260,7 +314,12 @@ export const guardHit = async (args: unknown, setup: GuardSetup): Promise<string
   (await guardFind(args, setup))?.label
 
 /** A guarded folder that a call names, and the key path of the argument that names it (`''` for the arguments as a whole). */
-export type GuardFound = { readonly label: string; readonly at: string }
+export type GuardFound = {
+  readonly label: string
+  readonly at: string
+  /** The lines of a multi-line string that hold a guarded folder, rising, at most GUARD_LINES. Absent when none is known. */
+  readonly lines?: readonly number[]
+}
 
 /** `guardHit` with the key path of the string that hit. */
 export const guardFind = async (args: unknown, setup: GuardSetup): Promise<GuardFound | undefined> => {
@@ -268,8 +327,11 @@ export const guardFind = async (args: unknown, setup: GuardSetup): Promise<Guard
   const paths: { abs: string; raw: string; remote: boolean; at: string }[] = []
   const names: { name: string; at: string }[] = []
   for (const [at, original] of stringsOf(args, 0, '', setup.schema)) {
-    const marker = markerIn(original)
-    if (marker !== undefined) return { label: `~/${marker}`, at }
+    const found = markerHit(original)
+    if (found !== undefined) {
+      const label = `~/${found.marker}`
+      return found.lines.length === 0 ? { label, at } : { label, at, lines: found.lines }
+    }
     const url = fileUrlPath(original)
     if (url === undefined && !isPathLike(original)) {
       if (names.length < GUARD_REALPATHS && isFileName(original)) names.push({ name: `${setup.cwd}/${original}`, at })

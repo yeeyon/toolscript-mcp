@@ -575,7 +575,7 @@ const execute = async (
     })
     if (folder !== undefined) {
       decided.set(id, callDecision(config.policy, config.guards, approved, tool, interactiveNow()))
-      return { ok: false, error: guardedText(tool, folder.label, folder.at), code: 'guarded' }
+      return { ok: false, error: guardedText(tool, folder.label, folder.at, folder.lines), code: 'guarded' }
     }
     const fromUntrusted = (): { untrusted?: true } => (downstream.untrusted(server) ? { untrusted: true } : {})
     // The link comes with the list after the last change of the server, so the check sees each new mark.
