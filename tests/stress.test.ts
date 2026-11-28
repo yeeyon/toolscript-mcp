@@ -15,6 +15,7 @@ import {
   measuresMemory,
   median,
   newestTag,
+  pairedStart,
   parseJunit,
   planOf,
   planOutputs,
@@ -559,6 +560,71 @@ describe('the baseline budgets', () => {
     const rows = judge(lost, lost, { memory: false })
     assert.ok(rows.every(r => r.ok))
     assert.match(renderBaseline(rows), /\| not judged: this system has no private memory number for a process \|/)
+  })
+
+  test('the start is judged by the paired differences of interleaved rounds, so a slow stretch cancels', () => {
+    const start = (pairs: number[][]) => {
+      const p = pairedStart(pairs)
+      const rows = judge(
+        { ...same, startMs: p.startMs },
+        { ...same, startMs: p.headStartMs, startDiffMs: p.startDiffMs, startPairs: p.startPairs },
+      )
+      return rows.find(r => r.metric.startsWith('start'))!
+    }
+    // The two runs of the same code on macOS: medians 214 against 156, then 189.5 against 258.5 (+69 ms, over the budget).
+    // Rounds of one run share their stretch: a slow stretch adds the same to both builds of a round.
+    const rounds = (stretch: (i: number) => number, shift: number) =>
+      Array.from({ length: 30 }, (_, i) => [190 + stretch(i) + (i % 3), 190 + shift + stretch(i) + (i % 5)])
+    assert.equal(start(rounds(i => (i >= 10 && i < 25 ? 120 : 0), 0)).ok, true, 'a slow stretch, same code')
+    assert.equal(start(rounds(() => 0, 40)).ok, true, '+40 ms is inside the budget')
+    assert.equal(start(rounds(i => (i >= 10 && i < 25 ? 120 : 0), 70)).ok, false, '+70 ms inside a slow stretch')
+    const row = start(rounds(() => 0, 70))
+    assert.match(row.budget, /judged on the median of 30 paired differences/)
+    // The columns show the medians, the result cell shows the paired median that decided.
+    assert.match(renderBaseline([row]), /\| FAIL \(paired \+7\d\.\d ms\) \|$/m)
+    const calm = start(rounds(i => (i >= 10 && i < 25 ? 120 : 0), 0))
+    assert.match(renderBaseline([calm]), /\| pass \(paired [+-]?\d+\.\d ms\) \|$/m)
+    // Fewer than 10 rounds, or lost starts, is not measured: the row fails.
+    const few = start(rounds(() => 0, 0).slice(0, 9))
+    assert.equal(few.ok, false)
+    assert.equal(few.na, true)
+    assert.equal(
+      start(rounds(() => 0, 0).map((p, i) => (i % 2 ? [null, p[1]] : p)) as never).ok,
+      true,
+      '15 good rounds are enough',
+    )
+    assert.equal(pairedStart([]).startMs, null)
+  })
+
+  test('on a noisy runner the paired start fails an unchanged build rarely and a build 80 ms slower nearly always', () => {
+    // A seeded model of a shared runner: a stretch offset that changes at random for all starts, plus spikes on single starts.
+    let seed = 777
+    const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32
+    const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd())
+    const expo = (mean: number) => -mean * Math.log(rnd() + 1e-12)
+    const fails = (shift: number, trials: number) => {
+      let failed = 0
+      for (let k = 0; k < trials; k++) {
+        let stretch = 0
+        const start = (level: number) => level + stretch + gauss() * 20 + (rnd() < 0.2 ? expo(80) : 0)
+        const pairs: number[][] = []
+        for (let i = 0; i < 30; i++) {
+          if (rnd() < 0.06) stretch = rnd() < 0.5 ? 0 : expo(120)
+          const first = start(i % 2 ? 150 : 150 + shift)
+          const second = start(i % 2 ? 150 + shift : 150)
+          pairs.push(i % 2 ? [first, second] : [second, first])
+        }
+        const p = pairedStart(pairs)
+        const row = judge(
+          { ...same, startMs: p.startMs },
+          { ...same, startMs: p.headStartMs, startDiffMs: p.startDiffMs, startPairs: p.startPairs },
+        ).find(r => r.metric.startsWith('start'))!
+        if (!row.ok) failed++
+      }
+      return failed / trials
+    }
+    assert.ok(fails(0, 400) <= 0.01, 'an unchanged build')
+    assert.ok(fails(80, 400) >= 0.95, 'a build 80 ms slower')
   })
 
   test('a metric that was not measured is n/a and fails: it never passes silently', () => {
