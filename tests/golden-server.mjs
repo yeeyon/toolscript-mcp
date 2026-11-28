@@ -3,12 +3,14 @@
 // tool name. The first argument is the file that it appends one line to for each message that it receives (the method,
 // and for `initialize` the whole params), so a test can see what the client sent.
 //
-//   node tests/golden-server.mjs /tmp/log.jsonl
+// A second argument `nocaps` makes it declare no capabilities and answer `tools/list` with -32601.
+//
+//   node tests/golden-server.mjs /tmp/log.jsonl [nocaps]
 
 import fs from 'node:fs'
 import readline from 'node:readline'
 
-const [log] = process.argv.slice(2)
+const [log, mode] = process.argv.slice(2)
 const send = msg => process.stdout.write(`${JSON.stringify(msg)}\n`)
 const OBJECT = { type: 'object', properties: {} }
 const TOOLS = [
@@ -20,6 +22,11 @@ const TOOLS = [
   { name: 'stall', inputSchema: OBJECT },
   { name: 'die', inputSchema: OBJECT },
   { name: 'is_error', inputSchema: OBJECT },
+  {
+    name: 'no_structured',
+    inputSchema: OBJECT,
+    outputSchema: { type: 'object', properties: { n: { type: 'number' } }, required: ['n'] },
+  },
   {
     name: 'bad_output',
     inputSchema: OBJECT,
@@ -41,11 +48,12 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       id: msg.id,
       result: {
         protocolVersion: msg.params.protocolVersion,
-        capabilities: { tools: {} },
+        capabilities: mode === 'nocaps' ? {} : { tools: {} },
         serverInfo: { name: 'golden', version: '1' },
       },
     })
   if (msg.id === undefined) return
+  if (msg.method === 'tools/list' && mode === 'nocaps') return fail(msg.id, -32601, 'golden: no tools here')
   if (msg.method === 'tools/list') return send({ jsonrpc: '2.0', id: msg.id, result: { tools: TOOLS } })
   if (msg.method !== 'tools/call') return fail(msg.id, -32601, `method not found: ${msg.method}`)
   const text = (t, extra) =>
@@ -67,6 +75,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       return void process.stderr.write('golden: dying\n', () => process.exit(3))
     case 'is_error':
       return text('golden: the tool failed', { isError: true })
+    case 'no_structured':
+      return text('plain text only')
     case 'bad_output':
       return text('{"n":"x"}', { structuredContent: { n: 'x' } })
     default:

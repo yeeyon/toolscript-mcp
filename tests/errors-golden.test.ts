@@ -117,6 +117,7 @@ describe('the texts of a nested call that fails', () => {
     'internal',
     'custom',
     'is_error',
+    'no_structured',
     'bad_output',
     'not_listed',
   ]) {
@@ -145,6 +146,17 @@ describe('the texts of a nested call that fails', () => {
     await r.downstream.settled
     setTimeout(() => controller.abort(), 400)
     settle('cancelled', await observe(r, 'stall'))
+  })
+
+  test('a server with no tools capability that answers tools/list with an error', async () => {
+    const args = [SERVER, path.join(ROOT, 'nocaps.jsonl'), 'nocaps']
+    const servers = new Map<ServerKey, ServerConfig>([
+      [KEY, { kind: 'stdio', command: process.execPath, args, env: {} }],
+    ])
+    const r = rig({ servers })
+    await r.downstream.settled
+    const state = r.downstream.states()[0]
+    settle('nocaps', state?.status === 'failed' ? state.reason : state?.status)
   })
 
   test('a missing command: the state, the refusal and the call', async () => {

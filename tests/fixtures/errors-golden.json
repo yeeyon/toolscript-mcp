@@ -75,6 +75,19 @@
       }
     ]
   },
+  "no_structured": {
+    "isError": false,
+    "text": "\"ERR:MCP error -32600: Tool no_structured has an output schema but did not return structured content\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__no_structured",
+        "decision": "allow",
+        "ok": false,
+        "error": "failed",
+        "class": "other"
+      }
+    ]
+  },
   "bad_output": {
     "isError": false,
     "text": "\"ERR:MCP error -32602: Structured content does not match the tool's output schema: data/n must be number\"\n",
@@ -137,6 +150,7 @@
       }
     ]
   },
+  "nocaps": "MCP error -32601: golden: no tools here",
   "missing": {
     "state": "its command was not found on PATH: toolscript-golden-no-such-command",
     "link": "the MCP server \"gone\" is not connected: its command was not found on PATH: toolscript-golden-no-such-command",

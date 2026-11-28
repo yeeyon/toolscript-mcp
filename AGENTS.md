@@ -176,7 +176,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 ## Rules
 - Read `CODING_STANDARDS.md` before a change to code, tests or model-facing text.
 - Only `src/host/sdk/` imports the MCP SDK. Callers import from its files (`client.ts`, `server.ts`, `transport.ts`,
-  `auth.ts`, `errors.ts`; no barrel). `tests/code.check.mjs` enforces it (issue #154).
+  `auth.ts`, `errors.ts`; no barrel). A stdio, shared or Workspace link has the v2 `@modelcontextprotocol/client` (legacy era); an HTTP link and
+  `login` keep the v1 client until PR 6. Nothing outside the folder asks which one a client is. `tests/code.check.mjs` enforces it (issue #154).
 - Never weaken a sandbox layer to make a test pass.
 - stdout carries only MCP JSON-RPC. Log to stderr.
 - A user-visible change adds a file in `changes/`, and never edits `CHANGELOG.md`. The version-bump PR runs

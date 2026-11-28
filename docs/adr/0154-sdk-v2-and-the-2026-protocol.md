@@ -69,10 +69,10 @@ the MCP clients page (URLs in section 7). `npm run check` resolves the relative 
 | `setRequestHandler(method, (request, ctx) => ...)` | found | server 2.4.0 `dist/mcp-BCJHyo7l.d.mts:2540` |
 | `ctx.mcpReq.id`, `ctx.mcpReq.signal` | found | same file, `mcpReq` at 2119 to 2183 |
 | `ProtocolErrorCode.InvalidParams = -32602` | found | same file:1553 |
-| an unknown tool rejects with -32602 where v1 gave `isError: true` | not checked | PR 5 |
-| `callTool` takes no result schema | not checked | PR 5 |
+| an unknown tool rejects with -32602 where v1 gave `isError: true` | found, no effect on the client | PR 5: a server side change. Our client refuses an unlisted name before the call, and a server that answers -32602 to a listed name gives the text of the golden test (`tests/errors-golden.test.ts`) |
+| `callTool` takes no result schema | found | PR 5: `callTool(params, options)`, client `dist/client-BTIWJvaF.d.mts:1082`. The result is checked against the tool's output schema from the response cache of the client, or from `options.toolDefinition` |
 | `listMaxPages`, default 64 (we keep `MAX_PAGES`) | found | client `dist/client-BTIWJvaF.d.mts:390` and 814 |
-| a list with no capability is empty | not checked | PR 5 |
+| a list with no capability is empty | found, not reached | PR 5: the host sends `tools/list` by hand (`request()`), so a server with no `tools` capability that answers -32601 gives the same reason as with v1 (golden case `nocaps`) |
 
   The model-facing text of the wrong-name hint and of the call errors stays as it is.
 
@@ -366,8 +366,39 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
    framing of `childtransport.ts` only (`src/core/codec.ts`), the SDK check passed in, `lineSplitter` untouched. See section 3.
 4. Test seam: the tests take the SDK through one helper file.
 5. v2 packages beside v1 (lockfile and pack review); the downstream client side on `@modelcontextprotocol/client`, legacy only; the
-   error mapping and the unknown-tool text.
-6. OAuth and login on the v2 client auth, with `iss` validation. SigV4 header test.
+   error mapping and the unknown-tool text. Done, with a narrower cut: the `Client` of the stdio, shared and Workspace links, the
+   transport types of those links, their `deserializeMessage` and the in-memory pair. The HTTP link, the OAuth provider, `auth`,
+   `login.ts` and the SigV4 fetch stay on v1 (PR 6), because the v2 HTTP transport runs the SDK's own auth flow on the provider and
+   its errors are tested with `instanceof`: transport, provider and errors must be one SDK version. `getDefaultEnvironment` stays on
+   v1 too. Findings of PR 5, all read in client 2.4.0 and tested:
+   - Lockfile: two packages are gained, `@modelcontextprotocol/client` 2.4.0 and `@modelcontextprotocol/core` 2.4.0 (both Apache-2.0,
+     registry.npmjs.org, no install script). `zod` (4.6.7), `jose`, `eventsource`, `eventsource-parser`, `pkce-challenge` and `cross-spawn`
+     were in the lockfile already, from SDK 1.32.2, at versions that satisfy the ranges of section 1. Only the client is a dependency
+     of the repository; `@modelcontextprotocol/server` is not added before a file imports it (PR 7).
+   - Size: packed 517,003 bytes (REF 382,836, budget 478,545), unpacked 2,314,296, `dist/host/main.js` 2,131,108 bytes (base 1,491,349), 16
+     files. The packed size is over its budget by 38,458 bytes until SDK v1 leaves in PR 8. `dist/host/broker.js` is byte-identical to a
+     base build (SHA-256 `8e677c76d452533a27f331f28db885784fd7a7b7e34842ff6e4a64d3a7b8caf4`) and holds no SDK.
+   - Legacy only, written out: `versionNegotiation: { mode: 'legacy' }`. The first message of each link kind (direct, shared,
+     Workspace) is the same bytes at base and head (`tests/initialize-golden.test.ts`): protocol version `2025-11-25`, `capabilities: {}`,
+     `clientInfo`. No `server/discover` is sent.
+   - Error texts: v2 raises `ProtocolError` for a code that a server answered and `SdkError` for a timeout and a closed connection, with a
+     message that has no `MCP error <code>:` prefix, and a timeout with the code string `REQUEST_TIMEOUT`. The folder maps both to
+     the v1 text and numeric code (`sdkErrorText`, `protocolFailure`), so every text of `tests/errors-golden.test.ts` is the same at base
+     and head: the codes -32602, -32601, -32603 and a custom code, the call limit, a child that exits, a cancelled call, an `isError`
+     result, a result that breaks its schema, a result with no structured content, a server with no `tools` capability, an unlisted name
+     and a missing command.
+   - Paging: `client.listTools()` with no cursor walks every page itself, with a cap of 64 pages that throws, and fills the response
+     cache. The host keeps its own `MAX_PAGES` (100) and its time limit, so it sends each page of `tools/list` by hand. A page by hand
+     fills no cache, so `callClientTool` gives the v2 client the listed tool (`toolDefinition`) and a result is still checked against its
+     output schema.
+   - `getDefaultEnvironment` of v2 adds six Windows variables (`COMSPEC`, `PATHEXT`, `PROGRAMDATA`, `PROGRAMFILES(X86)`,
+     `PROGRAMW6432`, `WINDIR`) to the list of v1. That changes the environment of every child on Windows, so it stays v1 until a decision.
+   - `deserializeMessage` of v2 gives the same messages and the same error names as v1 on every row of `tests/codec.test.ts`
+     (the list of rows that differ is empty).
+   - The v1 `Transport` and the v2 `Transport` are assignable both ways, and a v2 client connects to a v1 `Server` over the v2 in-memory
+     pair, with no cast. Only `src/host/sdk/` knows which client a link has.
+6. OAuth, login, `StreamableHTTPClientTransport` and the SigV4 fetch on the v2 client, with `iss` validation, in one PR: the HTTP link
+   leaves v1 there. SigV4 header test.
 7. The server side (server.ts, main.ts, the Workspace provider and roots) on `@modelcontextprotocol/server`.
 8. Remove SDK v1, re-measure section 9, update the bench results.
 9. The flag: `TOOLSCRIPT_PROTOCOL` and the config key, default `legacy`, in the entry frame and the share key, with the documented

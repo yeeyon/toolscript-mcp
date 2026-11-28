@@ -83,7 +83,7 @@ const codeProblems = (rel, text) => {
   })
 }
 
-// The SDK seam (#154): only src/host/sdk/ holds the text @modelcontextprotocol/, and only of the `sdk` package.
+// The SDK seam (#154): only src/host/sdk/ holds the text @modelcontextprotocol/, and only of the `sdk` and `client` packages.
 // src/ and runtime/ are scanned as raw text, so no import form can hide: import(variable), createRequire(...)(), a string
 // with // or /* before the import. A comment that names the package outside the folder fails too.
 // tests/, bench/, demo/ and scripts/ are out of the check.
@@ -112,7 +112,9 @@ const sdkProblems = root =>
       const named = [...text.matchAll(PACKAGE)].flatMap(m => {
         const at = `${rel}:${lineOf(text, m.index)}: `
         if (!rel.startsWith(SDK_DIR)) return [`${at}names ${m[0]} outside src/host/sdk/: use that folder`]
-        return m[1] === 'sdk' ? [] : [`${at}names ${m[0]}: src/host/sdk/ names only the sdk package`]
+        return m[1] === 'sdk' || m[1] === 'client'
+          ? []
+          : [`${at}names ${m[0]}: src/host/sdk/ names only the sdk and client packages`]
       })
       const sealed = NO_SDK_IMPORT.has(rel) || rel.startsWith('src/core/')
       const loaded = [...text.matchAll(MODULE)].flatMap(m =>
@@ -258,10 +260,15 @@ const tests = {
           drop(rel)
         }
       }
-      // The folder itself may name the sdk package, and no other.
+      // The folder itself may name the sdk and client packages, and no other.
       put('src/host/sdk/client.ts', `import { X } from '${sdk}'\nexport type { Y } from '${sdk}'\n`)
       assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the sdk package')
-      for (const other of ['client', 'server', 'core']) {
+      put(
+        'src/host/sdk/client.ts',
+        "import { X } from '@modelcontextprotocol/client'\nimport { Y } from '@modelcontextprotocol/client/stdio'\n",
+      )
+      assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the client package')
+      for (const other of ['server', 'core']) {
         put('src/host/sdk/client.ts', `import { X } from '@modelcontextprotocol/${other}'\n`)
         assert.equal(sdkProblems(root).length, 1, `the folder names @modelcontextprotocol/${other}`)
       }
