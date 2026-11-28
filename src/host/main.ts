@@ -167,7 +167,7 @@ const { server, stopRuns } = createServer(
   workspace?.then(w => (w.ok ? { root: w.bound.root, tasks: w.bound.tasks.names } : undefined)),
   workspaceDown,
 )
-roots?.attach(server.server)
+roots?.attach(server)
 
 // A run in flight gets its sandbox killed and its exchange dir removed before the exit.
 let closing: Promise<void> | undefined

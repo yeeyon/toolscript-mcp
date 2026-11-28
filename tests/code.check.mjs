@@ -83,11 +83,11 @@ const codeProblems = (rel, text) => {
   })
 }
 
-// The SDK seam (#154): only src/host/sdk/ and the test helper tests/sdk.* hold the text @modelcontextprotocol/, and only
-// of the `sdk` and `client` packages. src/, runtime/, tests/, bench/, demo/, scripts/ and plugin/ are scanned as raw text, so no import
+// The SDK seam (#154): only src/host/sdk/ and the test helper tests/sdk.* hold the text @modelcontextprotocol/. The folder names
+// the `client`, `core` and `server` packages of SDK v2 and never the first SDK (`sdk`); the helper names `sdk` and `client`. src/, runtime/, tests/, bench/, demo/, scripts/ and plugin/ are scanned as raw text, so no import
 // form can hide: import(variable), createRequire(...)(), a string with // or /* before the import. A comment that names
 // the package outside the two places fails too. The tests take the SDK through tests/sdk.mjs, which imports the package
-// itself and never src/host/sdk/: from PR 5 to PR 7 the host moves to SDK v2 while the test peers stay on v1.
+// itself and never src/host/sdk/: the host is on SDK v2 since PR 7 while the test peers stay on v1 until PR 8.
 // Named exceptions:
 //  - this file: its patterns and self-test lines hold the text;
 //  - a name `@modelcontextprotocol/server-<x>` outside src/ and runtime/: the reference MCP servers that a test names as
@@ -111,10 +111,13 @@ const sourcesIn = (root, dir) =>
       })
     : []
 
-const PACKAGE = /@modelcontextprotocol\/([\w.-]*)/g
-// The client side of the first SDK. Every link, the OAuth flow and `login` are on the v2 client (#154, PR 6), so nothing in
-// src/ names these paths: only the server side (server/index.js, server/mcp.js, server/stdio.js, types.js) is left for PR 7.
-const V1_CLIENT_SIDE = /@modelcontextprotocol\/sdk\/(?:client|shared|server\/auth)\//g
+const PACKAGE = /@modelcontextprotocol\/([\w.-]*)(\/[\w-]+(?:[./][\w-]+)*)?/g
+// The packages that each place may name. The first SDK (`sdk`) is gone from src/, runtime/ and demo/ since PR 7.
+const FOLDER_PACKAGES = ['client', 'core', 'server']
+// The exact specifiers that the folder imports: no other subpath (`server/ext/skills` waits for S2, `server/_shims` and
+// `server/validators/*` are internals).
+const FOLDER_SPECIFIERS = ['client', 'core', 'server', 'server/stdio']
+const HELPER_PACKAGES = ['sdk', 'client']
 const lineOf = (text, index) => text.slice(0, index).split('\n').length
 
 // The problems of the SDK seam in the tree under `root`, as "file:line: message".
@@ -130,18 +133,16 @@ const sdkProblems = root =>
         if (!rel.startsWith(SDK_DIR) && !isHelper(rel))
           return [`${at}names ${m[0]} outside src/host/sdk/ and tests/sdk.*: use src/host/sdk/ (tests: tests/sdk.mjs)`]
         // The folder also names core, whose schemas of the stored OAuth values the client package does not export.
-        return m[1] === 'sdk' || m[1] === 'client' || (m[1] === 'core' && rel.startsWith(SDK_DIR))
+        const places = rel.startsWith(SDK_DIR) ? FOLDER_PACKAGES : HELPER_PACKAGES
+        if (m[1] === 'sdk' && rel.startsWith(SDK_DIR))
+          return [`${at}names ${m[0]}: the first SDK is gone from src/, use the server or client package`]
+        if (rel.startsWith(SDK_DIR) && places.includes(m[1]) && !FOLDER_SPECIFIERS.includes(m[1] + (m[2] ?? '')))
+          return [`${at}names ${m[0]}: the folder imports only ${FOLDER_SPECIFIERS.join(', ')}`]
+        return places.includes(m[1])
           ? []
-          : [`${at}names ${m[0]}: this place names only the sdk and client packages`]
+          : [`${at}names ${m[0]}: this place names only the ${places.join(', ')} packages`]
       })
-      const v1 = rel.startsWith('src/')
-        ? [...text.matchAll(V1_CLIENT_SIDE)].map(
-            m =>
-              `${rel}:${lineOf(text, m.index)}: names ${m[0]}: the client side of the first SDK is gone from src/, use the client package`,
-          )
-        : []
       const sealed = NO_SDK_IMPORT.has(rel) || rel.startsWith('src/core/')
-      named.push(...v1)
       const shipped = SHIPS_NO_TEST.some(p => rel.startsWith(p))
       const loaded = [...text.matchAll(MODULE)].flatMap(m => {
         const at = `${rel}:${lineOf(text, m.index)}: `
@@ -302,35 +303,53 @@ const tests = {
           drop(rel)
         }
       }
-      // The folder itself may name the sdk and client packages, and no other.
-      put('src/host/sdk/client.ts', `import { X } from '${sdk}'\nexport type { Y } from '${sdk}'\n`)
-      assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the sdk package')
-      put(
-        'src/host/sdk/client.ts',
-        "import { X } from '@modelcontextprotocol/client'\nimport { Y } from '@modelcontextprotocol/client/stdio'\n",
-      )
+      // The folder itself may name the client, core and server packages, and no other.
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/client'\n")
       assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the client package')
+      for (const bad of [
+        '@modelcontextprotocol/server/ext/skills',
+        '@modelcontextprotocol/server/ext/skills/node',
+        '@modelcontextprotocol/server/_shims',
+        '@modelcontextprotocol/server/validators/cf-worker',
+        '@modelcontextprotocol/client/stdio',
+      ]) {
+        put('src/host/sdk/client.ts', `import { X } from '${bad}'\n`)
+        assert.equal(sdkProblems(root).length, 1, `the folder refuses ${bad}`)
+      }
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/server/stdio'\n")
+      assert.deepEqual(sdkProblems(root), [], 'the folder takes server/stdio')
       put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/core'\n")
       assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the core package')
-      put('src/host/sdk/client.ts', `import { X } from '@modelcontextprotocol/server'\n`)
-      assert.equal(sdkProblems(root).length, 1, 'the folder names @modelcontextprotocol/server')
-      // The client side of the first SDK is gone from src/, in the folder too: one row for each path.
+      put(
+        'src/host/sdk/client.ts',
+        "import { X } from '@modelcontextprotocol/server'\nimport { Y } from '@modelcontextprotocol/server/stdio'\n",
+      )
+      assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the server package')
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/server-extra'\n")
+      assert.equal(sdkProblems(root).length, 1, 'the folder names no other server-* package')
+      // The first SDK is gone from src/, in the folder too: one row for each path that it was used for.
       for (const sub of [
         'client/index.js',
         'client/streamableHttp.js',
         'shared/auth.js',
         'shared/transport.js',
         'server/auth/errors.js',
+        'server/index.js',
+        'server/mcp.js',
+        'server/stdio.js',
+        'types.js',
       ]) {
         put('src/host/sdk/client.ts', `import { X } from '@modelcontextprotocol/sdk/${sub}'\n`)
         assert.equal(sdkProblems(root).length, 1, `src names sdk/${sub}`)
-        put('src/host/x.ts', `import { X } from '@modelcontextprotocol/sdk/${sub}'\n`)
-        // The folder file and the host file each name the path, and the host file names the package outside the folder too.
-        assert.equal(sdkProblems(root).length, 3, `src/host names sdk/${sub}`)
-        drop('src/host/x.ts')
+        for (const other of ['src/host/x.ts', 'runtime/r.mjs', 'demo/d.mjs']) {
+          put(other, `import { X } from '@modelcontextprotocol/sdk/${sub}'\n`)
+          // The folder file and the other file each name the path.
+          assert.equal(sdkProblems(root).length, 2, `${other} names sdk/${sub}`)
+          drop(other)
+        }
       }
-      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/sdk/server/index.js'\n")
-      assert.deepEqual(sdkProblems(root), [], 'the fix passes: the server side stays until PR 7')
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/server'\n")
+      assert.deepEqual(sdkProblems(root), [], 'the fix passes')
       // The broker and src/core never load the folder.
       for (const rel of ['src/host/broker.ts', 'src/host/brokermain.ts', 'src/core/a.ts', 'src/core/sub/b.ts']) {
         for (const bad of ["'./sdk/client.ts'", "'../host/sdk/client.ts'", "'../../host/sdk/errors.ts'"]) {

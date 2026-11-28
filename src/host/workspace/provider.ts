@@ -849,7 +849,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     onListTools(server, () => ({
       tools: WORKSPACE_TOOL_NAMES.filter(
         name => run[name] !== undefined && (options.write || WORKSPACE_TOOLS[name].class !== 'write'),
-      ).map(described) as never,
+      ).map(described),
     }))
     onCallTool(server, async ({ params }, extra) => {
       const fail = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true })
