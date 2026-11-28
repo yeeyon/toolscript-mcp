@@ -566,12 +566,14 @@ describe('attach and routing', () => {
     test('a different refusing file that replaces the first one is kept for a full guard from its own first refusal', async () => {
       const { home, file, endpoint } = await stale('build replaced')
       const guardMs = 800
+      // File B is made beside the path before the broker starts: making it takes as long as a child takes to start and
+      // die, and that time must not count against the guard of file A.
+      const spare = endpoint + '.b'
+      await staleSocket(spare)
       const run = startBroker({ home, idleMs: 600_000, file, guardMs })
       await nap(guardMs / 2)
       // File B takes the path at half the guard of file A: the count starts again.
-      // It is made beside the path and renamed over file A, so the path is never empty for the broker.
-      const spare = endpoint + '.b'
-      await staleSocket(spare)
+      // It is renamed over file A, so the path is never empty for the broker.
       const swapped = Date.now()
       fs.renameSync(spare, endpoint)
       // The guard of file A would end at half the guard from now. File B refuses first after that, so it is removed
