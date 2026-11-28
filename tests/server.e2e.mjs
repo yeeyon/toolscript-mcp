@@ -279,9 +279,13 @@ test('(c) "issue" ranks list_issues first', async () => {
 test('(d) a server whose command does not exist shows as failed, and bench still works', async () => {
   const text = await search('deploys')
   assert.match(text, /### mcp__bench__get_deploys/, text)
-  // Linux and macOS: spawn ... ENOENT. Windows: cmd.exe says on stderr that the command is not recognized, and
-  // search_tools shows no stderr, because it can hold a secret that is not in the config.
-  assert.match(text, /## Not connected\n(- .+\n)*- missing: .*(ENOENT|Its stderr is not shown here)/, text)
+  // The reason names the command on every platform. The stderr of cmd.exe on Windows is not shown, because search_tools
+  // shows no stderr: it can hold a secret that is not in the config.
+  assert.match(
+    text,
+    /## Not connected\n(- .+\n)*- missing: its command was not found on PATH: toolscript-e2e-no-such-command(\.|\n|$)/,
+    text,
+  )
   assert.doesNotMatch(text, /not recognized/, text)
 })
 

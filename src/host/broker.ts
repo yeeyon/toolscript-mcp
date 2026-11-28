@@ -35,6 +35,8 @@ import {
   type Entry,
 } from '../core/broker.ts'
 import { createRouter, type Effect, type Router } from '../core/mux.ts'
+import { spawnCode, spawnReason, trustedSpawnError } from '../core/spawn.ts'
+import { findCommand, type FindCommand } from './commandfind.ts'
 import { brokerFolder } from '../core/paths.ts'
 import { buildId, endpointFor, loadKey, makeCrypto, privateFolder, stderrFrames } from './brokerwire.ts'
 
@@ -54,6 +56,8 @@ export type BrokerOptions = {
   readonly guardMs?: number
   /** A test hook, called once this broker listens, before it checks that its socket file is still at the path. */
   readonly afterListen?: () => void
+  /** The look for a command on the failure path of a Windows start: a test gives a fake. */
+  readonly findCommand?: FindCommand
 }
 
 export type Broker = {
@@ -380,6 +384,7 @@ export const startBroker = async ({
   maxUnsent = UNSENT_MAX,
   guardMs = SOCKET_GUARD_MS,
   afterListen,
+  findCommand: find = findCommand,
 }: BrokerOptions): Promise<Broker | undefined> => {
   const dir = brokerFolder(home)
   privateFolder(dir)
@@ -533,14 +538,14 @@ export const startBroker = async ({
         },
       ),
     )
-    const gone = (why: string, code: unknown): void => {
+    const gone = (why: string, code: unknown, exact = false): void => {
       if (child.dead) return
       child.dead = true
       clearTimeout(timer)
       clearTimeout(flush)
       if (children.get(id) === child) children.delete(id)
       log(`child ${tag(id)} exit ${String(code)}`)
-      const reason = `${why}. Run the command of the server by hand in a terminal to see why`
+      const reason = exact ? why : `${why}. Run the command of the server by hand in a terminal to see why`
       settle(reason)
       apply(child, router.died())
       for (const conn of child.conns.values()) conn.close(reason)
@@ -550,7 +555,16 @@ export const startBroker = async ({
       guard.remove(proc.pid)
       checkEmpty()
     }
-    proc.on('error', err => gone('the server process could not start', (err as NodeJS.ErrnoException).code))
+    proc.on('error', err => {
+      const code = spawnCode(err)
+      // The command only (see `spawnReason`): the hosts show it as it is.
+      if (
+        code !== undefined &&
+        trustedSpawnError(err, process.platform, () => find(entry.command, entry.env, entry.folder))
+      )
+        gone(spawnReason(entry.command, code), code, true)
+      else gone('the server process could not start', (err as NodeJS.ErrnoException).code)
+    })
     proc.on('exit', code => {
       const end = (): void => gone(`the server process ended with exit code ${String(code)}`, code)
       // A child that fails to start: its last stderr text is still in the pipe, and the waiting hosts get it first.

@@ -363,13 +363,36 @@ describe('attach and routing', () => {
     )
   })
 
-  test('a command that does not exist refuses the attach', async () => {
+  test('a command that does not exist refuses the attach with the command only, and the broker keeps serving', async () => {
     const rig = await startRig()
-    await assert.rejects(
-      connect(rig, { ...entryOf(), command: 'no-such-command-for-toolscript' }),
-      /could not start|exit code/,
+    const command = 'no-such-command-for-toolscript'
+    const bad = { ...entryOf({ T: 'MARK-ENV' }, ['MARK-ARG']), command }
+    const err = await connect(rig, bad).catch((e: Error) => e)
+    assert.ok(err instanceof BrokerError)
+    assert.match(
+      err.message,
+      new RegExp(`the shared server could not start: its command was not found on PATH: ${command}`),
     )
+    for (const secret of ['MARK-ARG', 'MARK-ENV', 'by hand', 'Connection closed'])
+      assert.ok(!err.message.includes(secret), `no ${secret}`)
+    const log = fs.readFileSync(path.join(rig.home, '.toolscript-mcp', 'broker', 'broker.log'), 'utf8')
+    assert.ok(!log.includes('MARK-ARG') && !log.includes('MARK-ENV'))
+    assert.match(await text(await connect(rig), 'pid'), /^\d+$/, 'the broker serves another link')
   })
+
+  test(
+    "a command that cross-spawn cannot resolve but that a file exists for keeps today's reason (an alias that crashed)",
+    { skip: process.platform !== 'win32' && 'the ENOENT of cross-spawn is a guess on Windows only' },
+    async () => {
+      // cross-spawn emits ENOENT when cmd.exe exited with 1 and it could not resolve the command. The look finds a file,
+      // as it does for an app execution alias that crashed at its start: the command did start.
+      const rig = await startRig(600_000, 'build one', undefined, { findCommand: () => true })
+      const err = await connect(rig, { ...entryOf(), command: 'no-such-command-for-toolscript' }).catch((e: Error) => e)
+      assert.ok(err instanceof BrokerError)
+      assert.match(err.message, /could not start.*by hand/)
+      assert.doesNotMatch(err.message, /its command was not found/)
+    },
+  )
 
   test('an entry that spawn refuses at once refuses the attach with the code, and the broker keeps serving', async () => {
     const rig = await startRig()

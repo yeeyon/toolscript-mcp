@@ -1,0 +1,1 @@
+- A stdio server whose command cannot start now says so, with the command: "its command was not found on PATH: <command>" (or "its command file was not found" for a path, or "could not start (<code>)"), in `search_tools`, in the refusal of a call and for a shared server, instead of "Connection closed". Only the command is shown, never an argument or a variable.

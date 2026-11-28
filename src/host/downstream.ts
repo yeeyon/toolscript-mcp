@@ -732,14 +732,16 @@ export const connectAll = (
         else lost(`the connection closed. ${STDERR_UNSHOWN}`, 'the connection closed')
       }
     } catch (err) {
-      // A child that exits gives only "Connection closed": its stderr says
-      // why (on Windows, also for a command that is not found).
+      // A child that exits gives only "Connection closed": its stderr says why.
       const stderr = lastError()
       // After an await: a failure that comes at once must not come before `attempt` marks the link connecting.
       await client.close().catch(() => {})
       opened.delete(client)
       // A closed transport of a failed connect is no child to hurry at the shutdown.
       if (started !== undefined) children.delete(started)
+      // A command that could not start: the error of the spawn comes before the close of the child, so it is known here.
+      // Its stderr (the text of cmd.exe on Windows) says nothing more, so the reason is the whole text.
+      if (started?.spawnReason !== undefined) return fail(started.spawnReason, undefined, unbound || undefined)
       // An error of the connect or the list can hold the text of the server: an HTTP body or a JSON-RPC message.
       // An AwsCredentialsError holds the text of the AWS CLI, not of the server, so an untrusted entry shows it too.
       if (
