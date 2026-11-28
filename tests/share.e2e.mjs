@@ -4,7 +4,7 @@
 //
 //   node tests/share.e2e.mjs
 
-import { Client, StdioClientTransport, ElicitRequestSchema } from './sdk.mjs'
+import { Client, StdioClientTransport } from './sdk.mjs'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -56,7 +56,7 @@ const startHost = async (share, name) => {
   const asked = []
   const errors = []
   const client = new Client({ name, version: '0' }, { capabilities: { elicitation: {} } })
-  client.setRequestHandler(ElicitRequestSchema, req => {
+  client.setRequestHandler('elicitation/create', req => {
     asked.push(req.params.message)
     return { action: 'accept' }
   })
@@ -69,7 +69,7 @@ const startHost = async (share, name) => {
   })
   await client.connect(transport)
   const run = async (code, options) => {
-    const r = await client.callTool({ name: 'run_code', arguments: { code } }, undefined, options)
+    const r = await client.callTool({ name: 'run_code', arguments: { code } }, options)
     return { text: r.content[0].text, isError: r.isError === true }
   }
   const search = async query => (await client.callTool({ name: 'search_tools', arguments: { query } })).content[0].text

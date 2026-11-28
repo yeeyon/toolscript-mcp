@@ -3,7 +3,10 @@
 // and approval tests that apply to a standalone server. tests/server.e2e.mjs
 // runs the same path through the built server over stdio.
 
-import { ErrorCode, McpError } from './sdk.mjs'
+import { ProtocolError, ProtocolErrorCode } from './sdk.mjs'
+
+// The JSON-RPC code that SDK v1 called ErrorCode.RequestTimeout: a server can send it as its own error.
+const REQUEST_TIMEOUT = -32001
 import { after, describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import childProcess, { type ChildProcess } from 'node:child_process'
@@ -119,7 +122,7 @@ const TOOLS: Record<string, Tool> = {
   itemthrow: () => ({ content: [{ type: 'text', text: `work item 7: ${INJECTED}` }], isError: true }),
   // An MCP error that a server sends for a failed request.
   itemmcp: () => {
-    throw new McpError(ErrorCode.InternalError, `work item 7: ${INJECTED}`)
+    throw new ProtocolError(ProtocolErrorCode.InternalError, `work item 7: ${INJECTED}`)
   },
   // Untrusted text that names the tools that the program calls next.
   next: () => ({
@@ -174,7 +177,7 @@ const TOOLS: Record<string, Tool> = {
   grant: args => json({ granted: args }),
   // A server's own error with the code of a timeout, as mcp-remote sends for a failed login.
   authfail: () => {
-    throw new McpError(ErrorCode.RequestTimeout, 'mcp-remote: Incompatible auth server')
+    throw new ProtocolError(REQUEST_TIMEOUT, 'mcp-remote: Incompatible auth server')
   },
   // A tool error with a zod 3 issue list, and an MCP error with the code of invalid params.
   zodfail: () => ({
@@ -184,7 +187,7 @@ const TOOLS: Record<string, Tool> = {
   // Listed only: the fake downstream times `stall` out itself.
   stall: () => json({}),
   badparams: () => {
-    throw new McpError(ErrorCode.InvalidParams, 'fake bad arguments')
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'fake bad arguments')
   },
 }
 const MARKED = { 'anthropic/requiresUserInteraction': true }
@@ -213,7 +216,7 @@ const fakeDownstream = (others: readonly ServerState[] = [], servers: Config['se
       if (name === 'stall')
         return await new Promise<never>((_r, reject) =>
           setTimeout(
-            () => reject(new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: options.timeout })),
+            () => reject(new ProtocolError(REQUEST_TIMEOUT, 'Request timed out', { timeout: options.timeout })),
             options.timeout,
           ),
         )

@@ -6,7 +6,9 @@
 //
 //   node tests/server.e2e.mjs
 
-import { Client, StdioClientTransport, ElicitRequestSchema } from './sdk.mjs'
+import { Client, StdioClientTransport } from './sdk.mjs'
+// The one peer that stays on SDK v1 here (tests/sdk-v1.mjs): a client that opens with `initialize`, as the clients of 1.0.x do.
+import { Client as ClientV1, StdioClientTransport as StdioClientTransportV1 } from './sdk-v1.mjs'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -182,7 +184,7 @@ const search = async (query, limit) => {
 // A second server for a client that can ask the person: it answers each prompt with `answer`.
 const asking = { answer: 'accept', prompts: [] }
 const askingClient = new Client({ name: 'e2e-ask', version: '0' }, { capabilities: { elicitation: {} } })
-askingClient.setRequestHandler(ElicitRequestSchema, req => {
+askingClient.setRequestHandler('elicitation/create', req => {
   asking.prompts.push(req.params.message)
   return { action: asking.answer }
 })
@@ -863,6 +865,26 @@ test('(j) init imports the servers of a client into a config that the server sta
     assert.match(r.content[0].text, /### mcp__bench__list_issues/, r.content[0].text)
   } finally {
     await imported.close()
+  }
+})
+
+test('a client of SDK v1 opens with initialize, lists the tools and calls one (gate G2)', async () => {
+  const old = new ClientV1({ name: 'e2e-v1', version: '0' })
+  await old.connect(
+    new StdioClientTransportV1({
+      command: process.execPath,
+      args: [MAIN, '--config', configFile],
+      env: SERVER_ENV,
+      stderr: 'ignore',
+    }),
+  )
+  try {
+    assert.deepEqual((await old.listTools()).tools.map(t => t.name).sort(), ['run_code', 'search_tools'])
+    const r = await old.callTool({ name: 'run_code', arguments: { code: 'return 1 + 1' } })
+    assert.equal(r.isError, false)
+    assert.ok(r.content[0].text.startsWith('2'), r.content[0].text)
+  } finally {
+    await old.close()
   }
 })
 

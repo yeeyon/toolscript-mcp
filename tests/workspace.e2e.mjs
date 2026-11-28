@@ -15,7 +15,7 @@ import path from 'node:path'
 import readline from 'node:readline'
 import { after, before, describe, test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { Client, ElicitRequestSchema, ListRootsRequestSchema } from './sdk.mjs'
+import { Client } from './sdk.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = process.env.TOOLSCRIPT_E2E_MAIN || path.join(ROOT, 'dist', 'host', 'main.js')
@@ -125,10 +125,9 @@ const connect = async (config, cwd, answer = 'accept', roots = undefined) => {
     { capabilities: { ...(answer !== 'none' && { elicitation: {} }), ...(roots !== undefined && { roots: {} }) } },
   )
   // `roots`: the URIs that the client answers to roots/list. Undefined is a client that declares no roots capability.
-  if (roots !== undefined)
-    client.setRequestHandler(ListRootsRequestSchema, () => ({ roots: roots.map(uri => ({ uri })) }))
+  if (roots !== undefined) client.setRequestHandler('roots/list', () => ({ roots: roots.map(uri => ({ uri })) }))
   if (answer !== 'none')
-    client.setRequestHandler(ElicitRequestSchema, req => {
+    client.setRequestHandler('elicitation/create', req => {
       prompts.push(req.params.message)
       return { action: answer }
     })
