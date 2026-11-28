@@ -5,7 +5,6 @@ import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { LIMITS, walkSlotsFor } from '../src/core/workspace.ts'
 import { open, rm, tempDir, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
 const mac = process.platform === 'darwin'
@@ -288,23 +287,37 @@ describe('the walk slots (issue #160)', () => {
     const root = tree(t)
     write(root, { 'a.txt': 'hit\n' })
     const h = holding()
-    const rig = await rigOf(t, root, { hook: h.hook, limits: { walkSlots: 2 } })
+    const rig = await rigOf(t, root, { hook: h.hook, limits: { searchMs, walkSlots: 2 } })
     if (rig === undefined) return
     const walks = [1, 2, 3].map(() => rig.call('search', { query: 'hit' }))
     await until(() => h.held() === 2)
-    await pause(150)
+    await pause(searchMs + 100)
     assert.equal(h.held(), 2, 'the third walk made a lookup while both slots were held')
     assert.equal(rig.bound.provider.inFlight(), 3)
     h.release()
-    for (const walk of await Promise.all(walks)) assert.equal(walk.matches.length, 1)
+    // The two held walks ran past their own budget while held. The third waited, and its budget starts at its slot.
+    const [, , third] = await Promise.all(walks)
+    assert.equal(third.truncated, false, 'the walk that waited was cut')
+    assert.equal(third.matches.length, 1)
   })
-})
 
-describe('the number of slots (issue #180)', () => {
-  test('a machine with fewer than 2 CPUs gets 1 slot, any other gets the limit, whatever its cores', () => {
-    assert.equal(LIMITS.walkSlots, 2)
-    for (const cpus of [0, 1]) assert.equal(walkSlotsFor(LIMITS.walkSlots, cpus), 1, `${cpus} CPUs`)
-    for (const cpus of [2, 3, 4, 8, 64, 1024]) assert.equal(walkSlotsFor(LIMITS.walkSlots, cpus), 2, `${cpus} CPUs`)
-    assert.equal(walkSlotsFor(3, 1), 1)
+  test('a provider that sees 1 CPU holds the second walk, one that sees 2 runs it (issue #180)', async t => {
+    const root = tree(t)
+    write(root, { 'a.txt': 'hit\n' })
+    for (const [parallelism, running] of [
+      [1, 1],
+      [2, 2],
+    ] as const) {
+      const h = holding()
+      const rig = await rigOf(t, root, { hook: h.hook, limits: { parallelism } })
+      if (rig === undefined) return
+      const walks = [1, 2].map(() => rig.call('search', { query: 'hit' }))
+      await until(() => h.held() === running)
+      await pause(150)
+      assert.equal(h.held(), running, `${parallelism} CPUs`)
+      h.release()
+      await Promise.all(walks)
+      await rig.close()
+    }
   })
 })

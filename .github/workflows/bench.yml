@@ -1,6 +1,8 @@
 # Measures the walk slots of the Workspace (issue #180): bench/walks.mjs with 1 and then 2 slots, with and without an
-# include, on the 4 CPUs of a runner. It starts by hand or by a push to a branch `bench/**`, never on main or a pull request.
-# The slot count is changed in a copy of the source in the job: nothing here is committed back.
+# include, on the 4 CPUs of a runner, on a tree of 2500 files and on a near-budget tree (a lone search takes 60 to 80 %
+# of `searchMs`; tune `files` of the second row), and in a Docker container with 2 CPUs. It starts by hand or by a push to
+# a branch `bench/**`, never on main or a pull request. The slot count is changed in a copy of the source in the job
+# (bench/walks-slots.sh): nothing here is committed back.
 name: bench
 
 on:
@@ -18,11 +20,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    name: walks ${{ matrix.os }}
+        files: [2500, 5500]
+    name: walks ${{ matrix.os }} ${{ matrix.files }} files
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -32,37 +37,38 @@ jobs:
         shell: bash
         run: |
           mkdir results
-          {
-            echo "os $RUNNER_OS"
-            echo "commit $GITHUB_SHA"
-            echo "nproc $(nproc)"
-            node --version
-          } | tee results/results.txt
-          # The copy, so the sed changes no file of the checkout.
+          { echo "os $RUNNER_OS"; echo "commit $GITHUB_SHA"; } | tee results/results.txt
           cp -a . "$RUNNER_TEMP/app"
           cd "$RUNNER_TEMP/app"
-          slots() { sed -i "s/walkSlots: [0-9]*,/walkSlots: $1,/" src/core/workspace.ts; grep -n "walkSlots" src/core/workspace.ts; }
-          # A first pass makes the tree and warms the file cache: its numbers are dropped, so no slot count has the warm cache
-          # alone. Then 2, 1, 2, 1 slots, each pass with 3 runs for each cell.
-          slots 1
-          node --experimental-strip-types bench/walks.mjs --files 2500 --runs 1 --tree "$RUNNER_TEMP/walks-tree" > /dev/null 2>&1
-          pass=0
-          for s in 2 1 2 1; do
-            pass=$((pass + 1))
-            slots "$s"
-            {
-              echo
-              echo "== pass $pass, walkSlots $s"
-              node --experimental-strip-types bench/walks.mjs --files 2500 --runs 3 --tree "$RUNNER_TEMP/walks-tree"
-            } 2>&1 | tee "$GITHUB_WORKSPACE/results/pass$pass-slots$s.txt" | tee -a "$GITHUB_WORKSPACE/results/results.txt"
-          done
-          {
-            echo
-            echo "== summary on $RUNNER_OS (median of every run of every pass of a slot count)"
-            node bench/walks-summary.mjs "$GITHUB_WORKSPACE/results"
-          } 2>&1 | tee -a "$GITHUB_WORKSPACE/results/results.txt"
+          bash bench/walks-slots.sh "${{ matrix.files }}" "$GITHUB_WORKSPACE/results" "$RUNNER_TEMP/walks-tree"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: walks-results-${{ matrix.os }}
+          name: walks-results-${{ matrix.os }}-${{ matrix.files }}
+          path: results/
+
+  docker:
+    # A container with a CPU quota of 2: the case that `availableParallelism` must see (issue #180).
+    name: walks docker 2 cpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Walks in a container with 2 CPUs
+        run: |
+          mkdir results
+          { echo "os docker"; echo "commit $GITHUB_SHA"; } | tee results/results.txt
+          cp -a . "$RUNNER_TEMP/app"
+          docker run --rm --cpus 2 -v "$RUNNER_TEMP/app:/app" -v "$GITHUB_WORKSPACE/results:/results" -w /app \
+            node:22-bookworm-slim bash bench/walks-slots.sh 2500 /results /tmp/walks-tree
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: walks-results-docker-2cpus
           path: results/

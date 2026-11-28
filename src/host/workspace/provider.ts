@@ -77,6 +77,8 @@ export type ProviderOptions = {
     readonly listEntries?: number
     readonly searchMs?: number
     readonly walkSlots?: number
+    /** The CPU count that the default of `walkSlots` follows, in place of `os.availableParallelism()`. */
+    readonly parallelism?: number
   }
   /** Tests only: shorter lock times. */
   readonly locks?: LockerOptions
@@ -141,13 +143,14 @@ export const createProvider = (options: ProviderOptions): Provider => {
     update: parts => unalias(options.confined.update(parts)),
     create: (parts, bytes, guard) => unalias(options.confined.create(parts, bytes, guard)),
   }
+  const { parallelism = os.availableParallelism(), ...given } = options.limits ?? {}
   const limits = {
     searchFiles: LIMITS.searchFiles,
     listEntries: LIMITS.listEntries,
     searchMs: LIMITS.searchMs,
     // One slot on a machine with one CPU, else LIMITS.walkSlots. Not a count from the cores (issue #180).
-    walkSlots: walkSlotsFor(LIMITS.walkSlots, os.availableParallelism()),
-    ...options.limits,
+    walkSlots: walkSlotsFor(LIMITS.walkSlots, parallelism),
+    ...given,
   }
   const skip = new Set(options.skip.map(fold))
   const servers = new Set<Server>()
