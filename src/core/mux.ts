@@ -3,6 +3,20 @@
 // progress notice and each failure back to the one link that asked. It is pure: no Node module, timer, clock or random.
 // An input goes in and a list of effects comes out, in the order to carry them out. It reads each message as
 // untrusted: no JSON value makes it throw, and it never changes a message that it gets.
+// The router speaks one of two eras to its child, fixed once: legacy (an `initialize` that it forwards) or the 2026-07-28
+// era (a `server/discover` result with a modern version, see `muxmodern.ts`). Before the era is fixed and on a legacy child
+// every input gives the effects of 1.0.5 (tests/fixtures/mux-1.0.5.ts). ADR 0154 section 4 is the design of the modern era.
+
+import {
+  foreignState,
+  inputRequiredState,
+  isModernDiscover,
+  metaTooLong,
+  remember,
+  restamped,
+  restampedResult,
+  stampOf,
+} from './muxmodern.ts'
 
 /** The id of a link. The caller makes it and never reuses it for another link. */
 export type LinkId = string
@@ -21,12 +35,15 @@ export type Router = {
   readonly fromChild: (msg: unknown) => readonly Effect[]
   /** The child ended. Each open request gets an error, then every input gives no effect. */
   readonly died: () => readonly Effect[]
-  /** The requests that wait for an answer: 0 after all answers, cancels and detaches. */
+  /** The requests and streams that wait for an answer: 0 after all answers, cancels and detaches. */
   readonly open: () => number
+  /** The era of the child once it is fixed: `'legacy'` or `'modern'`. Undefined before (PR 12 holds `ready` until it is). */
+  readonly era: () => 'legacy' | 'modern' | undefined
 }
 
 export const DIED_CODE = -32000
 const NOT_FOUND_CODE = -32601
+const INVALID_PARAMS_CODE = -32602
 const VERSION = '2.0'
 
 type Id = string | number
@@ -40,7 +57,12 @@ const answer = (id: Id, result: unknown): unknown => ({ jsonrpc: VERSION, id, re
 const failure = (id: Id, code: number, message: string): unknown => ({ jsonrpc: VERSION, id, error: { code, message } })
 
 /** The ids of one link, kept apart by type: 7 and "7" are two ids, and no string joins two inputs. */
-type Held = { readonly numbers: Map<number, number>; readonly strings: Map<string, number> }
+type Held = {
+  readonly numbers: Map<number, number>
+  readonly strings: Map<string, number>
+  /** The `requestState` strings that the child gave this link (modern era only). */
+  readonly states: Set<string>
+}
 
 type Waiter = { readonly link: LinkId; readonly id: Id }
 type Call = {
@@ -49,13 +71,19 @@ type Call = {
   readonly id: Id
   /** The progress token of the link. The child sees the router id in its place. */
   readonly token?: Id
+  /** A `server/discover` sent before the era was fixed: its result can fix it. */
+  readonly probe?: true
 }
+/** A `subscriptions/listen` stream of a link, open until its result, a cancel, a detach or a death (modern era). */
+type Stream = { readonly kind: 'stream'; readonly link: LinkId; readonly id: Id; readonly token?: Id }
 /** The one initialize that the child sees. Every link that asked while it was open waits in `waiters`. */
 type Init = { readonly kind: 'init'; readonly waiters: Waiter[] }
 
 export const createRouter = (): Router => {
   const links = new Map<LinkId, Held>()
-  const open = new Map<number, Call | Init>()
+  const open = new Map<number, Call | Init | Stream>()
+  const streams = new Map<LinkId, number>()
+  let era: 'legacy' | 'modern' | undefined
   let nextId = 1
   let dead = false
   let cached: { readonly result: unknown } | undefined
@@ -78,8 +106,9 @@ export const createRouter = (): Router => {
     const entry = open.get(rid)
     const held = links.get(link)
     if (held !== undefined) release(held, id)
-    if (entry?.kind === 'call') {
+    if (entry?.kind === 'call' || entry?.kind === 'stream') {
       open.delete(rid)
+      if (entry.kind === 'stream') streams.delete(link)
     } else if (entry !== undefined) {
       const at = entry.waiters.findIndex(w => w.link === link && w.id === id)
       if (at >= 0) entry.waiters.splice(at, 1)
@@ -102,7 +131,7 @@ export const createRouter = (): Router => {
     const entry = rid === undefined ? undefined : open.get(rid)
     if (rid === undefined || entry === undefined) return []
     close(rid, link, id)
-    return entry.kind === 'call' ? [cancelChild(rid, reason)] : []
+    return entry.kind === 'init' ? [] : [cancelChild(rid, reason)]
   }
 
   /** The message with its progress token swapped for the router id of the request. */
@@ -113,8 +142,31 @@ export const createRouter = (): Router => {
     return { msg: { ...msg, params: { ...params, _meta: { ...meta, progressToken: rid } } }, token: original }
   }
 
+  /** A request of a link on a modern child. The router answers only what it must refuse; the rest goes to the child. */
+  const modernRequest = (link: LinkId, id: Id, msg: Obj, held: Held, method: unknown): Effect[] => {
+    // A request with an id that its link already holds gets no answer, as in the legacy era.
+    if (holder(held, id) !== undefined) return []
+    const refuse = (code: number, message: string): Effect[] => [{ to: 'link', link, msg: failure(id, code, message) }]
+    if (method === 'initialize') return refuse(NOT_FOUND_CODE, 'Method not found')
+    const params = own(msg, 'params')
+    if (metaTooLong(params)) return refuse(INVALID_PARAMS_CODE, 'params._meta is too long')
+    const listen = method === 'subscriptions/listen'
+    if (listen && streams.has(link))
+      return refuse(INVALID_PARAMS_CODE, 'a subscription is already open on this connection')
+    if (foreignState(params, held.states))
+      return refuse(INVALID_PARAMS_CODE, 'requestState is not one that this connection was given')
+    const rid = nextId++
+    const { msg: changed, token } = withToken(msg, params, rid)
+    const kept = token !== undefined && { token }
+    open.set(rid, listen ? { kind: 'stream', link, id, ...kept } : { kind: 'call', link, id, ...kept })
+    if (listen) streams.set(link, rid)
+    hold(held, id, rid)
+    return [{ to: 'child', msg: { ...changed, id: rid } }]
+  }
+
   const request = (link: LinkId, id: Id, msg: Obj, held: Held): Effect[] => {
     const method = own(msg, 'method')
+    if (era === 'modern') return modernRequest(link, id, msg, held, method)
     if (method === 'ping') return [{ to: 'link', link, msg: answer(id, {}) }]
     // A request with an id that its link already holds gets no answer: an error would be a second response for an id
     // whose first response is still to come. The link broke JSON-RPC, and no other link is touched.
@@ -129,6 +181,7 @@ export const createRouter = (): Router => {
       }
       const rid = nextId++
       opening = rid
+      era = 'legacy'
       open.set(rid, { kind: 'init', waiters: [{ link, id }] })
       hold(held, id, rid)
       const params = own(msg, 'params')
@@ -139,7 +192,14 @@ export const createRouter = (): Router => {
     }
     const rid = nextId++
     const { msg: changed, token } = withToken(msg, own(msg, 'params'), rid)
-    open.set(rid, { kind: 'call', link, id, ...(token !== undefined && { token }) })
+    const probe = era === undefined && method === 'server/discover'
+    open.set(rid, {
+      kind: 'call',
+      link,
+      id,
+      ...(token !== undefined && { token }),
+      ...(probe && { probe: true as const }),
+    })
     hold(held, id, rid)
     return [{ to: 'child', msg: { ...changed, id: rid } }]
   }
@@ -185,17 +245,54 @@ export const createRouter = (): Router => {
     const entry = open.get(rid)
     if (entry === undefined) return []
     if (entry.kind === 'init') return answerInit(rid, entry, msg)
+    // The era turns modern on a real discover result, once, and never after an initialize was forwarded.
+    if (entry.kind === 'call' && entry.probe === true && era === undefined && isModernDiscover(msg)) era = 'modern'
     open.delete(rid)
     const held = links.get(entry.link)
     if (held !== undefined) release(held, entry.id)
+    if (entry.kind === 'stream') {
+      streams.delete(entry.link)
+      return [{ to: 'link', link: entry.link, msg: { ...restampedResult(msg, entry.id), id: entry.id } }]
+    }
+    const state = era === 'modern' ? inputRequiredState(msg) : undefined
+    if (held !== undefined && state !== undefined) remember(held.states, state)
     return [{ to: 'link', link: entry.link, msg: { ...msg, id: entry.id } }]
+  }
+
+  /**
+   * A cancel of the child whose requestId is the router id of an open stream (the server-side teardown of a stream on stdio)
+   * closes that stream and goes to its link only, with the id that the link sent. Any other cancel of the child is dropped.
+   */
+  const streamCancel = (msg: Obj): Effect[] => {
+    const params = own(msg, 'params')
+    const sent = isObj(params) ? own(params, 'requestId') : undefined
+    const entry = typeof sent === 'number' ? open.get(sent) : undefined
+    if (!isObj(params) || entry?.kind !== 'stream' || typeof sent !== 'number') return []
+    open.delete(sent)
+    streams.delete(entry.link)
+    const held = links.get(entry.link)
+    if (held !== undefined) release(held, entry.id)
+    return [
+      {
+        to: 'link',
+        link: entry.link,
+        msg: restamped({ ...msg, params: { ...params, requestId: entry.id } }, entry.id),
+      },
+    ]
+  }
+
+  /** A notification of the child on a modern child: only a stamp of an open stream takes it to a link, and to that one. */
+  const streamNotice = (msg: Obj): Effect[] => {
+    const stamp = stampOf(msg)
+    const entry = stamp === undefined ? undefined : open.get(stamp)
+    return entry?.kind === 'stream' ? [{ to: 'link', link: entry.link, msg: restamped(msg, entry.id) }] : []
   }
 
   const progress = (msg: Obj): Effect[] => {
     const params = own(msg, 'params')
     const sent = isObj(params) ? own(params, 'progressToken') : undefined
     const entry = typeof sent === 'number' ? open.get(sent) : undefined
-    if (!isObj(params) || entry?.kind !== 'call' || entry.token === undefined) return []
+    if (!isObj(params) || entry === undefined || entry.kind === 'init' || entry.token === undefined) return []
     const changed = { ...msg, params: { ...params, progressToken: entry.token } }
     return [{ to: 'link', link: entry.link, msg: changed }]
   }
@@ -207,6 +304,7 @@ export const createRouter = (): Router => {
     if (typeof method === 'string') {
       if (id === undefined) {
         if (method === 'notifications/progress') return progress(msg)
+        if (era === 'modern') return method === 'notifications/cancelled' ? streamCancel(msg) : streamNotice(msg)
         if (method !== 'notifications/tools/list_changed') return []
         return [...links.keys()].map(link => ({ to: 'link', link, msg }))
       }
@@ -222,7 +320,7 @@ export const createRouter = (): Router => {
 
   return {
     attach: link => {
-      if (!dead && !links.has(link)) links.set(link, { numbers: new Map(), strings: new Map() })
+      if (!dead && !links.has(link)) links.set(link, { numbers: new Map(), strings: new Map(), states: new Set() })
       return []
     },
     detach: link => {
@@ -230,7 +328,7 @@ export const createRouter = (): Router => {
       if (dead || held === undefined) return []
       const mine = [...open.entries()]
         .flatMap(([rid, entry]): [number, Id][] =>
-          entry.kind === 'call'
+          entry.kind !== 'init'
             ? entry.link === link
               ? [[rid, entry.id]]
               : []
@@ -249,16 +347,18 @@ export const createRouter = (): Router => {
       const effects = [...open.entries()]
         .sort((a, b) => a[0] - b[0])
         .flatMap(([, entry]): Effect[] =>
-          (entry.kind === 'call' ? [entry] : entry.waiters).map(w => ({
+          (entry.kind !== 'init' ? [entry] : entry.waiters).map(w => ({
             to: 'link',
             link: w.link,
             msg: failure(w.id, DIED_CODE, 'the server process ended'),
           })),
         )
       open.clear()
+      streams.clear()
       links.clear()
       return effects
     },
-    open: () => [...open.values()].reduce((n, entry) => n + (entry.kind === 'call' ? 1 : entry.waiters.length), 0),
+    open: () => [...open.values()].reduce((n, entry) => n + (entry.kind === 'init' ? entry.waiters.length : 1), 0),
+    era: () => era,
   }
 }
