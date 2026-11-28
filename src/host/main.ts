@@ -13,7 +13,7 @@ import { StdioServerTransport } from './sdk/server.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import { parseArgs } from 'node:util'
-import { configPath, nestedStart } from '../core/config.ts'
+import { configPath, nestedStart, protocolOf, unknownLegacyLine } from '../core/config.ts'
 import { errorText } from '../core/protocol.ts'
 import { ALLOW_USAGE, runAllow } from './allow.ts'
 import { RUNS_USAGE, runRuns, runTools, TOOLS_USAGE } from './diagnose.ts'
@@ -96,6 +96,9 @@ if (!loaded.ok) fail(loaded.lines)
 const { config } = loaded
 // A launch of Claude Code that parseConfig does not see is not a bridge: this line lets the person see the miss.
 log(`Claude Code bridges: ${[...config.bridges].join(', ') || 'none'}`)
+// Items of TOOLSCRIPT_LEGACY_SERVERS that name no server: one line, never fatal, and only key-shaped items.
+const unknownLegacy = unknownLegacyLine(config.protocol)
+if (unknownLegacy !== undefined) log(unknownLegacy)
 
 // The built-in Workspace binds its root one time, after the client roots settle (issue #150): at the answer to
 // roots/list, or ROOTS_WAIT_MS after the client initialized. The section is never read again. The server starts at once,
@@ -153,6 +156,7 @@ const downstream = connectAll(config.servers, version, log, {
       home: os.homedir(),
       folder: process.cwd(),
       brokerFile: brokerFileBeside(import.meta.url),
+      protocol: key => protocolOf(config.protocol, key),
     },
   }),
 })

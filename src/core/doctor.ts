@@ -27,6 +27,7 @@ export const CHECK_NAMES = [
   'config',
   'servers',
   'workspace',
+  'protocol',
   'share',
   'broker',
   'lazy',
@@ -234,6 +235,21 @@ export const shareFindings = (config: Config): Finding[] => {
     return c === undefined ? [] : [info(shareLine(key, c))]
   })
   return lines.length === 0 ? [] : [info(shareSwitch(config.share)), ...lines]
+}
+
+/**
+ * The protocol line (#154): the host value and where it came from, and the servers kept on `legacy`. Fixed words and
+ * server keys only, so no text of either variable reaches the line. It changes no wire yet.
+ */
+export const protocolFindings = (config: Config): Finding[] => {
+  const p = config.protocol
+  const kept = [...(p?.legacy ?? [])].filter(key => key === 'workspace' || config.servers.has(key as ServerKey)).sort()
+  // The default with no list is no news: a setup that sets neither variable gets no line, as before.
+  if (p === undefined || (p.source === 'default' && kept.length === 0)) return []
+  const how = p.source === 'env' ? ' (TOOLSCRIPT_PROTOCOL)' : ' (the default)'
+  const list =
+    kept.length === 0 ? '' : `; kept on legacy by TOOLSCRIPT_LEGACY_SERVERS: ${kept.map(shownName).join(', ')}`
+  return [info(`host value ${p.value}${how}${list}`)]
 }
 
 /** What a person does when something else holds the name of the broker. It names no path but the broker folder. */

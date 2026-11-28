@@ -167,6 +167,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   `baseline` (with the SHA-256 rows of the upgrade gate: a row that may differ on purpose is named in `baseline.differs` of
   `tests/stress.json`, with a reason and a PR number), and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
   `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
+- The protocol switch (#154, PR 9) is two environment variables and never a config key (1.0.5 refuses an unknown key, and turns an
+  entry with one into an invalid server): `TOOLSCRIPT_PROTOCOL=legacy|auto` (default `legacy`) and `TOOLSCRIPT_LEGACY_SERVERS=<key>,<key>`
+  (servers that stay on `legacy`). `parseProtocol` in `src/core/config.ts` reads them into `Config.protocol`, and `protocolOf` gives the
+  value of one link. It changes no wire yet: only an `auto` link writes `protocol` in its broker entry frame and share key, so a
+  `legacy` and an `auto` link never share a child. `legacy` has the bytes of 1.0.5. `doctor` prints a `protocol` line only when a
+  variable is set. Tests: `tests/protocol-flag.test.ts` and `tests/protocol-flag.e2e.mjs` (it needs `tests/first-message-server.mjs`).
 - `tests/modern-server.mjs`, `modern-http.mjs`, `modern-client.mjs` and `modern-core.mjs` are the raw JSON-RPC peers of the 2026-07-28 revision (issue #154, C0), plain `.mjs`
   with no SDK: a stdio fake (kinds `modern`, `dual` and the old-server kinds, by argument), an HTTP fake (`startHttp(kind)`, with a record of every
   request), a raw client with the openings as data (`OPENINGS`, `replay`, Claude Code's two among them), and the engine they share.
@@ -182,6 +188,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `node tests/bridge.e2e.mjs` runs one program through the real `claude mcp serve` bridge (Grep, Read, Edit, a shell test run)
   and the missing-binary case. It needs `claude` on PATH, else it prints one line and exits 0. It is not in `npm test`.
 - `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
+- `node tests/protocol-flag.e2e.mjs` runs the built server with `TOOLSCRIPT_PROTOCOL` unset, `legacy` and `auto`: the same first message
+  and hashes for a direct, a lazy, a shared and an HTTP link, the answers to what a downstream server may not ask, and the child count
+  of a shared server. Run `npm run build` first.
 - `node tests/upgrade.e2e.mjs --base <built 1.0.5 dir> --head <built dir>` runs both builds on one HOME with raw JSON-RPC:
   an OAuth store refreshed both ways, a 1.0.5 host and a head host on one broker or two, and the rollback read (doctor,
   `tools/list`, `run_code`, `search_tools` of one build on the files of the other). With no `--base` it prints one line and

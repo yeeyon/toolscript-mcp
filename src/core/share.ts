@@ -71,8 +71,11 @@ export const shareText = (
   server: StdioServer,
   env: Readonly<Record<string, string>>,
   at: Place,
+  protocol?: 'auto',
 ): string => {
   const names = Object.keys(env).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   const folder = server.cwd ?? (class_.class === 'shared' ? at.home : at.folder)
-  return JSON.stringify(['toolscript-share', server.command, server.args, names.map(n => [n, env[n]]), folder])
+  const base = ['toolscript-share', server.command, server.args, names.map(n => [n, env[n]]), folder]
+  // A link of `auto` never shares a child with one of `legacy` (#154). For `legacy` the text is the bytes of 1.0.5.
+  return JSON.stringify(protocol === 'auto' ? [...base, 'auto'] : base)
 }

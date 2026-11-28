@@ -295,7 +295,11 @@ describe('the profiles', () => {
   test('tests/stress.json: each profile has entries that name a target and a count, and the files exist', () => {
     // `baseline` is not a list of targets: its `differs` names the rows of the baseline that may differ on purpose.
     assert.deepEqual(Object.keys(config).sort(), ['baseline', 'bench', 'cpu1', 'flakes', 'load'])
-    assert.deepEqual(parseDiffers(config), [], 'the list is empty until a PR changes a row on purpose')
+    assert.deepEqual(
+      parseDiffers(config).map((d: { row: string; pr: number }) => [d.row, d.pr]),
+      [['dist/host/broker.js sha256', 234]],
+      'the list names the rows that a PR changes on purpose',
+    )
     for (const name of PROFILES)
       for (const e of profileOf(config, name)) {
         assert.ok(typeof e.target === 'string' && e.count >= 1, name + ' ' + e.target)
