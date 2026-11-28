@@ -16,6 +16,7 @@ import { newKept } from '../src/core/protocol.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
 import { connectAll, type Downstream } from '../src/host/downstream.ts'
 import { storeFile } from '../src/host/oauth.ts'
+import { signRequest } from '../src/host/sigv4.ts'
 import { runCode, type RunContext } from '../src/host/run.ts'
 import { closedPort, startGoldenHttp } from './golden-http.ts'
 
@@ -277,6 +278,84 @@ describe('the texts of an HTTP link that fails', () => {
   test('http a refused connection at connect', async () => {
     const port = await closedPort()
     settle('http refused at connect', await observeHttp('ok', { url: `http://127.0.0.1:${port}/ok` }))
+  })
+
+  test('http a SigV4 entry signs each request, and its other headers are the same', async () => {
+    const fake = await startGoldenHttp()
+    fakes.push(fake)
+    // A fake AWS CLI first on PATH: the entry starts it through the real exportCredentials.
+    const bin = fs.mkdtempSync(path.join(ROOT, 'bin-'))
+    const script = path.join(bin, 'aws.mjs')
+    const exported = { AccessKeyId: 'AKIDGOLDEN', SecretAccessKey: 'golden-secret', SessionToken: 'golden-token' }
+    fs.writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(exported))})\n`)
+    if (process.platform === 'win32')
+      fs.writeFileSync(path.join(bin, 'aws.cmd'), `@"${process.execPath}" "${script}" %*\r\n`)
+    else fs.writeFileSync(path.join(bin, 'aws'), `#!/bin/sh\n"${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 })
+    const realPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${realPath}`
+    const scope = { profile: 'p', region: 'us-east-1', service: 'aws-mcp' }
+    const url = `${fake.origin}/ok`
+    try {
+      const servers = new Map<ServerKey, ServerConfig>([[KEY, { kind: 'http', url, headers: {}, sigv4: scope }]])
+      const r = rig({ servers })
+      await r.downstream.settled
+      await observe(r, 'ok')
+    } finally {
+      process.env.PATH = realPath
+    }
+    const sent = fake.seen.filter(s => s.path === '/ok')
+    assert.ok(
+      sent.some(s => s.body.includes('tools/call')),
+      'the call reached the fake',
+    )
+    const rows = sent.map(s => {
+      const date = s.headers['x-amz-date'] ?? ''
+      const when = new Date(
+        Date.UTC(
+          +date.slice(0, 4),
+          +date.slice(4, 6) - 1,
+          +date.slice(6, 8),
+          +date.slice(9, 11),
+          +date.slice(11, 13),
+          +date.slice(13, 15),
+        ),
+      )
+      const again = signRequest(
+        {
+          method: s.method,
+          url,
+          headers: new Headers({ ...(s.headers['content-type'] && { 'content-type': s.headers['content-type'] }) }),
+          body: s.body,
+        },
+        {
+          accessKeyId: exported.AccessKeyId,
+          secretAccessKey: exported.SecretAccessKey,
+          sessionToken: exported.SessionToken,
+        },
+        scope,
+        when,
+      )
+      assert.equal(
+        s.headers.authorization,
+        again.authorization,
+        'the authorization header is the one of the signature of the request',
+      )
+      const {
+        host: _h,
+        'user-agent': _u,
+        connection: _c,
+        'content-length': _l,
+        'x-amz-date': _d,
+        authorization: _a,
+        ...rest
+      } = s.headers
+      return {
+        method: s.method,
+        headers: rest,
+        signedHeaders: /SignedHeaders=([^,]+)/.exec(s.headers.authorization ?? '')?.[1],
+      }
+    })
+    settle('http sigv4', rows)
   })
 
   test('http a refused connection at a call', async () => {

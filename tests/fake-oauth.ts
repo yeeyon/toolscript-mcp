@@ -41,6 +41,9 @@ export const startFake = async () => {
   const secrets = new Set<string>([STATIC_SECRET, ...STATIC_FORMS])
   const seen = {
     registrations: 0,
+    /** The body of each registration request, and the content type of each token request. */
+    registered: [] as unknown[],
+    tokenTypes: [] as (string | undefined)[],
     authorizations: [] as URL[],
     tokens: [] as URLSearchParams[],
     /** The client authentication of each token request that got as far as the client check. */
@@ -259,6 +262,7 @@ export const startFake = async () => {
     if (url.pathname === '/register') {
       const metadata = JSON.parse(await body(req)) as { redirect_uris: string[] }
       const number = ++seen.registrations
+      seen.registered.push(metadata)
       const clientId = change.registeredId === '' ? `fake-client-${number}` : change.registeredId
       clients.set(clientId, { redirectUris: metadata.redirect_uris })
       const secret = change.registeredSecret
@@ -288,6 +292,7 @@ export const startFake = async () => {
       return void res.writeHead(302, { location: to.href }).end()
     }
     if (url.pathname === '/token' && change.tokenDown) return void req.socket.destroy()
+    if (url.pathname === '/token') (seen.tokenTypes.push(req.headers['content-type']), void 0)
     if (url.pathname === '/token') return token(await body(req), req.headers.authorization, res)
     if (url.pathname.startsWith('/mcp')) return mcp(req, res)
     res.writeHead(404).end()

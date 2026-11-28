@@ -1,0 +1,43 @@
+{
+  "code": 0,
+  "lines": [
+    "Log in to fake in the browser. If the browser does not open, open this URL:",
+    "Logged in to fake. It has 1 tool. The tokens are in STORE"
+  ],
+  "registered": [
+    {
+      "client_name": "toolscript-mcp",
+      "redirect_uris": ["http://127.0.0.1:P/callback"],
+      "grant_types": ["authorization_code", "refresh_token"],
+      "response_types": ["code"],
+      "token_endpoint_auth_method": "none",
+      "scope": "a b"
+    }
+  ],
+  "authorize": {
+    "names": [
+      "client_id",
+      "code_challenge",
+      "code_challenge_method",
+      "redirect_uri",
+      "resource",
+      "response_type",
+      "scope",
+      "state"
+    ],
+    "fixed": {
+      "response_type": "code",
+      "code_challenge_method": "S256",
+      "scope": "a b",
+      "resource": "http://127.0.0.1:N/mcp",
+      "redirect_uri": "http://127.0.0.1:P/callback"
+    }
+  },
+  "exchange": {
+    "names": ["client_id", "code", "code_verifier", "grant_type", "redirect_uri", "resource"],
+    "grant_type": "authorization_code",
+    "resource": "http://127.0.0.1:N/mcp",
+    "redirect_uri": "http://127.0.0.1:P/callback"
+  },
+  "tokenTypes": ["application/x-www-form-urlencoded"]
+}

@@ -398,6 +398,75 @@
       ]
     }
   },
+  "http sigv4": [
+    {
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+        "x-amz-security-token": "golden-token",
+        "accept-language": "*",
+        "sec-fetch-mode": "cors",
+        "accept-encoding": "gzip, deflate"
+      },
+      "signedHeaders": "content-type;host;x-amz-date;x-amz-security-token"
+    },
+    {
+      "method": "POST",
+      "headers": {
+        "mcp-session-id": "golden-session",
+        "mcp-protocol-version": "2025-11-25",
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+        "x-amz-security-token": "golden-token",
+        "accept-language": "*",
+        "sec-fetch-mode": "cors",
+        "accept-encoding": "gzip, deflate"
+      },
+      "signedHeaders": "content-type;host;x-amz-date;x-amz-security-token"
+    },
+    {
+      "method": "GET",
+      "headers": {
+        "mcp-session-id": "golden-session",
+        "mcp-protocol-version": "2025-11-25",
+        "accept": "text/event-stream",
+        "x-amz-security-token": "golden-token",
+        "accept-language": "*",
+        "sec-fetch-mode": "cors",
+        "accept-encoding": "gzip, deflate"
+      },
+      "signedHeaders": "host;x-amz-date;x-amz-security-token"
+    },
+    {
+      "method": "POST",
+      "headers": {
+        "mcp-session-id": "golden-session",
+        "mcp-protocol-version": "2025-11-25",
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+        "x-amz-security-token": "golden-token",
+        "accept-language": "*",
+        "sec-fetch-mode": "cors",
+        "accept-encoding": "gzip, deflate"
+      },
+      "signedHeaders": "content-type;host;x-amz-date;x-amz-security-token"
+    },
+    {
+      "method": "POST",
+      "headers": {
+        "mcp-session-id": "golden-session",
+        "mcp-protocol-version": "2025-11-25",
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+        "x-amz-security-token": "golden-token",
+        "accept-language": "*",
+        "sec-fetch-mode": "cors",
+        "accept-encoding": "gzip, deflate"
+      },
+      "signedHeaders": "content-type;host;x-amz-date;x-amz-security-token"
+    }
+  ],
   "http refused at a call": {
     "state": "connected",
     "result": {

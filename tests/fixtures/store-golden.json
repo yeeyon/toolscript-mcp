@@ -1,0 +1,136 @@
+{
+  "valid": {
+    "client": {
+      "info": {
+        "redirect_uris": ["http://127.0.0.1:5555/callback"],
+        "client_id": "c1"
+      },
+      "redirectUrl": "http://127.0.0.1:5555/callback"
+    },
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "scope": "x y",
+      "refresh_token": "r1"
+    }
+  },
+  "a client with a secret": {
+    "client": {
+      "info": {
+        "redirect_uris": ["http://127.0.0.1:5555/callback"],
+        "token_endpoint_auth_method": "client_secret_post",
+        "client_id": "c1",
+        "client_secret": "s1",
+        "client_secret_expires_at": 0
+      },
+      "redirectUrl": "http://127.0.0.1:5555/callback"
+    },
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "scope": "x y",
+      "refresh_token": "r1"
+    }
+  },
+  "a client of the config (id only)": {
+    "client": {
+      "info": {
+        "client_id": "c2"
+      },
+      "redirectUrl": "http://127.0.0.1:5555/callback"
+    }
+  },
+  "a client with an issuer": {
+    "client": {
+      "info": {
+        "redirect_uris": ["http://127.0.0.1:5555/callback"],
+        "client_id": "c1",
+        "issuer": "http://as.example/"
+      },
+      "redirectUrl": "http://127.0.0.1:5555/callback"
+    }
+  },
+  "a client with a non-string issuer": {
+    "client": {
+      "info": {
+        "redirect_uris": ["http://127.0.0.1:5555/callback"],
+        "client_id": "c1"
+      },
+      "redirectUrl": "http://127.0.0.1:5555/callback"
+    }
+  },
+  "no access_token": {},
+  "no token_type": {},
+  "a lower-case token_type": {
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "bearer",
+      "refresh_token": "r1"
+    }
+  },
+  "a dpop token_type": {
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "DPoP"
+    }
+  },
+  "tokens with no refresh token": {
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "Bearer"
+    }
+  },
+  "tokens with an issuer, no slash": {
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "scope": "x y",
+      "refresh_token": "r1",
+      "issuer": "http://as.example"
+    }
+  },
+  "tokens with an issuer, a slash": {
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "scope": "x y",
+      "refresh_token": "r1",
+      "issuer": "http://as.example/"
+    }
+  },
+  "tokens with a non-string issuer": {
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "scope": "x y",
+      "refresh_token": "r1"
+    }
+  },
+  "tokens with a bad expires_in": {},
+  "tokens with a non-string scope": {},
+  "a client that is not an object": {
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "scope": "x y",
+      "refresh_token": "r1"
+    }
+  },
+  "a client with another redirect host": {
+    "tokens": {
+      "access_token": "a1",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "scope": "x y",
+      "refresh_token": "r1"
+    }
+  },
+  "a client with no client_id": {},
+  "text that is not JSON": {}
+}
