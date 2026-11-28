@@ -299,8 +299,10 @@ config that you write for it stays valid for 1.0.5.
 - With `auto`, a client that sends `server/discover` first gets a session of the 2026-07-28 protocol. Claude Code does this.
   It has the same two tools, the same instructions and the same results. A client that sends `initialize` first gets the session
   of 1.0.5.
-- On a 2026-07-28 session, an `ask` rule refuses the call with the text for a client that cannot ask. It never allows the call.
-  The built-in Workspace is not available on that session. Both come back with the next two changes of the same release.
+- On a 2026-07-28 session, an `ask` rule asks the person, as it does on the older protocol. toolscript-mcp answers the call with a
+  request for input and a state. Only this program, these tools and this policy can use the state, one time, for 10 minutes. A client that did
+  not declare elicitation in that request gets the refusal for a client that cannot ask. Nothing runs without an accept.
+- The built-in Workspace is not available on a 2026-07-28 session. It comes back with the next change of the same release.
 
 To go back to the old protocol, set `TOOLSCRIPT_PROTOCOL=legacy` in the entry of your client and restart the client.
 `TOOLSCRIPT_LEGACY_SERVERS` keeps named servers on `legacy`. It does not change what a client sees of toolscript-mcp.

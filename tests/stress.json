@@ -134,6 +134,12 @@
       "note": "the timing tests, on one CPU"
     },
     {
+      "target": "tests/modern-approval.e2e.mjs",
+      "count": 3,
+      "box": 1,
+      "note": "approval on a 2026-07-28 connection: 13 cases, about 20 s a run (P3-1)"
+    },
+    {
       "target": "tests/share.e2e.mjs",
       "count": 30,
       "box": 8

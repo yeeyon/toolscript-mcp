@@ -131,8 +131,9 @@ time: the kept results of `recall`, the `saveFile` folder and the written files,
 reload, the runs in flight and their stop signal, the downstream links, the Workspace bind and the orphan sweep. The factory only
 builds an instance (`HostServer`) and sets its two handlers, so closing a discarded instance stops no run, closes no child and removes
 no file. Both eras get the same surface (`tools` only, no `resources`, no `extensions`) and the same instructions. Until the next two
-changes of the release, a modern instance cannot ask (`elicitInput` throws on a 2026-07-28 request, so `canAsk` is false and an `ask`
-decision gets the refusal for a client that cannot ask), and it has no Workspace: roots/list does not exist in that era, so a modern
+changes of the release, a modern instance asks by `input_required` (P3-1: `elicitInput` throws on a 2026-07-28 request, so `run_code`
+returns the prompt and a sealed `requestState`, the state lives in the host's table and never in the client, and a request whose
+envelope does not declare the form capability gets the refusal for a client that cannot ask), and it has no Workspace: roots/list does not exist in that era, so a modern
 instance hides the Workspace link (it is not listed and a call of it is refused as an unknown server) and the bind, which waits for the
 roots, ends with no Workspace when the first request other than `server/discover` shows the connection is in use. A request of
 `serveStdio` that is not 2026-07-28 and not a legacy opening is answered by the entry itself, with the errors of the SDK: a probe with
@@ -148,8 +149,19 @@ Phase 3 decides whether to use it or to keep our own signing: not decided here.
 2. `requestState` is replayable and readable: signed, expiring, bound to the original inputs, and on a shared child bound to its link
    (section 4). A continuation never reruns a finished side effect and revalidates the policy. The SDK states the same risk: "MUST
    be treated by the server as attacker-controlled input on re-entry" (server 2.4.0 `dist/mcp-BCJHyo7l.d.mts:696` to 701).
+   Held by P3-1 (`src/core/state.ts`, `src/host/server.ts`): the state is sealed with the SDK codec (HMAC-SHA256, a key of 32 random
+   bytes made at process start, 600 s, bound to the method), holds only a version, a kind, a round, a number used once and three SHA-256
+   (the call's arguments, the sorted asked tools, the policy), and is at most 512 characters. A number is removed when its state is
+   presented, whatever the outcome, so a replay, an expired state, a state of another program, tool or kind, a tampered state and a state
+   from before a restart each get the same fixed -32602 with one fixed word in the log. A plan or a policy that changed between two
+   rounds gets a new prompt, and at most 4 rounds are asked. Tests: `tests/modern-approval.e2e.mjs` (accept, decline, cancel, no or bad
+   answer, replay, moved state, one changed character in each part, restart, policy changed between rounds, the policy round, 5 rounds,
+   two calls in flight, the opening of Claude Code), `tests/modern-approval.test.ts` (the 601 s clock) and `tests/state.test.ts`.
 3. Input that a downstream server asks for (Phase 3) is shown with the server's name, and its answer is a value, never an approval.
-   Decline, cancel, timeout and a bad answer grant nothing (decision 011 stays).
+   Decline, cancel, timeout and a bad answer grant nothing (decision 011 stays). For the approval that toolscript itself asks of the
+   person (P3-1), the answer is only `inputResponses.approve.action`: `accept` runs, `decline` and `cancel` refuse, and a missing or
+   malformed entry is no answer. Held by the decline, cancel, no-answer and bad-answer rows of `tests/modern-approval.e2e.mjs`, which
+   compare the refusal text with the same answers on a legacy connection.
 4. A shared modern child sees each link's own capabilities. If it mixes them up, its results still go only to the asker.
 5. Unknown-tool and other protocol errors carry downstream text in an exception: same redaction and untrusted wrapper.
 6. Auth: `iss` validation (RFC 9207) in Phase 1. Claude Code states the same check on its v2 runtime (section 7). CIMD after 1.1.0,

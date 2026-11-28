@@ -61,8 +61,13 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     each with a handler for each tool in `SERVED`, the approval prompt (elicitation, legacy era only) and the policy read again at each
     run (a looser one waits for the person or a restart). `main.ts` stops the runs at shutdown. `createServer` is one legacy instance.
     `serve.ts` (issue #154, PR 13): with `TOOLSCRIPT_PROTOCOL=auto`, `serveStdio` calls the factory for a `server/discover` probe and
-    again for the connection, so the factory only builds an instance (no file, child, log line or timer). A modern instance cannot ask
-    and has no Workspace until the next two changes of the release. With `legacy` or no variable, one legacy instance on a stdio transport.
+    again for the connection, so the factory only builds an instance (no file, child, log line or timer). A modern instance has no
+    Workspace until the next change of the release. It asks by `input_required` (issue #154, P3-1): the approval stage that would push a
+    prompt throws `NeedsInput`, and the `tools/call` handler answers with the prompt and a `requestState` sealed by the SDK codec
+    (HMAC-SHA256, a key made at process start). `src/core/state.ts` holds the payload (version, kind, round, a number used once, and
+    three hashes: the call's arguments, the sorted asked tools, the policy), the table of open numbers (256, used one time) and the answer
+    of the client; the state is checked in `requestState.verify` and the arguments in the handler. Only a request whose own envelope
+    declares elicitation is asked. With `legacy` or no variable, one legacy instance on a stdio transport, which pushes its prompt.
   - `run.ts`: one `run_code` call: the check before a run, the policy, the sandbox, the nested calls, saveFile,
     readFile, recall and the result.
   - `downstream.ts`: connects to the servers of the config in parallel. A failed or closed server connects again on
@@ -200,6 +205,10 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   close, and the error of 1.0.5 for `server/discover` with the variable unset. `tests/upstream-golden-auto.test.ts` is the golden of PR 7
   again through `serveStdio` (G2), `tests/upstream-modern-golden.test.ts` the golden of the modern openings, `tests/modern-upstream.test.ts`
   the factory rule (three instances, one state). Run `npm run build` first.
+- `node tests/modern-approval.e2e.mjs` runs the built server with `auto` and the raw client of C0 through the approval on a 2026-07-28
+  connection: accept, decline, cancel, no or bad answer, a replay, a moved or changed state, a restart, a policy that changed between
+  rounds, the policy round, 5 rounds, the capability of each request, two calls in flight, and the opening of Claude Code. The 601 s
+  clock is `tests/modern-approval.test.ts`, the pure part `tests/state.test.ts`. Run `npm run build` first.
 - `node tests/upgrade.e2e.mjs --base <built 1.0.5 dir> --head <built dir>` runs both builds on one HOME with raw JSON-RPC:
   an OAuth store refreshed both ways, a 1.0.5 host and a head host on one broker or two, and the rollback read (doctor,
   `tools/list`, `run_code`, `search_tools` of one build on the files of the other). With no `--base` it prints one line and

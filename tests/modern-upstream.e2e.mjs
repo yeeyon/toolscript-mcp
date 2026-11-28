@@ -233,10 +233,8 @@ test('rule 5: a refused call gives the same text on a modern and a legacy connec
 // --- rule 6: approval until the next change --------------------------------------------------------------------------------
 
 test('rule 6: an ask never allows on a modern connection, for a server tool and for a bridge tool', async () => {
-  const modern = start(CONFIGS.asking, {
-    protocol: 'auto',
-    capabilities: { ...CLAUDE_CODE_CAPABILITIES, elicitation: { form: {} } },
-  })
+  // A modern client that did not declare elicitation cannot be asked. One that did is asked (tests/modern-approval.e2e.mjs).
+  const modern = start(CONFIGS.asking, { protocol: 'auto', capabilities: CLAUDE_CODE_CAPABILITIES })
   const legacy = start(CONFIGS.asking, { protocol: 'auto', capabilities: {} })
   try {
     await modern.client.discover()
