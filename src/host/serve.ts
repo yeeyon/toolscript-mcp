@@ -9,7 +9,7 @@ import type { Host } from './server.ts'
 export type ServeOptions = {
   /** Called for the instance of a legacy connection, before it connects: the roots of the client are asked there. */
   readonly attachRoots?: (server: HostServer) => void
-  /** A line for the log: out-of-band errors of the SDK entry. It never carries argument text. */
+  /** A line for the log: out-of-band errors of the SDK entry, one bounded line each (`sdkLine`). */
   readonly log: (line: string) => void
   /** Tests only: a transport in place of the stdio of the process. */
   readonly transport?: Transport
@@ -26,5 +26,26 @@ export const serveBoth = (
       if (era === 'legacy') attachRoots?.(instance)
       return instance
     },
-    { legacy: 'serve', ...(transport !== undefined && { transport }), onerror: err => log(`[mcp-sdk] ${err.message}`) },
+    { legacy: 'serve', ...(transport !== undefined && { transport }), onerror: err => log(sdkLine(err)) },
   )
+
+/** The most characters of a line of the SDK entry in the log. */
+export const SDK_LINE_MAX = 160
+
+const blank = (ch: string): string => {
+  const code = ch.codePointAt(0) ?? 0
+  // The C0 and C1 controls, and the two line separators of Unicode.
+  return code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029 ? ' ' : ch
+}
+
+/**
+ * One bounded line for an out-of-band error of the SDK entry: its name and the first line of its message, with the control
+ * characters taken out and at most SDK_LINE_MAX characters. The message can hold text that the client chose (a protocol version,
+ * the keys of a message that is not JSON-RPC), and a validation error can span many lines: only the first line is kept.
+ */
+export const sdkLine = (err: unknown): string => {
+  const name = err instanceof Error && err.name !== '' ? err.name : 'Error'
+  const message = err instanceof Error ? err.message : String(err)
+  const first = [...(message.split(/\r?\n/, 1)[0] ?? '')].map(blank).join('')
+  return `[mcp-sdk] ${name}: ${first}`.slice(0, SDK_LINE_MAX)
+}
