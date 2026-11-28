@@ -368,6 +368,8 @@ const oauthCase = (first, issuer) => async () => {
         `${where}: the store does not hold the new refresh token`,
       )
       assert.ok(stored.client?.info?.client_id, `${where}: the store lost its client`)
+      // The issuer stamp survives a refresh by either build.
+      if (issuer) assert.equal(stored.tokens?.issuer, fake.base, `${where}: the refresh dropped the issuer stamp`)
       if (!WIN) assert.equal(fs.statSync(file).mode & 0o777, 0o600, `${where}: the store is not 0600`)
       expected = fake.seen.lastRefresh
     }
@@ -389,21 +391,37 @@ const mixedCase = async () => {
   const extra = { TOOLSCRIPT_SHARE: '1', TOOLSCRIPT_BROKER_IDLE_MS: '1000' }
   const program = 'return "PID=" + String(await call("mcp__pid__pid", {}))'
   const answers = []
+  const byHost = new Map()
   const hosts = await Promise.all([BASE, HEAD].map(b => startHost(b, config, home, extra).open()))
   try {
     await Promise.all(
       hosts.map(async host => {
+        byHost.set(host.label, [])
         for (let i = 0; i < 3; i++) {
           const r = await host.run(program)
           const pid = Number(/PID=(\d+)/.exec(r.text)?.[1])
           assert.ok(!r.isError && pid > 0, `${host.label}: call ${i + 1} gave no pid: ${r.text.slice(0, 300)}`)
           answers.push(pid)
+          byHost.get(host.label).push(pid)
           pids.add(pid)
         }
       }),
     )
     assert.equal(answers.length, 6, 'all 6 answers')
     const equal = BASE.brokerHash === HEAD.brokerHash
+    // The pids say who shared: a host that started a direct child, or a broker of its own, would answer with another pid.
+    if (equal)
+      assert.equal(
+        new Set(answers).size,
+        1,
+        `the broker.js files are equal, so one child answers all 6 calls: ${answers}`,
+      )
+    else {
+      for (const [label, own] of byHost)
+        assert.equal(new Set(own).size, 1, `${label}: its 3 answers come from one child: ${own}`)
+      const [a, b] = [...byHost.values()].map(own => own[0])
+      assert.notEqual(a, b, 'the broker.js files differ, so each host has its own broker and child')
+    }
     const running = brokersAlive(home)
     assert.equal(
       running.length,
