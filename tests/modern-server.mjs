@@ -26,11 +26,16 @@ import {
   handleLegacy,
   handleModern,
   KEY,
+  STDIO_BASE_KINDS,
   notifyToolsChanged,
   ok,
 } from './modern-core.mjs'
 
 const [kind = 'modern', arg] = process.argv.slice(2)
+if (!STDIO_BASE_KINDS.includes(kind)) {
+  process.stderr.write(`modern-server: unknown kind ${kind}; the kinds are ${STDIO_BASE_KINDS.join(', ')}\n`)
+  process.exit(2)
+}
 const state = createState()
 const conn = createConn()
 

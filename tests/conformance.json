@@ -6,8 +6,8 @@
       "kind": "modern",
       "link": "direct",
       "flag": "legacy",
-      "expect": "error: initialize refused (-32601)",
-      "source": "tests/modern-core.mjs handleModern: a modern-only server refuses initialize",
+      "expect": "error: -32022 unsupported protocol version (an initialize has no envelope)",
+      "source": "client 2.4.0 dist/src-CeKsbNLO.mjs:4614-4624 (era classification: a request with no envelope on a modern-only endpoint is -32022 with data.supported); tests/modern-core.mjs handleModern",
       "status": "pending",
       "owner": "10"
     },
@@ -27,8 +27,8 @@
       "kind": "modern",
       "link": "lazy",
       "flag": "legacy",
-      "expect": "error: initialize refused (-32601)",
-      "source": "tests/modern-core.mjs handleModern: a modern-only server refuses initialize",
+      "expect": "error: -32022 unsupported protocol version (an initialize has no envelope)",
+      "source": "client 2.4.0 dist/src-CeKsbNLO.mjs:4614-4624 (era classification: a request with no envelope on a modern-only endpoint is -32022 with data.supported); tests/modern-core.mjs handleModern",
       "status": "pending",
       "owner": "10",
       "note": "the probe runs at the wake of the server"
@@ -50,8 +50,8 @@
       "kind": "modern",
       "link": "shared",
       "flag": "legacy",
-      "expect": "error: initialize refused (-32601)",
-      "source": "tests/modern-core.mjs handleModern: a modern-only server refuses initialize",
+      "expect": "error: -32022 unsupported protocol version (an initialize has no envelope)",
+      "source": "client 2.4.0 dist/src-CeKsbNLO.mjs:4614-4624 (era classification: a request with no envelope on a modern-only endpoint is -32022 with data.supported); tests/modern-core.mjs handleModern",
       "status": "pending",
       "owner": "12"
     },
@@ -543,11 +543,11 @@
       "link": "direct",
       "flag": "auto",
       "expect": "legacy session",
-      "asRead": "as read: error: RequestTimeout",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2051-2056, 2434, 3024 (no answer: RequestTimeout after the request timeout, by default)",
+      "asRead": "as read: legacy after the probe limit when the transport has stderr and pid, else error: RequestTimeout",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2217-2218 (a stdio transport is told by its stderr and pid: a probe timeout on it is legacy), 2051-2056, 2434, 3024 (the probe limit is the request timeout)",
       "status": "pending",
       "owner": "10",
-      "note": "host must fall back; PR 10 sets the time cap"
+      "note": "host must fall back; PR 10 sets the time cap; whether our ChildTransport has stderr and pid decides which of the two it is"
     },
     {
       "side": "downstream",
@@ -566,11 +566,11 @@
       "link": "lazy",
       "flag": "auto",
       "expect": "legacy session",
-      "asRead": "as read: error: RequestTimeout",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2051-2056, 2434, 3024 (no answer: RequestTimeout after the request timeout, by default)",
+      "asRead": "as read: legacy after the probe limit when the transport has stderr and pid, else error: RequestTimeout",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2217-2218 (a stdio transport is told by its stderr and pid: a probe timeout on it is legacy), 2051-2056, 2434, 3024 (the probe limit is the request timeout)",
       "status": "pending",
       "owner": "10",
-      "note": "host must fall back; PR 10 sets the time cap; the probe runs at the wake of the server"
+      "note": "host must fall back; PR 10 sets the time cap; whether our ChildTransport has stderr and pid decides which of the two it is; the probe runs at the wake of the server"
     },
     {
       "side": "downstream",
@@ -588,11 +588,11 @@
       "link": "shared",
       "flag": "auto",
       "expect": "legacy session",
-      "asRead": "as read: error: RequestTimeout",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2051-2056, 2434, 3024 (no answer: RequestTimeout after the request timeout, by default)",
+      "asRead": "as read: legacy after the probe limit when the transport has stderr and pid, else error: RequestTimeout",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2217-2218 (a stdio transport is told by its stderr and pid: a probe timeout on it is legacy), 2051-2056, 2434, 3024 (the probe limit is the request timeout)",
       "status": "pending",
       "owner": "12",
-      "note": "host must fall back; PR 10 sets the time cap; no direct-child fallback in the broker (decision 024): the router speaks 2025 to the child when the probe fails"
+      "note": "host must fall back; PR 10 sets the time cap; whether our ChildTransport has stderr and pid decides which of the two it is"
     },
     {
       "side": "downstream",
@@ -810,7 +810,7 @@
       "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2086-2105 (an answer of -32601 inside the probe time limit is legacy)",
       "status": "pending",
       "owner": "10",
-      "note": "the answer comes before the probe time limit; above it the kind is silent"
+      "note": "the answer comes before the probe time limit; above it the kind is silent; above the probe limit the kind is silent: the cell of silent applies (cls:2217-2218)"
     },
     {
       "side": "downstream",
@@ -833,7 +833,7 @@
       "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2086-2105 (an answer of -32601 inside the probe time limit is legacy)",
       "status": "pending",
       "owner": "10",
-      "note": "the answer comes before the probe time limit; above it the kind is silent; the probe runs at the wake of the server"
+      "note": "the answer comes before the probe time limit; above it the kind is silent; the probe runs at the wake of the server; above the probe limit the kind is silent: the cell of silent applies (cls:2217-2218)"
     },
     {
       "side": "downstream",
@@ -856,15 +856,15 @@
       "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2086-2105 (an answer of -32601 inside the probe time limit is legacy)",
       "status": "pending",
       "owner": "12",
-      "note": "the answer comes before the probe time limit; above it the kind is silent"
+      "note": "the answer comes before the probe time limit; above it the kind is silent; above the probe limit the kind is silent: the cell of silent applies (cls:2217-2218)"
     },
     {
       "side": "downstream",
       "kind": "modern",
       "link": "http",
       "flag": "legacy",
-      "expect": "error: header mismatch (HTTP 400, -32020)",
-      "source": "tests/modern-http.mjs: the modern kind needs mcp-protocol-version and mcp-method on every request",
+      "expect": "error: HTTP 400, -32022 (an initialize has no envelope)",
+      "source": "client 2.4.0 dist/src-CeKsbNLO.mjs:4614-4624 (era classification: a request with no envelope on a modern-only endpoint is -32022 with data.supported), 4626-4632 (-32602 only when the protocol-version header names a modern revision, which a 2025 initialize does not send); tests/modern-core.mjs handleModern",
       "status": "pending",
       "owner": "10"
     },
@@ -1073,23 +1073,21 @@
       "kind": "probe-307",
       "link": "http",
       "flag": "legacy",
-      "expect": "error: redirect to another origin not followed",
-      "source": "tests/modern-http.mjs: every request gets a 307 to localhost",
+      "expect": "error: redirect not followed (HTTP 307)",
+      "source": "client dist/index.mjs:1073-1078 and 1775-1780 (the initialize gets the 307, which fetchWithinOrigin leaves unfollowed: ClientHttpNotImplemented); tests/modern-http.mjs: every request gets the 307",
       "status": "pending",
-      "owner": "10",
-      "note": "unverified: whether the transport wraps its fetch in fetchWithinOrigin; the fidelity run of PR 10 decides"
+      "owner": "10"
     },
     {
       "side": "downstream",
       "kind": "probe-307",
       "link": "http",
       "flag": "auto",
-      "expect": "legacy session",
-      "asRead": "as read",
-      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2128-2135 (a 307 is a status below 500 with no JSON-RPC body); src-CeKsbNLO.mjs:6854-6877 (fetchWithinOrigin leaves a cross-origin redirect unfollowed)",
+      "expect": "error: redirect not followed (HTTP 307)",
+      "asRead": "as read: the probe reads the 307 as legacy, then the initialize gets the same 307 and fails",
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2121-2127, 2386-2424 (a 307 is an http-error status below 500 with no JSON-RPC body: legacy), then client dist/index.mjs:1073-1078 and 1775-1780 (fetchWithinOrigin leaves a cross-origin 307 unfollowed; the POST throws ClientHttpNotImplemented)",
       "status": "pending",
-      "owner": "10",
-      "note": "unverified: whether the transport wraps its fetch in fetchWithinOrigin; the fidelity run of PR 10 decides"
+      "owner": "10"
     },
     {
       "side": "downstream",
@@ -1163,8 +1161,8 @@
       "kind": "modern",
       "link": "http-oauth",
       "flag": "legacy",
-      "expect": "error: header mismatch (HTTP 400, -32020)",
-      "source": "the flag sends initialize first, as 1.0.5 does",
+      "expect": "error: HTTP 400, -32022 (an initialize has no envelope)",
+      "source": "client 2.4.0 dist/src-CeKsbNLO.mjs:4614-4624 (era classification: a request with no envelope on a modern-only endpoint is -32022 with data.supported), 4626-4632 (-32602 only when the protocol-version header names a modern revision, which a 2025 initialize does not send); tests/modern-core.mjs handleModern",
       "status": "pending",
       "owner": "10",
       "note": "the record shows the bearer on every request"
@@ -1209,8 +1207,8 @@
       "kind": "modern",
       "link": "http-sigv4",
       "flag": "legacy",
-      "expect": "error: header mismatch (HTTP 400, -32020)",
-      "source": "the flag sends initialize first, as 1.0.5 does",
+      "expect": "error: HTTP 400, -32022 (an initialize has no envelope)",
+      "source": "client 2.4.0 dist/src-CeKsbNLO.mjs:4614-4624 (era classification: a request with no envelope on a modern-only endpoint is -32022 with data.supported), 4626-4632 (-32602 only when the protocol-version header names a modern revision, which a 2025 initialize does not send); tests/modern-core.mjs handleModern",
       "status": "pending",
       "owner": "10",
       "note": "the record shows an Authorization header that starts with AWS4-HMAC-SHA256 on every request, signed over the mcp-* headers"
@@ -1245,11 +1243,11 @@
       "link": "bridge",
       "flag": "auto",
       "expect": "legacy session",
-      "source": "tests/bridge.e2e.mjs (the real bridge, by hand)",
-      "status": "manual",
-      "file": "tests/bridge.e2e.mjs",
-      "test": "Case 1: the real bridge.",
-      "note": "Claude Code 2.1.332 bridge; the era under auto is read by hand in PR 10"
+      "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2086-2105 (the bridge is a 2025 stdio server: it answers the probe with an error, which is legacy); tests/bridge.e2e.mjs runs the real bridge by hand",
+      "status": "pending",
+      "note": "Claude Code 2.1.332 bridge; the era under auto is read by hand in PR 10",
+      "owner": "10",
+      "asRead": "as read"
     },
     {
       "side": "upstream",

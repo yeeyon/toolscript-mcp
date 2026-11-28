@@ -97,6 +97,7 @@ export const spawnPeer = (kind, arg) => {
 /** A client over a transport. */
 export const createClient = (transport, { capabilities = {}, timeoutMs = DEFAULT_MS } = {}) => {
   let nextId = 1
+  let nextListenId = 1
   const pending = new Map()
   const waiters = new Set()
   const messages = []
@@ -179,7 +180,9 @@ export const createClient = (transport, { capabilities = {}, timeoutMs = DEFAULT
      * stream (the acknowledged notification, or an error) came, with `{ id, ack, error, notifications() }`.
      */
     listen: async (filter = { toolsListChanged: true }, { ms = timeoutMs, meta } = {}) => {
-      const id = nextId++
+      // The id of a listen request is a string, as the v2 client sends it (public-CvV4ZHkX.mjs 3629); the server stamps the
+      // acknowledged notification and each notification of the stream with it.
+      const id = `listen:${nextListenId++}`
       const answer = new Promise((resolve, reject) => pending.set(id, { resolve, reject }))
       answer.catch(() => {})
       transport.send({

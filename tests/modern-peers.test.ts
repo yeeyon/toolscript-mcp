@@ -3,6 +3,7 @@
 import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { startHttp } from './modern-http.mjs'
+import { HTTP_KINDS, STDIO_KINDS, stdioArgs } from './modern-core.mjs'
 import { aliveCount, connectPeer, killAll, OPENINGS, replay, within } from './modern-client.mjs'
 
 after(async () => {
@@ -20,6 +21,9 @@ describe('modern', () => {
     const discover = await c.discover()
     assert.deepEqual(discover.result.supportedVersions, ['2026-07-28'])
     assert.deepEqual(discover.result.capabilities, { tools: { listChanged: true } })
+    assert.equal(discover.result.resultType, 'complete')
+    assert.equal(discover.result.ttlMs, 1000)
+    assert.equal(discover.result.cacheScope, 'private')
     assert.deepEqual(discover.result._meta['io.modelcontextprotocol/serverInfo'], {
       name: 'modern-fake',
       version: '0.0.1',
@@ -29,9 +33,14 @@ describe('modern', () => {
       capabilities: {},
       clientInfo: { name: 'x', version: '1' },
     })
-    assert.equal(init.error.code, -32601)
+    // A modern-only endpoint answers a request with no envelope, initialize included, with -32022 naming what it supports
+    // (client 2.4.0 src-CeKsbNLO.mjs 4614 to 4624).
+    assert.equal(init.error.code, -32022)
+    assert.deepEqual(init.error.data, { supported: ['2026-07-28'] })
     const bare = await c.legacyRequest('tools/list', {})
-    assert.equal(bare.error.code, -32602)
+    assert.equal(bare.error.code, -32022)
+    assert.deepEqual(bare.error.data, { supported: ['2026-07-28'] })
+    assert.equal((await c.request('resources/list')).error.code, -32601)
     const wrong = await c.request(
       'tools/list',
       {},
@@ -85,7 +94,13 @@ describe('modern', () => {
     const other = connectPeer('modern')
     const asked = await c.listen({ toolsListChanged: true })
     const declined = await c.listen({ toolsListChanged: false })
+    // The id of a listen request is a string, the ack is the first message of the stream, and both carry that id.
+    assert.match(asked.id, /^listen:\d+$/)
     assert.equal(asked.ack.params._meta['io.modelcontextprotocol/subscriptionId'], asked.id)
+    assert.equal(
+      c.messages.find(m => m.params?._meta?.['io.modelcontextprotocol/subscriptionId'] === asked.id),
+      asked.ack,
+    )
     assert.deepEqual(asked.ack.params.notifications, { toolsListChanged: true })
     assert.equal(c.messages.at(-1).method, 'notifications/subscriptions/acknowledged')
     c.control('add-tool', 'extra')
@@ -123,7 +138,7 @@ describe('dual', () => {
           clientInfo: { name: 'x', version: '1' },
         })
       ).error.code,
-      -32601,
+      -32022,
     )
     assert.deepEqual(names(await c.request('tools/list')), ['echo', 'slow'])
   })
@@ -380,12 +395,47 @@ describe('the HTTP peer, modern', () => {
     })
   })
 
+  test('the ladder: no envelope is -32602 with a modern header and -32022 without, a notification needs no header', async () => {
+    await withHttp('modern', async server => {
+      const bare = (id, method) => ({ jsonrpc: '2.0', id, method, params: {} })
+      const named = await post(server, bare(1, 'tools/list'), modernHeaders('tools/list'))
+      assert.equal(named.status, 400)
+      assert.equal((await json(named)).error.code, -32602)
+      for (const headers of [{}, { 'mcp-protocol-version': '2025-06-18' }]) {
+        const old = await post(server, bare(2, 'initialize'), headers)
+        assert.equal(old.status, 400)
+        const body = await json(old)
+        assert.equal(body.error.code, -32022)
+        assert.deepEqual(body.error.data, { supported: ['2026-07-28'] })
+      }
+      // An unknown version in the envelope, with a matching header: -32022 as well.
+      const future = {
+        ...rpc(3, 'tools/list'),
+        params: { _meta: { ...ENV, 'io.modelcontextprotocol/protocolVersion': '2099-01-01' } },
+      }
+      const unknown = await post(server, future, {
+        ...modernHeaders('tools/list'),
+        'mcp-protocol-version': '2099-01-01',
+      })
+      assert.equal(unknown.status, 400)
+      assert.equal((await json(unknown)).error.code, -32022)
+      // A notification is exempt from the header rules.
+      const note = await post(server, { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'x' } })
+      assert.equal(note.status, 202)
+      assert.deepEqual(server.state.cancelled, ['x'])
+      // The discover result carries ttlMs and cacheScope.
+      const discover = await json(await post(server, rpc(4, 'server/discover'), modernHeaders('server/discover')))
+      assert.equal(discover.result.ttlMs, 1000)
+      assert.equal(discover.result.cacheScope, 'private')
+    })
+  })
+
   test('subscriptions/listen is an SSE stream: acknowledged, then the list change from the control call', async () => {
     await withHttp('modern', async server => {
       const stop = new AbortController()
       const res = await post(
         server,
-        rpc(7, 'subscriptions/listen', { notifications: { toolsListChanged: true } }),
+        rpc('listen:1', 'subscriptions/listen', { notifications: { toolsListChanged: true } }),
         modernHeaders('subscriptions/listen'),
         { signal: stop.signal },
       )
@@ -401,11 +451,30 @@ describe('the HTTP peer, modern', () => {
         }
       }
       await until('notifications/subscriptions/acknowledged')
-      assert.ok(seen.includes('"io.modelcontextprotocol/subscriptionId":7'))
+      assert.ok(seen.includes('"io.modelcontextprotocol/subscriptionId":"listen:1"'))
+      assert.ok(!seen.includes('list_changed'), 'the acknowledged notification is the first message of the stream')
       await server.control('add-tool', 'extra')
       await until('notifications/tools/list_changed')
       stop.abort()
     })
+  })
+})
+
+describe('the kinds', () => {
+  test('an unknown kind is refused, by the HTTP peer and by the stdio peer', async () => {
+    await assert.rejects(startHttp('nope'), /unknown HTTP kind: nope/)
+    const c = connectPeer('nope')
+    assert.deepEqual(await within(c.exited, 5000, 'the exit'), { code: 2, signal: null })
+  })
+
+  test('every kind of the lists starts: the stdio kinds take their arguments, the HTTP kinds start and stop', async () => {
+    for (const name of STDIO_KINDS) {
+      const [kind, ...rest] = stdioArgs(name)
+      const c = connectPeer(kind, rest[0])
+      c.close()
+      assert.deepEqual(await within(c.exited, 5000, `the exit of ${name}`), { code: 0, signal: null }, name)
+    }
+    for (const kind of HTTP_KINDS) await withHttp(kind, async server => assert.equal(server.kind, kind))
   })
 })
 
@@ -513,12 +582,28 @@ describe('the HTTP peer, the probe kinds', () => {
     }
   })
 
-  test('a 307 to another origin', async () => {
+  test('a 307 to another origin, a second server that records what reaches it', async () => {
     await withHttp('probe-307', async server => {
       const res = await probe(server, {}, { redirect: 'manual' })
       assert.equal(res.status, 307)
       assert.equal(new URL(res.headers.get('location')).hostname, 'localhost')
       assert.notEqual(new URL(res.headers.get('location')).origin, new URL(server.url).origin)
+      assert.equal(new URL(res.headers.get('location')).port, String(server.other.port))
+      // A client that follows must not take its bearer along: the record of the other origin shows what it got.
+      const followed = await probe(server, { authorization: 'Bearer secret-token' })
+      assert.equal(followed.status, 200)
+      assert.equal(server.other.requests.length, 1)
+      assert.equal(server.other.requests[0].headers.authorization, undefined)
+      assert.equal(server.requests.at(-1).headers.authorization, 'Bearer secret-token')
+    })
+  })
+
+  test('a request outside /mcp is recorded too, and not found', async () => {
+    await withHttp('probe-401', async server => {
+      const res = await fetch(`http://127.0.0.1:${server.port}/.well-known/oauth-protected-resource`)
+      assert.equal(res.status, 404)
+      assert.equal(server.requests.at(-1).path, '/.well-known/oauth-protected-resource')
+      assert.equal(server.requests.at(-1).method, 'GET')
     })
   })
 

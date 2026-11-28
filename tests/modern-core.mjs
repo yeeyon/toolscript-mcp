@@ -16,6 +16,53 @@ export const KEY = {
 }
 export const SERVER_INFO = { name: 'modern-fake', version: '0.0.1' }
 
+/** The kinds of `tests/modern-server.mjs`, as the matrix names them (a name with a dash is a kind with an argument). */
+export const STDIO_KINDS = [
+  'modern',
+  'dual',
+  'e32601',
+  'eother-32600',
+  'eother-32602',
+  'eother-32000',
+  'exits',
+  'closes',
+  'silent',
+  'garbage',
+  'e32022-legacy',
+  'e32022-modern',
+  'slow',
+]
+/** The kinds of `tests/modern-http.mjs`. */
+export const HTTP_KINDS = [
+  'modern',
+  'legacy',
+  'probe-400',
+  'probe-404',
+  'probe-405',
+  'probe-400-rpc',
+  'probe-401',
+  'probe-403',
+  'probe-500',
+  'probe-503',
+  'probe-307',
+  'probe-hang',
+]
+/** The command-line arguments (kind, then its argument) of a stdio kind as the matrix names it. */
+export const stdioArgs = name => {
+  const [kind, arg] = name.split('-')
+  return kind === 'e32022'
+    ? arg === 'modern'
+      ? [kind, 'modern']
+      : [kind]
+    : arg === '32600'
+      ? [kind]
+      : arg === undefined
+        ? [kind]
+        : [kind, arg]
+}
+/** The kinds that the server file takes on its command line. */
+export const STDIO_BASE_KINDS = [...new Set(STDIO_KINDS.map(name => name.split('-')[0]))]
+
 export const baseTools = () => [
   {
     name: 'echo',
@@ -78,12 +125,14 @@ const cancel = (state, conn, msg) => {
 }
 
 /**
- * A message on a connection of the 2026-07-28 era. `initialize` is refused with -32601, a request with no version in its
- * envelope with -32602, an unknown version with -32022 (data.supported). `send` gets each message for the connection.
+ * A message on a connection of the 2026-07-28 era, as a modern-only endpoint of the real SDK answers it (client 2.4.0
+ * `dist/src-CeKsbNLO.mjs` 4614 to 4632): a request with no version in its envelope, `initialize` included, gets -32022 with
+ * data.supported (era classification); an unknown version gets -32022 too; an unknown method -32601. (-32602 for a missing
+ * envelope is only for an HTTP request whose header names a modern revision: modern-http.mjs.) `send` gets each message.
  */
 export const handleModern = (state, conn, msg, rawSend) => {
   // Every result of this revision carries `resultType: "complete"`: the real client refuses a result without it (found by the
-  // fidelity run against client 2.4.0, `dist/src-CeKsbNLO.mjs` stampResultType 3645).
+  // fidelity run against client 2.4.0: it refuses the result, `dist/src-CeKsbNLO.mjs` 3956 to 3961, and the server stamps it, 3645).
   const send = message =>
     rawSend(
       message.result === undefined ? message : { ...message, result: { resultType: 'complete', ...message.result } },
@@ -92,10 +141,11 @@ export const handleModern = (state, conn, msg, rawSend) => {
     if (msg.method === 'notifications/cancelled') cancel(state, conn, msg)
     return
   }
-  if (msg.method === 'initialize') return send(fail(msg.id, -32601, 'Method not found: initialize'))
   const meta = envelopeOf(msg)
   if (typeof meta[KEY.version] !== 'string') {
-    return send(fail(msg.id, -32602, `Request is missing ${KEY.version} in params._meta`))
+    return send(
+      fail(msg.id, -32022, `Unsupported protocol version: no ${KEY.version} in params._meta`, { supported: [MODERN] }),
+    )
   }
   if (meta[KEY.version] !== MODERN) {
     return send(
@@ -108,6 +158,9 @@ export const handleModern = (state, conn, msg, rawSend) => {
       return send(
         ok(msg.id, {
           supportedVersions: [MODERN],
+          // ttlMs and cacheScope are required on a discover result (spec /schema#discoverresult; SDK 3371 to 3378, 3657 to 3671).
+          ttlMs: 1000,
+          cacheScope: 'private',
           capabilities: { tools: { listChanged: true } },
           instructions: 'A fake server of the 2026-07-28 revision, for tests.',
           _meta: { [KEY.serverInfo]: SERVER_INFO },

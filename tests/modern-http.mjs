@@ -2,7 +2,7 @@
 //
 //   const server = await startHttp('modern')
 //   server.url                 http://127.0.0.1:<port>/mcp
-//   server.requests            every request to /mcp, in order: { method, path, headers, body, json }
+//   server.requests            every request except the control call, in order: { method, path, headers, body, json }
 //   await server.waitFor(r => r.json?.method === 'tools/list', 2000)
 //   await server.control('add-tool', 'extra')   the tool list changes; an open listen stream is told
 //   await server.close()
@@ -17,7 +17,7 @@
 //   probe-400-rpc the probe gets 400 with a JSON-RPC error body (-32600), then a legacy session
 //   probe-401     every request without `authorization: Bearer ...` gets 401 with www-authenticate; with one, a legacy session
 //   probe-403 | probe-500 | probe-503   every request gets that status
-//   probe-307     every request gets a 307 to another origin (localhost, not 127.0.0.1)
+//   probe-307     every request gets a 307 to another origin (localhost, not 127.0.0.1): a second recording server, `server.other`
 //   probe-hang    every request gets 200 headers and a body that never ends
 // The record is what the SigV4 and OAuth rows read: the headers of each request are kept as sent, in lower case.
 
@@ -30,6 +30,8 @@ import {
   fail,
   handleLegacy,
   handleModern,
+  HTTP_KINDS,
+  KEY,
   MODERN,
   notifyToolsChanged,
   ok,
@@ -56,12 +58,42 @@ const nameOf = json =>
 
 /** Starts the server. `kind` is one of the kinds above. */
 export const startHttp = async kind => {
+  if (!HTTP_KINDS.includes(kind)) throw new Error(`unknown HTTP kind: ${String(kind)}`)
   const state = createState()
   const requests = []
   const sessions = new Map()
   const streams = new Set()
   const sockets = new Set()
   const waiters = new Set()
+
+  // The server that a 307 points to (probe-307): another origin that records what reaches it, so a leaked bearer shows.
+  const other =
+    kind === 'probe-307'
+      ? await (async () => {
+          const seen = []
+          const sockets = new Set()
+          const s = http.createServer((req, res) => {
+            const chunks = []
+            req.on('data', c => chunks.push(c))
+            req.on('end', () => {
+              seen.push({
+                method: req.method,
+                path: req.url,
+                headers: { ...req.headers },
+                body: Buffer.concat(chunks).toString('utf8'),
+              })
+              res.writeHead(200, { 'content-type': 'application/json' })
+              res.end('{}')
+            })
+          })
+          s.on('connection', socket => {
+            sockets.add(socket)
+            socket.on('close', () => sockets.delete(socket))
+          })
+          await new Promise(resolve => s.listen(0, '127.0.0.1', resolve))
+          return { server: s, sockets, requests: seen, port: s.address().port }
+        })()
+      : undefined
 
   const record = (req, body) => {
     let json
@@ -81,20 +113,35 @@ export const startHttp = async kind => {
     res.end(payload === undefined ? '' : typeof payload === 'string' ? payload : JSON.stringify(payload))
   }
 
+  // The order of the SDK ladder (client 2.4.0 `dist/src-CeKsbNLO.mjs` 4590 to 4660), for a request: an envelope-less request
+  // is -32602 when its protocol-version header names a modern revision (the envelope rung, 4626 to 4632) and -32022 with
+  // data.supported otherwise (era classification, 4614 to 4624); a header that disagrees with the envelope, or an mcp-method
+  // or mcp-name that disagrees with the body, is -32020 (4650 to 4655); all of them HTTP 400. A notification is exempt from
+  // the header rules (the spec defines none for it).
   const modern = (req, res, json) => {
     const header = name => req.headers[name]
-    const mismatch =
-      header('mcp-protocol-version') !== MODERN
-        ? 'mcp-protocol-version'
-        : header('mcp-method') !== json.method
-          ? 'mcp-method'
-          : nameOf(json) !== undefined && header('mcp-name') !== nameOf(json)
-            ? 'mcp-name'
-            : undefined
-    if (mismatch !== undefined) {
-      return reply(res, 400, fail(json.id ?? null, -32020, `Header mismatch: ${mismatch}`))
+    const isRequest = json.id !== undefined
+    if (isRequest) {
+      const envelope = json.params?._meta?.[KEY.version]
+      if (typeof envelope !== 'string') {
+        const named = header('mcp-protocol-version')
+        return typeof named === 'string' && named >= MODERN
+          ? reply(res, 400, fail(json.id, -32602, `Request is missing ${KEY.version} in params._meta`))
+          : reply(res, 400, fail(json.id, -32022, 'Unsupported protocol version: no envelope', { supported: [MODERN] }))
+      }
+      const mismatch =
+        header('mcp-protocol-version') !== envelope
+          ? 'mcp-protocol-version'
+          : header('mcp-method') !== json.method
+            ? 'mcp-method'
+            : nameOf(json) !== undefined && header('mcp-name') !== nameOf(json)
+              ? 'mcp-name'
+              : undefined
+      if (mismatch !== undefined) {
+        return reply(res, 400, fail(json.id, -32020, `Header mismatch: ${mismatch}`))
+      }
     }
-    if (json.id === undefined) {
+    if (!isRequest) {
       handleModern(state, createConn(), json, () => {})
       return reply(res, 202, undefined)
     }
@@ -111,12 +158,13 @@ export const startHttp = async kind => {
     // An answer that comes during the call is sent at once; a slow tool answers later, on the open request.
     let during = true
     let early
+    const status = message => (message.error?.code === -32022 ? 400 : 200)
     handleModern(state, conn, json, message => {
       if (during) early = message
-      else reply(res, 200, message)
+      else reply(res, status(message), message)
     })
     during = false
-    return early === undefined ? undefined : reply(res, 200, early)
+    return early === undefined ? undefined : reply(res, status(early), early)
   }
 
   const legacy = (req, res, json) => {
@@ -174,8 +222,7 @@ export const startHttp = async kind => {
     }
     const always = ALWAYS.get(kind)
     if (always !== undefined) return reply(res, always, 'not available', { 'content-type': 'text/plain' })
-    if (kind === 'probe-307')
-      return reply(res, 307, undefined, { location: `http://localhost:${server.address().port}/mcp` })
+    if (kind === 'probe-307') return reply(res, 307, undefined, { location: `http://localhost:${other.port}/mcp` })
     if (kind === 'probe-hang') {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.write('{')
@@ -196,7 +243,11 @@ export const startHttp = async kind => {
         }
         return reply(res, 200, { ok: true })
       }
-      if (!req.url?.startsWith('/mcp')) return reply(res, 404, 'not found', { 'content-type': 'text/plain' })
+      // A request outside /mcp (the well-known documents of an OAuth discovery) is recorded too, then not found.
+      if (!req.url?.startsWith('/mcp')) {
+        record(req, body)
+        return reply(res, 404, 'not found', { 'content-type': 'text/plain' })
+      }
       handle(req, res, body)
     })
   })
@@ -214,6 +265,8 @@ export const startHttp = async kind => {
     url,
     requests,
     state,
+    /** The server that a probe-307 points to, with its own record. */
+    other: other === undefined ? undefined : { port: other.port, requests: other.requests },
     /** Resolves with the first recorded request that `predicate` accepts, or rejects at the deadline. */
     waitFor: (predicate, ms = 5000) =>
       new Promise((resolve, reject) => {
@@ -237,7 +290,11 @@ export const startHttp = async kind => {
       ),
     close: async () => {
       for (const socket of sockets) socket.destroy()
-      await new Promise(resolve => server.close(resolve))
+      for (const socket of other?.sockets ?? []) socket.destroy()
+      await Promise.all([
+        new Promise(resolve => server.close(resolve)),
+        other === undefined ? undefined : new Promise(resolve => other.server.close(resolve)),
+      ])
     },
   }
 }

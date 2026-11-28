@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { OPENINGS } from './modern-client.mjs'
+import { HTTP_KINDS, STDIO_KINDS } from './modern-core.mjs'
 
 const dir = path.dirname(fileURLToPath(import.meta.url))
 const read = (name: string) => fs.readFileSync(path.join(dir, name), 'utf8')
@@ -27,48 +28,9 @@ type Row = {
 }
 const key = (r: Pick<Row, 'side' | 'kind' | 'link' | 'flag'>) => [r.side, r.kind, r.link, r.flag].join(' | ')
 
-// What the peers offer. Each name must be in the file of its peer: the lists below are checked against the text.
-const STDIO = [
-  'modern',
-  'dual',
-  'e32601',
-  'eother-32600',
-  'eother-32602',
-  'eother-32000',
-  'exits',
-  'closes',
-  'silent',
-  'garbage',
-  'e32022-legacy',
-  'e32022-modern',
-  'slow',
-]
-const STDIO_PEER_NAMES = [
-  'modern',
-  'dual',
-  'e32601',
-  'eother',
-  'exits',
-  'closes',
-  'silent',
-  'garbage',
-  'e32022',
-  'slow',
-]
-const HTTP = [
-  'modern',
-  'legacy',
-  'probe-400',
-  'probe-404',
-  'probe-405',
-  'probe-400-rpc',
-  'probe-401',
-  'probe-403',
-  'probe-500',
-  'probe-503',
-  'probe-307',
-  'probe-hang',
-]
+// What the peers offer: the lists that the peer files export (a peer refuses a kind that is not in them).
+const STDIO = STDIO_KINDS
+const HTTP = HTTP_KINDS
 const FLAGS = ['legacy', 'auto']
 const expected = (): string[] => [
   ...STDIO.flatMap(kind =>
@@ -102,11 +64,7 @@ describe('the matrix', () => {
     assert.deepEqual([...matrix.rows.map(key)].sort(), [...expected()].sort())
   })
 
-  test('the peers offer the kinds that the lists name', () => {
-    const server = read('modern-server.mjs')
-    for (const name of STDIO_PEER_NAMES) assert.ok(server.includes(`modern-server.mjs ${name}`), name)
-    const http = read('modern-http.mjs')
-    for (const kind of HTTP) assert.ok(http.includes(`//   ${kind} `) || http.includes(`${kind}`), kind)
+  test('the openings are the six that the bar names', () => {
     assert.deepEqual(Object.keys(OPENINGS).sort(), [
       'claude-code-auto',
       'claude-code-legacy',
@@ -137,6 +95,8 @@ describe('the matrix', () => {
         assert.ok(fs.existsSync(file), `${key(r)}: ${r.file} does not exist`)
         assert.ok(fs.readFileSync(file, 'utf8').includes(r.test), `${key(r)}: the test name is not in ${r.file}`)
       } else if (r.status === 'manual') {
+        // Only the real Claude Code bridge is run by hand.
+        assert.equal(r.link, 'bridge', `${key(r)}: a manual row is the bridge`)
         assert.ok(r.file && fs.existsSync(path.join(dir, '..', r.file)), key(r))
       } else {
         assert.fail(`${key(r)}: status ${r.status}`)
@@ -145,7 +105,8 @@ describe('the matrix', () => {
   })
 
   test('the legacy rows that a test of today proves are covered, and the others of the modern work are pending', () => {
-    const covered = matrix.rows.filter(r => r.status === 'covered').map(key)
-    assert.deepEqual(covered, ['upstream | legacy | upstream-stdio | legacy'])
+    // The flag `legacy` is the behavior of 1.0.x, which today's tests prove; no row of `auto` can be covered before PR 10 to 13.
+    for (const r of matrix.rows.filter(r => r.status === 'covered')) assert.equal(r.flag, 'legacy', key(r))
+    for (const r of matrix.rows.filter(r => r.flag === 'auto')) assert.notEqual(r.status, 'covered', key(r))
   })
 })
