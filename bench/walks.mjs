@@ -81,6 +81,7 @@ const binding = await bindWorkspace({
   home,
   configFile: path.join(home, 'toolscript.json'),
   log: () => {},
+  callSeconds: 60,
 })
 if (!binding.ok) throw new Error(`Workspace unavailable: ${binding.reason}`)
 const client = new Client({ name: 'walks-bench', version: '0' })

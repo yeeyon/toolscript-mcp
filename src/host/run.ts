@@ -682,15 +682,20 @@ const execute = async (
 
   // Calls of the built-in Workspace `list` and `search` that stopped early, for the footer. Only the provider of the
   // config counts, and only the boolean `true`: the footer is outside the wrapper of untrusted content.
-  const cutCounts = { list: { cut: 0, total: 0 }, search: { cut: 0, total: 0 } }
+  const cutCounts = {
+    list: { cut: 0, total: 0, notStarted: 0 },
+    search: { cut: 0, total: 0, notStarted: 0 },
+  }
   const noteCut = (tool: string, r: Reply): void => {
     const target = splitToolName(tool)
     if (target === undefined || config.servers.get(target.server as ServerKey)?.kind !== 'workspace') return
     if (!r.ok || (target.name !== 'list' && target.name !== 'search')) return
     const count = cutCounts[target.name]
     count.total++
-    if (typeof r.value === 'object' && r.value !== null && (r.value as { truncated?: unknown }).truncated === true)
-      count.cut++
+    if (typeof r.value !== 'object' || r.value === null) return
+    const shown = r.value as { truncated?: unknown; notStarted?: unknown }
+    if (shown.notStarted === true) count.notStarted++
+    else if (shown.truncated === true) count.cut++
   }
 
   const answerCall = async (
@@ -935,7 +940,7 @@ const execute = async (
       recalled,
       wholeRef,
       serial,
-      ...(cutCounts.list.cut + cutCounts.search.cut > 0 && {
+      ...(cutCounts.list.cut + cutCounts.search.cut + cutCounts.list.notStarted + cutCounts.search.notStarted > 0 && {
         cut: { list: cutCounts.list, search: cutCounts.search },
       }),
     },

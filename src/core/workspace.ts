@@ -9,7 +9,14 @@ import type { TaskConfig } from './task.ts'
 export const WORKSPACE_KEY = 'workspace'
 
 /** The version of the provider. A change that breaks a schema raises the major version. */
-export const WORKSPACE_VERSION = '1.0.0'
+export const WORKSPACE_VERSION = '1.1.0'
+
+/**
+ * How long a `list` or `search` call may wait for a walk slot, in ms: the call limit (`sandbox.callTimeoutSeconds`) less the
+ * budget of one walk and 2 s, so a call that waits the whole time still answers before the caller's limit. 0 when the limit
+ * is too short: a call that must queue then answers at once.
+ */
+export const queueWaitMs = (callMs: number, searchMs: number): number => Math.max(0, callMs - searchMs - 2000)
 
 export const LIMITS = {
   /** `read` refuses a larger file. */
@@ -551,6 +558,7 @@ export const WORKSPACE_TOOLS = {
           },
         },
         truncated: { type: 'boolean' },
+        notStarted: { type: 'boolean' },
       },
       required: ['entries', 'truncated'],
     },
@@ -609,6 +617,7 @@ export const WORKSPACE_TOOLS = {
         truncated: { type: 'boolean' },
         filesScanned: { type: 'integer' },
         skipped: { type: 'integer' },
+        notStarted: { type: 'boolean' },
       },
       required: ['matches', 'truncated', 'filesScanned', 'skipped'],
     },

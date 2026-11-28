@@ -3181,7 +3181,7 @@ describe('workspace', () => {
     extra: Partial<Options> = {},
     tasks: readonly TaskConfig[] = [],
     write = false,
-    limits?: { searchFiles?: number; listEntries?: number },
+    limits?: { searchFiles?: number; listEntries?: number; searchMs?: number; callMs?: number },
   ) => {
     const root = fs.realpathSync.native(dir('ws-root-'))
     const outside = fs.realpathSync.native(dir('ws-out-'))
@@ -3293,6 +3293,28 @@ describe('workspace', () => {
     const fine = await whole.run('return (await call("mcp__workspace__search", { query: "file" })).truncated')
     assert.equal(fine.isError, false, fine.text)
     assert.ok(!fine.text.includes('stopped early'), fine.text)
+  })
+
+  test('a Promise.all of searches where a call did not start returns, is no error, and the footer counts it apart from the cut ones', async t => {
+    // A call limit of 1 s gives a queue wait of 0: a search that must queue for the one walk slot answers as not started.
+    const q = await rig(t, { policy: [] }, [], false, { searchMs: 100, callMs: 1000 })
+    if (q === undefined) return
+    const out = await q.run(
+      'const all = await Promise.all(Array.from({ length: 8 }, () => call("mcp__workspace__search", { query: "file" })))\nreturn all.map(r => r.notStarted === true)',
+    )
+    assert.equal(out.isError, false, out.text)
+    const got = JSON.parse(hostMark(out.text)?.inside ?? 'null') as boolean[]
+    const skipped = got.filter(Boolean).length
+    assert.ok(skipped >= 1 && skipped < 8, out.text)
+    assert.ok(
+      out.text
+        .split('\n')
+        .includes(
+          `mcp__workspace__search: ${skipped} of 8 calls did not start: the calls before them took the time. Put the texts in one query array, run fewer searches at once, or give a narrower path or include.`,
+        ),
+      out.text,
+    )
+    assert.ok(!out.text.includes('stopped early'), out.text)
   })
 
   test('a tool mcp__workspace__search of a server that is not the built-in Workspace gives no cut line', async () => {
