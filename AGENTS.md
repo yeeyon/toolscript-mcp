@@ -14,7 +14,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
   text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
   proof of the key, the entry, `PATH` resolve), `lock.ts` (the content of the OAuth refresh lock file, its parse and
-  the stale decision, and the reason text of a silent token endpoint), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
+  the stale decision, and the reason text of a silent token endpoint), `spawn.ts` (the reason text of a stdio command that cannot start: the command only, never an argument or a variable), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
   note on `Promise.all`), `workspace.ts` (the built-in Workspace, issue #144: the tool table with a class for each
   tool, the limits, the check of a path text, globs, exclusions, the refusal of a root, the binding of a session to its
   root, the input of each tool, the application of edits and the unified diff) and `task.ts` (its named tasks: the
@@ -142,11 +142,20 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `tests/memory.e2e.mjs` runs its smoke and the hard-kill case.
   - `broker-race.mjs`: N brokers started at once on a fresh HOME, R rounds, counts the rounds with two brokers at once
     (issue #133). Linux and macOS; no model and no spend. `--contenders 20 --rounds 300` is the case that reproduced it.
+  - `bridge-modes.mjs`: interactive Claude Code through node-pty, with the real `claude mcp serve` bridge behind toolscript-mcp
+    (issue #94): the permission-mode matrix (`matrix`, `cell`, `print`) and G10 of issue #63 (`g10`, two sessions on one
+    broker, Windows only). It spends money on Haiku and stops at `--max-spend` (default 3 USD). Temp HOME and fixture for each cell.
   - `walks.mjs`: N parallel Workspace `search` calls on one tree, in Docker with `--cpus 1` only. Results in `RESULTS-walks.md`.
   - `CODEX.md`: the test plan for the same arms in Codex, and the result of the Codex smoke test. `check.mjs`
     judges an answer of another agent.
   - `data.mjs` holds the tasks and their checks, `fake-server.mjs` the fake MCP server, and `forget.mjs` removes the
     Claude Code project folder of a run.
+- `.github/workflows/stress.yml` runs repeats, flakes, load, one-CPU, bench and baseline runs on the free runners (Linux, macOS,
+  Windows), from the Actions tab, from a push to `stress/**`, and every Sunday on main (flakes and baseline). Its profiles are
+  `tests/stress.json`. `scripts/stress.mjs` (Node built-ins only; `tests/stress.test.ts`) repeats one target with the junit
+  reporter and writes the summary of each test that failed (runs, fails, rate, first failing run and seed), the budgets of
+  `baseline`, and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
+  `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake
   servers. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
 
@@ -154,6 +163,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `npm test`, `npm run typecheck`, `npm run build`, `npm run check`.
 - `node tests/runner.integration.mjs` runs the real sandbox on Linux, macOS and Windows.
 - `node tests/server.e2e.mjs` runs the built server over stdio. Run `npm run build` first.
+- `node tests/bridge.e2e.mjs` runs one program through the real `claude mcp serve` bridge (Grep, Read, Edit, a shell test run)
+  and the missing-binary case. It needs `claude` on PATH, else it prints one line and exits 0. It is not in `npm test`.
 - `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
 - After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
 - `node scripts/start-time.mjs` measures the start, from the spawn to the `tools/list` reply. Run `npm run build` first.
@@ -164,5 +175,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - stdout carries only MCP JSON-RPC. Log to stderr.
 - A user-visible change adds a file in `changes/`, and never edits `CHANGELOG.md`. The version-bump PR runs
   `node scripts/changelog.mjs <version> --apply`, then rewrites the section by hand as a summary.
+- Before the release button, a `flakes` run and a `baseline` run of `stress.yml` on main must be green (the weekly run counts when
+  main has not changed since): `gh run list --workflow stress.yml --branch main`. A flake is fixed, never accepted: there is no
+  allow list. A red weekly run is read at the start of the next session and taken before other work.
 - After a change in `plugin/`, raise `version` in `plugin/.claude-plugin/plugin.json`. Users get a new copy of the
   plugin only when the version changes.

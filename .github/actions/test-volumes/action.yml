@@ -1,0 +1,47 @@
+# The volumes and switches that some tests of tests/workspace-fs.test.ts and the child guard need. test.yml and stress.yml
+# both use this one copy, after their checkout. It sets variables in $GITHUB_ENV for the steps after it.
+name: test volumes
+description: A vfat image, a casefolded ext4 image, a case-sensitive APFS image and the Windows child guard switch.
+
+runs:
+  using: composite
+  steps:
+    # The Windows cases that compile the child guard program raise a Defender audit event for each new program, so a
+    # laptop skips them. CI runs them: tests/childguard.test.ts, tests/lazy.e2e.mjs and tests/memory.e2e.mjs.
+    - name: Turn on the Windows child guard cases
+      if: runner.os == 'Windows'
+      shell: bash
+      run: echo "TOOLSCRIPT_TEST_CHILD_GUARD=1" >> "$GITHUB_ENV"
+    # A vfat volume has short names such as GIT~1: the alias test of tests/workspace-fs.test.ts runs on it.
+    - name: Mount a vfat image for the alias test
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        command -v mkfs.vfat >/dev/null || { sudo apt-get update && sudo apt-get install -y dosfstools; }
+        truncate -s 8M "$RUNNER_TEMP/alias.img"
+        sudo "$(command -v mkfs.vfat || echo /sbin/mkfs.vfat)" "$RUNNER_TEMP/alias.img"
+        mkdir "$RUNNER_TEMP/alias"
+        sudo mount -o loop,uid=$(id -u),gid=$(id -g) "$RUNNER_TEMP/alias.img" "$RUNNER_TEMP/alias"
+        echo "TOOLSCRIPT_TEST_ALIAS_DIR=$RUNNER_TEMP/alias" >> "$GITHUB_ENV"
+    # A case-sensitive APFS image: tests/workspace-roots-fs.test.ts holds `app` and `App` there as two folders.
+    - name: Attach a case-sensitive APFS image
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        hdiutil create -size 16m -fs "Case-sensitive APFS" -volname casefs "$RUNNER_TEMP/case.dmg"
+        mkdir "$RUNNER_TEMP/case"
+        hdiutil attach "$RUNNER_TEMP/case.dmg" -mountpoint "$RUNNER_TEMP/case" -nobrowse
+        echo "TOOLSCRIPT_TEST_CASE_DIR=$RUNNER_TEMP/case" >> "$GITHUB_ENV"
+    # A casefolded ext4 folder opens .ſſh as .ssh: the casefold test of tests/workspace-fs.test.ts runs on it.
+    - name: Mount a casefolded ext4 image
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        truncate -s 16M "$RUNNER_TEMP/fold.img"
+        mkfs.ext4 -q -O casefold "$RUNNER_TEMP/fold.img"
+        mkdir "$RUNNER_TEMP/fold"
+        sudo mount -o loop "$RUNNER_TEMP/fold.img" "$RUNNER_TEMP/fold"
+        sudo chown $(id -u):$(id -g) "$RUNNER_TEMP/fold"
+        mkdir "$RUNNER_TEMP/fold/dir"
+        chattr +F "$RUNNER_TEMP/fold/dir"
+        echo "TOOLSCRIPT_TEST_CASEFOLD_DIR=$RUNNER_TEMP/fold/dir" >> "$GITHUB_ENV"
