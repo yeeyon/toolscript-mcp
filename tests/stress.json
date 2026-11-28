@@ -60,7 +60,7 @@
     {
       "target": "tests/modern-peers.test.ts",
       "count": 20,
-      "box": 3,
+      "box": 2,
       "note": "raw fake servers, 20 processes, deadlines (C0)"
     },
     {
