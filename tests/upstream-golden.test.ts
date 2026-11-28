@@ -323,6 +323,22 @@ describe('cancel and a request twice', () => {
     settle('cancel', { ping, answered: s.peer.inbox.filter(m => m.id === 500) })
   })
 
+  test('a client that cancels a run while its approval prompt is pending: one cancel of the prompt with the reason, nothing else', async () => {
+    const s = await open(DEMO_CONFIG)
+    await s.initialized({ elicitation: { form: {} } })
+    s.peer.send({ id: 600, method: 'tools/call', params: { name: 'run_code', arguments: { code: ASKING } } })
+    const ask = await s.peer.take(m => m.method === 'elicitation/create')
+    s.peer.send({ method: 'notifications/cancelled', params: { requestId: 600, reason: 'the person pressed escape' } })
+    const ping = await s.peer.request('ping')
+    await sleep(700)
+    // The id of the prompt is the server's own: it is named `prompt` when it is the one that the cancel refers to.
+    const after = s.peer.inbox.map(m => ({
+      ...m,
+      ...(m.params?.requestId === ask.id && { params: { ...m.params, requestId: 'prompt' } }),
+    }))
+    settle('cancelWhileAsking', { ping, after })
+  })
+
   test('an id in flight twice', async () => {
     const s = await open()
     await s.initialized()

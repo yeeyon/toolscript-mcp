@@ -8,6 +8,7 @@ import {
   decide,
   declinedNote,
   deniedReport,
+  guardedText,
   keptPolicyNote,
   loosenText,
   matches,
@@ -1043,5 +1044,44 @@ describe('printable text', () => {
 
   test('a name keeps the strict form, which also shows a look-alike', () => {
     assert.equal(printable('pаypal 홍'), 'p\\u0430ypal \\ud64d')
+  })
+})
+
+describe('the guarded refusal with lines', () => {
+  const tool = 'mcp__workspace__edit'
+  const folder = '~/.toolscript-mcp/functions'
+
+  test('with no key path the lines stand alone in the parenthesis', () => {
+    assert.ok(guardedText(tool, folder, '', [306]).includes(' guards (line 306). A mention'))
+    assert.ok(
+      guardedText(tool, folder, '', [12, 40]).includes(
+        ' guards (lines 12, 40: each names a guarded folder). A mention',
+      ),
+    )
+  })
+
+  test('a long key path or long numbers keep fewer numbers, still ending in and more, and stay within 420', () => {
+    const six = Array.from({ length: 11 }, (_, i) => 100000 + i * 1111)
+    const a = guardedText(tool, folder, 'edits[0].new', six)
+    assert.ok(a.length <= 420, String(a.length))
+    assert.ok(a.includes(' and more: each names a guarded folder)'))
+    const nine = Array.from({ length: 11 }, (_, i) => 100000000 + i * 1111111)
+    const b = guardedText(tool, folder, 'k'.repeat(60), nine)
+    assert.ok(b.length <= 420, String(b.length))
+    assert.ok(b.includes(' and more: each names a guarded folder)'))
+    for (let n = 0; n <= 330; n += 3) {
+      if (guardedText(tool, folder, 'k'.repeat(n)).length > 420) break
+      for (const lines of [[7], [7, 9], nine])
+        assert.ok(guardedText(tool, folder, 'k'.repeat(n), lines).length <= 420, `at ${n}, ${lines.length} lines`)
+    }
+  })
+
+  test('when not even one number fits, the text is the one with no lines', () => {
+    const lines = [123456789, 223456789]
+    const bare = (n: number): string => guardedText(tool, folder, 'k'.repeat(n))
+    const n = Array.from({ length: 330 }, (_, i) => i).find(
+      i => bare(i).length <= 420 && guardedText(tool, folder, 'k'.repeat(i), lines) === bare(i),
+    )
+    assert.notEqual(n, undefined)
   })
 })

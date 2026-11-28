@@ -181,6 +181,11 @@ jobs:
         working-directory: base
       # head and base are measured in turns on this runner, so the noise of the runner hits both.
       - run: node head/scripts/stress.mjs baseline --base base --head head --deadline 40 --out stress-out
+      # The upgrade test (R1): both builds on one HOME. It runs also when a measurement failed, and its failure fails the job.
+      - name: Upgrade test, base and head on one HOME
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: node head/tests/upgrade.e2e.mjs --base base --head head
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

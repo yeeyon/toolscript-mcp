@@ -58,6 +58,12 @@
       "note": "slow, many processes"
     },
     {
+      "target": "tests/modern-peers.test.ts",
+      "count": 4,
+      "box": 2,
+      "note": "raw fake servers, 60 processes, about 24 s a run (C0)"
+    },
+    {
       "target": "tests/childguard.test.ts",
       "count": 10,
       "box": 2,
@@ -147,5 +153,8 @@
       "timeout": 1200,
       "note": "fixture mode"
     }
-  ]
+  ],
+  "baseline": {
+    "differs": []
+  }
 }

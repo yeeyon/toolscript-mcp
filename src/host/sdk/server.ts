@@ -53,11 +53,46 @@ export class HostServer extends Server {
 export type CallExtra = { readonly signal: AbortSignal; readonly requestId: RequestId }
 
 /** The tool list that a handler gives: tables with `as const` arrays, which the v2 type of a tool (mutable) does not take. */
-export type ListedTools = { readonly tools: readonly { readonly name: string; readonly inputSchema: object }[] }
+export type ListedTool = {
+  readonly name: string
+  readonly description?: string
+  readonly inputSchema: object
+  readonly outputSchema?: object
+  readonly annotations?: object
+  readonly _meta?: object
+}
+export type ListedTools = { readonly tools: readonly ListedTool[] }
 
-/** Answers `tools/list`. The list goes through JSON, so the v2 server gets a plain copy of the table, as the wire carries it. */
+/** A deep, mutable copy of a plain value: what the wire carries (a key whose value is undefined is not in it). */
+const plain = (value: unknown): unknown =>
+  Array.isArray(value)
+    ? value.map(plain)
+    : typeof value === 'object' && value !== null
+      ? Object.fromEntries(
+          Object.entries(value)
+            .filter(([, v]) => v !== undefined)
+            .map(([k, v]) => [k, plain(v)]),
+        )
+      : value
+
+/** An object of a tool, copied. Its fields are the table's, so the schema of `ListToolsResult` types them as it checks them. */
+const plainObject = (value: object): Record<string, unknown> => plain(value) as Record<string, unknown>
+
+/** The tools of a handler as the v2 `tools/list` result, field by field, in the order of the first SDK's wire (the bytes are pinned). */
+export const toToolList = (listed: ListedTools): ListToolsResult => ({
+  tools: listed.tools.map(t => ({
+    name: t.name,
+    ...(t.description !== undefined && { description: t.description }),
+    inputSchema: { ...plainObject(t.inputSchema), type: 'object' as const },
+    ...(t.outputSchema !== undefined && { outputSchema: { ...plainObject(t.outputSchema), type: 'object' as const } }),
+    ...(t.annotations !== undefined && { annotations: plainObject(t.annotations) }),
+    ...(t._meta !== undefined && { _meta: plainObject(t._meta) }),
+  })),
+})
+
+/** Answers `tools/list`. */
 export const onListTools = (target: Server, handler: () => ListedTools): void =>
-  target.setRequestHandler('tools/list', (): ListToolsResult => JSON.parse(JSON.stringify(handler())))
+  target.setRequestHandler('tools/list', (): ListToolsResult => toToolList(handler()))
 
 /** Answers `tools/call`. */
 export const onCallTool = (
