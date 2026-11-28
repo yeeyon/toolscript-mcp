@@ -20,10 +20,11 @@ export const LIMITS = {
   searchMs: 10_000,
   listEntries: 5_000,
   /**
-   * Walks of `list` and `search` that run at one time in a provider at most (issue #160, #180). A machine with one CPU runs
-   * one: `walkSlotsFor`. Two walks cut a batch there, because each walk needs the CPU for seconds.
+   * Walks of `list` and `search` that run at one time in a provider at most (issue #160). Two were measured against one
+   * (issue #180, `bench/RESULTS-walks.md`): they cut batch time on trees that fit the budget, but on a tree where a search
+   * alone takes 55 to 75 % of `searchMs` two walks slow each other to the 10 s edge and cut calls that one slot did not.
    */
-  walkSlots: 2,
+  walkSlots: 1,
   /** Files of one `search` walk that are opened, proven and read at the same time. Each is proven by its own open. */
   searchInFlight: 4,
   /** `search` cuts the text of a line at this length. */

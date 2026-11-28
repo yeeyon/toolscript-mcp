@@ -5,6 +5,7 @@ import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { LIMITS } from '../src/core/workspace.ts'
 import { open, rm, tempDir, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
 const mac = process.platform === 'darwin'
@@ -509,12 +510,12 @@ describe('the walk slots (issue #160)', () => {
     assert.equal(third.matches.length, 1)
   })
 
-  test('a provider that sees 1 CPU holds the second walk, one that sees 2 runs it (issue #180)', async t => {
+  test('a provider that sees 1 CPU holds the second walk, one that sees 2 runs as many as the limit (issue #180)', async t => {
     const root = tree(t)
     write(root, { 'a.txt': 'hit\n' })
     for (const [parallelism, running] of [
       [1, 1],
-      [2, 2],
+      [2, LIMITS.walkSlots],
     ] as const) {
       const h = holding()
       const rig = await rigOf(t, root, { hook: h.hook, limits: { parallelism } })

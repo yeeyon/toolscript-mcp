@@ -1,12 +1,18 @@
 # Measures the walk slots of the Workspace (issue #180): bench/walks.mjs with 1 and then 2 slots, with and without an
-# include, on the 4 CPUs of a runner, on a tree of 2500 files and on a near-budget tree (a lone search takes 60 to 80 %
-# of `searchMs`; tune `files` of the second row), and in a Docker container with 2 CPUs. It starts by hand or by a push to
-# a branch `bench/**`, never on main or a pull request. The slot count is changed in a copy of the source in the job
-# (bench/walks-slots.sh): nothing here is committed back.
+# include, on the 4 CPUs of a runner. The file count is an input (default 2500; 16000 is near the 10 s search budget on
+# Windows, where 2 slots cut calls, see bench/RESULTS-walks.md). It starts by hand or by a push to a branch `bench/**`, never
+# on main or a pull request. The slot count is changed in a copy of the source in the job (bench/walks-slots.sh): nothing
+# here is committed back.
 name: bench
 
 on:
   workflow_dispatch:
+    inputs:
+      files:
+        description: Files in the tree
+        default: '2500'
+        type: string
+        required: false
   push:
     branches: ['bench/**']
 
@@ -19,12 +25,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest]
-        # Near the budget: a lone search took about 2.5 s at 5500 files, so 16000 files should take 6 to 8 s of `searchMs` 10 s.
-        files: [16000]
-    name: walks ${{ matrix.os }} ${{ matrix.files }} files
+        os: [ubuntu-latest, windows-latest]
+    name: walks ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,14 +40,16 @@ jobs:
       - name: Walks with 1 slot and with 2 slots
         # bash on both: Git Bash on Windows has cp, sed, grep, tee and nproc.
         shell: bash
+        env:
+          FILES: ${{ inputs.files || '2500' }}
         run: |
           mkdir results
           { echo "os $RUNNER_OS"; echo "commit $GITHUB_SHA"; } | tee results/results.txt
           cp -a . "$RUNNER_TEMP/app"
           cd "$RUNNER_TEMP/app"
-          bash bench/walks-slots.sh "${{ matrix.files }}" "$GITHUB_WORKSPACE/results" "$RUNNER_TEMP/walks-tree" 2
+          bash bench/walks-slots.sh "$FILES" "$GITHUB_WORKSPACE/results" "$RUNNER_TEMP/walks-tree"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: walks-results-${{ matrix.os }}-${{ matrix.files }}
+          name: walks-results-${{ matrix.os }}
           path: results/
