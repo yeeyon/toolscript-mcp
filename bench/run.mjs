@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { TASKS } from './data.mjs'
 import { forgetRuns } from './forget.mjs'
+import { scrubHome } from './scrub.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const FAKE_SERVER = path.join(REPO, 'bench', 'fake-server.mjs')
@@ -36,7 +37,7 @@ const TOOLSCRIPT = path.join(REPO, 'dist', 'host', 'main.js')
 const NODE = process.execPath
 
 const USAGE = `usage: node bench/run.mjs [--reps N] [--parallel N] [--max-spend USD] [--model NAME]
-       [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,toolscript,both] [--out DIR] [--dry-run]
+       [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,toolscript,both,direct-lean,toolscript-lean] [--out DIR] [--dry-run]
        node bench/run.mjs --report DIR
 Each run starts headless Claude Code and costs money. --max-spend stops the bench (default 3).
 --dry-run lists the tools and instructions of each arm, writes definitions.json and starts no run.`
@@ -81,7 +82,7 @@ fs.mkdirSync(outArg, { recursive: true })
 const out = fs.realpathSync.native(outArg)
 // A second run would write over the run folders of the first, and the report would count each new stream twice.
 if (!reportOnly && fs.existsSync(path.join(out, 'results.jsonl'))) {
-  console.error(`${path.join(out, 'results.jsonl')} exists: give --out a new folder, or use --report ${out}`)
+  console.error(scrubHome(`${path.join(out, 'results.jsonl')} exists: give --out a new folder, or use --report ${out}`))
   process.exit(1)
 }
 
@@ -115,6 +116,18 @@ const ARMS = {
   both: {
     servers: run => ({ bench: benchServer(run.log), toolscript: toolscriptServer(run) }),
     allowed: benchTools => [...directTools(benchTools), ...toolscriptTools],
+  },
+  // The lean host (#4, #89): the same two arms with `--tools ""`, so Claude Code lists none of its built-in tools. The
+  // fixed context of a run is then the MCP tools and the system prompt, which is what Code Mode also leaves.
+  'direct-lean': {
+    lean: true,
+    servers: ({ log }) => ({ bench: benchServer(log) }),
+    allowed: directTools,
+  },
+  'toolscript-lean': {
+    lean: true,
+    servers: run => ({ toolscript: toolscriptServer(run) }),
+    allowed: () => toolscriptTools,
   },
 }
 
@@ -224,7 +237,7 @@ const measure = ({ task, arm, rep, events, calls, ms }) => {
     initMcp: (init.mcp_servers ?? []).map(s => `${s.name}:${s.status}`),
     initPlugins: (init.plugins ?? []).map(p => p.name ?? p),
     models: Object.keys(result.modelUsage ?? {}),
-    answer: answer.slice(0, 400),
+    answer: scrubHome(answer).slice(0, 400),
   }
 }
 
@@ -239,6 +252,7 @@ const runOne = async ({ task, arm, rep, benchTools }) => {
     '-p',
     task.prompt,
     '--restricted',
+    ...(ARMS[arm].lean ? ['--tools', ''] : []),
     '--strict-mcp-config',
     '--mcp-config',
     mcp,
@@ -405,7 +419,9 @@ const report = rows => {
   if (wrong.length > 0) {
     console.log('\n### wrong answers\n')
     for (const r of wrong)
-      console.log(`- ${r.task}-${r.arm}-${r.rep}${r.error ? ` (${r.error})` : ''}: ${r.answer.replace(/\s+/g, ' ')}`)
+      console.log(
+        `- ${r.task}-${r.arm}-${r.rep}${r.error ? ` (${r.error})` : ''}: ${scrubHome(r.answer).replace(/\s+/g, ' ')}`,
+      )
   }
   const others = {}
   for (const name of rows.flatMap(r => r.otherTools)) others[name] = (others[name] ?? 0) + 1
@@ -415,7 +431,7 @@ const report = rows => {
   const odd = rows.filter(r => r.hookEvents > 0 || r.initMcp.some(s => !s.endsWith(':connected')))
   for (const r of odd)
     console.log(`CHECK ${r.task}-${r.arm}-${r.rep}: ${r.hookEvents} hook events, MCP servers [${r.initMcp}]`)
-  console.log(`\nrows: ${path.join(out, 'results.jsonl')}`)
+  console.log(`\nrows: ${scrubHome(path.join(out, 'results.jsonl'))}`)
 }
 
 if (reportOnly) {
@@ -440,7 +456,10 @@ if (reportOnly) {
       `${arm}: ${d.tools.join(', ')}: ${d.toolChars} chars of tool JSON, ${d.instructionChars} of instructions`,
     )
   if (opts['dry-run']) {
-    for (const arm of armIds) console.log(`${arm} allows: ${ARMS[arm].allowed(benchTools).join(',')}`)
+    for (const arm of armIds)
+      console.log(
+        `${arm} allows: ${ARMS[arm].allowed(benchTools).join(',')}${ARMS[arm].lean ? ' (lean: --tools "", no built-in tools)' : ''}`,
+      )
     process.exit(0)
   }
 
@@ -449,7 +468,7 @@ if (reportOnly) {
   for (let rep = 1; rep <= reps; rep++)
     for (const task of TASKS.filter(t => taskIds.includes(t.id)))
       for (const arm of rep % 2 ? armIds : [...armIds].reverse()) jobs.push({ task, arm, rep, benchTools })
-  console.log(`${jobs.length} runs, ${parallel} at a time, stop after $${maxSpend}, into ${out}`)
+  console.log(`${jobs.length} runs, ${parallel} at a time, stop after $${maxSpend}, into ${scrubHome(out)}`)
   const rows = []
   let spent = 0
   let next = 0
@@ -458,7 +477,7 @@ if (reportOnly) {
       while (next < jobs.length && spent < maxSpend) {
         const job = jobs[next++]
         const { cwd, row } = await runOne(job)
-        for (const removed of forgetRuns([cwd])) console.log(`removed ${removed}`)
+        for (const removed of forgetRuns([cwd])) console.log(`removed ${scrubHome(removed)}`)
         rows.push(row)
         spent += row.costUsd
         fs.appendFileSync(path.join(out, 'results.jsonl'), `${JSON.stringify(row)}\n`)

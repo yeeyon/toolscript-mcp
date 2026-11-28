@@ -6,3 +6,4 @@ dist/
 .claude/settings.local.json
 CHANGELOG.md.tmp
 CHANGELOG.md.folded
+bench/rerun-2026-11-27/interactive/*/
