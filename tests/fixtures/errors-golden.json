@@ -180,5 +180,238 @@
         "version": "0"
       }
     }
+  },
+  "http 401 with no OAuth": {
+    "state": "Streamable HTTP error: Error POSTing to endpoint: unauthorized golden",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: Streamable HTTP error: Error POSTing to endpoint: unauthorized golden",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http 401 with OAuth and no token": {
+    "state": "it needs an OAuth login. Ask the person to run `npx -y toolscript-mcp login g` in a terminal, then try again",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: it needs an OAuth login. Ask the person to run `npx -y toolscript-mcp login g` in a terminal, then try again",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http 401 after a refresh": {
+    "state": "it needs an OAuth login. Ask the person to run `npx -y toolscript-mcp login g` in a terminal, then try again",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: it needs an OAuth login. Ask the person to run `npx -y toolscript-mcp login g` in a terminal, then try again",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http 403": {
+    "state": "Streamable HTTP error: Error POSTing to endpoint: forbidden golden",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: Streamable HTTP error: Error POSTing to endpoint: forbidden golden",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http 404 with no session": {
+    "state": "Streamable HTTP error: Error POSTing to endpoint: not found golden",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: Streamable HTTP error: Error POSTing to endpoint: not found golden",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http 404 with a session": {
+    "state": "connected",
+    "result": {
+      "isError": false,
+      "text": "\"ERR:Streamable HTTP error: Error POSTing to endpoint: gone golden\"\n",
+      "calls": [
+        {
+          "tool": "mcp__g__ok",
+          "decision": "allow",
+          "ok": false,
+          "error": "failed",
+          "class": "other"
+        }
+      ]
+    }
+  },
+  "http 400 with an unknown session": {
+    "state": "connected",
+    "result": {
+      "isError": false,
+      "text": "\"ERR:Streamable HTTP error: Error POSTing to endpoint: Bad Request: No valid session ID provided\"\n",
+      "calls": [
+        {
+          "tool": "mcp__g__ok",
+          "decision": "allow",
+          "ok": false,
+          "error": "failed",
+          "class": "other"
+        }
+      ]
+    }
+  },
+  "http 500": {
+    "state": "Streamable HTTP error: Error POSTing to endpoint: boom golden",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: Streamable HTTP error: Error POSTing to endpoint: boom golden",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http 503": {
+    "state": "Streamable HTTP error: Error POSTing to endpoint: busy golden",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: Streamable HTTP error: Error POSTing to endpoint: busy golden",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http a 200 text/html body": {
+    "state": "Streamable HTTP error: Unexpected content type: text/html",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: Streamable HTTP error: Unexpected content type: text/html",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http a 200 application/json body that is not JSON": {
+    "state": "Unexpected token 'o', \"not json golden\" is not valid JSON",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: Unexpected token 'o', \"not json golden\" is not valid JSON",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http a dropped connection at a call": {
+    "state": "connected",
+    "result": {
+      "isError": false,
+      "text": "\"ERR:fetch failed\"\n",
+      "calls": [
+        {
+          "tool": "mcp__g__ok",
+          "decision": "allow",
+          "ok": false,
+          "error": "failed",
+          "class": "other"
+        }
+      ]
+    }
+  },
+  "http a 307 to another origin": {
+    "state": "Streamable HTTP error: Error POSTing to endpoint: Redirect to http://localhost:N/ok not followed (redirectPolicy: 'same-origin')",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: Streamable HTTP error: Error POSTing to endpoint: Redirect to http://localhost:N/ok not followed (redirectPolicy: 'same-origin')",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http sse-cut": {
+    "state": "connected",
+    "result": {
+      "isError": false,
+      "text": "\"ERR:mcp__g__ok did not answer within the call limit of 2 s and was cancelled\"\n",
+      "calls": [
+        {
+          "tool": "mcp__g__ok",
+          "decision": "allow",
+          "ok": false,
+          "error": "timeout"
+        }
+      ]
+    }
+  },
+  "http refused at connect": {
+    "state": "fetch failed",
+    "result": {
+      "isError": true,
+      "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"g\" is not connected: fetch failed",
+      "calls": [
+        {
+          "tool": "unknown",
+          "decision": "allow",
+          "ok": false
+        }
+      ]
+    }
+  },
+  "http refused at a call": {
+    "state": "connected",
+    "result": {
+      "isError": false,
+      "text": "\"ERR:fetch failed\"\n",
+      "calls": [
+        {
+          "tool": "mcp__g__ok",
+          "decision": "allow",
+          "ok": false,
+          "error": "failed",
+          "class": "other"
+        }
+      ]
+    }
   }
 }

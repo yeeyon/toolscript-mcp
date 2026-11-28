@@ -15,6 +15,8 @@ import { startBroker } from '../src/host/broker.ts'
 import { BrokerTransport } from '../src/host/brokerlink.ts'
 import { ChildTransport } from '../src/host/childtransport.ts'
 import { connectAll } from '../src/host/downstream.ts'
+import { storeFile } from '../src/host/oauth.ts'
+import { startGoldenHttp } from './golden-http.ts'
 import { bindWorkspace, linkOf } from '../src/host/workspace/bind.ts'
 
 const FIXTURE = path.join(import.meta.dirname, 'fixtures', 'initialize-golden.json')
@@ -134,3 +136,45 @@ test('the built-in Workspace', async t => {
   assert.equal(downstream.states()[0]?.status, 'connected')
   settle('workspace', sends)
 })
+
+const NAMES = ['accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'authorization']
+
+for (const oauth of [false, true]) {
+  test(`an HTTP link ${oauth ? 'with' : 'without'} OAuth`, async () => {
+    const fake = await startGoldenHttp()
+    closers.push(() => fake.close())
+    const home = fs.mkdtempSync(path.join(ROOT, 'hh-'))
+    const url = `${fake.origin}/ok`
+    if (oauth) {
+      const file = storeFile(home, KEY, url)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const client = { info: { client_id: 'golden-client' }, redirectUrl: 'http://127.0.0.1:1/callback' }
+      const tokens = { access_token: 'golden-access-1', token_type: 'Bearer', refresh_token: 'golden-refresh-1' }
+      fs.writeFileSync(file, JSON.stringify({ client, tokens }))
+    }
+    const servers = new Map<ServerKey, ServerConfig>([
+      [KEY, { kind: 'http', url, headers: {}, ...(oauth && { oauth: { scopes: [] } }) }],
+    ])
+    const downstream = connectAll(servers, '0', () => {}, { home })
+    closers.push(() => downstream.close())
+    await downstream.settled
+    assert.equal(downstream.states()[0]?.status, 'connected')
+    const posts = fake.seen.filter(s => s.method === 'POST' && s.path === '/ok')
+    const first = posts.find(s => s.body.includes('"method":"initialize"'))
+    const initialized = posts.find(s => s.body.includes('notifications/initialized'))
+    const listed = posts.find(s => s.body.includes('"method":"tools/list"'))
+    assert.ok(first && initialized && listed)
+    for (const s of fake.seen) {
+      assert.ok(!s.body.includes('server/discover'), 'server/discover was sent')
+      for (const name of ['mcp-method', 'mcp-name']) assert.equal(s.headers[name], undefined, `${name} was sent`)
+    }
+    const kind = oauth ? 'http-oauth' : 'http'
+    const pick = (s: { headers: Record<string, string> }) =>
+      Object.fromEntries(NAMES.filter(n => s.headers[n] !== undefined).map(n => [n, s.headers[n]]))
+    recorded[kind] = JSON.stringify({
+      initialize: first.body,
+      headers: [first, initialized, listed].map(pick),
+    })
+    if (!RECORD) assert.equal(recorded[kind], golden[kind], `the first requests of ${kind} changed`)
+  })
+}
