@@ -186,14 +186,17 @@ export const buildLines = rows => {
 }
 
 /**
- * The jobs in the order that the bench runs them: arms alternate inside a task, and the arm that starts moves one place each
- * rep (a Latin square: with as many reps as arms, each arm leads equally often and stands in each place equally often).
+ * The jobs in the order that the bench runs them: arms alternate inside a task. The toolscript arms (the ones that are judged)
+ * rotate among the places that they hold, one place each rep (a Latin square: with as many reps as toolscript arms, each leads
+ * equally often and stands after each other equally often). Any other arm (codemode, direct) keeps its place.
  */
 export const jobsOf = ({ tasks, armIds, reps }) => {
   const jobs = []
+  const places = armIds.flatMap((a, i) => (a.startsWith('toolscript') ? [i] : []))
   for (let rep = 1; rep <= reps; rep++) {
-    const start = (rep - 1) % armIds.length
-    const order = [...armIds.slice(start), ...armIds.slice(0, start)]
+    const start = (rep - 1) % Math.max(places.length, 1)
+    const order = [...armIds]
+    for (const [k, place] of places.entries()) order[place] = armIds[places[(k + start) % places.length]]
     for (const task of tasks) for (const arm of order) jobs.push({ task, arm, rep })
   }
   return jobs
@@ -219,11 +222,19 @@ export const dryRunPlan = ({ armIds, builds, tasks, reps, todo, rows = [], spent
   for (const [i, j] of todo.entries()) lines.push(`${String(i + 1).padStart(3)}. ${j.task.id}-${j.arm}-${j.rep}`)
   // The estimate of each planned run from the saved runs (bench/spend.mjs); the real run updates it as runs finish.
   const planned = todo.reduce((n, j) => n + estimate(rows, j.arm, j.task.id), 0)
+  // A run whose arm (or toolscript family) has no saved run has the default of bench/spend.mjs, not a measured cost.
+  const defaulted = todo.filter(
+    j => !rows.some(r => r.arm === j.arm || (j.arm.startsWith('toolscript') && r.arm.startsWith('toolscript'))),
+  ).length
   lines.push(
     '',
     `spent so far $${spent.toFixed(4)}, cap $${maxSpend}`,
     `estimate of the ${todo.length} planned runs $${planned.toFixed(4)}, total $${(spent + planned).toFixed(4)} against the cap $${maxSpend}${spent + planned > maxSpend ? ': OVER, the run would stop early' : ''}`,
   )
+  if (defaulted > 0)
+    lines.push(
+      `${defaulted} of the ${todo.length} runs are estimated at the $0.25 default (no saved run of the arm): with no saved runs this is a guess, not a measured cost, and it says nothing about a real over-cap`,
+    )
   return lines
 }
 

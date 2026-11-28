@@ -12,10 +12,22 @@ build on its default, beside Code Mode, on the 6 tasks of `bench/data.mjs`. No S
   in the `env` of its MCP entry, and `toolscript` the head build with no variable. Config, policy and allowed tools are the same.
   Each saved row names what ran: the `version` of the build, the SHA-256 of its `main.js`, the variables on its entry and the
   first method that the fake server saw (`initialize` or `server/discover`). The report prints them once for each arm.
-- The release run passes when, on warm runs, every toolscript arm is correct in every run, and `toolscript-legacy` against
-  `toolscript-1.0.5` and `toolscript` against `toolscript-legacy` each stay within +2 % on the median total input tokens and the
-  median first-call input, with no more failed `run_code` calls. `codemode` is reported, not judged. The report prints the verdict.
-  No task and no prompt is tuned after a run.
+- The rule that the code applies (`passRule` in `bench/arms.mjs`; the report prints the verdict):
+  - Correctness: every toolscript arm is correct in every run that finished, cold runs included.
+  - Limits, on warm runs only: `toolscript-legacy` against `toolscript-1.0.5`, and `toolscript` against `toolscript-legacy`. For
+    total input tokens and for first-call input tokens, the ratio of the two medians is taken task by task (only tasks where both
+    arms have warm runs), and the median over the tasks of those ratios must be within +2 %. Failed `run_code` calls (all finished
+    runs) must be no more than the arm before it.
+  - A verdict needs warm runs in all three arms (and a task that both arms of each pair have). Otherwise the report prints
+    `NO VERDICT` with a line that names the missing arm, and there is no pass. A failed limit is `FAIL`.
+  - `codemode` is reported, not judged. No task and no prompt is tuned after a run.
+- Fairness: arms alternate inside a task, one run at a time. The three toolscript arms rotate the start place each rep (a Latin
+  square over them), and `codemode` keeps its place. The pty has no `CLAUDE*` and no `TOOLSCRIPT_*` variable, every arm has a cwd
+  path of one length, and each toolscript run has its own fresh HOME (`HOME`, `USERPROFILE`, `APPDATA` on its MCP entry), so
+  learned shapes and tool lists never pass from one arm to another.
+- The base is checked against the published `toolscript-mcp@1.0.5` (`PINNED_105`: SHA-256 of `dist/host/main.js` and
+  `runtime/runner.mjs`): a different build prints one WARN line, and a base whose `main.js` equals the head's ends the command.
+  Rows name both hashes.
 - Date, system, Node, Claude Code version, model, each arm's version, hash and variables, the spend and the tables go here
   after the run.
 

@@ -300,6 +300,8 @@ describe('the dry run', () => {
     assert.match(r.stdout, /spent so far \$0\.0000, cap \$0\.5/)
     // 12 runs with no saved run: 0.25 USD each, over the cap of 0.5.
     assert.match(r.stdout, /estimate of the 12 planned runs \$3\.0000, total \$3\.0000 against the cap \$0\.5: OVER/)
+    // No saved run: every figure is the default, and the dry run says so.
+    assert.match(r.stdout, /12 of the 12 runs are estimated at the \$0\.25 default \(no saved run of the arm\)/)
     assert.ok(!fs.existsSync(path.join(dir, 'out')), 'a dry run makes no folder')
   })
 
@@ -314,21 +316,43 @@ describe('the dry run', () => {
   })
 
   test('jobsOf gives the order that the bench runs', () => {
-    const jobs = jobsOf({ tasks: [{ id: 't1' }, { id: 't2' }], armIds: ['a', 'b'], reps: 2 })
+    const jobs = jobsOf({ tasks: [{ id: 't1' }, { id: 't2' }], armIds: ['toolscript-a', 'toolscript-b'], reps: 2 })
     assert.deepEqual(
       jobs.map((j: { task: { id: string }; arm: string; rep: number }) => `${j.task.id}-${j.arm}-${j.rep}`),
-      ['t1-a-1', 't1-b-1', 't2-a-1', 't2-b-1', 't1-b-2', 't1-a-2', 't2-b-2', 't2-a-2'],
+      [
+        't1-toolscript-a-1',
+        't1-toolscript-b-1',
+        't2-toolscript-a-1',
+        't2-toolscript-b-1',
+        't1-toolscript-b-2',
+        't1-toolscript-a-2',
+        't2-toolscript-b-2',
+        't2-toolscript-a-2',
+      ],
     )
   })
 
-  test('with three arms each arm leads once in three reps and stands in each place once (a Latin square)', () => {
-    const arms = ['a', 'b', 'c']
+  test('codemode keeps its place while the three toolscript arms rotate through the others', () => {
+    const arms = ['codemode', 'toolscript-1.0.5', 'toolscript-legacy', 'toolscript']
     const jobs = jobsOf({ tasks: [{ id: 't' }], armIds: arms, reps: 3 }) as { arm: string; rep: number }[]
     const orders = [1, 2, 3].map(rep => jobs.filter(j => j.rep === rep).map(j => j.arm))
     assert.deepEqual(orders, [
-      ['a', 'b', 'c'],
-      ['b', 'c', 'a'],
-      ['c', 'a', 'b'],
+      ['codemode', 'toolscript-1.0.5', 'toolscript-legacy', 'toolscript'],
+      ['codemode', 'toolscript-legacy', 'toolscript', 'toolscript-1.0.5'],
+      ['codemode', 'toolscript', 'toolscript-1.0.5', 'toolscript-legacy'],
+    ])
+    // Each toolscript arm leads once and follows each other arm once.
+    assert.deepEqual(orders.map(o => o[1]).sort(), arms.slice(1).sort())
+  })
+
+  test('with three arms each arm leads once in three reps and stands in each place once (a Latin square)', () => {
+    const arms = ['toolscript-a', 'toolscript-b', 'toolscript-c']
+    const jobs = jobsOf({ tasks: [{ id: 't' }], armIds: arms, reps: 3 }) as { arm: string; rep: number }[]
+    const orders = [1, 2, 3].map(rep => jobs.filter(j => j.rep === rep).map(j => j.arm))
+    assert.deepEqual(orders, [
+      ['toolscript-a', 'toolscript-b', 'toolscript-c'],
+      ['toolscript-b', 'toolscript-c', 'toolscript-a'],
+      ['toolscript-c', 'toolscript-a', 'toolscript-b'],
     ])
     assert.deepEqual(orders.map(o => o[0]).sort(), arms)
     for (let place = 0; place < 3; place++) assert.deepEqual(orders.map(o => o[place]).sort(), arms)
