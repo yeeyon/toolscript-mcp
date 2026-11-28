@@ -1,9 +1,9 @@
 // The MCP server that a client starts: it lists the tools in SERVED and
 // answers their calls. The schemas come from TOOLS as JSON Schema, so the
-// handlers are set on the SDK's underlying Server: McpServer.registerTool
+// handlers are set on a Server of the SDK: McpServer.registerTool
 // takes only Zod schemas.
 
-import { McpServer, onCallTool, onListTools, type CallToolResult } from './sdk/server.ts'
+import { HostServer, onCallTool, onListTools, type CallToolResult } from './sdk/server.ts'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -62,7 +62,7 @@ const HANDLERS: Record<ServedName, Handler> = {
 const isServed = (name: string): name is ServedName => (SERVED as readonly string[]).includes(name)
 
 export type Served = {
-  readonly server: McpServer
+  readonly server: HostServer
   /** Kills the sandbox of each run in flight and waits until its exchange dir is gone. */
   readonly stopRuns: () => Promise<void>
 }
@@ -81,10 +81,11 @@ export const createServer = (
   /** True when the config part of the Workspace bind failed (`bindStep`): the instructions say it is not available. */
   workspaceDown = false,
 ): Served => {
-  const mcp = new McpServer(
+  const mcp = new HostServer(
     { name: 'toolscript-mcp', version },
     {
-      capabilities: { tools: {} },
+      // listChanged: as the capabilities that McpServer of the first SDK declared for its tools, and clients saw.
+      capabilities: { tools: { listChanged: true } },
       instructions: serverInstructions([...config.servers.keys()], config.bridges, workspaceDown),
     },
   )
@@ -104,12 +105,12 @@ export const createServer = (
   const stopping = new AbortController()
   const runs = new Set<Promise<unknown>>()
 
-  const canAsk = () => mcp.server.getClientCapabilities()?.elicitation?.form !== undefined
+  const canAsk = () => mcp.getClientCapabilities()?.elicitation?.form !== undefined
   // 'unanswered': the person dismissed the prompt, or it failed, timed out or was cancelled.
   const prompt = async (extra: Extra, message: string): Promise<Approval | 'unanswered'> => {
     if (!canAsk()) return 'unsupported'
     try {
-      const r = await mcp.server.elicitInput(
+      const r = await mcp.elicitInput(
         { mode: 'form', message, requestedSchema: { type: 'object', properties: {} } },
         { signal: extra.signal, timeout: ASK_TIMEOUT_MS, relatedRequestId: extra.requestId },
       )
@@ -218,8 +219,8 @@ export const createServer = (
     }
   }
 
-  onListTools(mcp.server, () => ({ tools: SERVED.map(registration) }))
-  onCallTool(mcp.server, (req, extra) => {
+  onListTools(mcp, () => ({ tools: SERVED.map(registration) }))
+  onCallTool(mcp, (req, extra) => {
     const { name, arguments: args = {} } = req.params
     return isServed(name)
       ? HANDLERS[name](args, { downstream, shapes: shownNow, canAsk, run, extra })

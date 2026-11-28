@@ -1,9 +1,9 @@
 // The protocol errors of the SDK, by what the callers do with them: ask, read the code, compare with a code, show the text.
 // A link on the v2 client raises `ProtocolError` (a code that a server answered) and `SdkError` (a timeout, a closed
-// connection); a test double of the first SDK raises `McpError` for all of these. The host sees one shape and one text.
+// connection); a test double of the first SDK raises `McpError` for all of these. No file of `src/` imports the first SDK
+// (issue #154, PR 7), so that class is known by its name and its numeric code. The host sees one shape and one text.
 // An HTTP link raises `SdkHttpError` (the status of an answer) and `SdkError` (a content type): the text stays what the
 // first SDK wrote, `Streamable HTTP error: <message>`, because a model and a person read it (issue #154, PR 6).
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import {
   AuthorizationServerMismatchError,
   ProtocolError,
@@ -12,8 +12,18 @@ import {
   SdkHttpError,
 } from '@modelcontextprotocol/client'
 
+/** The JSON-RPC codes that the first SDK gave to a timeout and a closed connection, and that the host still reads. */
+const REQUEST_TIMEOUT = -32001
+const CONNECTION_CLOSED = -32000
+
+/** An `McpError` of the first SDK, as a test double raises it: its name, a numeric code and the data of the answer. */
+const firstSdkError = (err: unknown): ProtocolFailure | undefined =>
+  err instanceof Error && err.name === 'McpError' && 'code' in err && typeof err.code === 'number'
+    ? { code: err.code, data: 'data' in err ? err.data : undefined }
+    : undefined
+
 /** The codes of a protocol error that the host reads. */
-export const PROTOCOL_CODES = { RequestTimeout: ErrorCode.RequestTimeout } as const
+export const PROTOCOL_CODES = { RequestTimeout: REQUEST_TIMEOUT } as const
 
 /** What the host reads of a protocol error, from either SDK. */
 export type ProtocolFailure = { readonly code: number; readonly data?: unknown }
@@ -21,14 +31,16 @@ export type ProtocolFailure = { readonly code: number; readonly data?: unknown }
 /** The code that the v1 SDK gave to what the v2 SDK reports as an `SdkError`, or undefined when v1 had no such code. */
 const legacyCode = (code: SdkErrorCode): number | undefined =>
   code === SdkErrorCode.RequestTimeout
-    ? ErrorCode.RequestTimeout
+    ? REQUEST_TIMEOUT
     : code === SdkErrorCode.ConnectionClosed
-      ? ErrorCode.ConnectionClosed
+      ? CONNECTION_CLOSED
       : undefined
 
 /** The code and data of an error that the protocol layer raised or that a server answered with a code. */
 export const protocolFailure = (err: unknown): ProtocolFailure | undefined => {
-  if (err instanceof McpError || err instanceof ProtocolError) return { code: err.code, data: err.data }
+  if (err instanceof ProtocolError) return { code: err.code, data: err.data }
+  const first = firstSdkError(err)
+  if (first !== undefined) return first
   if (err instanceof SdkError) {
     const code = legacyCode(err.code)
     return code === undefined ? undefined : { code, data: err.data }
