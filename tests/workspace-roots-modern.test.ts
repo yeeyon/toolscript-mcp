@@ -61,11 +61,61 @@ describe('seal and open, the pair that a kind is built on', () => {
   })
 })
 
+describe('one table for every kind', () => {
+  test('peek tells the kind of a whole state and touches no table; a forged or broken one has none', () => {
+    const sealer = createSealer()
+    const text = sealer.seal('approval', { a: 'x' })
+    assert.deepEqual(sealer.peek(text), { kind: 'approval' })
+    assert.deepEqual(sealer.peek(text), { kind: 'approval' }, 'again: nothing was used')
+    assert.equal(sealer.count(), 1)
+    const [body, tag] = text.split('.') as [string, string]
+    assert.equal(sealer.peek(`${body}.${tag.slice(1)}`), undefined)
+    assert.equal(sealer.peek(`${body.slice(1)}.${tag}`), undefined)
+    assert.equal(sealer.peek('junk'), undefined)
+    assert.equal(sealer.peek(''), undefined)
+    assert.equal(createSealer().peek(text), undefined, 'another key')
+    assert.deepEqual(sealer.open('approval', text), { ok: true, fields: { a: 'x' } })
+  })
+
+  test('the roots state refuses a valid state of another kind and does not use it up: its own kind still opens it', () => {
+    const sealer = createSealer()
+    const state = createRootsState(sealer)
+    const approval = sealer.seal('approval', { c: callHash('run_code', { code: 'return 1' }) })
+    for (let i = 0; i < 3; i++) assert.equal(state.take(approval, 'run_code', { code: 'return 1' }), 'kind')
+    assert.equal(sealer.count(), 1, 'the approval state is still in the table')
+    assert.deepEqual(sealer.open('approval', approval).ok, true, 'and it opens under its own kind')
+    // A forged state (right shape, wrong key) is refused as a bad mac and touches nothing.
+    const forged = createSealer().seal('approval', { a: 'x' })
+    assert.equal(state.take(forged, 'run_code', {}), 'mac')
+    assert.equal(sealer.count(), 0)
+  })
+
+  test('the roots round shares the table with the pair of the process, and refuses another kind with the fixed refusal', () => {
+    const roots = fakeRoots()
+    const lines: string[] = []
+    const round = createRootsRound({ roots, log: l => lines.push(l) })
+    const approval = sealState('approval', { c: 'x' })
+    assert.deepEqual(round.round('run_code', {}, { requestState: approval, inputResponses: answer(['file:///a']) }), {
+      kind: 'refused',
+    })
+    assert.deepEqual(roots.calls, [])
+    assert.deepEqual(lines, ['Workspace: a roots state was refused (kind)'])
+    assert.deepEqual(
+      openState('approval', approval),
+      { ok: true, fields: { c: 'x' } },
+      'the approval state was not burned',
+    )
+    // A roots state of the round is a state of the same sealer, and the pair of the process reads its kind.
+    const first = round.round('run_code', {}, { capabilities: CAPS }) as { state: string }
+    assert.deepEqual(openState('approval', first.state), { ok: false, reason: 'kind' })
+  })
+})
+
 describe('the sealed state', () => {
   const ARGS = { code: 'return 1' }
 
   test('a state is taken once, for the call that it was minted for', () => {
-    const state = createRootsState()
+    const state = createRootsState(createSealer())
     const minted = state.mint('run_code', ARGS)
     assert.equal(state.open(), 1)
     assert.equal(state.take(minted, 'run_code', ARGS), 'ok')
@@ -74,7 +124,7 @@ describe('the sealed state', () => {
   })
 
   test('arguments that differ by one byte, or another tool, are refused, and the state is used up', () => {
-    const state = createRootsState()
+    const state = createRootsState(createSealer())
     for (const [tool, args] of [
       ['run_code', { code: 'return 2' }],
       ['search_tools', ARGS],
@@ -93,7 +143,7 @@ describe('the sealed state', () => {
   })
 
   test('one flipped character in each part, a missing part, an extra part and a long string are refused', () => {
-    const state = createRootsState()
+    const state = createRootsState(createSealer())
     const minted = state.mint('run_code', ARGS)
     const [body, tag] = minted.split('.') as [string, string]
     const flip = (s: string, at: number) => s.slice(0, at) + (s[at] === 'A' ? 'B' : 'A') + s.slice(at + 1)
@@ -107,7 +157,7 @@ describe('the sealed state', () => {
 
   test('a state of another kind, signed with the key, is refused; a state of another process is a bad mac', () => {
     const key = randomBytes(32)
-    const state = createRootsState({ key })
+    const state = createRootsState(createSealer({ key }))
     const sign = (payload: unknown): string => {
       const body = b64(JSON.stringify(payload))
       return `${body}.${b64(createHmac('sha256', key).update(body).digest())}`
@@ -117,12 +167,16 @@ describe('the sealed state', () => {
     assert.equal(state.take(sign({ ...real, v: 2 }), 'run_code', ARGS), 'malformed')
     assert.equal(state.take(sign({ ...real, n: 5 }), 'run_code', ARGS), 'malformed')
     const minted = state.mint('run_code', ARGS)
-    assert.equal(createRootsState().take(minted, 'run_code', ARGS), 'mac', 'a restart ends every open state')
+    assert.equal(
+      createRootsState(createSealer()).take(minted, 'run_code', ARGS),
+      'mac',
+      'a restart ends every open state',
+    )
   })
 
   test('a state of 601 s is expired, one of 600 s is not; the table keeps at most 256 and sweeps the expired', () => {
     let now = 1_000_000
-    const state = createRootsState({ now: () => now })
+    const state = createRootsState(createSealer({ now: () => now }))
     const fresh = state.mint('run_code', ARGS)
     const old = state.mint('run_code', ARGS)
     now += STATE_TTL_MS - 1
@@ -137,7 +191,7 @@ describe('the sealed state', () => {
   })
 
   test('the payload holds no program text, no tool name and no path, and the whole state is at most 512 characters', () => {
-    const state = createRootsState()
+    const state = createRootsState(createSealer())
     const minted = state.mint('run_code', { code: 'SECRET-PROGRAM-TEXT /home/secret/path' })
     assert.ok(minted.length <= 512, String(minted.length))
     const text = Buffer.from(minted.split('.')[0]!, 'base64url').toString()
@@ -171,7 +225,11 @@ describe('what a call does', () => {
   const rig = () => {
     const roots = fakeRoots()
     const lines: string[] = []
-    return { roots, lines, round: createRootsRound({ roots, log: l => lines.push(l) }) }
+    return {
+      roots,
+      lines,
+      round: createRootsRound({ roots, log: l => lines.push(l), state: createRootsState(createSealer()) }),
+    }
   }
   const ARGS = { code: 'return 1' }
 

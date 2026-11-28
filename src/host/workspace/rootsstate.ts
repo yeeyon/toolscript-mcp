@@ -41,7 +41,12 @@ export type Opened = { readonly ok: true; readonly fields: Fields } | { readonly
 export type Sealer = {
   /** A sealed, used-once state of `kind` that carries `fields`: base64url(payload) + '.' + base64url(HMAC-SHA256), payload `{ v, k, n, e, f }`. */
   readonly seal: (kind: string, fields: Fields) => string
-  /** Opens a state of `kind` and uses it up: it is removed from the table whatever the outcome. */
+  /**
+   * The kind of a state whose MAC is good and whose payload is whole, or undefined. It touches no table: a state of any kind is left
+   * as it is, so a caller that serves one kind can tell another kind's state from a forged one without using it up.
+   */
+  readonly peek: (text: string) => { readonly kind: string } | undefined
+  /** Opens a state of `kind` and uses it up: it is removed from the table whatever the outcome, also under another kind. */
   readonly open: (kind: string, text: string) => Opened
   /** The states that are open. */
   readonly count: () => number
@@ -63,6 +68,45 @@ export const createSealer = ({
   const sweep = (): void => {
     for (const [nonce, expires] of table) if (expires <= now()) table.delete(nonce)
   }
+  // The checks that touch no table: the shape, the MAC and the payload. Both `peek` and `open` start here.
+  const verified = (
+    text: string,
+  ):
+    | {
+        readonly ok: true
+        readonly kind: string
+        readonly nonce: string
+        readonly expires: number
+        readonly fields: Fields
+      }
+    | { readonly ok: false; readonly reason: Refusal } => {
+    const [body, tag, extra] = text.split('.')
+    if (body === undefined || tag === undefined || extra !== undefined || text.length > 512) {
+      return { ok: false, reason: 'malformed' }
+    }
+    const given = Buffer.from(tag, 'base64url')
+    const wanted = mac(body)
+    if (given.length !== wanted.length || !timingSafeEqual(given, wanted)) return { ok: false, reason: 'mac' }
+    let payload: { v?: unknown; k?: unknown; n?: unknown; e?: unknown; f?: unknown }
+    try {
+      payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as typeof payload
+    } catch {
+      return { ok: false, reason: 'malformed' }
+    }
+    const fields = payload.f
+    if (
+      payload.v !== VERSION ||
+      typeof payload.k !== 'string' ||
+      typeof payload.n !== 'string' ||
+      typeof payload.e !== 'number' ||
+      typeof fields !== 'object' ||
+      fields === null ||
+      Array.isArray(fields)
+    ) {
+      return { ok: false, reason: 'malformed' }
+    }
+    return { ok: true, kind: payload.k, nonce: payload.n, expires: payload.e, fields: fields as Fields }
+  }
   return {
     seal: (kind, fields) => {
       sweep()
@@ -73,62 +117,51 @@ export const createSealer = ({
       const body = b64(Buffer.from(JSON.stringify({ v: VERSION, k: kind, n: nonce, e: expires, f: fields })))
       return `${body}.${b64(mac(body))}`
     },
+    peek: text => {
+      const read = verified(text)
+      return read.ok ? { kind: read.kind } : undefined
+    },
     open: (kind, text) => {
-      const [body, tag, extra] = text.split('.')
-      if (body === undefined || tag === undefined || extra !== undefined || text.length > 512) {
-        return { ok: false, reason: 'malformed' }
-      }
-      const given = Buffer.from(tag, 'base64url')
-      const wanted = mac(body)
-      if (given.length !== wanted.length || !timingSafeEqual(given, wanted)) return { ok: false, reason: 'mac' }
-      let payload: { v?: unknown; k?: unknown; n?: unknown; e?: unknown; f?: unknown }
-      try {
-        payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as typeof payload
-      } catch {
-        return { ok: false, reason: 'malformed' }
-      }
-      const fields = payload.f
-      if (
-        payload.v !== VERSION ||
-        typeof payload.n !== 'string' ||
-        typeof payload.e !== 'number' ||
-        typeof fields !== 'object' ||
-        fields === null ||
-        Array.isArray(fields)
-      ) {
-        return { ok: false, reason: 'malformed' }
-      }
+      const read = verified(text)
+      if (!read.ok) return { ok: false, reason: read.reason }
       // Used up from here on, whatever follows.
-      const known = table.delete(payload.n)
-      if (payload.k !== kind) return { ok: false, reason: 'kind' }
-      if (payload.e <= now()) return { ok: false, reason: 'expired' }
+      const known = table.delete(read.nonce)
+      if (read.kind !== kind) return { ok: false, reason: 'kind' }
+      if (read.expires <= now()) return { ok: false, reason: 'expired' }
       if (!known) return { ok: false, reason: 'used' }
-      return { ok: true, fields: fields as Fields }
+      return { ok: true, fields: read.fields }
     },
     count: () => (sweep(), table.size),
   }
 }
 
 // The sealer of the process: the key is made when the module loads, at the start of the process, and is never written or logged.
-const processSealer = createSealer()
+// One sealer for every kind, so the kinds share one key and one used-once table.
+export const processSealer = createSealer()
 export const seal = (kind: string, fields: Fields): string => processSealer.seal(kind, fields)
 export const open = (kind: string, text: string): Opened => processSealer.open(kind, text)
+export const peek = (text: string): { readonly kind: string } | undefined => processSealer.peek(text)
 
 export type RootsState = {
   /** A new state for the call `tool` with `args`. */
   readonly mint: (tool: string, args: unknown) => string
-  /** Checks a state presented with the call `tool` and `args`, and uses it up: it is removed whatever the outcome. */
+  /**
+   * Checks a state presented with the call `tool` and `args`, and uses it up: it is removed whatever the outcome, except a state of
+   * another kind, which is refused (`kind`) and left as it is.
+   */
   readonly take: (state: string, tool: string, args: unknown) => 'ok' | Refusal
   /** The states that are open. */
   readonly open: () => number
 }
 
-/** The state of kind `roots`: one field, the hash that binds it to the call. */
-export const createRootsState = (options: Parameters<typeof createSealer>[0] = {}): RootsState => {
-  const sealer = createSealer(options)
+/** The state of kind `roots`: one field, the hash that binds it to the call. It is built on a sealer, the one of the process by default. */
+export const createRootsState = (sealer: Sealer = processSealer): RootsState => {
   return {
     mint: (tool, args) => sealer.seal(KIND, { c: callHash(tool, args) }),
     take: (state, tool, args) => {
+      // A state that is whole and of another kind is not ours: it is refused and not used up, so its own kind can still open it.
+      const seen = sealer.peek(state)
+      if (seen !== undefined && seen.kind !== KIND) return 'kind'
       const opened = sealer.open(KIND, state)
       if (!opened.ok) return opened.reason
       return opened.fields['c'] === callHash(tool, args) ? 'ok' : 'call'
