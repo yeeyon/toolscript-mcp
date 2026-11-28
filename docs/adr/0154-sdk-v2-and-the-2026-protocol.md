@@ -397,6 +397,20 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
      (the list of rows that differ is empty).
    - The v1 `Transport` and the v2 `Transport` are assignable both ways, and a v2 client connects to a v1 `Server` over the v2 in-memory
      pair, with no cast. Only `src/host/sdk/` knows which client a link has.
+   - A result that breaks the result schema of the SDK: v2 raises `SdkError` (`INVALID_RESULT`) with the message `Invalid result for
+     <method>: <issues>`, where v1 gave the issues alone. `sdkErrorText` strips the prefix, so the text of a `tools/call` result with a
+     text block that has no text, and the reason of a `tools/list` with a tool that has no `inputSchema`, are the v1 bytes (golden cases
+     `bad_result` and `badlist`).
+   - What a server sees that is not the same as with v1 (nothing a server is known to read): on a call timeout, the `reason` of
+     `notifications/cancelled` is `SdkError: Request timed out` (v1: `McpError: MCP error -32001: Request timed out`), and
+     `notifications/initialized` has its keys in another order.
+   - Size: the growth is not two copies of zod (zod 4.6.7 is one package, and v1 already used it). The v2 client inlines `ajv` (its
+     `ajvProvider-*.mjs`, about 289 KB) beside the `ajv` (215 KB) and `ajv-formats` of v1, and adds its own `src-*` (198 KB) and
+     `public-*` (110 KB) chunks. The notice of the inlined ajv (MIT) must stay in `dist/third-party-licenses.txt` after PR 8.
+   - The `baseline` run of this PR (stress run 46144301916, against `d18eaa6`, Node 24): the start time, paired, is +23.5 ms on
+     Ubuntu, +30.5 ms on macOS and +36.5 ms on Windows (all inside the budget); host memory is +9.5 MB on Ubuntu (84.2 against 74.7 MB,
+     budget +10) and +3.2 MB on Windows; the sharing saving on Windows is 57.4 against 58.1 MB, which fails the strict rule; the package
+     is +35 % and `main.js` +43 %, which fail as expected until PR 8 removes v1.
 6. OAuth, login, `StreamableHTTPClientTransport` and the SigV4 fetch on the v2 client, with `iss` validation, in one PR: the HTTP link
    leaves v1 there. SigV4 header test.
 7. The server side (server.ts, main.ts, the Workspace provider and roots) on `@modelcontextprotocol/server`.

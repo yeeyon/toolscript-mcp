@@ -88,6 +88,19 @@
       }
     ]
   },
+  "bad_result": {
+    "isError": false,
+    "text": "\"ERR:[\\n  {\\n    \\\"code\\\": \\\"invalid_union\\\",\\n    \\\"errors\\\": [\\n      [\\n        {\\n          \\\"expected\\\": \\\"string\\\",\\n          \\\"code\\\": \\\"invalid_type\\\",\\n          \\\"path\\\": [\\n            \\\"text\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n        }\\n      ],\\n      [\\n        {\\n          \\\"code\\\": \\\"invalid_value\\\",\\n          \\\"values\\\": [\\n            \\\"image\\\"\\n          ],\\n          \\\"path\\\": [\\n            \\\"type\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected \\\\\\\"image\\\\\\\"\\\"\\n        },\\n        {\\n          \\\"expected\\\": \\\"string\\\",\\n          \\\"code\\\": \\\"invalid_type\\\",\\n          \\\"path\\\": [\\n            \\\"data\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n        },\\n        {\\n          \\\"expected\\\": \\\"string\\\",\\n          \\\"code\\\": \\\"invalid_type\\\",\\n          \\\"path\\\": [\\n            \\\"mimeType\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n        }\\n      ],\\n      [\\n        {\\n          \\\"code\\\": \\\"invalid_value\\\",\\n          \\\"values\\\": [\\n            \\\"audio\\\"\\n          ],\\n          \\\"path\\\": [\\n            \\\"type\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected \\\\\\\"audio\\\\\\\"\\\"\\n        },\\n        {\\n          \\\"expected\\\": \\\"string\\\",\\n          \\\"code\\\": \\\"invalid_type\\\",\\n          \\\"path\\\": [\\n            \\\"data\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n        },\\n        {\\n          \\\"expected\\\": \\\"string\\\",\\n          \\\"code\\\": \\\"invalid_type\\\",\\n          \\\"path\\\": [\\n            \\\"mimeType\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n        }\\n      ],\\n      [\\n        {\\n          \\\"expected\\\": \\\"string\\\",\\n          \\\"code\\\": \\\"invalid_type\\\",\\n          \\\"path\\\": [\\n            \\\"name\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n        },\\n        {\\n          \\\"expected\\\": \\\"string\\\",\\n          \\\"code\\\": \\\"invalid_type\\\",\\n          \\\"path\\\": [\\n            \\\"uri\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n        },\\n        {\\n          \\\"code\\\": \\\"invalid_value\\\",\\n          \\\"values\\\": [\\n            \\\"resource_link\\\"\\n          ],\\n          \\\"path\\\": [\\n            \\\"type\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected \\\\\\\"resource_link\\\\\\\"\\\"\\n        }\\n      ],\\n      [\\n        {\\n          \\\"code\\\": \\\"invalid_value\\\",\\n          \\\"values\\\": [\\n            \\\"resource\\\"\\n          ],\\n          \\\"path\\\": [\\n            \\\"type\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input: expected \\\\\\\"resource\\\\\\\"\\\"\\n        },\\n        {\\n          \\\"code\\\": \\\"invalid_union\\\",\\n          \\\"errors\\\": [\\n            [\\n              {\\n                \\\"expected\\\": \\\"object\\\",\\n                \\\"code\\\": \\\"invalid_type\\\",\\n                \\\"path\\\": [],\\n                \\\"message\\\": \\\"Invalid input: expected object, received undefined\\\"\\n              }\\n            ],\\n            [\\n              {\\n                \\\"expected\\\": \\\"object\\\",\\n                \\\"code\\\": \\\"invalid_type\\\",\\n                \\\"path\\\": [],\\n                \\\"message\\\": \\\"Invalid input: expected object, received undefined\\\"\\n              }\\n            ]\\n          ],\\n          \\\"path\\\": [\\n            \\\"resource\\\"\\n          ],\\n          \\\"message\\\": \\\"Invalid input\\\"\\n        }\\n      ]\\n    ],\\n    \\\"path\\\": [\\n      \\\"content\\\",\\n      0\\n    ],\\n    \\\"message\\\": \\\"Invalid input\\\"\\n  }\\n]\"\n",
+    "calls": [
+      {
+        "tool": "mcp__g__bad_result",
+        "decision": "allow",
+        "ok": false,
+        "error": "failed",
+        "class": "validation"
+      }
+    ]
+  },
   "bad_output": {
     "isError": false,
     "text": "\"ERR:MCP error -32602: Structured content does not match the tool's output schema: data/n must be number\"\n",
@@ -151,10 +164,11 @@
     ]
   },
   "nocaps": "MCP error -32601: golden: no tools here",
+  "badlist": "[\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"tools\",\n      0,\n      \"inputSchema\"\n    ],\n    \"message\": \"Invalid input: expected object, received undefined\"\n  }\n]",
   "missing": {
     "state": "its command was not found on PATH: toolscript-golden-no-such-command",
     "link": "the MCP server \"gone\" is not connected: its command was not found on PATH: toolscript-golden-no-such-command",
-    "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"gone\" is not connected: its command was not found on PATH: toolscript-golden-no-such-command. toolscript-mcp tries again on next use after 60 s"
+    "text": "Error: the program did not run, because of the calls below. No call was made.\n- line 1: the MCP server \"gone\" is not connected: its command was not found on PATH: toolscript-golden-no-such-command. toolscript-mcp tries again on next use after N s"
   },
   "first": {
     "methods": ["initialize", "notifications/initialized", "tools/list", "tools/call"],

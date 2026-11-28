@@ -28,6 +28,8 @@ export const protocolFailure = (err: unknown): ProtocolFailure | undefined => {
   return undefined
 }
 
+const RESULT_PREFIX = /^Invalid result for [^:\s]+: /u
+
 /** The code of a protocol error, or undefined for any other error. */
 export const protocolCode = (err: unknown): number | undefined => protocolFailure(err)?.code
 
@@ -38,6 +40,8 @@ export const protocolCode = (err: unknown): number | undefined => protocolFailur
 export const sdkErrorText = (err: unknown): string => {
   if (err instanceof ProtocolError) return `MCP error ${err.code}: ${err.message}`
   if (err instanceof SdkError) {
+    // A result that breaks the result schema: v1 gave the issues of the schema alone, v2 puts the method in front.
+    if (err.code === SdkErrorCode.InvalidResult) return err.message.replace(RESULT_PREFIX, '')
     const code = legacyCode(err.code)
     return code === undefined ? err.message : `MCP error ${code}: ${err.message}`
   }

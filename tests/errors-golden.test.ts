@@ -118,6 +118,7 @@ describe('the texts of a nested call that fails', () => {
     'custom',
     'is_error',
     'no_structured',
+    'bad_result',
     'bad_output',
     'not_listed',
   ]) {
@@ -159,6 +160,17 @@ describe('the texts of a nested call that fails', () => {
     settle('nocaps', state?.status === 'failed' ? state.reason : state?.status)
   })
 
+  test('a server whose tools/list breaks the result schema of the SDK', async () => {
+    const args = [SERVER, path.join(ROOT, 'badlist.jsonl'), 'badlist']
+    const servers = new Map<ServerKey, ServerConfig>([
+      [KEY, { kind: 'stdio', command: process.execPath, args, env: {} }],
+    ])
+    const r = rig({ servers })
+    await r.downstream.settled
+    const state = r.downstream.states()[0]
+    settle('badlist', state?.status === 'failed' ? state.reason : state?.status)
+  })
+
   test('a missing command: the state, the refusal and the call', async () => {
     const servers = new Map<ServerKey, ServerConfig>([
       [GONE, { kind: 'stdio', command: 'toolscript-golden-no-such-command', args: [], env: {} }],
@@ -173,7 +185,8 @@ describe('the texts of a nested call that fails', () => {
     settle('missing', {
       state: state?.status === 'failed' ? state.reason : state?.status,
       link: link.ok ? 'ok' : link.reason,
-      text: result.text.split('\n--- ')[0],
+      // The wait in the note moves by a second with the clock.
+      text: result.text.split('\n--- ')[0]?.replace(/after \d+ s/u, 'after N s'),
     })
   })
 })
