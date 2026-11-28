@@ -9,18 +9,16 @@
 
 import {
   HostServer,
-  approvalRequest,
-  invalidStateError,
+  ProtocolError,
+  ProtocolErrorCode,
+  inputRequired,
   onCallTool,
   onListTools,
-  stateCodec,
-  type CallAnswer,
   type CallExtra,
   type CallToolResult,
-  type StateCodec,
-  type StateContext,
+  type InputRequiredResult,
 } from './sdk/server.ts'
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -41,12 +39,10 @@ import {
 import { errorText, newKept, serverInstructions, type Written } from '../core/protocol.ts'
 import {
   MAX_ROUNDS,
-  OpenStates,
-  STATE_TTL_SECONDS,
   answerOf,
   argsHash,
   nextRound,
-  parsePayload,
+  parseFields,
   policyHash,
   toolsHash,
   type StateKind,
@@ -57,6 +53,9 @@ import { WORKSPACE_KEY } from '../core/workspace.ts'
 import type { Downstream } from './downstream.ts'
 import { runCode, type Approval, type RunContext } from './run.ts'
 import { SHAPES_WAIT_MS, loadShapes, removeOrphans, schemaHash, within } from './shapes.ts'
+import type { Roots } from './workspace/roots.ts'
+import { createRootsRound } from './workspace/rootsround.ts'
+import { createRootsState, processSealer, type Sealer } from './workspace/rootsstate.ts'
 
 const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], isError })
 
@@ -64,7 +63,7 @@ const text = (t: string, isError = false): CallToolResult => ({ content: [{ type
 const ASK_TIMEOUT_MS = 10 * 60_000
 
 /**
- * What a call reads of its request. `round` is the state of an approval that this request carries (verified, and used up), and
+ * What a call reads of its request. `round` is the state of an approval that this request carries (opened, and used up), and
  * the flags of the stages that read it: a policy stage and a tools stage, in that order, share one request.
  */
 type Extra = CallExtra & { readonly round: Round }
@@ -72,13 +71,31 @@ type Extra = CallExtra & { readonly round: Round }
 type Round = {
   /** The hash of this call's tool name and arguments. */
   readonly args: string
-  /** The verified payload of the state that the client echoed, if any. */
+  /** The opened payload of the approval state that the client echoed, if any. */
   readonly payload: StatePayload | undefined
+  /** The round that a new prompt of this call gets, when no approval state was presented: 2 after a roots round, else 1. */
+  readonly base: number
   /** True once a stage took the payload as its answer. */
   used: boolean
   /** True once the stage of the looser policy was reached in this request. */
   policySeen: boolean
 }
+
+/** The kind of the states of the approval in the sealer of the process, which the roots round shares. */
+const APPROVAL = 'approval'
+
+/** The answer that a bad state gets, the same for every reason (the text and data of the SDK). */
+const invalidState = (): ProtocolError =>
+  new ProtocolError(ProtocolErrorCode.InvalidParams, 'Invalid or expired requestState', {
+    reason: 'invalid_request_state',
+  })
+
+/** The answer that asks the person: one elicitation `approve` with an empty form, and the sealed state of the round. */
+const approvalRequest = (message: string, requestState: string): InputRequiredResult =>
+  inputRequired({
+    inputRequests: { approve: inputRequired.elicit({ message, requestedSchema: { type: 'object', properties: {} } }) },
+    requestState,
+  })
 
 /** Thrown by a stage of the approval when the person must be asked on a 2026-07-28 connection: the handler turns it into `input_required`. */
 class NeedsInput extends Error {
@@ -153,8 +170,13 @@ export type Host = {
 
 /** What the caller hears of a modern connection. */
 export type HostHooks = {
-  /** Called one time, when a modern instance gets a request other than `server/discover`: the connection is in use. */
-  readonly modernInUse?: () => void
+  /**
+   * The roots of the Workspace (issue #154, P3-2). With them, a modern connection asks the client for its roots at the first call
+   * (`input_required`) and the Workspace follows the answer. Without them, a modern connection has no Workspace.
+   */
+  readonly roots?: Pick<Roots, 'isSettled' | 'answer' | 'modern'>
+  /** Tests only: the sealer of the states (its key and its clock). Default: the one of the process, which the roots round shares. */
+  readonly sealer?: Sealer
 }
 
 export type Served = {
@@ -251,50 +273,28 @@ export const createHost = (
     return fresh
   }
 
-  // The state of an approval on a 2026-07-28 connection (src/core/state.ts). The key is made here, at process start, and is never
-  // written or logged: a restart ends every open state. A state is sealed with it, expires in 10 minutes and is used one time.
-  const codec = stateCodec<StatePayload>(randomBytes(32), STATE_TTL_SECONDS)
-  const open = new OpenStates()
-  // Checks a state before the handler runs: the seal and the expiry (the codec), the shape, and that it was not used. A refusal is
-  // one fixed word in the log and the same -32602 for the client, whatever failed.
-  const verify = async (state: string, ctx: StateContext): Promise<StatePayload> => {
-    let word = 'invalid'
-    try {
-      const decoded = await codec.verify(state, ctx)
-      const payload = parsePayload(decoded)
-      if (payload === undefined) throw new Error('malformed')
-      if (!open.take(payload.n, Date.now())) throw new Error('used')
-      return payload
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : ''
-      if (['malformed', 'mac', 'expired', 'bind', 'used'].includes(reason)) word = reason
-      log(`an approval state was refused: ${word}`)
-      throw new Error(word)
-    }
-  }
-  const stateOf = (stateBytes: unknown, args: string): Round => ({
-    args,
-    payload: parsePayload(stateBytes),
-    used: false,
-    policySeen: false,
-  })
-
-  let modernUsed = false
+  // The states of the roots round and of the approval share one sealer: one key, made at process start and never written or logged
+  // (a restart ends every open state), and one used-once table. The kinds differ by the kind in the sealed payload.
+  const sealer = hooks.sealer ?? processSealer
+  // The roots round of a modern connection: only when the config has the Workspace and the caller gave its roots.
+  const rootsRound =
+    config.workspace !== undefined && hooks.roots !== undefined
+      ? createRootsRound({ roots: hooks.roots, log, state: createRootsState(sealer) })
+      : undefined
 
   const make = (era: Era): HostServer => {
-    // A modern connection has no Workspace until the client's roots come with the next change of this release: the
-    // roots/list request does not exist in that era, and the bound root without them is wider than a client roots give.
-    // Its instructions say what they say for a Workspace that is not available, and its tools are not listed or callable.
-    const noWorkspace = era === 'modern' && config.workspace !== undefined
+    // A modern connection has the Workspace once its client gave the roots (the roots round of its first call). With no way to ask
+    // (no roots in the hooks) it has none: the roots/list request does not exist in that era, and the bound root without them is
+    // wider than a client roots give. Its instructions say what they say for a Workspace that is not available, and its tools are
+    // not listed or callable.
+    const noWorkspace = era === 'modern' && config.workspace !== undefined && rootsRound === undefined
     const mcp = new HostServer(
       { name: 'toolscript-mcp', version },
       {
         // listChanged: as the capabilities that McpServer of the first SDK declared for its tools, and clients saw.
         capabilities: { tools: { listChanged: true } },
         instructions: serverInstructions([...config.servers.keys()], config.bridges, workspaceDown || noWorkspace),
-        // A state is checked before any handler runs. The legacy shim of the SDK never serves a request: the push prompt of a
-        // legacy connection is the one of today.
-        requestState: { verify },
+        // The legacy shim of the SDK never serves a request: the push prompt of a legacy connection is the one of today.
         inputRequired: { legacyShim: false },
       },
     )
@@ -307,7 +307,7 @@ export const createHost = (
     const canAsk = (extra: Extra): boolean =>
       era === 'legacy'
         ? mcp.getClientCapabilities()?.elicitation?.form !== undefined
-        : formCapability(extra.clientCapabilities)
+        : formCapability(extra.capabilities)
     // 'unanswered': the person dismissed the prompt, or it failed, timed out or was cancelled.
     const prompt: Prompter = async (extra, message, subject) => {
       if (!canAsk(extra)) return 'unsupported'
@@ -342,9 +342,8 @@ export const createHost = (
         return answer === 'accept' ? 'accept' : answer === 'decline' ? 'decline' : 'unanswered'
       }
       // A state of the looser policy that no stage of this request used is not for this call.
-      if (payload?.k === 'policy' && !round.used && subject.kind === 'tools' && !round.policySeen)
-        throw invalidStateError()
-      const number = nextRound(payload)
+      if (payload?.k === 'policy' && !round.used && subject.kind === 'tools' && !round.policySeen) throw invalidState()
+      const number = payload === undefined ? round.base : nextRound(payload)
       if (number > MAX_ROUNDS) return 'unanswered'
       throw new NeedsInput(subject.kind, message, number, tools, policyH)
     }
@@ -391,54 +390,69 @@ export const createHost = (
       }
     }
 
-    if (era === 'modern')
-      mcp.onRequest = method => {
-        if (method === 'server/discover' || modernUsed) return
-        modernUsed = true
-        hooks.modernInUse?.()
-      }
     onListTools(mcp, () => ({ tools: SERVED.map(registration) }))
-    onCallTool(
-      mcp,
-      async (req, call): Promise<CallAnswer> => {
-        const { name, arguments: args = {} } = req.params
-        const round = stateOf(call.state, argsHash(sha, name, args))
-        // A state is for `run_code` and for the call that it was made for, to the byte. Any other call that carries one is
-        // refused with the answer that a bad state gets: a state moved to another program, or to another tool, runs nothing.
-        if (
-          call.state !== undefined &&
-          (round.payload === undefined || round.payload.a !== round.args || name !== 'run_code')
-        )
-          throw invalidStateError()
-        const extra: Extra = { ...call, round }
-        try {
-          return isServed(name)
-            ? await HANDLERS[name](args, {
-                downstream: view,
-                shapes: shownNow,
-                canAsk: () => canAsk(extra),
-                run,
-                extra,
-              })
-            : text(`Unknown tool: ${name}`, true)
-        } catch (err) {
-          if (!(err instanceof NeedsInput)) throw err
-          // Nothing ran: no sandbox, no nested call and no run-log line came from this round.
-          const payload: StatePayload = {
-            v: 1,
-            k: err.kind,
-            r: err.round,
-            n: randomBytes(16).toString('base64url'),
-            a: round.args,
-            t: err.tools,
-            p: err.policy,
-          }
-          open.add(payload.n, Date.now())
-          return approvalRequest(err.prompt, await call.mint(payload))
+    onCallTool(mcp, async (req, call): Promise<CallToolResult | InputRequiredResult> => {
+      const { name, arguments: args = {} } = req.params
+      const hash = argsHash(sha, name, args)
+      // The state that a 2026-07-28 retry carries, and its kind in the sealer (a peek: nothing is used up yet). A state that is not a
+      // whole sealed state of this process is refused whatever the call is: the same -32602 for every reason, one fixed word in the log.
+      const presented = call.requestState
+      const seen = presented === undefined ? undefined : sealer.peek(presented)
+      if (era === 'modern' && presented !== undefined && seen === undefined) {
+        log('a request state was refused: invalid')
+        throw invalidState()
+      }
+      // The roots round comes before everything else of the call: no plan, no prompt, no sandbox, no run-log line. It uses a state of
+      // its own kind. A state of the approval is not its own: it goes on once the roots are settled (the retry that comes after a
+      // roots round), and it is refused, not used up, while they are not.
+      if (era === 'modern' && rootsRound !== undefined && isServed(name)) {
+        const step = rootsRound.round(name, args, call)
+        if (step.kind === 'refused') throw invalidState()
+        if (step.kind === 'ask')
+          return inputRequired({ inputRequests: { roots: inputRequired.listRoots() }, requestState: step.state })
+      } else if (era === 'modern' && seen !== undefined && seen.kind !== APPROVAL) {
+        // A state of the roots round on a connection that has no roots round.
+        log('a request state was refused: kind')
+        throw invalidState()
+      }
+      // The approval state: opened here, one time, and bound to this call to the byte (its tool name and its arguments). A state of
+      // the approval is for `run_code` only.
+      let payload: StatePayload | undefined
+      if (era === 'modern' && seen?.kind === APPROVAL) {
+        const opened = sealer.open(APPROVAL, presented!)
+        payload = opened.ok ? parseFields(opened.fields) : undefined
+        if (!opened.ok || payload === undefined || payload.a !== hash || name !== 'run_code') {
+          log(
+            `an approval state was refused: ${opened.ok ? (payload === undefined ? 'malformed' : 'program') : opened.reason}`,
+          )
+          throw invalidState()
         }
-      },
-      codec as StateCodec<unknown>,
-    )
+      }
+      const round: Round = {
+        args: hash,
+        payload,
+        base: seen !== undefined && seen.kind !== APPROVAL ? 2 : 1,
+        used: false,
+        policySeen: false,
+      }
+      const extra: Extra = { ...call, round }
+      try {
+        return isServed(name)
+          ? await HANDLERS[name](args, {
+              downstream: view,
+              shapes: shownNow,
+              canAsk: () => canAsk(extra),
+              run,
+              extra,
+            })
+          : text(`Unknown tool: ${name}`, true)
+      } catch (err) {
+        if (!(err instanceof NeedsInput)) throw err
+        // Nothing ran: no sandbox, no nested call and no run-log line came from this round.
+        const fields = { s: err.kind, r: err.round, a: hash, t: err.tools, p: err.policy }
+        return approvalRequest(err.prompt, sealer.seal(APPROVAL, fields))
+      }
+    })
     return mcp
   }
 

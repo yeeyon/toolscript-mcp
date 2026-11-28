@@ -50,7 +50,7 @@ const BOTH =
   'const a = await call("mcp__bench__list_issues", { project: "OPS" }); const b = await call("mcp__bench__get_deploys", { date: "2026-10-09" }); return [a.total, b.count]'
 
 /** A host of the built server (TOOLSCRIPT_PROTOCOL=auto), its config file (rewritten between rounds) and a count of downstream calls. */
-const start = (policy, { capabilities = ELICIT, protocol = 'auto' } = {}) => {
+const start = (policy, { capabilities = ELICIT, protocol = 'auto', workspace } = {}) => {
   const home = tempDir('home')
   fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true })
   const dir = tempDir('config')
@@ -62,6 +62,7 @@ const start = (policy, { capabilities = ELICIT, protocol = 'auto' } = {}) => {
       JSON.stringify({
         mcpServers: { bench: { command: process.execPath, args: [FAKE], env: { BENCH_LOG: log } } },
         policy: rules,
+        ...(workspace !== undefined && { workspace }),
       }),
     )
   write(policy)
@@ -168,7 +169,8 @@ test('an accept runs once, the prompt is the legacy prompt, and the state is sma
     const state = first.result.requestState
     assert.ok(state.length <= 512, `the state is ${state.length} characters`)
     // The client can read the payload: it holds no program text, no tool name, no path.
-    const body = Buffer.from(state.split('.')[1], 'base64url').toString('utf8')
+    const body = Buffer.from(state.split('.')[0], 'base64url').toString('utf8')
+    assert.match(body, /"k":"approval"/, 'the kind of the state is in its sealed body')
     for (const secret of ['get_deploys', 'mcp__', '2026-10-09', 'deploys', os.homedir()])
       assert.ok(!body.includes(secret) && !state.includes(secret), `the state holds ${secret}`)
     const done = await host.call(DEPLOYS, retryOf(first))
@@ -256,12 +258,13 @@ test('one changed character in each of the three parts of the state is -32602, a
     await host.client.discover()
     const first = asked(await host.call(DEPLOYS))
     const state = first.result.requestState
-    const [prefix, body, mac] = state.split('.')
+    // The state is the sealed body and its MAC: two parts. One changed character in each, and a third part.
+    const [body, mac] = state.split('.')
     const flip = text => text.slice(0, 5) + (text[5] === 'A' ? 'B' : 'A') + text.slice(6)
     for (const [label, bad] of [
-      ['prefix', `v2.${body}.${mac}`],
-      ['body', `${prefix}.${flip(body)}.${mac}`],
-      ['mac', `${prefix}.${body}.${flip(mac)}`],
+      ['body', `${flip(body)}.${mac}`],
+      ['mac', `${body}.${flip(mac)}`],
+      ['a third part', `${body}.${mac}.x`],
     ]) {
       const reply = await host.call(DEPLOYS, { inputResponses: { approve: { action: 'accept' } }, requestState: bad })
       assert.deepEqual(reply.error, INVALID, label)
@@ -431,6 +434,67 @@ test('the opening of Claude Code and the retry shape of probe D runs the program
     )
     assert.ok(!done.result.isError, JSON.stringify(done).slice(0, 300))
     assert.equal(host.calls(), 1)
+  } finally {
+    await host.close()
+  }
+})
+
+// --- the fold with the roots round (P3-2): one sealer, one counter ---------------------------------------------------------------
+
+const ROOTS_CAPS = { ...ELICIT, roots: { listChanged: true } }
+const rootsUri = dir => new URL(`file:///${dir.replaceAll('\\', '/')}`).href
+const rootsRetry = (code, first, project) => ({
+  inputResponses: { roots: { roots: [{ uri: rootsUri(project) }] } },
+  requestState: first.result.requestState,
+  code,
+})
+const askedRoots = reply => {
+  assert.equal(reply.result?.resultType, 'input_required', JSON.stringify(reply).slice(0, 300))
+  assert.deepEqual(Object.keys(reply.result.inputRequests), ['roots'])
+  return reply
+}
+
+test('a call that needs the roots and the approval: roots, then approval, then one run, counted at the fake server', async () => {
+  const project = tempDir('project')
+  fs.writeFileSync(path.join(project, 'readme.txt'), 'hello')
+  const host = start(ASK, { capabilities: ROOTS_CAPS, workspace: { roots: [{ path: project }] } })
+  try {
+    await host.client.discover()
+    const first = askedRoots(await host.call(DEPLOYS))
+    assert.equal(host.calls(), 0)
+    // The roots answer: the roots round takes its own state, and the same call goes on to the approval round (a new prompt).
+    const second = asked(await host.call(DEPLOYS, rootsRetry(DEPLOYS, first, project)))
+    assert.equal(host.calls(), 0, 'nothing ran before the approval')
+    assert.notEqual(second.result.requestState, first.result.requestState)
+    assert.ok(second.result.requestState.length <= 512)
+    // The roots state is used up: it cannot settle or approve anything again.
+    assert.deepEqual((await host.call(DEPLOYS, retryOf(first))).error, INVALID)
+    const done = await host.call(DEPLOYS, retryOf(second))
+    assert.ok(!done.result.isError, JSON.stringify(done).slice(0, 300))
+    assert.equal(host.calls(), 1, 'one run for the one accept')
+    // The approval state does not burn a roots state, and is used one time too.
+    assert.deepEqual((await host.call(DEPLOYS, retryOf(second))).error, INVALID)
+    assert.equal(host.calls(), 1)
+  } finally {
+    await host.close()
+  }
+})
+
+test('one counter across both kinds: the roots round is a round, and the fifth is refused', async () => {
+  const project = tempDir('project')
+  const host = start(ASK, { capabilities: ROOTS_CAPS, workspace: { roots: [{ path: project }] } })
+  try {
+    await host.client.discover()
+    const roots = askedRoots(await host.call(DEPLOYS))
+    // Round 1 was the roots. The approval prompts are rounds 2, 3 and 4; the plan changes between them.
+    let reply = asked(await host.call(DEPLOYS, rootsRetry(DEPLOYS, roots, project)))
+    for (let round = 3; round <= 4; round++) {
+      host.rewrite([{ match: `mcp__bench__no_such_${round}`, action: 'deny' }, ...ASK])
+      reply = asked(await host.call(DEPLOYS, retryOf(reply)))
+    }
+    host.rewrite([{ match: 'mcp__bench__no_such_5', action: 'deny' }, ...ASK])
+    refusedWith(await host.call(DEPLOYS, retryOf(reply)), /did not approve/)
+    assert.equal(host.calls(), 0)
   } finally {
     await host.close()
   }

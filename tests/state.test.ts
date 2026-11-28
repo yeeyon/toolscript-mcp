@@ -1,35 +1,24 @@
 // The pure part of the approval on a 2026-07-28 connection (src/core/state.ts, issue #154, P3-1): the hashes that bind a state to one
-// program, one set of tools and one policy, the payload check, the table of open states and the answer of the client.
+// program, one set of tools and one policy, the fields of a state, and the answer of the client. The seal (the key, the used-once
+// table, the expiry) is the sealer of src/host/workspace/rootsstate.ts, which tests/workspace-roots-modern.test.ts and
+// tests/modern-approval-fold.test.ts hold.
 
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import {
-  MAX_OPEN,
   MAX_ROUNDS,
-  OpenStates,
   answerOf,
   argsHash,
   canonicalJson,
-  checkPayload,
   nextRound,
-  parsePayload,
+  parseFields,
   policyHash,
   toolsHash,
-  type StatePayload,
 } from '../src/core/state.ts'
 
 const sha = (text: string): string => createHash('sha256').update(text).digest('base64url')
-const payload = (over: Partial<StatePayload> = {}): StatePayload => ({
-  v: 1,
-  k: 'tools',
-  r: 1,
-  n: 'nonce',
-  a: 'a',
-  t: 't',
-  p: 'p',
-  ...over,
-})
+const fields = (over: Record<string, unknown> = {}) => ({ s: 'tools', r: 1, a: 'a', t: 't', p: 'p', ...over })
 
 describe('the hashes', () => {
   test('canonical JSON sorts the keys of each object and keeps the order of an array', () => {
@@ -66,61 +55,36 @@ describe('the hashes', () => {
   })
 })
 
-describe('the payload', () => {
-  test('a payload is exactly the fields of the bar, in a plain object', () => {
-    assert.deepEqual(parsePayload(payload()), payload())
+describe('the fields of a state', () => {
+  test('they are exactly the stage, the round and the three hashes', () => {
+    assert.deepEqual(parseFields(fields()), { k: 'tools', r: 1, a: 'a', t: 't', p: 'p' })
+    assert.deepEqual(parseFields(fields({ s: 'policy', r: MAX_ROUNDS })), {
+      k: 'policy',
+      r: MAX_ROUNDS,
+      a: 'a',
+      t: 't',
+      p: 'p',
+    })
     for (const bad of [
-      null,
-      [],
-      'text',
-      { ...payload(), extra: 1 },
-      { ...payload(), v: 2 },
-      { ...payload(), k: 'other' },
-      { ...payload(), r: 0 },
-      { ...payload(), r: MAX_ROUNDS + 1 },
-      { ...payload(), r: 1.5 },
-      { ...payload(), n: '' },
-      { ...payload(), a: 5 },
-      { ...payload(), t: 'x'.repeat(65) },
+      { ...fields(), extra: 1 },
+      fields({ s: 'other' }),
+      fields({ s: 'roots' }),
+      fields({ r: 0 }),
+      fields({ r: MAX_ROUNDS + 1 }),
+      fields({ r: 1.5 }),
+      fields({ r: '1' }),
+      fields({ a: '' }),
+      fields({ a: 5 }),
+      fields({ t: 'x'.repeat(65) }),
     ])
-      assert.equal(parsePayload(bad), undefined, JSON.stringify(bad))
-    const { p, ...missing } = payload()
+      assert.equal(parseFields(bad), undefined, JSON.stringify(bad))
+    const { p, ...missing } = fields()
     void p
-    assert.equal(parsePayload(missing), undefined)
-  })
-
-  test('the checks name the first failure: the kind, then the arguments', () => {
-    assert.equal(checkPayload(payload(), 'tools', 'a'), undefined)
-    assert.equal(checkPayload(payload(), 'policy', 'a'), 'kind')
-    assert.equal(checkPayload(payload(), 'tools', 'b'), 'program')
+    assert.equal(parseFields(missing), undefined)
   })
 
   test('the next round is one more than the round that was presented', () => {
-    assert.equal(nextRound(undefined), 1)
-    assert.equal(nextRound(payload({ r: 3 })), 4)
-  })
-})
-
-describe('the open states', () => {
-  test('a number is used one time, whatever the answer', () => {
-    const open = new OpenStates()
-    open.add('n1', 1000)
-    assert.equal(open.take('n1', 2000), true)
-    assert.equal(open.take('n1', 2001), false, 'the second use')
-    assert.equal(open.take('never-made', 2000), false)
-    open.add('n2', 1000)
-    assert.equal(open.take('n2', 1000 + 600_001), false, 'an expired number')
-    assert.equal(open.take('n2', 1000 + 1), false, 'and it is gone')
-  })
-
-  test('at most 256 are open: the oldest is dropped, and an expired one is swept on use', () => {
-    const open = new OpenStates()
-    for (let i = 0; i < MAX_OPEN + 5; i++) open.add(`n${i}`, 1000)
-    assert.equal(open.size, MAX_OPEN)
-    assert.equal(open.take('n0', 1001), false, 'the oldest was dropped')
-    assert.equal(open.take(`n${MAX_OPEN + 4}`, 1001), true)
-    open.add('late', 1000 + 700_000)
-    assert.equal(open.size, 1, 'the expired numbers were swept when another was made')
+    assert.equal(nextRound({ k: 'tools', r: 3, a: 'a', t: 't', p: 'p' }), 4)
   })
 })
 

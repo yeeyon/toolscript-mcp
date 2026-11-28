@@ -1,8 +1,8 @@
 // The clock rows of the approval on a 2026-07-28 connection (issue #154, P3-1): a state expires in 10 minutes. The host is in this
-// process, wired as `auto` wires it (`serveStdio` and the factory), so the test sets the clock that the codec reads. The other rows are
+// process, wired as `auto` wires it (`serveStdio` and the factory), so the test gives the sealer a clock it sets. The other rows are
 // in tests/modern-approval.e2e.mjs, against the built server.
 
-import { after, describe, mock, test } from 'node:test'
+import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -11,6 +11,7 @@ import { parseConfig } from '../src/core/config.ts'
 import { connectAll } from '../src/host/downstream.ts'
 import { serveBoth } from '../src/host/serve.ts'
 import { createHost } from '../src/host/server.ts'
+import { createSealer } from '../src/host/workspace/rootsstate.ts'
 
 const ROOT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-modern-approval-')))
 const HOME = path.join(ROOT, 'home')
@@ -33,7 +34,7 @@ const ENVELOPE = {
 }
 const CODE = 'const r = await call("mcp__bench__get_deploys", { date: "2026-10-09" }); return r.count'
 
-const open = async () => {
+const open = async (now: () => number) => {
   const log = path.join(fs.mkdtempSync(path.join(ROOT, 'c-')), 'calls.jsonl')
   const text = JSON.stringify({
     mcpServers: { bench: { command: process.execPath, args: [FAKE], env: { BENCH_LOG: log } } },
@@ -44,7 +45,9 @@ const open = async () => {
   const parsed = parseConfig(text, process.env, process.execPath, process.platform)
   assert.ok(parsed.ok)
   const downstream = connectAll(parsed.config.servers, '0', () => {}, {})
-  const host = createHost(downstream, parsed.config, file, '0.0.0', () => {})
+  const host = createHost(downstream, parsed.config, file, '0.0.0', () => {}, undefined, false, {
+    sealer: createSealer({ now }),
+  })
   const inbox: Msg[] = []
   const wire = (m: unknown): Msg => JSON.parse(JSON.stringify(m))
   const server: any = {
@@ -88,22 +91,21 @@ const retry = (s: Awaited<ReturnType<typeof open>>, state: string) =>
   })
 
 describe('the life of a state', () => {
-  test('a state of 599 s runs the program, and one of 601 s is -32602 and runs nothing', async t => {
-    const s = await open()
+  test('a state of 599 s runs the program, and one of 601 s is -32602 and runs nothing', async () => {
+    let skew = 0
+    const s = await open(() => Date.now() + skew)
     const fresh = await asked(s)
     const old = await asked(s)
-    const real = Date.now
-    t.mock.method(Date, 'now', () => real() + 599_000)
+    skew = 599_000
     const inTime = await retry(s, fresh)
     assert.ok(!inTime.error && !inTime.result.isError, JSON.stringify(inTime).slice(0, 300))
     assert.equal(s.calls(), 1)
-    mock.restoreAll()
-    t.mock.method(Date, 'now', () => real() + 601_000)
+    skew = 601_000
     const late = await retry(s, old)
     assert.equal(late.error?.code, -32602)
     assert.equal(late.error?.message, 'Invalid or expired requestState')
     assert.equal(s.calls(), 1, 'the expired state ran nothing')
-    mock.restoreAll()
+    skew = 0
     // The states of the table that expired are swept: a new state is asked and used as usual.
     const again = await asked(s)
     assert.ok(!(await retry(s, again)).error)

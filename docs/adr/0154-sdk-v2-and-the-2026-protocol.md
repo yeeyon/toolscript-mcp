@@ -134,12 +134,21 @@ builds an instance (`HostServer`) and sets its two handlers, so closing a discar
 no file. One exception to "no timer": for an instance of the legacy era the factory calls `roots.attach`, which starts its unref'd wait
 for `notifications/initialized` (the roots of the client are asked there). A probe instance is always modern, so a discarded instance
 never holds that timer, and a legacy instance made by `serveStdio` is never discarded. Both eras get the same surface (`tools` only, no
-`resources`, no `extensions`) and the same instructions. Until the next two changes of the release, a modern instance asks by
+`resources`, no `extensions`) and the same instructions. Until the next change of the release, a modern instance asks by
 `input_required` (P3-1: `elicitInput` throws on a 2026-07-28 request, so `run_code` returns the prompt and a sealed `requestState`, the
 state lives in the host's table and never in the client, and a request whose envelope does not declare the form capability gets the
-refusal for a client that cannot ask), and it has no Workspace: roots/list does not exist in that era, so a modern
-instance hides the Workspace link (it is not listed and a call of it is refused as an unknown server) and the bind, which waits for the
-roots, ends with no Workspace when the first request other than `server/discover` shows the connection is in use. A request of
+refusal for a client that cannot ask). The states of the approval and of the roots round are sealed by one sealer (`kind` `approval` and
+`roots`: one key, one used-once table); a state is read by its peeked kind and used by the round of that kind only, and a call that needs both
+(the roots, then the approval, then one run) counts the roots round as one of its 4 rounds. Its Workspace follows the roots of the client (P3-2): roots/list does not exist in
+that era, so the first `tools/call` that needs the Workspace of a connection whose request declares `roots` in its envelope returns
+`input_required` with a roots request (`inputRequired.listRoots()`) and a sealed, used-once state of kind `roots` bound to the tool
+and the arguments (HMAC-SHA256, a key of 32 random bytes made at the start, 10 minutes, at most 256 open; `src/host/workspace/rootsstate.ts`),
+and does nothing else. The retry's `inputResponses.roots` settles the same list that the legacy push settles, through `narrowRoot`, so a
+root is the bound root or inside it. The first answer of the process stays. No `roots` declared, or a retry with no usable `roots` entry
+(none, an error, another shape), or a third call after two roots requests with no good retry, ends with no Workspace for the process: the
+bind refuses (never the bound root), its tools are not listed, a nested call of one is refused as a server that is not available, and one
+fixed line on stderr says so. So a client that declares roots and never answers loses at most two calls. Rows: `tests/workspace-roots-modern.test.ts`
+(the state, the decisions, gate G6 with a legacy and a modern column) and `tests/modern-upstream.e2e.mjs` (the built server). A request of
 `serveStdio` that is not 2026-07-28 and not a legacy opening is answered by the entry itself, with the errors of the SDK: a probe with
 a partial envelope gets -32602 (a malformed envelope) where the legacy server answered -32601.
 
