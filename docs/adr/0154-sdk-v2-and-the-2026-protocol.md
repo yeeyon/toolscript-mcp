@@ -454,7 +454,7 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
      is a later decision of the owner. A store stamped by v1 with and without the trailing `/` still refreshes (tested).
    - SigV4: v2 sets `mcp-method` and `mcp-name` only on a request with a modern envelope, so never here. The signature covers `host`,
      `x-amz-*` and `content-type`, so it is the same; the test recomputes the signature of each request the transport sent and compares the
-     other headers with the recording of base.
+     other headers with the recording of base. This replaces a fixed clock: the signature covers only `content-type`, `host` and `x-amz-*`, so re-deriving it from what the fake received proves the covered headers more directly (accepted deviation from the bar's fixed-clock test).
    - Refresh under the lock is unchanged: the refresh request body is still a `URLSearchParams` at `fetchWithinOrigin`, `src/core/lock.ts` and
      `oauthlock.ts` have 0 changed lines, and `oauth-lock*.test.ts`, `oauthlock.test.ts` and `oauth.test.ts` pass unchanged on the v2 flow.
 7. The server side (server.ts, main.ts, the Workspace provider and roots) on `@modelcontextprotocol/server`.

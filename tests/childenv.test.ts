@@ -14,13 +14,13 @@ const WITH_ALL: Record<string, string> = Object.fromEntries(
   ALL.map(name => [name, process.env[name] ?? `value of ${name}`]),
 )
 // The extra names that the v2 package inherits on Windows, and a shell function that no list passes on.
-const EXTRA: Record<string, string> = {
-  ComSpec: 'c',
-  PATHEXT: 'p',
-  WINDIR: 'w',
-  PROGRAMDATA: 'd',
-  NUMBER_OF_PROCESSORS: '1',
-}
+// Exactly the six that stdio.mjs of client 2.4.0 lists beyond the first SDK's list.
+const EXTRA: Record<string, string> = Object.fromEntries(
+  ['COMSPEC', 'PATHEXT', 'PROGRAMDATA', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'WINDIR'].map(name => [
+    name,
+    process.env[name] ?? `value of ${name}`,
+  ]),
+)
 
 for (const platform of ['win32', 'linux', 'darwin']) {
   test(`the inherited environment on ${platform} is the one of the first SDK`, () => {
@@ -28,7 +28,7 @@ for (const platform of ['win32', 'linux', 'darwin']) {
       ...WITH_ALL,
       ...EXTRA,
       FUNC: '() { :; }',
-      ...(platform === 'win32' ? { PROGRAMFILES: '() x' } : { HOME: '() x' }),
+      ...(platform === 'win32' ? { USERNAME: '() x' } : { HOME: '() x' }),
     }
     // On this machine the child must still start: keep the real root of the system.
     if (process.env.SYSTEMROOT !== undefined) env.SYSTEMROOT = process.env.SYSTEMROOT

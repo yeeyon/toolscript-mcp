@@ -9,7 +9,7 @@ import path from 'node:path'
 import type { ServerKey } from '../src/core/config.ts'
 import { connectAll, type Downstream } from '../src/host/downstream.ts'
 import { runLogin } from '../src/host/login.ts'
-import { storeFile } from '../src/host/oauth.ts'
+import { oauthProvider, storeFile } from '../src/host/oauth.ts'
 import { servers, startFake, STATIC_ID, STATIC_SECRET, type Fake } from './fake-oauth.ts'
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-issuer-test-'))
@@ -197,11 +197,51 @@ for (const error of ['invalid_client', 'invalid_grant'] as const) {
       write.mock.restore()
     }
     const warned = written.join('')
-    assert.ok(
-      warned.includes('[mcp-sdk]') || error === 'invalid_grant',
-      `no warning: ${warned} :: ${s.lines.join(' | ')}`,
-    )
+    assert.ok(warned.includes(`[mcp-sdk] OAuth "${error}"`), `no warning: ${warned} :: ${s.lines.join(' | ')}`)
     for (const secret of fake.secrets) assert.ok(!warned.includes(secret), `stderr holds ${secret.slice(0, 8)}`)
     assert.ok(!s.lines.join('\n').includes(STATIC_SECRET))
   })
 }
+
+test('a store of 1.0.x has no issuer stamp, and the running server refreshes it with no SEP-2352 line on stderr', async () => {
+  const fake = await startFake()
+  const s = setup(fake)
+  assert.equal(await s.login(), 0, s.lines.join('\n'))
+  const file = storeFile(s.home, KEY, fake.url)
+  const store = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+    tokens: { issuer?: string }
+    client: { info: { issuer?: string } }
+  }
+  delete store.tokens.issuer
+  delete store.client.info.issuer
+  fs.writeFileSync(file, JSON.stringify(store))
+  fake.expire()
+  const written: string[] = []
+  const write = mock.method(process.stderr, 'write', (chunk: unknown) => (written.push(String(chunk)), true))
+  try {
+    const entry = { kind: 'http' as const, url: fake.url, headers: {}, oauth: { scopes: [] } }
+    const downstream = connectAll(new Map([[KEY, entry]]), '0', () => {}, { home: s.home })
+    opened.push(downstream)
+    await downstream.settled
+    assert.equal(downstream.states()[0]?.status, 'connected')
+  } finally {
+    write.mock.restore()
+  }
+  assert.ok(fake.refreshRequests() >= 1, 'the store was refreshed')
+  assert.ok(!written.join('').includes('SEP-2352'), written.join(''))
+})
+
+test('a code that is not an OAuth error code is not printed in a warning of the SDK', () => {
+  oauthProvider(path.join(DIR, 'guard.json'), { scopes: [] }, { kind: 'serve', reason: 'r', refreshTimeoutMs: 1000 })
+  const written: string[] = []
+  const write = mock.method(process.stderr, 'write', (chunk: unknown) => (written.push(String(chunk)), true))
+  try {
+    console.warn('[mcp-sdk] OAuth "s3cr3t-shaped-code" - invalidating the stored tokens. Cause: "echo s3cr3t"')
+    console.warn('[mcp-sdk] OAuth "invalid_grant" - invalidating the stored tokens. Cause: "echo s3cr3t"')
+  } finally {
+    write.mock.restore()
+  }
+  const text = written.join('')
+  assert.ok(!text.includes('s3cr3t'), text)
+  assert.ok(text.includes('OAuth "invalid_grant"'), text)
+})
