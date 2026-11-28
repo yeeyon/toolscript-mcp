@@ -10,6 +10,7 @@ import {
   decode,
   judge,
   median,
+  newestTag,
   parseJunit,
   planOf,
   planOutputs,
@@ -232,6 +233,25 @@ describe('runTarget', () => {
     assert.match(renderSummary('t', [result]), /stopped at the box of 0\.0005 min/)
   })
 
+  test('the deadline of the run drops the repeat that it cuts, and stops the repeats after it', async () => {
+    const out = path.join(dir, 'out-deadline')
+    const cut = await runTarget(
+      { target: HANG, cwd: dir, count: 3, label: 'hang' },
+      { out, deadline: performance.now() + 1500 },
+    )
+    assert.equal(cut.stopped, 'deadline')
+    assert.equal(cut.runs.length, 0)
+    assert.ok(!anyFailed([cut]))
+    const some = await runTarget(
+      { target: PASS, cwd: dir, count: 500, label: 'pass' },
+      { out, deadline: performance.now() + 4000 },
+    )
+    assert.equal(some.stopped, 'deadline')
+    assert.ok(some.runs.length >= 1 && some.runs.length < 500)
+    assert.ok(!anyFailed([some]))
+    assert.match(renderSummary('t', [some]), /stopped at the deadline of the run/)
+  })
+
   test('a script passes on exit code 0, and its output is kept for each repeat', async () => {
     const out = path.join(dir, 'out-script')
     const ok = await runTarget({ target: SCRIPT_OK, cwd: dir, kind: 'script', count: 2, label: 'ok' }, { out })
@@ -278,6 +298,42 @@ describe('the profiles', () => {
     assert.ok(!anyFailed([results[0]!]))
     assert.ok(anyFailed([results[1]!]))
     assert.match(renderSummary('t', results), /skipped: bench\/not-there\.mjs is not in this checkout/)
+  })
+
+  test('a target that the deadline kept from running fails, and each result is handed on when its target ends', async () => {
+    const seen: string[] = []
+    const results = await runProfile(
+      [
+        { target: path.basename(PASS), cwd: dir, count: 1, label: 'late' },
+        { target: 'tests/also-missing.test.mjs', optional: true, count: 1, cwd: dir, label: 'optional' },
+      ],
+      { out: path.join(dir, 'out-late'), deadline: performance.now() - 1, onResult: r => seen.push(r.label) },
+    )
+    assert.deepEqual(seen, ['late', 'optional'])
+    assert.ok(anyFailed([results[0]!]))
+    assert.match(
+      renderSummary('t', [results[0]!]),
+      /not run: the deadline of the run passed before this target started/,
+    )
+    assert.ok(!anyFailed([results[1]!]))
+  })
+
+  test('the command line: a filter that matches no target is an error, not a green run', () => {
+    const r = spawnSync(
+      process.execPath,
+      [
+        path.join(REPO, 'scripts', 'stress.mjs'),
+        'profile',
+        'flakes',
+        '--only',
+        'no-such-target',
+        '--out',
+        path.join(dir, 'o'),
+      ],
+      { encoding: 'utf8', windowsHide: true },
+    )
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /matches no target/)
   })
 
   test('the command line: exit code 1 and the table for a flake, 0 for a pass, and the step summary is written', () => {
@@ -365,12 +421,13 @@ describe('the baseline budgets', () => {
     assert.equal(verdict({ mainBytes: 1_750_001 }, 'dist/host'), false)
   })
 
-  test('a metric that a system does not measure is n/a and never fails', () => {
+  test('a metric that was not measured is n/a and fails: it never passes silently', () => {
     const rows = judge({ ...same, hostMb: null, sharedSavingMb: null }, { ...same, hostMb: 500, sharedSavingMb: null })
-    assert.ok(rows.every(r => r.ok))
+    assert.equal(rows.filter(r => !r.ok).length, 2)
     assert.equal(rows.filter(r => r.na).length, 2)
+    assert.ok(rows.filter(r => !r.na).every(r => r.ok))
     const text = renderBaseline(rows)
-    assert.match(text, /\| host memory MB .* \| n\/a \| 500\.0 \| \+10 MB \| n\/a \|/)
+    assert.match(text, /\| host memory MB .* \| n\/a \| 500\.0 \| \+10 MB \| FAIL \(not measured\) \|/)
     assert.match(text, /Tokens and cost need a Claude login/)
   })
 
@@ -387,7 +444,7 @@ describe('the plan of a run', () => {
   const macs = (plan: ReturnType<typeof planOf>) =>
     [...plan.stress, ...plan.baseline].filter(j => j.os === 'macos-latest').length
 
-  test('each profile has its systems and Node versions, and at most 4 macOS jobs', () => {
+  test('each profile has its systems and Node versions, and at most 3 macOS jobs', () => {
     const jobs = (profile: string) => planOf({ event: 'workflow_dispatch', inputs: { profile } })
     assert.equal(jobs('flakes').stress.length, 6)
     assert.deepEqual([...new Set(jobs('flakes').stress.map(j => j.node))].sort(), ['22.13', '24'])
@@ -398,14 +455,23 @@ describe('the plan of a run', () => {
     const baseline = jobs('baseline')
     assert.equal(baseline.stress.length, 0)
     assert.equal(baseline.baseline.length, 3)
-    for (const profile of ['flakes', 'load', 'cpu1', 'bench', 'baseline']) assert.ok(macs(jobs(profile)) <= 4, profile)
+    for (const profile of ['flakes', 'load', 'cpu1', 'bench', 'baseline']) assert.ok(macs(jobs(profile)) <= 3, profile)
   })
 
-  test('the weekly schedule is flakes and baseline on main: 9 jobs, 3 on macOS', () => {
-    const plan = planOf({ event: 'schedule' })
+  test('the weekly schedule is flakes and baseline against the newest release tag: 9 jobs, 3 on macOS', () => {
+    const plan = planOf({ event: 'schedule', latestTag: 'v1.0.4' })
     assert.equal(plan.stress.length + plan.baseline.length, 9)
     assert.equal(macs(plan), 3)
-    assert.equal(plan.base, 'main')
+    assert.equal(plan.base, 'v1.0.4')
+    assert.throws(() => planOf({ event: 'schedule' }), /needs a v\* release tag/)
+    // An input of a dispatch never reaches a scheduled run.
+    assert.equal(planOf({ event: 'schedule', latestTag: 'v1.0.4', inputs: { base: 'dev' } }).base, 'v1.0.4')
+  })
+
+  test('the newest tag is the highest stable version, by number', () => {
+    assert.equal(newestTag('v1.0.9\nv1.0.10\nv0.12.20\nv1.0.2\n'), 'v1.0.10')
+    assert.equal(newestTag('v1.1.0-beta.1\nv1.0.4\nlatest\nv2\n'), 'v1.0.4')
+    assert.equal(newestTag(''), undefined)
   })
 
   test('a push to stress/** runs the profile of the stress.json of the branch, flakes by default', () => {
@@ -482,7 +548,7 @@ describe('the plan of a run', () => {
   })
 
   test('the outputs are one line each, as $GITHUB_OUTPUT wants, with no newline inside a value', () => {
-    const lines = planOutputs(planOf({ event: 'schedule' })).split('\n')
+    const lines = planOutputs(planOf({ event: 'schedule', latestTag: 'v1.0.4' })).split('\n')
     assert.deepEqual(
       lines.map(l => l.split('=')[0]),
       ['stress', 'has_stress', 'baseline', 'has_baseline', 'base'],

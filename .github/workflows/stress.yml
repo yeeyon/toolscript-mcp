@@ -5,7 +5,9 @@
 #   gh workflow run stress.yml --ref <branch> -f profile=one -f target=tests/lazy.e2e.mjs -f pattern="2 s kill" -f count=200 -f os=windows-latest
 # or push a copy of a branch to stress/<name>: the profile of the stress.json at the root of that branch runs (default flakes).
 # A stress/** branch is deleted by the person who pushed it, when the run is read. A schedule runs flakes and baseline on main
-# every Sunday. A green flakes and baseline run on main is a condition of the release (AGENTS.md).
+# every Sunday: its baseline compares main with the newest v* release tag. A green flakes and baseline run on main is a
+# condition of the release (AGENTS.md). A run of one profile ends its repeats at 50 minutes (--deadline) and writes the block of
+# each target when it ends, so the 60-minute limit of a job never leaves a run with no summary.
 #
 # One event makes at most 9 jobs, 3 of them on macOS: a full run of one profile makes at most 6. The jobs share the runners
 # of PR CI, so a big run can slow a PR by minutes. No secret is used, and a stress/** branch runs its own copy of this file.
@@ -53,9 +55,11 @@ on:
 permissions:
   contents: read
 
+# One group for each event: a push to a stress/** branch cancels the earlier push of that ref only. A scheduled or manual run has
+# its own group (the run id), so no push cancels it and no other run replaces it while it waits.
 concurrency:
-  group: stress-${{ github.ref }}
-  cancel-in-progress: true
+  group: stress-${{ github.event_name }}-${{ github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   plan:
@@ -69,8 +73,10 @@ jobs:
       has_baseline: ${{ steps.plan.outputs.has_baseline }}
       base: ${{ steps.plan.outputs.base }}
     steps:
+      # The whole history with its tags: the schedule compares with the newest v* tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       # The inputs reach the script as environment variables, never inside a shell command.
       - id: plan
@@ -111,14 +117,14 @@ jobs:
       - name: Run the profile
         if: matrix.profile != 'cpu1' && matrix.profile != 'one'
         shell: bash
-        run: node scripts/stress.mjs profile "$PROFILE" --out stress-out
+        run: node scripts/stress.mjs profile "$PROFILE" --deadline 50 --out stress-out
         env:
           PROFILE: ${{ matrix.profile }}
       - name: Run one test file
         if: matrix.profile == 'one'
         shell: bash
         run: |
-          args=(run --target "$TARGET" --count "$COUNT" --box 50 --out stress-out)
+          args=(run --target "$TARGET" --count "$COUNT" --box 50 --deadline 50 --out stress-out)
           if [ -n "$PATTERN" ]; then args+=(--pattern "$PATTERN"); fi
           node scripts/stress.mjs "${args[@]}"
         env:
@@ -131,14 +137,14 @@ jobs:
         run: >
           docker run --rm --cpus 1 --user "$(id -u):$(id -g)" -e HOME=/tmp -e STRESS_LABEL
           -e GITHUB_STEP_SUMMARY=/summary.md -v "$GITHUB_STEP_SUMMARY:/summary.md" -v "$PWD:/app" -w /app
-          node:24-bookworm-slim node scripts/stress.mjs profile cpu1 --out stress-out
+          node:24-bookworm-slim node scripts/stress.mjs profile cpu1 --deadline 50 --out stress-out
       # One CPU on Windows: the affinity of this shell, which the node processes below it inherit. macOS has no such switch.
       - name: Run cpu1 on one CPU
         if: matrix.profile == 'cpu1' && runner.os == 'Windows'
         shell: pwsh
         run: |
           (Get-Process -Id $PID).ProcessorAffinity = 1
-          node scripts/stress.mjs profile cpu1 --out stress-out
+          node scripts/stress.mjs profile cpu1 --deadline 50 --out stress-out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

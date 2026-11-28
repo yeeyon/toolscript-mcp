@@ -1,20 +1,23 @@
 // Repeats one test target many times and reports each test that failed at least once (the stress workflow,
 // .github/workflows/stress.yml). Node built-ins only.
 //
-//   node scripts/stress.mjs run --target tests/lazy.e2e.mjs [--pattern <name>] [--count 30] [--box 10] [--out DIR]
-//   node scripts/stress.mjs profile flakes [--config tests/stress.json] [--out DIR]
+//   node scripts/stress.mjs run --target tests/lazy.e2e.mjs [--pattern <name>] [--count 30] [--box 10] [--deadline 50] [--out DIR]
+//   node scripts/stress.mjs profile flakes [--config tests/stress.json] [--deadline 50] [--out DIR]
 //   node scripts/stress.mjs baseline --base DIR --head DIR [--out DIR]
 //   node scripts/stress.mjs plan        the jobs of a run of stress.yml, from the environment (EVENT_NAME, INPUT_*)
 //
 // run: each repeat is one `node --test --test-reporter=junit` of the target (a plain script is one test named by its file), with
 // STRESS_RUN=<n> and STRESS_SEED=<seed base + n> in the environment, so a seeded test can shift its seeds. A repeat has a time
 // limit (--timeout seconds, default 600), and the target stops repeating after --box minutes. A process that fails with no
-// failed test in its junit file (a crash, a time limit) is a failed test named "(process)".
+// failed test in its junit file (a crash, a time limit) is a failed test named "(process)". --deadline MIN is the end of the whole
+// command, counted from its start: no repeat starts after it, a repeat that it cuts is dropped (not a failure), and a profile
+// target that never ran because of it is a failed result, so a green run never hides a target that did not run.
 // profile: the entries of one profile of tests/stress.json, one after the other. An entry with "optional": true that is not
 // in the checkout is skipped with a line. "kind": "script" runs `node <target> <args>` and passes on exit code 0.
 // baseline: the budgets of v2 phase 1 for the build in --head against the build in --base (both built), measured in turns.
 //
-// The summary goes to stdout and to $GITHUB_STEP_SUMMARY. The junit file, the stdout and the stderr of each failed repeat go
+// The summary goes to stdout and to $GITHUB_STEP_SUMMARY, a profile writes the block of each target when the target ends, so a job
+// that is killed still shows the targets that finished. The junit file, the stdout and the stderr of each failed repeat go
 // to --out (default stress-out). The exit code is 1 when any repeat failed.
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -118,7 +121,11 @@ export const renderTarget = result => {
     ' of ' +
     result.planned +
     ' runs' +
-    (result.stopped === 'box' ? ' (stopped at the box of ' + result.box + ' min)' : '') +
+    (result.stopped === 'box'
+      ? ' (stopped at the box of ' + result.box + ' min)'
+      : result.stopped === 'deadline'
+        ? ' (stopped at the deadline of the run)'
+        : '') +
     ', ' +
     failedRuns +
     ' failed, ' +
@@ -136,18 +143,16 @@ export const renderTarget = result => {
   return out
 }
 
-export const renderSummary = (title, results) => {
+/** The closing line of a run: targets, runs, failed runs and minutes. */
+export const renderTotals = results => {
   const runs = results.reduce((n, r) => n + r.runs.length, 0)
   const failed = results.reduce((n, r) => n + r.runs.filter(x => x.results.some(t => t.failed)).length, 0)
   const minutes = results.reduce((n, r) => n + r.ms, 0) / 60000
-  return [
-    '### ' + title,
-    '',
-    ...results.flatMap(renderTarget),
-    '',
-    results.length + ' targets, ' + runs + ' runs, ' + failed + ' failed runs, ' + minutes.toFixed(1) + ' min.',
-  ].join('\n')
+  return results.length + ' targets, ' + runs + ' runs, ' + failed + ' failed runs, ' + minutes.toFixed(1) + ' min.'
 }
+
+export const renderSummary = (title, results) =>
+  ['### ' + title, '', ...results.flatMap(renderTarget), '', renderTotals(results)].join('\n')
 
 // ---------------------------------------------------------------------------------------------------------------
 // One repeat, and a target
@@ -211,9 +216,16 @@ const once = (entry, n, seed, out) =>
     child.stdout.on('data', d => (outs.push(d), outs.length > 64 && outs.splice(0, outs.length - 32)))
     child.stderr.on('data', d => (errs.push(d), errs.length > 64 && errs.splice(0, errs.length - 32)))
     child.on('error', () => {})
-    const timer = setTimeout(() => ((timedOut = true), void endTree(child)), (entry.timeout ?? 600) * 1000)
+    const own = entry.timeout ?? 600
+    const left = entry.deadline === undefined ? Infinity : Math.max(1, (entry.deadline - started) / 1000)
+    const timer = setTimeout(() => ((timedOut = true), void endTree(child)), Math.min(own, left) * 1000)
     child.on('close', code => {
       clearTimeout(timer)
+      if (timedOut && left < own) {
+        // The deadline of the run cut this repeat: it is not a result, so it is neither a pass nor a failure.
+        fs.rmSync(dir, { recursive: true, force: true })
+        return resolve({ run: n, seed, ms: performance.now() - started, results: [], cut: true })
+      }
       let results = []
       if (!script) {
         try {
@@ -257,15 +269,24 @@ const once = (entry, n, seed, out) =>
 /**
  * Repeats `entry` ({ target, label, count, box (minutes), pattern, kind, args, timeout }) until count repeats or the box ran out.
  */
-export const runTarget = async (entry, { out = 'stress-out', seedBase = 0 } = {}) => {
+export const runTarget = async (entry, { out = 'stress-out', seedBase = 0, deadline } = {}) => {
   const label = entry.label ?? entry.target + (entry.pattern === undefined ? '' : ' / ' + entry.pattern)
-  const full = { ...entry, label }
+  const full = { ...entry, label, deadline }
   const planned = entry.count ?? 1
   const began = performance.now()
   const runs = []
   let stopped
   for (let n = 1; n <= planned; n++) {
-    runs.push(await once(full, n, seedBase + n, out))
+    if (deadline !== undefined && n > 1 && performance.now() >= deadline) {
+      stopped = 'deadline'
+      break
+    }
+    const run = await once(full, n, seedBase + n, out)
+    if (run.cut) {
+      stopped = 'deadline'
+      break
+    }
+    runs.push(run)
     if (entry.box !== undefined && performance.now() - began > entry.box * 60000 && n < planned) {
       stopped = 'box'
       break
@@ -283,41 +304,44 @@ export const profileOf = (config, name) => {
   return entries
 }
 
-/** Runs a profile. A missing optional target is a line, a missing other target is a failed result. */
-export const runProfile = async (entries, options) => {
+/** A target that failed to run at all: one failed test named after it. */
+const failedResult = (label, detail) => ({
+  label,
+  planned: 1,
+  ms: 0,
+  runs: [{ run: 1, seed: 0, ms: 0, results: [{ name: '(process) ' + label, failed: true, skipped: false, detail }] }],
+})
+
+/**
+ * Runs a profile. A missing optional target is a line, a missing other target is a failed result, and so is a target that the
+ * deadline of the run stopped before its first repeat ended. `options.onResult` gets each result when its target ends.
+ */
+export const runProfile = async (entries, options = {}) => {
   const results = []
+  const done = result => (results.push(result), options.onResult?.(result))
   for (const e of entries) {
+    const label = e.label ?? e.target
     const file = path.join(e.cwd ?? ROOT, e.target.replace(/\{temp\}/g, os.tmpdir()))
     const glob = /[*?]/.test(e.target)
     if (!glob && !fs.existsSync(file)) {
-      const label = e.label ?? e.target
-      if (e.optional)
-        results.push({ label, planned: 0, runs: [], ms: 0, note: 'skipped: ' + e.target + ' is not in this checkout' })
-      else
-        results.push({
-          label,
-          planned: 1,
-          ms: 0,
-          runs: [
-            {
-              run: 1,
-              seed: 0,
-              ms: 0,
-              results: [
-                {
-                  name: '(process) ' + label,
-                  failed: true,
-                  skipped: false,
-                  detail: e.target + ' is not in this checkout',
-                },
-              ],
-            },
-          ],
-        })
+      done(
+        e.optional
+          ? { label, planned: 0, runs: [], ms: 0, note: 'skipped: ' + e.target + ' is not in this checkout' }
+          : failedResult(label, e.target + ' is not in this checkout'),
+      )
+      continue
+    }
+    if (options.deadline !== undefined && performance.now() >= options.deadline) {
+      done(failedResult(label, 'not run: the deadline of the run passed before this target started'))
       continue
     }
     const args = (e.args ?? []).map(a => a.replace(/\{temp\}/g, os.tmpdir()))
-    results.push(await runTarget({ ...e, args }, options))
+    const result = await runTarget({ ...e, args }, options)
+    done(
+      result.runs.length === 0
+        ? failedResult(label, 'not run: the deadline of the run passed in its first repeat')
+        : result,
+    )
   }
   return results
 }
@@ -335,7 +359,7 @@ export const median = list => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
 }
 
-/** The budgets: a value of head against base. `null` on either side is n/a, which passes. */
+/** The budgets: a value of head against base. `null` on either side is n/a: a metric that was not measured fails, it never passes silently. */
 export const judge = (base, head) => {
   const rows = []
   const row = (metric, b, h, budget, ok, unit) =>
@@ -345,7 +369,7 @@ export const judge = (base, head) => {
       head: h,
       budget,
       unit,
-      ok: b === null || h === null ? true : ok(b, h),
+      ok: b === null || h === null ? false : ok(b, h),
       na: b === null || h === null,
     })
   row(
@@ -383,9 +407,13 @@ export const renderBaseline = rows => {
     ...rows.map(
       r =>
         '| ' +
-        [r.metric, show(r.base, r.unit), show(r.head, r.unit), r.budget, r.na ? 'n/a' : r.ok ? 'pass' : 'FAIL'].join(
-          ' | ',
-        ) +
+        [
+          r.metric,
+          show(r.base, r.unit),
+          show(r.head, r.unit),
+          r.budget,
+          r.na ? 'FAIL (not measured)' : r.ok ? 'pass' : 'FAIL',
+        ].join(' | ') +
         ' |',
     ),
     '',
@@ -520,7 +548,7 @@ export const baseline = async (baseDir, headDir, out) => {
   // A, B, A, B: the noise of the runner hits both builds.
   for (const turn of ['base', 'head', 'base', 'head'])
     for (const [key, list] of [
-      ['start', 5],
+      ['start', 10],
       ['mem', 1],
       ['shared', 1],
     ]) {
@@ -557,7 +585,7 @@ const SAFE_REF = /^[A-Za-z0-9._/-]+$/
  * job: macOS has no way to limit a job to one CPU. At most 3 macOS jobs run for one event (flakes 2, baseline 1), under the
  * unverified macOS limit of GitHub, which is taken as 5.
  */
-export const planOf = ({ event, inputs = {}, branch = {} }) => {
+export const planOf = ({ event, inputs = {}, branch = {}, latestTag }) => {
   const source = event === 'push' ? { profile: 'flakes', ...branch } : inputs
   const profiles = event === 'schedule' ? ['flakes', 'baseline'] : [source.profile || 'flakes']
   for (const p of profiles)
@@ -589,13 +617,28 @@ export const planOf = ({ event, inputs = {}, branch = {} }) => {
       }
   }
   // The base goes to $GITHUB_OUTPUT: a ref has no newline, no leading dash and no `..`, so no line of output can be forged.
-  const ref = String(source.base || 'main')
+  // The weekly run compares with the newest release, not with main: main against main shows nothing.
+  if (event === 'schedule' && !latestTag)
+    throw new Error('the weekly baseline needs a v* release tag, and there is none')
+  const ref = String(event === 'schedule' ? latestTag : source.base || 'main')
   if (!SAFE_REF.test(ref) || ref.startsWith('-') || ref.includes('..'))
     throw new Error('base is a ref: letters, digits and . _ / -')
   const mac = [...stress, ...baseline].filter(j => j.os === 'macos-latest').length
-  if (mac > 4) throw new Error('more than 4 macOS jobs: ' + mac)
+  if (mac > 3) throw new Error('more than 3 macOS jobs: ' + mac)
   return { stress, baseline, base: ref }
 }
+
+/** The newest release tag (vX.Y.Z, no prerelease) in a list of tag names, one for each line, or undefined. */
+export const newestTag = text =>
+  text
+    .split('\n')
+    .map(t => t.trim())
+    .filter(t => /^v\d+\.\d+\.\d+$/.test(t))
+    .sort((a, b) => {
+      const x = a.slice(1).split('.').map(Number)
+      const y = b.slice(1).split('.').map(Number)
+      return y[0] - x[0] || y[1] - x[1] || y[2] - x[2]
+    })[0]
 
 /** The lines for $GITHUB_OUTPUT of a plan. */
 export const planOutputs = plan =>
@@ -633,10 +676,17 @@ const main = async () => {
       base: { type: 'string' },
       head: { type: 'string' },
       'seed-base': { type: 'string', default: '0' },
+      deadline: { type: 'string' },
     },
   })
   const label = process.env.STRESS_LABEL ?? os.type() + ' node ' + process.versions.node
-  const options = { out: values.out, seedBase: Number(values['seed-base']) }
+  const minutes = values.deadline === undefined ? undefined : Number(values.deadline)
+  if (minutes !== undefined && !(minutes > 0)) throw new Error('--deadline is a number of minutes above 0')
+  const options = {
+    out: values.out,
+    seedBase: Number(values['seed-base']),
+    deadline: minutes === undefined ? undefined : performance.now() + minutes * 60000,
+  }
   if (command === 'run') {
     if (values.target === undefined) throw new Error('run needs --target')
     const entry = {
@@ -657,8 +707,13 @@ const main = async () => {
     const entries = profileOf(JSON.parse(fs.readFileSync(values.config, 'utf8')), name).filter(
       e => values.only === undefined || e.target.includes(values.only),
     )
-    const results = await runProfile(entries, options)
-    publish(renderSummary('stress ' + name + ': ' + label, results))
+    if (entries.length === 0) throw new Error('--only ' + values.only + ' matches no target of profile ' + name)
+    publish('### stress ' + name + ': ' + label + '\n')
+    const results = await runProfile(entries, {
+      ...options,
+      onResult: result => publish(renderTarget(result).join('\n')),
+    })
+    publish('\n' + renderTotals(results))
     process.exit(anyFailed(results) ? 1 : 0)
   }
   if (command === 'plan') {
@@ -674,7 +729,13 @@ const main = async () => {
         env['INPUT_' + k.toUpperCase()] ?? '',
       ]),
     )
-    const text = planOutputs(planOf({ event: env.EVENT_NAME ?? 'workflow_dispatch', inputs, branch }))
+    const event = env.EVENT_NAME ?? 'workflow_dispatch'
+    const tags =
+      event === 'schedule'
+        ? spawnSync('git', ['tag', '--list', 'v*'], { cwd: ROOT, encoding: 'utf8', windowsHide: true })
+        : null
+    const latestTag = tags === null ? undefined : newestTag(tags.stdout ?? '')
+    const text = planOutputs(planOf({ event, inputs, branch, latestTag }))
     console.log(text)
     if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT, text + '\n')
     process.exit(0)
@@ -686,7 +747,7 @@ const main = async () => {
     process.exit(rows.some(r => !r.ok) ? 1 : 0)
   }
   console.error(
-    'usage: node scripts/stress.mjs run --target FILE [--pattern NAME] [--count N] [--box MIN] [--timeout SEC] [--out DIR]\n       node scripts/stress.mjs profile NAME [--config FILE] [--only TEXT] [--out DIR]\n       node scripts/stress.mjs baseline --base DIR --head DIR [--out DIR]',
+    'usage: node scripts/stress.mjs run --target FILE [--pattern NAME] [--count N] [--box MIN] [--timeout SEC] [--deadline MIN] [--out DIR]\n       node scripts/stress.mjs profile NAME [--config FILE] [--only TEXT] [--deadline MIN] [--out DIR]\n       node scripts/stress.mjs baseline --base DIR --head DIR [--out DIR]',
   )
   process.exit(2)
 }
