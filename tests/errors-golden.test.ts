@@ -15,7 +15,10 @@ import type { Rule } from '../src/core/policy.ts'
 import { newKept } from '../src/core/protocol.ts'
 import type { RunRecord } from '../src/core/runlog.ts'
 import { connectAll, type Downstream } from '../src/host/downstream.ts'
+import { storeFile } from '../src/host/oauth.ts'
+import { signRequest } from '../src/host/sigv4.ts'
 import { runCode, type RunContext } from '../src/host/run.ts'
+import { closedPort, startGoldenHttp } from './golden-http.ts'
 
 const SERVER = path.join(import.meta.dirname, 'golden-server.mjs')
 const FIXTURE = path.join(import.meta.dirname, 'fixtures', 'errors-golden.json')
@@ -53,16 +56,16 @@ type Rig = {
 }
 
 const rig = (
-  options: { callSeconds?: number; signal?: AbortSignal; servers?: Map<ServerKey, ServerConfig> } = {},
+  options: { callSeconds?: number; signal?: AbortSignal; servers?: Map<ServerKey, ServerConfig>; home?: string } = {},
 ): Rig => {
-  const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
+  const home = options.home ?? fs.mkdtempSync(path.join(ROOT, 'home-'))
   const log = path.join(home, 'received.jsonl')
   const servers =
     options.servers ??
     new Map<ServerKey, ServerConfig>([
       [KEY, { kind: 'stdio', command: process.execPath, args: [SERVER, log], env: {} }],
     ])
-  const downstream = connectAll(servers, '0', () => {})
+  const downstream = connectAll(servers, '0', () => {}, { home })
   opened.push(downstream)
   const policy: Rule[] = [{ match: 'mcp__*', action: 'allow', index: 0 }]
   const config: Config = {
@@ -205,5 +208,157 @@ describe('what the client sends first', () => {
     assert.equal(methods[0], 'initialize')
     assert.ok(!methods.includes('server/discover'), methods.join(','))
     settle('first', { methods, initialize: sent[0]?.params })
+  })
+})
+
+describe('the texts of an HTTP link that fails', () => {
+  const fakes: { close: () => void }[] = []
+  after(() => void fakes.forEach(f => f.close()))
+
+  const writeStore = (home: string, url: string, tokens: boolean): void => {
+    const file = storeFile(home, KEY, url)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const client = { info: { client_id: 'golden-client' }, redirectUrl: 'http://127.0.0.1:1/callback' }
+    const stored = {
+      client,
+      ...(tokens && {
+        tokens: { access_token: 'golden-access-1', token_type: 'Bearer', refresh_token: 'golden-refresh-1' },
+      }),
+    }
+    fs.writeFileSync(file, JSON.stringify(stored))
+  }
+
+  /** The state of the link, and what the model got for one call, with the port of the fake left out. */
+  const observeHttp = async (
+    scenario: string,
+    options: { oauth?: 'none' | 'tokens'; callSeconds?: number; closeBeforeCall?: boolean; url?: string } = {},
+  ): Promise<unknown> => {
+    const fake = await startGoldenHttp()
+    fakes.push(fake)
+    const home = fs.mkdtempSync(path.join(ROOT, 'home-'))
+    const url = options.url ?? `${fake.origin}/${scenario}`
+    if (options.oauth !== undefined) writeStore(home, url, options.oauth === 'tokens')
+    const servers = new Map<ServerKey, ServerConfig>([
+      [KEY, { kind: 'http', url, headers: {}, ...(options.oauth !== undefined && { oauth: { scopes: [] } }) }],
+    ])
+    const r = rig({ servers, home, ...(options.callSeconds !== undefined && { callSeconds: options.callSeconds }) })
+    await r.downstream.settled
+    const state = r.downstream.states()[0]
+    if (options.closeBeforeCall) fake.close()
+    const result = await observe(r, 'ok')
+    const value = { state: state?.status === 'failed' ? state.reason : state?.status, result }
+    return JSON.parse(JSON.stringify(value).replaceAll(`:${fake.port}`, ':N'))
+  }
+
+  for (const [name, options] of [
+    ['401 with no OAuth', { scenario: '401' }],
+    ['401 with OAuth and no token', { scenario: '401-oauth', oauth: 'none' }],
+    ['401 after a refresh', { scenario: '401-refresh', oauth: 'tokens' }],
+    ['403', { scenario: '403' }],
+    ['404 with no session', { scenario: '404-nosession' }],
+    ['404 with a session', { scenario: '404-session' }],
+    ['400 with an unknown session', { scenario: '400-unknown' }],
+    ['500', { scenario: '500' }],
+    ['503', { scenario: '503' }],
+    ['a 200 text/html body', { scenario: 'html' }],
+    ['a 200 application/json body that is not JSON', { scenario: 'badjson' }],
+    ['a dropped connection at a call', { scenario: 'die' }],
+    ['a 307 to another origin', { scenario: 'redirect' }],
+  ] as const) {
+    test(`http ${name}`, async () => {
+      const { scenario, ...rest } = options as { scenario: string; oauth?: 'none' | 'tokens' }
+      settle(`http ${name}`, await observeHttp(scenario, rest))
+    })
+  }
+
+  test('http an SSE answer that ends before its result ends at the call limit', async () => {
+    settle('http sse-cut', await observeHttp('sse-cut', { callSeconds: 2 }))
+  })
+
+  test('http a refused connection at connect', async () => {
+    const port = await closedPort()
+    settle('http refused at connect', await observeHttp('ok', { url: `http://127.0.0.1:${port}/ok` }))
+  })
+
+  test('http a SigV4 entry signs each request, and its other headers are the same', async () => {
+    const fake = await startGoldenHttp()
+    fakes.push(fake)
+    // A fake AWS CLI first on PATH: the entry starts it through the real exportCredentials.
+    const bin = fs.mkdtempSync(path.join(ROOT, 'bin-'))
+    const script = path.join(bin, 'aws.mjs')
+    const exported = { AccessKeyId: 'AKIDGOLDEN', SecretAccessKey: 'golden-secret', SessionToken: 'golden-token' }
+    fs.writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(exported))})\n`)
+    if (process.platform === 'win32')
+      fs.writeFileSync(path.join(bin, 'aws.cmd'), `@"${process.execPath}" "${script}" %*\r\n`)
+    else fs.writeFileSync(path.join(bin, 'aws'), `#!/bin/sh\n"${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 })
+    const realPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${realPath}`
+    const scope = { profile: 'p', region: 'us-east-1', service: 'aws-mcp' }
+    const url = `${fake.origin}/ok`
+    try {
+      const servers = new Map<ServerKey, ServerConfig>([[KEY, { kind: 'http', url, headers: {}, sigv4: scope }]])
+      const r = rig({ servers })
+      await r.downstream.settled
+      await observe(r, 'ok')
+    } finally {
+      process.env.PATH = realPath
+    }
+    const sent = fake.seen.filter(s => s.path === '/ok')
+    assert.ok(
+      sent.some(s => s.body.includes('tools/call')),
+      'the call reached the fake',
+    )
+    const rows = sent.map(s => {
+      const date = s.headers['x-amz-date'] ?? ''
+      const when = new Date(
+        Date.UTC(
+          +date.slice(0, 4),
+          +date.slice(4, 6) - 1,
+          +date.slice(6, 8),
+          +date.slice(9, 11),
+          +date.slice(11, 13),
+          +date.slice(13, 15),
+        ),
+      )
+      const again = signRequest(
+        {
+          method: s.method,
+          url,
+          headers: new Headers({ ...(s.headers['content-type'] && { 'content-type': s.headers['content-type'] }) }),
+          body: s.body,
+        },
+        {
+          accessKeyId: exported.AccessKeyId,
+          secretAccessKey: exported.SecretAccessKey,
+          sessionToken: exported.SessionToken,
+        },
+        scope,
+        when,
+      )
+      assert.equal(
+        s.headers.authorization,
+        again.authorization,
+        'the authorization header is the one of the signature of the request',
+      )
+      const {
+        host: _h,
+        'user-agent': _u,
+        connection: _c,
+        'content-length': _l,
+        'x-amz-date': _d,
+        authorization: _a,
+        ...rest
+      } = s.headers
+      return {
+        method: s.method,
+        headers: rest,
+        signedHeaders: /SignedHeaders=([^,]+)/.exec(s.headers.authorization ?? '')?.[1],
+      }
+    })
+    settle('http sigv4', rows)
+  })
+
+  test('http a refused connection at a call', async () => {
+    settle('http refused at a call', await observeHttp('ok', { closeBeforeCall: true }))
   })
 })

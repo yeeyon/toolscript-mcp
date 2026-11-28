@@ -6,7 +6,8 @@
 
 import type { ChildProcess } from 'node:child_process'
 import { PassThrough } from 'node:stream'
-import { deserializeMessage, getDefaultEnvironment } from './sdk/transport.ts'
+import { deserializeMessage } from './sdk/transport.ts'
+import { defaultEnvironment } from '../core/childenv.ts'
 import type { JSONRPCMessage, Transport } from './sdk/transport.ts'
 import crossSpawn from 'cross-spawn'
 import { STOP_WAIT_MS } from '../core/broker.ts'
@@ -44,7 +45,7 @@ export type ChildParams = {
 
 /** The env that the child gets. The cache key of a launch does not hash it: it holds the inherited PATH. */
 export const childEnvironment = (env: Readonly<Record<string, string>>): Record<string, string> => ({
-  ...getDefaultEnvironment(),
+  ...defaultEnvironment(process.platform, process.env),
   ...env,
 })
 

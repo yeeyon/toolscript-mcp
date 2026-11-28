@@ -9,9 +9,10 @@
 
 import fs from 'node:fs'
 import os from 'node:os'
+import { IssuerMismatchError } from './sdk/auth.ts'
 import { listToolsPage, newClient, onToolListChanged, type HostClient } from './sdk/client.ts'
-import { StreamableHTTPClientTransport, StreamableHTTPError } from './sdk/transport.ts'
-import type { FetchLike, HttpWireTransport, Transport } from './sdk/transport.ts'
+import { StreamableHTTPClientTransport } from './sdk/transport.ts'
+import type { FetchLike, Transport } from './sdk/transport.ts'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import { cachedTools, isLazy, sameTools, type ToolsCache } from '../core/lazy.ts'
 import {
@@ -30,12 +31,21 @@ import {
 } from '../core/config.ts'
 import type { Bridges } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
-import { sdkErrorText } from './sdk/errors.ts'
+import { httpStatus, isBoundElsewhere, sdkErrorText } from './sdk/errors.ts'
+import { metadataIssuerText } from '../core/issuer.ts'
 import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
 import type { Guard } from './childguard.ts'
 import { ChildTransport } from './childtransport.ts'
-import { LoginNeeded, oauthProvider, REFRESH_TIMEOUT_MS, RefreshFailed, storeFile, type Provider } from './oauth.ts'
+import {
+  IssuerRefused,
+  LoginNeeded,
+  oauthProvider,
+  REFRESH_TIMEOUT_MS,
+  RefreshFailed,
+  storeFile,
+  type Provider,
+} from './oauth.ts'
 import { AwsCredentialsError, sigv4Fetch, stopCredentialReads } from './sigv4.ts'
 import type { WorkspaceLink } from './workspace/bind.ts'
 
@@ -293,20 +303,19 @@ const UNKNOWN_SESSION =
 const endsSession = (err: unknown, hadSession: boolean): err is Error =>
   isOAuthStop(err) ||
   (err instanceof TypeError && err.message === 'fetch failed') ||
-  (err instanceof StreamableHTTPError &&
-    ((err.code === 404 && hadSession) || (err.code === 400 && UNKNOWN_SESSION.test(err.message))))
+  (httpStatus(err) === 404 && hadSession) ||
+  (httpStatus(err) === 400 && err instanceof Error && UNKNOWN_SESSION.test(err.message))
 
 /**
  * True for an error of the SDK's OAuth flow that only a new login fixes. With OAuth, the SDK answers a 401 itself:
  * it refreshes the token and sends again, so a 401 that comes through is a server that still refuses the token. A
  * stored client of another authorization server needs a new registration, and only login registers.
  */
-const needsLogin = (err: unknown): boolean =>
-  (err instanceof StreamableHTTPError && err.code === 401) ||
-  (err instanceof Error && err.message.startsWith('OAuth client information is bound to authorization server'))
+const needsLogin = (err: unknown): boolean => httpStatus(err) === 401 || isBoundElsewhere(err)
 
-/** An error of the provider whose message is the reason to show: a login is needed, or a refresh failed. */
-const isOAuthStop = (err: unknown): err is Error => err instanceof LoginNeeded || err instanceof RefreshFailed
+/** An error of the provider whose message is the reason to show: a login is needed, a refresh failed, or an issuer is refused. */
+const isOAuthStop = (err: unknown): err is Error =>
+  err instanceof LoginNeeded || err instanceof RefreshFailed || err instanceof IssuerRefused
 
 /** The OAuth provider of an HTTP server, and the reason that its link shows when a person must log in. */
 type Auth = { readonly provider: Provider; readonly reason: string }
@@ -344,7 +353,13 @@ class HttpTransport extends StreamableHTTPClientTransport {
     try {
       await super.send(...args)
     } catch (raw) {
-      const err = this.#loginReason !== undefined && needsLogin(raw) ? new LoginNeeded(this.#loginReason) : raw
+      // The metadata of an authorization server that names another issuer: the SDK sends it no login and no token.
+      const err =
+        raw instanceof IssuerMismatchError && raw.kind === 'metadata'
+          ? new IssuerRefused(metadataIssuerText(raw.expected ?? '', raw.received))
+          : this.#loginReason !== undefined && needsLogin(raw)
+            ? new LoginNeeded(this.#loginReason)
+            : raw
       if (endsSession(err, hadSession)) this.#onSessionEnd(err)
       throw err
     }
@@ -380,7 +395,7 @@ const transportOf = (
   stderr: (chunk: Buffer) => void,
   share: ShareOptions | undefined,
   guard: Guard | undefined,
-): { transport: Transport | HttpWireTransport; lastError: () => string; child?: ChildTransport } => {
+): { transport: Transport; lastError: () => string; child?: ChildTransport } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   // With sharing on, a shared or per-folder server has one child in the broker and never a child of this process.
   const class_ = share === undefined ? undefined : classify(key, server, share.bridges)
@@ -563,7 +578,7 @@ export const connectAll = (
 
   const connect = async (key: ServerKey, server: Live, woke = false): Promise<void> => {
     const began = performance.now()
-    const client = newClient(server.kind === 'http' ? 'http' : 'link', { name: 'toolscript-mcp', version })
+    const client = newClient({ name: 'toolscript-mcp', version })
     opened.add(client)
     let secrets = (): readonly string[] => []
     // The built-in Workspace holds no secret of a config, and its reasons are our own text.
