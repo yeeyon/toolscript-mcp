@@ -19,7 +19,15 @@ const note = (method: string, params?: unknown) =>
 const MODERN = { supportedVersions: ['2026-07-28'], capabilities: {} }
 
 type M = Record<string, any>
-const toChild = (effects: readonly Effect[]) => effects.flatMap(e => (e.to === 'child' ? [e.msg as M] : []))
+// Every router id that went to the child, so a refusal can be checked against all of them.
+const seenRids = new Set<number>()
+const toChild = (effects: readonly Effect[]) =>
+  effects.flatMap(e => {
+    if (e.to !== 'child') return []
+    const m = e.msg as M
+    if (typeof m.id === 'number') seenRids.add(m.id)
+    return [m]
+  })
 const toLink = (effects: readonly Effect[], link: string) =>
   effects.flatMap(e => (e.to === 'link' && e.link === link ? [e.msg as M] : []))
 const rig = (...names: string[]): Router => {
@@ -45,7 +53,8 @@ const refusal = (effects: readonly Effect[], link: string, id: unknown, code: nu
   const [m] = toLink(effects, link)
   assert.equal(m?.id, id)
   assert.equal(m?.error.code, code)
-  assert.ok(!/\d{3,}/.test(String(m?.error.message)), 'no router id in the text')
+  for (const rid of seenRids)
+    assert.ok(!new RegExp(`\\b${rid}\\b`).test(String(m?.error.message)), `router id ${rid} in the text`)
 }
 
 describe('the era', () => {
@@ -300,6 +309,42 @@ describe('modern rules', () => {
     assert.equal(router.open(), 0)
   })
 
+  test('rule 4: a cancel of the child for a stream (server-side teardown) closes it and goes to its link, with the link id', () => {
+    const router = modern('a', 'b')
+    const rid = send(router, 'a', 'listen:1', 'subscriptions/listen', { notifications: { toolsListChanged: true } })
+    const other = send(router, 'b', 'listen:1', 'subscriptions/listen', { notifications: {} })
+    router.fromChild(note('notifications/subscriptions/acknowledged', { _meta: { [STAMP]: rid }, notifications: {} }))
+    const out = router.fromChild(note('notifications/cancelled', { requestId: rid, reason: 'server closing' }))
+    assert.deepEqual(out, [
+      {
+        to: 'link',
+        link: 'a',
+        msg: {
+          jsonrpc: '2.0',
+          method: 'notifications/cancelled',
+          params: { requestId: 'listen:1', reason: 'server closing' },
+        },
+      },
+    ])
+    assert.equal(router.open(), 1)
+    // Nothing more for that stream, and the link may open a new one.
+    assert.deepEqual(router.fromChild(note('notifications/tools/list_changed', { _meta: { [STAMP]: rid } })), [])
+    assert.deepEqual(router.fromChild(note('notifications/cancelled', { requestId: rid })), [])
+    assert.equal(
+      toChild(router.fromLink('a', req('listen:2', 'subscriptions/listen', { notifications: {} }))).length,
+      1,
+    )
+    // Any other cancel of the child is dropped: a call, a string form, an unknown id, no id.
+    const call = send(router, 'a', 5)
+    for (const requestId of [call, String(other), 9999, undefined, null]) {
+      assert.deepEqual(
+        router.fromChild(note('notifications/cancelled', requestId === undefined ? {} : { requestId })),
+        [],
+      )
+    }
+    assert.equal(router.open(), 3)
+  })
+
   test('rule 4: a death gives each open request and each stream one error, then nothing', () => {
     const router = modern('a', 'b')
     send(router, 'a', 'listen:1', 'subscriptions/listen', { notifications: {} })
@@ -407,7 +452,7 @@ const generator = (seed: number) => {
 
 describe('modern property test', () => {
   // What the seeds reached: the test fails when a kind of event never happened.
-  const reached = { streams: 0, notices: 0, retries: 0, refusals: 0, states: 0 }
+  const reached = { streams: 0, notices: 0, retries: 0, refusals: 0, states: 0, cancels: 0 }
   test('250 seeds of 200 steps: no router id, no cross-link stamp or requestState, streams end with their link, open() ends at 0', () => {
     for (let seed = 1; seed <= 250; seed++) {
       const g = generator(seed)
@@ -439,6 +484,13 @@ describe('modern property test', () => {
           const m = e.msg as M
           assert.ok(!gone.has(e.link), where(step, `${what}: an effect names the detached link ${e.link}`))
           const l = mine.get(e.link)!
+          if (m.method === 'notifications/cancelled') {
+            reached.cancels++
+            assert.ok(
+              typeof m.params?.requestId === 'string' && l.streams.has(m.params.requestId),
+              where(step, 'a link got a cancel for an id it did not send'),
+            )
+          }
           if (m.error?.code === -32602) reached.refusals++
           if (m.params?._meta?.[STAMP] !== undefined) reached.notices++
           if (m.id !== undefined)
@@ -541,6 +593,11 @@ describe('modern property test', () => {
             step,
             'progress',
           )
+        } else if (roll < 90 && rids.size > 0) {
+          const streamRids = [...rids.entries()].filter(([, info]) => info.stream)
+          const [rid] = streamRids.length > 0 && g.chance(0.8) ? g.pick(streamRids) : g.pick([...rids.entries()])
+          const requestId = g.pick<unknown>([rid, rid, rid, String(rid), 4242])
+          check(router.fromChild(note('notifications/cancelled', { requestId })), step, 'child cancel')
         } else if (roll < 92) {
           check(router.fromChild(note('notifications/tools/list_changed')), step, 'unstamped list change')
         } else if (roll < 94) {

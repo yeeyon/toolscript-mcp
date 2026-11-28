@@ -259,6 +259,22 @@ export const createRouter = (): Router => {
     return [{ to: 'link', link: entry.link, msg: { ...msg, id: entry.id } }]
   }
 
+  /**
+   * A cancel of the child whose requestId is the router id of an open stream (the server-side teardown of a stream on stdio)
+   * closes that stream and goes to its link only, with the id that the link sent. Any other cancel of the child is dropped.
+   */
+  const streamCancel = (msg: Obj): Effect[] => {
+    const params = own(msg, 'params')
+    const sent = isObj(params) ? own(params, 'requestId') : undefined
+    const entry = typeof sent === 'number' ? open.get(sent) : undefined
+    if (!isObj(params) || entry?.kind !== 'stream' || typeof sent !== 'number') return []
+    open.delete(sent)
+    streams.delete(entry.link)
+    const held = links.get(entry.link)
+    if (held !== undefined) release(held, entry.id)
+    return [{ to: 'link', link: entry.link, msg: { ...msg, params: { ...params, requestId: entry.id } } }]
+  }
+
   /** A notification of the child on a modern child: only a stamp of an open stream takes it to a link, and to that one. */
   const streamNotice = (msg: Obj): Effect[] => {
     const stamp = stampOf(msg)
@@ -282,7 +298,7 @@ export const createRouter = (): Router => {
     if (typeof method === 'string') {
       if (id === undefined) {
         if (method === 'notifications/progress') return progress(msg)
-        if (era === 'modern') return streamNotice(msg)
+        if (era === 'modern') return method === 'notifications/cancelled' ? streamCancel(msg) : streamNotice(msg)
         if (method !== 'notifications/tools/list_changed') return []
         return [...links.keys()].map(link => ({ to: 'link', link, msg }))
       }

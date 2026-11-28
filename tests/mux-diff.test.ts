@@ -107,14 +107,19 @@ describe('the legacy router, value for value', () => {
           const known = sent.length > 0 && g.chance(0.85)
           const target = known ? g.pick(sent) : { rid: g.pick<unknown>([999, '1', 1.5, null, 0]), method: 'x' }
           const refusedProbe = target.method === 'server/discover'
+          // A probe answered with a result that is not a modern discover result: the era must stay open, as in 1.0.5.
+          const garbageProbe = refusedProbe && g.chance(0.4)
+          const garbage = g.pick<unknown>([{}, { supportedVersions: ['2025-06-18'] }])
           const msg = frozen(
-            refusedProbe || g.chance(0.2)
-              ? { jsonrpc: '2.0', id: target.rid, error: { code: -32601, message: 'Method not found' } }
-              : {
-                  jsonrpc: '2.0',
-                  id: target.rid,
-                  result: g.pick<unknown>([{}, { ok: 1 }, { protocolVersion: '2025-06-18' }, 'x', null]),
-                },
+            garbageProbe
+              ? { jsonrpc: '2.0', id: target.rid, result: garbage }
+              : refusedProbe || g.chance(0.2)
+                ? { jsonrpc: '2.0', id: target.rid, error: { code: -32601, message: 'Method not found' } }
+                : {
+                    jsonrpc: '2.0',
+                    id: target.rid,
+                    result: g.pick<unknown>([{}, { ok: 1 }, { protocolVersion: '2025-06-18' }, 'x', null]),
+                  },
           )
           both(`child answer ${JSON.stringify(msg)}`, r => r.fromChild(msg), step)
         } else if (roll < 82) {
