@@ -905,6 +905,62 @@ describe('the handshake limits and a peer that is not the broker', () => {
     assert.ok(!received.join('').includes('hunter2-value') && !received.join('').includes('"entry"'))
   })
 
+  // A broker.js that leaves a line in a marker file each time it starts, so a test counts the brokers that were started.
+  const markerBroker = (home: string, body: string): { file: string; marker: string; id: string; endpoint: string } => {
+    const marker = path.join(home, 'started')
+    const file = path.join(home, 'broker.js')
+    const code = `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x\\n')\n${body}\n`
+    fs.writeFileSync(file, code)
+    const id = crypto.createHash('sha256').update(code).digest('hex')
+    const endpoint = endpointFor(home, loadKey(home), id)
+    fs.mkdirSync(path.dirname(endpoint), { recursive: true })
+    return { file, marker, id, endpoint }
+  }
+  const started = (marker: string): number =>
+    fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').split('\n').length - 1 : 0
+
+  test('a squatter that closes every connection after the hello fails the link with the closed reason, starts no broker and gets no entry', async () => {
+    const home = fs.mkdtempSync(path.join(root, 'sq-'))
+    const { file, marker, endpoint } = markerBroker(home, '')
+    const received: string[] = []
+    const squatter = net.createServer(socket => {
+      socket.on('error', () => {})
+      // The host writes its hello first, and an entry frame could follow only a proof: close on the first data.
+      socket.on('data', d => {
+        received.push(String(d))
+        socket.destroy()
+      })
+    })
+    await new Promise<void>(r => squatter.listen(endpoint, r))
+    closers.push(() => void squatter.close())
+    const start = Date.now()
+    await assert.rejects(openLink({ home, brokerFile: file, entry: entryOf() }), /closed the connection/)
+    assert.ok(Date.now() - start < 12_500)
+    assert.ok(received.length > 1, 'the host dialled again after each close')
+    assert.equal(started(marker), 0, 'no broker was started')
+    assert.ok(!received.join('').includes('"entry"'), 'no entry frame')
+  })
+
+  test(
+    'a broker that closes its first connection and ends, again and again, is started once for one link',
+    { skip: process.platform === 'win32' && 'pipes vanish with their process' },
+    async () => {
+      const home = fs.mkdtempSync(path.join(root, 'sq-'))
+      // It listens, closes the first connection and is killed, so the file stays and refuses: the next dial starts another
+      // broker unless the link remembers that it started one.
+      const body =
+        "const s = require('net').createServer(c => { c.destroy(); process.kill(process.pid, 'SIGKILL') });" +
+        's.listen(process.env.TS_TEST_ENDPOINT)'
+      const { file, marker, endpoint } = markerBroker(home, body)
+      process.env.TS_TEST_ENDPOINT = endpoint
+      closers.push(() => void delete process.env.TS_TEST_ENDPOINT)
+      const start = Date.now()
+      await assert.rejects(openLink({ home, brokerFile: file, entry: entryOf() }), /none listened within 10 s/)
+      assert.ok(Date.now() - start < 12_500)
+      assert.equal(started(marker), 1, 'one broker was started for the whole link')
+    },
+  )
+
   test('a silent squatter fails the link within the handshake time', async () => {
     const home = fs.mkdtempSync(path.join(root, 'sq-'))
     const file = path.join(home, 'broker.js')
