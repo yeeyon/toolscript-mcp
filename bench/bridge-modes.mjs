@@ -409,13 +409,18 @@ const saveEvidence = (name, lines) => {
 }
 
 /** One interactive cell. A cell where the model made no run_code call in 2 tries is not observed. */
+/** Whether one more paid session fits under the cap. A NaN cap or spend fits nothing. */
+const fits = need => spent + need <= CAP
+/** The process of this run that are still alive, by pid and creation time, whether or not the broker that made them lives. */
+const alive = (list, seen) => list.filter(p => seen.has(p.p + '@' + p.t))
+
 const runCell = async ({ mode, kind, runCode }) => {
   const name = cellName({ mode, kind, runCode })
   const term = loadPty()
   const result = { name, mode, kind, runCode, observed: false }
   const evidence = []
   for (let attempt = 1; attempt <= 2 && !result.observed; attempt++) {
-    if (spent + 0.15 > CAP) {
+    if (!fits(0.15)) {
       result.reason = 'the spend cap'
       break
     }
@@ -491,6 +496,10 @@ const runCell = async ({ mode, kind, runCode }) => {
 const runPrintCell = async ({ mode, runCode }) => {
   const name = cellName({ mode, kind: 'W', runCode, print: true })
   const evidence = []
+  if (!fits(0.15)) {
+    saveEvidence(name, ['NOT OBSERVED: the spend cap'])
+    return { name, observed: false, reason: 'the spend cap', spent }
+  }
   const cell = freshCell(name)
   forgetRuns([cell.cwd])
   const config = bridgeConfig(cell)
@@ -571,6 +580,7 @@ const processes = () => {
 
 const runG10 = async () => {
   if (process.platform !== 'win32') throw new Error('g10 is written for Windows: the process list uses PowerShell')
+  if (!fits(0.05)) return { steps: {}, reason: 'the spend cap', spent }
   const evidence = []
   const log = line => evidence.push(line)
   const term = loadPty()
@@ -599,11 +609,16 @@ const runG10 = async () => {
     return fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : ''
   }
   const starts = () => [...brokerLog().matchAll(/start pid (\d+)/g)].map(m => Number(m[1]))
+  // Every broker and child that a snapshot saw, as pid@creation time. A child outlives its broker only by a leak, and
+  // then it has no live parent: step 4 asks for these identities, not for the children of a live broker.
+  const seen = new Set()
   const snapshot = label => {
     const list = processes()
     const pids = starts()
     const broker = list.filter(p => pids.includes(p.p))
     const children = list.filter(p => broker.some(b => b.p === p.pp) && /fake-server/.test(p.c ?? ''))
+    for (const p of [...broker, ...children]) seen.add(p.p + '@' + p.t)
+    const kept = alive(list, seen)
     const hosts = mine(list).filter(p => /main\.js/.test(p.c ?? ''))
     log(
       '[' +
@@ -615,9 +630,11 @@ const runG10 = async () => {
         '; shared children: ' +
         children.map(c => c.p + '@' + c.t).join(',') +
         '; toolscript-mcp hosts of this run: ' +
-        hosts.map(h => h.p).join(','),
+        hosts.map(h => h.p).join(',') +
+        '; observed broker or child still running: ' +
+        kept.map(k => k.p + '@' + k.t).join(','),
     )
-    return { startLines: pids.length, broker, children, hosts }
+    return { startLines: pids.length, broker, children, hosts, kept }
   }
   const prompt = askFor('const r = await call("mcp__bench__get_deploys", {date: "2026-10-09"}); return r.count')
   const answered = cwd => toolResults(cwd).some(t => t.includes(String(DEPLOYS.length)))
@@ -735,10 +752,10 @@ const runG10 = async () => {
     let left
     while (Date.now() - t0 < IDLE_MS + 10_000) {
       left = snapshot('step 4, ' + Math.round((Date.now() - t0) / 1000) + ' s after B exited')
-      if (left.broker.length === 0 && left.children.length === 0 && left.hosts.length === 0) break
+      if (left.kept.length === 0 && left.hosts.length === 0) break
       await sleep(1000)
     }
-    result.steps[4] = left.broker.length === 0 && left.children.length === 0 && left.hosts.length === 0
+    result.steps[4] = left.kept.length === 0 && left.hosts.length === 0
     log('broker.log:\n' + brokerLog())
   } catch (err) {
     log('error: ' + err.message)
@@ -780,6 +797,25 @@ if (COMMAND === 'cell') {
   console.log('total spend USD ' + spent.toFixed(4))
 } else if (COMMAND === 'print') {
   console.log(JSON.stringify(await runPrintCell({ mode: opts.mode, runCode: opts['run-code'] === 'allowed' })))
+} else if (COMMAND === 'selftest') {
+  // No model, no session: the cap check and the leftover check on injected values.
+  const assert = (await import('node:assert/strict')).default
+  const seen = new Set(['10@5', '20@6'])
+  assert.deepEqual(
+    alive(
+      [
+        { p: 10, t: 5 },
+        { p: 99, t: 7 },
+      ],
+      seen,
+    ).map(p => p.p),
+    [10],
+    'an orphan with no broker still counts',
+  )
+  assert.deepEqual(alive([{ p: 10, t: 8 }], seen), [], 'a reused pid with another creation time does not count')
+  assert.deepEqual(alive([], seen), [])
+  assert.equal(fits(Number.POSITIVE_INFINITY), false)
+  console.log('selftest passed; fits(0.15) is ' + fits(0.15) + ' with cap ' + CAP + ' and spent ' + spent)
 } else if (COMMAND === 'g10') {
   console.log(JSON.stringify(await runG10()))
 } else {
