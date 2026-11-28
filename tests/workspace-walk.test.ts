@@ -331,7 +331,7 @@ describe('search with several files in flight', () => {
       limits: { searchInFlight: 4 },
       hook: async lookup => {
         if (returned && lookup !== 'readdir') afterReturn++
-        if (lookup === 'readdir' && /d$/.test('d')) listed = true
+        if (lookup === 'readdir') listed = true
         if (lookup !== 'open' || !listed) return
         const n = ++opens
         // The first open of a file of d fails, the second fails too, the third is held, the others go on.
@@ -489,5 +489,26 @@ describe('the walk slots (issue #160)', () => {
     if (rig === undefined) return
     for (let i = 0; i < 5; i++) assert.match(await rig.fail('list', { path: 'missing' }), /./)
     assert.equal((await rig.call('search', { query: 'hit' })).matches.length, 1)
+  })
+  test('a search that took its last match walks no sibling folder, at any number in flight', async t => {
+    const root = tree(t)
+    const sub = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`b/s${i}/f.dat`, 'nothing\n']))
+    write(root, {
+      ...Object.fromEntries(Object.keys(files('a/x', 4)).map(k => [`${k}.txt`, 'hit\n'])),
+      ...Object.fromEntries(Object.keys(files('b/y', 400)).map(k => [`${k}.dat`, 'nothing\n'])),
+      ...sub,
+    })
+    for (const searchInFlight of [1, 4]) {
+      let readdirs = 0
+      const rig = await rigOf(t, root, {
+        limits: { searchInFlight },
+        hook: lookup => void (lookup === 'readdir' && readdirs++),
+      })
+      if (rig === undefined) return
+      readdirs = 0
+      const found = await rig.call('search', { query: 'hit', include: ['**/*.txt'], maxMatches: 2 })
+      assert.equal(found.matches.length, 2)
+      assert.equal(readdirs, 2, `N = ${searchInFlight}: the root and a, never b`)
+    }
   })
 })

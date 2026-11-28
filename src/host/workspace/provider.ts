@@ -210,25 +210,25 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   /**
+   * What a `search` walk adds to `walk`. `take` takes the answers of the visits that ran, in the order of the walk, and
+   * throws the first error; it returns false when the answers stopped the search (the matches are all taken). `settle` waits for every running visit and never throws: it runs before a folder closes, so
+   * no visit is left that opens a name through that folder. `ahead`: the entries of one folder whose `lstat` run at the
+   * same time. `kinds`: take the kind of an entry from the listing.
+   */
+  type Pool = {
+    readonly take: () => Promise<boolean>
+    readonly settle: () => Promise<void>
+    readonly ahead: number
+    readonly kinds: boolean
+  }
+
+  /**
    * Visits each entry below `dir` in sorted order, down to `levels` levels. The names of a folder are read to its end
    * or to the budget before any folder below it is entered. A name from the listing is a candidate: `lstat` and each
    * open prove it. An excluded name is never read into the walk, a link is visited and never entered, and a folder
    * that vanished or became a link while the walk ran is left out. Returns false when a visit or the time stopped the
    * walk. A read that the budget or the time cut sets `within.cut`, and the walk goes on with the names it holds.
    */
-  /**
-   * What a `search` walk adds to `walk`. `take` takes the answers of the visits that ran, in the order of the walk, and
-   * throws the first error. `settle` waits for every running visit and never throws: it runs before a folder closes, so
-   * no visit is left that opens a name through that folder. `ahead`: the entries of one folder whose `lstat` run at the
-   * same time. `kinds`: take the kind of an entry from the listing.
-   */
-  type Pool = {
-    readonly take: () => Promise<void>
-    readonly settle: () => Promise<void>
-    readonly ahead: number
-    readonly kinds: boolean
-  }
-
   const walk = async (
     dir: Dir,
     levels: number,
@@ -304,8 +304,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
         try {
           const complete = await walk(child, levels - 1, visit, signal, within, hides, reach, pool)
           // The visits that ran in this folder count, also when the walk ended here.
-          await pool?.take()
-          if (!complete) return false
+          if (!complete || (pool !== undefined && !(await pool.take()))) return false
         } finally {
           // A visit that is still running must end before its folder closes: its open goes through that folder.
           try {
@@ -477,6 +476,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
           dir,
           Infinity,
           async ({ parts, kind }, parent, name) => {
+            if (stopped) return false
             if (kind !== 'file' || !inList(parts)) return true
             // A load never rejects here: its error is taken in the order of the walk, as the sequential walk met it.
             pending.push(
@@ -493,7 +493,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
           hides,
           reachOf(input.include),
           {
-            take: () => drain(0),
+            take: async () => (await drain(0), !stopped),
             settle: async () => void (await Promise.all(pending)),
             ahead: limits.searchInFlight,
             kinds: options.listedKinds !== false,

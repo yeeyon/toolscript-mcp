@@ -76,8 +76,8 @@ export type Names = {
   readonly names: string[]
   readonly more: boolean
   /**
-   * The kind of a name as the directory listing gives it, with no `lstat`: only for a name whose entry type the listing
-   * knows (a file system can leave it unknown), and only when `NameRead.kinds` is true. It is a hint, not a proof.
+   * The kind of a name as the directory listing gives it, with no `lstat`: only a file or a folder (a link, any other type and an
+   * entry type that the listing leaves unknown have no kind here), and only when `NameRead.kinds` is true. It is a hint, not a proof.
    */
   readonly kinds?: ReadonlyMap<string, Kind>
 }
@@ -102,17 +102,11 @@ const readNames = async (at: string, { keep, room, alive, kinds: wantKinds }: Na
         break
       }
       names.push(name)
-      if (wantKinds === true) {
-        const kind = entry.isSymbolicLink()
-          ? 'link'
-          : entry.isFile()
-            ? 'file'
-            : entry.isDirectory()
-              ? 'folder'
-              : entry.isFIFO() || entry.isSocket() || entry.isBlockDevice() || entry.isCharacterDevice()
-                ? 'other'
-                : undefined
-        if (kind !== undefined) kinds.set(name, kind)
+      // Only a file or a folder: a link and any other type stay unknown and get the `lstat` of the walk, because on Windows
+      // the listing calls every reparse point a link, and `lstat` calls only real links (a placeholder is a file).
+      if (wantKinds === true && !entry.isSymbolicLink()) {
+        if (entry.isFile()) kinds.set(name, 'file')
+        else if (entry.isDirectory()) kinds.set(name, 'folder')
       }
     }
   } catch (err) {
