@@ -23,6 +23,7 @@ import {
   redact,
   type HttpServer,
   type InvalidServer,
+  type Protocol,
   type ServerConfig,
   type ServerEntry,
   type ServerKey,
@@ -390,7 +391,7 @@ const transportOf = (
       transport: new BrokerTransport({
         home: share.home,
         brokerFile: share.brokerFile,
-        entry: entryOf(server, class_, { home: share.home, folder: share.folder }),
+        entry: entryOf(server, class_, { home: share.home, folder: share.folder }, share.protocol?.(key)),
         onStderr: chunk => {
           stderr(chunk)
           tail = (tail + chunk.toString('utf8')).slice(-2000)
@@ -517,6 +518,8 @@ export type ShareOptions = {
   /** The folder of this session: where a per-folder server runs. */
   readonly folder: string
   readonly brokerFile: string | undefined
+  /** The protocol of the link of a server (#154). It only keys the shared child: no byte of a message depends on it yet. */
+  readonly protocol?: (key: ServerKey) => Protocol
 }
 
 export const connectAll = (

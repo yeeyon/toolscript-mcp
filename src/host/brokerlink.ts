@@ -28,7 +28,7 @@ import {
   unusable,
   type Entry,
 } from '../core/broker.ts'
-import { childEnv, type StdioServer } from '../core/config.ts'
+import { childEnv, type Protocol, type StdioServer } from '../core/config.ts'
 import type { Keyed, Place } from '../core/share.ts'
 import { brokerFolder } from '../core/paths.ts'
 import { BAD_KEY, buildId, endpointFor, folderProblem, loadKey, makeCrypto, parseStderr } from './brokerwire.ts'
@@ -48,7 +48,7 @@ const realPath = (entry: string): string | undefined => {
  * The entry that the host sends: the command and arguments, the whole child environment as the SDK builds it, with
  * each PATH entry resolved (decision 027), and the folder of decision 025.
  */
-export const entryOf = (server: StdioServer, class_: Keyed, at: Place): Entry => ({
+export const entryOf = (server: StdioServer, class_: Keyed, at: Place, protocol: Protocol = 'legacy'): Entry => ({
   command: server.command,
   args: server.args,
   env: resolveEnvPath(
@@ -58,6 +58,8 @@ export const entryOf = (server: StdioServer, class_: Keyed, at: Place): Entry =>
     process.platform === 'win32',
   ),
   folder: server.cwd ?? (class_.class === 'shared' ? at.home : at.folder),
+  // Only `auto` is written, so the frame and the share key of a `legacy` link are the bytes of 1.0.5.
+  ...(protocol === 'auto' && { protocol }),
 })
 
 /** The `broker.js` that sits beside the running file, or undefined: a run from source has none. */

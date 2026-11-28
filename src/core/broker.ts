@@ -59,6 +59,8 @@ export type Entry = {
   readonly args: readonly string[]
   readonly env: Readonly<Record<string, string>>
   readonly folder: string
+  /** Only `auto` is written: an entry with no `protocol` is a `legacy` link, as every entry of 1.0.5 is. */
+  readonly protocol?: 'auto'
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -66,12 +68,19 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 /** The entry in a frame, or the reason that it is not one. The frame comes from a peer that proved the key. */
 export const parseEntry = (frame: unknown): Entry | string => {
   if (!isObj(frame) || frame.t !== 'entry') return 'the first frame after the proof is not an entry'
-  const { command, args, env, folder } = frame
+  const { command, args, env, folder, protocol } = frame
   if (typeof command !== 'string' || command === '' || typeof folder !== 'string' || folder === '')
     return 'the entry has no command or no folder'
   if (!Array.isArray(args) || !args.every(a => typeof a === 'string')) return 'the entry has bad arguments'
   if (!isObj(env) || !Object.values(env).every(v => typeof v === 'string')) return 'the entry has a bad environment'
-  return { command, args: args as string[], env: env as Record<string, string>, folder }
+  if (protocol !== undefined && protocol !== 'auto') return 'the entry has a bad protocol'
+  return {
+    command,
+    args: args as string[],
+    env: env as Record<string, string>,
+    folder,
+    ...(protocol === 'auto' && { protocol }),
+  }
 }
 
 /**
@@ -84,6 +93,7 @@ export const entryText = (entry: Entry): string =>
     { kind: 'stdio', command: entry.command, args: entry.args, env: {}, cwd: entry.folder },
     entry.env,
     { home: entry.folder, folder: entry.folder },
+    entry.protocol,
   )
 
 /** What the two sides need from a crypto library. `same` compares in constant time. */
