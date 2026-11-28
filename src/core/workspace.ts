@@ -21,6 +21,8 @@ export const LIMITS = {
   listEntries: 5_000,
   /** Walks of `list` and `search` that run at one time in a provider (issue #160). */
   walkSlots: 1,
+  /** Files of one `search` walk that are opened, proven and read at the same time. Each is proven by its own open. */
+  searchInFlight: 4,
   /** `search` cuts the text of a line at this length. */
   lineChars: 400,
   parts: 64,
