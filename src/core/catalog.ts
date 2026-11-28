@@ -747,6 +747,83 @@ export const actionValues = (inputSchema: unknown): readonly (readonly string[])
   return values
 }
 
+/** The first names of a server that the overview shows, and the characters after which a line adds no name. */
+const OVERVIEW_NAMES = 5
+const OVERVIEW_LINE = 160
+/** Most names that the list of one server holds. */
+const KEY_NAMES_MAX = 400
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+
+/** The tools of each server that lists one, as short names sorted, in the order of the servers. */
+const namesOf = (all: readonly CatalogEntry[]): Map<ServerKey, string[]> => {
+  const byServer = new Map<ServerKey, string[]>()
+  for (const t of all) {
+    const names = byServer.get(t.server)
+    if (names === undefined) byServer.set(t.server, [t.tool])
+    else names.push(t.tool)
+  }
+  for (const names of byServer.values()) names.sort()
+  return byServer
+}
+
+/**
+ * The answer to an empty query: the count of tools and servers, then one line for each server with its first names.
+ * Only names, keys and counts: no text of a server. `limit` plays no part.
+ */
+const overviewText = (all: readonly CatalogEntry[]): string => {
+  const byServer = namesOf(all)
+  const lines = [...byServer].map(([key, names]) => {
+    let line = `${key}: ${plural(names.length, 'tool')}: ${names[0]}`
+    let shown = 1
+    for (; shown < names.length && shown < OVERVIEW_NAMES; shown++) {
+      if (line.length >= OVERVIEW_LINE) break
+      line += `, ${names[shown]}`
+    }
+    return names.length > shown ? `${line} (+${names.length - shown} more)` : line
+  })
+  const head = `${all.length} MCP tools on ${plural(byServer.size, 'server')}. A server key as the query lists all the tool names of that server.`
+  return `${head}\n${lines.join('\n')}`
+}
+
+/**
+ * The server that a query names: the trimmed query is its key or `mcp__<key>__`, in any case. Of two keys that
+ * differ only in case, only the exact spelling matches.
+ */
+const serverKey = (states: readonly ServerState[], query: string): ServerState | undefined => {
+  const q = query.trim()
+  const bare = /^mcp__.+__$/i.test(q) ? q.slice(5, -2) : q
+  const same = states.filter(s => s.key.toLowerCase() === bare.toLowerCase())
+  return same.length === 1 ? same[0] : same.find(s => s.key === bare)
+}
+
+/** The answer to a query that is a server key: that server's tools only, or all its names when they are above `limit`. */
+const keyText = (
+  state: ServerState,
+  all: readonly CatalogEntry[],
+  limit: number,
+  shapes: ReadonlyMap<string, string>,
+  canAsk: boolean,
+): string => {
+  const tools = all.filter(t => t.server === state.key).sort((a, b) => (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0))
+  const key = state.key
+  if (tools.length === 0) return `${key}: no tools listed.`
+  const way = 'Add a word to search all servers.'
+  if (tools.length <= limit) {
+    const blocks = tools.map(t =>
+      tools.length <= DETAIL_HITS ? detailBlock(t, shapes, canAsk) : summaryBlock(t, canAsk),
+    )
+    return `${key}: ${plural(tools.length, 'tool')}, this server only. ${way}\n\n${blocks.join('\n\n')}`
+  }
+  const names = tools.slice(0, KEY_NAMES_MAX).map(t => t.tool)
+  const more = tools.length - names.length
+  return [
+    `${key}: ${tools.length} tools, more than the limit of ${limit}: names only. ${way}`,
+    `mcp__${key}__: ${names.join(', ')}${more > 0 ? ` (+${more} more)` : ''}`,
+    'Search a full tool name for its arguments. Several full names in one query show each.',
+  ].join('\n')
+}
+
 /**
  * The text of a search_tools result: the best matches, then the servers that
  * are not connected. A query with words shows its first DETAIL_HITS matches in
@@ -758,9 +835,10 @@ export const actionValues = (inputSchema: unknown): readonly (readonly string[])
  * hit above (same short name, description, schemas and mark) is a heading and a
  * line that names that hit, anywhere in the result. It takes no place of
  * DETAIL_HITS and no budget, so those count full blocks. A list of all
- * tools shows summaries only, so the check of the servers with limit 1 stays
- * short. With no match, the result lists the tool names by server. `canAsk`:
- * the client can show an approval prompt.
+ * tools is the overview of the servers (`overviewText`), and a query that is a
+ * server key lists that server (`keyText`): both are decided before the rank.
+ * With no match, the result lists the tool names by server. `canAsk`: the client
+ * can show an approval prompt.
  */
 export const searchResult = (
   states: readonly ServerState[],
@@ -770,12 +848,16 @@ export const searchResult = (
   canAsk = true,
 ): string => {
   const all = catalogOf(states)
+  const tail = notConnectedText(states)
+  // A server key wins, also one that is a filler word such as `x`: no key is empty, so the empty query is never a key.
+  const key = serverKey(states, query)
+  if (key !== undefined) return `${keyText(key, all, limit, shapes, canAsk)}${tail}`
+  if (all.length > 0 && listsAll(query)) return `${overviewText(all)}${tail}`
   const found = rankTools(
     all.map(t => ({ ...t, actions: actionWords(t.inputSchema), values: actionValues(t.inputSchema) })),
     query,
     limit,
   )
-  const tail = notConnectedText(states)
   if (found.length === 0) {
     const shown = query.length > ECHO_MAX ? `${query.slice(0, ECHO_MAX)}... (${query.length} characters)` : query
     const head = `No MCP tool matches "${shown}". ${all.length} MCP tools are connected.`
@@ -785,29 +867,26 @@ export const searchResult = (
     return `${head}\n${lines.join('\n')}${rest}${tail}`
   }
   const blocks: string[] = []
-  if (listsAll(query)) blocks.push(...found.map(t => summaryBlock(t, canAsk)))
-  else {
-    // Hit 1 shows in full always. The next hits show in full while they fit, and the first one that does not ends it.
-    // A twin of a full hit above is a heading and one line, and takes no full place and no budget.
-    const few = found.length <= DETAIL_HITS
-    const fulls: CatalogEntry[] = []
-    let used = 0
-    let full = true
-    for (const t of found) {
-      const twin = fulls.find(f => isTwin(f, t))
-      if (twin !== undefined) {
-        blocks.push(`### ${t.name}\nthe same description and arguments as ${twin.name}`)
-        continue
-      }
-      const detail = full && fulls.length < DETAIL_HITS ? detailBlock(t, shapes, canAsk) : undefined
-      if (detail !== undefined && (fulls.length === 0 || few || used + detail.length <= DETAIL_BUDGET)) {
-        used += detail.length
-        fulls.push(t)
-        blocks.push(detail)
-      } else {
-        full = false
-        blocks.push(summaryBlock(t, canAsk))
-      }
+  // Hit 1 shows in full always. The next hits show in full while they fit, and the first one that does not ends it.
+  // A twin of a full hit above is a heading and one line, and takes no full place and no budget.
+  const few = found.length <= DETAIL_HITS
+  const fulls: CatalogEntry[] = []
+  let used = 0
+  let full = true
+  for (const t of found) {
+    const twin = fulls.find(f => isTwin(f, t))
+    if (twin !== undefined) {
+      blocks.push(`### ${t.name}\nthe same description and arguments as ${twin.name}`)
+      continue
+    }
+    const detail = full && fulls.length < DETAIL_HITS ? detailBlock(t, shapes, canAsk) : undefined
+    if (detail !== undefined && (fulls.length === 0 || few || used + detail.length <= DETAIL_BUDGET)) {
+      used += detail.length
+      fulls.push(t)
+      blocks.push(detail)
+    } else {
+      full = false
+      blocks.push(summaryBlock(t, canAsk))
     }
   }
   return `${found.length} of ${all.length} MCP tools.\n\n${blocks.join('\n\n')}${tail}`

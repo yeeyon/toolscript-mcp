@@ -184,7 +184,8 @@ describe('lazy start', () => {
 
   test('the first session has no cache: it connects, writes the cache, and the child stops after the idle time', async () => {
     const host = await startHost(true)
-    tools = await host.search('')
+    // The key of the server lists its tools (an empty query lists only the servers, #208).
+    tools = await host.search('claude-code')
     assert.match(tools, /mcp__claude-code__pid/)
     await until('the cache file', () => fs.existsSync(CACHE))
     await until('the idle stop', () => /claude-code: stopped after \d+ s idle/.test(host.log()))
@@ -200,7 +201,7 @@ describe('lazy start', () => {
 
   test('the next session has no child at the start, lists the same tools, starts one for a call, and it is gone after the idle time', async () => {
     const host = await startHost(true)
-    assert.equal(await host.search(''), tools, 'the search lists the same tools as the connected one')
+    assert.equal(await host.search('claude-code'), tools, 'the search lists the same tools as the connected one')
     await new Promise(r => setTimeout(r, 500))
     assert.doesNotMatch(host.log(), /claude-code: (connected|started on first use)/, 'no child before a call')
     const first = await pidOf(host)

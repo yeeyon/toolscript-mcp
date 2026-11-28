@@ -1099,6 +1099,7 @@ describe('the tool table', () => {
   // + 365 (#47): the three examples of when to prefer run_code, and the empty search after a reconnect.
   // + 76 (#47): limit 1 and the "Not connected" section. The check after a reconnect shows one summary line: with
   // fake servers, 86 to 820 characters, against 1,039 to 8,512 for an empty query with the default limit.
+  // #208: the empty query is the overview and a server key lists a server, so the text about limit 1 went: no change.
   test('the listed tools do not grow', () => {
     const size = SERVED.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
     assert.ok(size <= 2847, `size ${size} is over 2847`)

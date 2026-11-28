@@ -1,6 +1,10 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
+  actionValues,
+  actionWords,
   argsText,
   argSpec,
   catalogOf,
@@ -8,12 +12,13 @@ import {
   listedNames,
   namesByServer,
   searchResult,
+  shownStates,
   type CatalogEntry,
   type DownstreamTool,
   type ServerState,
 } from '../src/core/catalog.ts'
 import { serverKey } from '../src/core/config.ts'
-import { checkCalls } from '../src/core/protocol.ts'
+import { checkCalls, rankTools } from '../src/core/protocol.ts'
 
 const server = (tools: DownstreamTool[]): ServerState[] => [{ key: serverKey('x')!, status: 'connected', tools }]
 // The full name of the tool ranks it first, so the one tool is a hit in full. An empty query shows a summary.
@@ -95,7 +100,7 @@ describe('search_tools and a tool whose server requires a person', () => {
   test('with a client that cannot ask, the note says that a program cannot call it', () => {
     const text = searchResult(
       server([{ name: 'grant', description: 'Grant access.', _meta: MARK }]),
-      '',
+      'x',
       15,
       new Map(),
       false,
@@ -626,10 +631,16 @@ describe('search_tools with an empty query', () => {
       ...server([tool]),
       { key: serverKey('down')!, status: 'failed', reason: 'spawn fake ENOENT' },
     ]
-    const summary = '1 of 1 MCP tools.\n\n### mcp__x__get\nGets a thing.\nargs: { id: string }'
+    const overview =
+      '1 MCP tools on 1 server. A server key as the query lists all the tool names of that server.\nx: 1 tool: get'
     const tail = '\n\n## Not connected\n- down: spawn fake ENOENT'
-    for (const limit of [1, 15]) assert.equal(searchResult(states, '', limit), `${summary}${tail}`)
-    assert.equal(searchResult(states, ' ', 1), `${summary}${tail}`)
+    for (const limit of [1, 15]) assert.equal(searchResult(states, '', limit), `${overview}${tail}`)
+    assert.equal(searchResult(states, ' ', 1), `${overview}${tail}`)
+    assert.ok(
+      searchResult(states, 'x', 15).startsWith(
+        'x: 1 tool, this server only. Add a word to search all servers.\n\n### mcp__x__get\nGets a thing.',
+      ),
+    )
     assert.match(
       searchResult(states, 'get', 1),
       /^1 of 1 MCP tools\.\n\n### mcp__x__get\nGets a thing\. More text\.[^]*\ncall\(/,
@@ -646,8 +657,8 @@ describe('search_tools with more than 3 hits', () => {
     }))
     const shapes = new Map([['mcp__x__a', '{id}']])
     assert.equal(
-      searchResult(server(tools), '', 15, shapes),
-      `4 of 4 MCP tools.\n\n${['a', 'b', 'c', 'd'].map(n => `### mcp__x__${n}\nTool ${n}.\nargs: { id: string }`).join('\n\n')}`,
+      searchResult(server(tools), 'x', 15, shapes),
+      `x: 4 tools, this server only. Add a word to search all servers.\n\n${['a', 'b', 'c', 'd'].map(n => `### mcp__x__${n}\nTool ${n}.\nargs: { id: string }`).join('\n\n')}`,
     )
     assert.match(
       searchResult(server(tools.slice(0, 3)), 'tool', 15),
@@ -662,7 +673,7 @@ describe('search_tools with more than 3 hits', () => {
       name,
       inputSchema: { type: 'object', properties: { id: name === 'd' ? deep : { type: 'string' } } },
     }))
-    const text = searchResult(server(tools), '', 15)
+    const text = searchResult(server(tools), 'x', 15)
     assert.match(text, /### mcp__x__d\n\nargs: \{ id\?: unknown(\[\])+ \}/)
     assert.match(one(tools[3]!), /^### mcp__x__d\ncall\("mcp__x__d", \{\n {2}id\?: unknown(\[\])+\n\}\)$/)
   })
@@ -672,7 +683,7 @@ describe('search_tools shows the top hits in full', () => {
   // A full hit holds `call(`. A summary holds `args:`. The first line "N of M MCP tools." is not a block.
   const blocksOf = (text: string): string[] =>
     text
-      .replace(/^\d+ of \d+ MCP tools\.\n\n/, '')
+      .replace(/^(\d+ of \d+ MCP tools\.|x: \d+ tools, this server only\.[^\n]*)\n\n/, '')
       .replace(/\n\n## Not connected[^]*$/, '')
       .split(/\n\n(?=### mcp__)/)
   const kindsOf = (text: string): string[] => blocksOf(text).map(b => (b.includes('call(') ? 'full' : 'summary'))
@@ -756,13 +767,12 @@ describe('search_tools shows the top hits in full', () => {
     ])
   })
 
-  test('3 hits show in full however long; an empty query shows summaries only, for limit 1 and 15', () => {
+  test('3 hits show in full however long; a server key shows summaries only, or names above the limit', () => {
     const tools = [large('widget_a'), large('widget_b'), large('widget_c')]
     assert.deepEqual(kindsOf(searchResult(server(tools), 'widget', 15)), ['full', 'full', 'full'])
-    for (const limit of [1, 15]) {
-      const text = searchResult(server(widgets(5)), '', limit)
-      assert.deepEqual(kindsOf(text), Array<string>(Math.min(limit, 5)).fill('summary'))
-    }
+    assert.deepEqual(kindsOf(searchResult(server(widgets(5)), 'x', 15)), Array<string>(5).fill('summary'))
+    const names = searchResult(server(widgets(5)), 'x', 1)
+    assert.ok(!names.includes('###'), names)
   })
 
   test('a full tool name with more than 3 hits shows that tool first and in full', () => {
@@ -905,12 +915,15 @@ describe('search_tools and twin tools on equal servers', () => {
     assert.ok(!text.includes('{ b: string }'))
   })
 
-  test('h: an empty query shows summaries only, with no twin line', () => {
-    for (const limit of [1, 15]) {
-      const blocks = blocksOf(searchResult(twinsOf(['gf-a', 'gf-b', 'gf-c'], six), '', limit))
-      assert.equal(blocks.length, limit)
-      for (const b of blocks) assert.ok(b.includes('args:') && !isTwinLine(b))
-    }
+  test('h: a server key shows its own summaries only, with no twin line', () => {
+    const blocks = blocksOf(
+      searchResult(twinsOf(['gf-a', 'gf-b', 'gf-c'], six), 'gf-a', 15).replace(
+        /^gf-a: \d+ tools, this server only\.[^\n]*\n\n/,
+        '',
+      ),
+    )
+    assert.equal(blocks.length, six.length)
+    for (const b of blocks) assert.ok(b.includes('args:') && !isTwinLine(b) && b.startsWith('### mcp__gf-a__'))
   })
 })
 
@@ -1077,8 +1090,12 @@ describe('search_tools on a realistic catalog', () => {
       .replace(/\n\n## Not connected[^]*$/, '')
       .split(/\n\n(?=### mcp__)/)
   const nameOf = (block: string): string => /^### (\S+)/.exec(block)![1]!
-  // The text of the empty query holds every tool as a summary: the same block that main shows for a hit.
-  const summaryOf = new Map(split(searchResult(states, '', 500)).map(b => [nameOf(b), b] as const))
+  // The text of a server key holds each of its tools as a summary: the same block that main shows for a hit.
+  const summaryOf = new Map(
+    states.flatMap(s =>
+      split(searchResult(states, s.key, 500).replace(/^[^\n]*\n\n/, '')).map(b => [nameOf(b), b] as const),
+    ),
+  )
 
   test('the fixture has 50 to 200 tools on 8 servers', () => {
     assert.ok(all.length >= 50 && all.length <= 200, `${all.length} tools`)
@@ -1092,7 +1109,6 @@ describe('search_tools on a realistic catalog', () => {
     'pull request',
     'dashboard',
     'work item',
-    'mcp__gf2__',
     'mcp__azdo__get_work_item',
   ]) {
     test(`"${query}": the full hits are a prefix of at most 3 and the result grows by at most 5,500 characters`, () => {
@@ -1114,8 +1130,10 @@ describe('search_tools on a realistic catalog', () => {
     })
   }
 
-  test('"mcp__gf2__" returns tools of that server, so the closing sentence of a zero-hit list is true', () => {
-    assert.ok(split(searchResult(states, 'mcp__gf2__', 15)).every(b => b.startsWith('### mcp__gf2__')))
+  test('"mcp__gf2__" lists that server only, so the closing sentence of a zero-hit list is true', () => {
+    const text = searchResult(states, 'mcp__gf2__', 500)
+    assert.ok(text.startsWith('gf2: '), text)
+    assert.ok(split(text.replace(/^[^\n]*\n\n/, '')).every(b => b.startsWith('### mcp__gf2__')))
   })
 
   for (const query of ['calendar', 'zzzqq']) {
@@ -1199,5 +1217,165 @@ describe('search_tools with action enums', () => {
       { name: 'b_write', description: 'Write operations.', inputSchema: withEnum[0]!.inputSchema },
     ]
     assert.match(searchResult(server(tools), 'create', 1), /mcp__x__b_write/)
+  })
+})
+
+// Issue #208: an empty query is the overview of the servers, and a server key lists that server.
+describe('search_tools overview and server keys', () => {
+  const pool = (): string[] => {
+    const names = new Set<string>()
+    for (const file of ['rank-catalog.json', 'rank-heldout-b.json', 'rank-github-readme.json']) {
+      const raw = fs.readFileSync(path.join(import.meta.dirname, 'fixtures', file), 'utf8')
+      const parsed = JSON.parse(raw) as { servers: Record<string, [string, string][]> }
+      for (const tools of Object.values(parsed.servers)) for (const [name] of tools) names.add(name)
+    }
+    return [...names]
+  }
+  const POOL = pool()
+  const toolsOf = (n: number): DownstreamTool[] =>
+    Array.from({ length: n }, (_, i) => ({
+      name: `${POOL[i % POOL.length]}${i >= POOL.length ? `_${Math.floor(i / POOL.length)}` : ''}`,
+      description: `Does the thing ${i}.`,
+    }))
+  const SIZES = [210, 48, 48, 48, 48, 48, 48, 48, 48, 46]
+  const realistic = (): ServerState[] =>
+    SIZES.map((n, i) => ({ key: serverKey(`k${i}`)!, status: 'connected', tools: toolsOf(n) }))
+  const HEAD = 'A server key as the query lists all the tool names of that server.'
+  const WAY = 'Add a word to search all servers.'
+  const down: ServerState = { key: serverKey('down')!, status: 'failed', reason: 'boom' }
+  const TAIL = '\n\n## Not connected\n- down: boom'
+
+  test('1: an empty query gives one line for each server, at most 2,000 characters, whatever the limit', () => {
+    const text = searchResult(realistic(), '', 15)
+    const lines = text.split('\n')
+    assert.equal(lines[0], `640 MCP tools on 10 servers. ${HEAD}`)
+    assert.equal(lines.length, 11, text)
+    lines.slice(1).forEach((line, i) => {
+      assert.ok(line.startsWith(`k${i}: ${SIZES[i]} tools: `), line)
+      assert.ok(line.length <= 180, line)
+      assert.ok(line.includes(' more)'), line)
+    })
+    assert.ok(text.length <= 2000, `${text.length}`)
+    for (const q of [' ', '   ', 'a', ' a '])
+      for (const limit of [1, 15, 40]) assert.equal(searchResult(realistic(), q, limit), text)
+    assert.equal(searchResult([...realistic(), down], '', 1), `${text}${TAIL}`)
+  })
+
+  test('1: a server line shows one tool as "1 tool", at most 5 names, and no "more" at 5 or fewer', () => {
+    const states: ServerState[] = [
+      { key: serverKey('one')!, status: 'connected', tools: [{ name: 'solo' }] },
+      { key: serverKey('five')!, status: 'connected', tools: ['e', 'd', 'c', 'b', 'a'].map(name => ({ name })) },
+      { key: serverKey('six')!, status: 'connected', tools: ['f', 'e', 'd', 'c', 'b', 'a'].map(name => ({ name })) },
+      { key: serverKey('empty')!, status: 'connected', tools: [] },
+    ]
+    assert.equal(
+      searchResult(states, '', 15),
+      `12 MCP tools on 3 servers. ${HEAD}\none: 1 tool: solo\nfive: 5 tools: a, b, c, d, e\nsix: 6 tools: a, b, c, d, e (+1 more)`,
+    )
+  })
+
+  const wsTools = ['get', 'list', 'read', 'search', 'diff', 'edit', 'write'].map(name => ({
+    name,
+    description: `${name} in a folder.`,
+  }))
+  const ws: ServerState[] = [
+    {
+      key: serverKey('other')!,
+      status: 'connected',
+      tools: [{ name: 'getWorkspaceInfo', description: 'Info of a workspace.' }],
+    },
+    { key: serverKey('workspace')!, status: 'connected', tools: wsTools },
+  ]
+
+  test('2 and 3: a key lists its own server first and only, in any case and as mcp__key__', () => {
+    const text = searchResult(ws, 'workspace', 15)
+    assert.ok(text.startsWith(`workspace: 7 tools, this server only. ${WAY}\n\n### mcp__workspace__diff\n`), text)
+    assert.ok(!text.includes('getWorkspaceInfo'), text)
+    assert.equal(text.split('### ').length - 1, 7)
+    assert.equal(text.split('\nargs: ').length - 1, 7)
+    for (const q of ['WORKSPACE', ' workspace ', 'mcp__workspace__', 'MCP__Workspace__'])
+      assert.equal(searchResult(ws, q, 15), text, q)
+  })
+
+  test('3: a key with another word ranks across all servers as before', () => {
+    const states = realistic()
+    const all = catalogOf(states)
+    const entries = all.map(t => ({ ...t, actions: actionWords(t.inputSchema), values: actionValues(t.inputSchema) }))
+    for (const q of ['k0 issue', 'mcp__k0__ issue', 'k1 pull request', 'k2 dashboard', 'mcp__k3__x']) {
+      const found = rankTools(entries, q, 15)
+      const text = searchResult(states, q, 15)
+      if (found.length === 0) assert.ok(text.startsWith(`No MCP tool matches "${q}"`), text)
+      else assert.ok(text.startsWith(`${found.length} of ${all.length} MCP tools.\n\n### ${found[0]!.name}`), text)
+    }
+    // The case of the issue, with a second word: the other server's tool ranks first, as before.
+    assert.ok(
+      searchResult(ws, 'workspace info', 15).startsWith('8 of 8 MCP tools.\n\n### mcp__other__getWorkspaceInfo'),
+    )
+  })
+
+  test('4: a key with 210 tools above the limit lists every name one time, and a full name then shows its arguments', () => {
+    const states = realistic()
+    const names = toolsOf(210)
+      .map(t => t.name)
+      .sort()
+    const text = searchResult(states, 'k0', 40)
+    const lines = text.split('\n')
+    assert.equal(lines[0], `k0: 210 tools, more than the limit of 40: names only. ${WAY}`)
+    assert.equal(lines[1], `mcp__k0__: ${names.join(', ')}`)
+    assert.equal(lines[2], 'Search a full tool name for its arguments. Several full names in one query show each.')
+    assert.equal(lines.length, 3)
+    assert.ok(text.length <= names.reduce((n, s) => n + s.length + 2, 0) + 300, `${text.length}`)
+    const three = names.slice(0, 3).map(n => `mcp__k0__${n}`)
+    const hit = searchResult(states, three.join(' '), 15)
+    for (const n of three) assert.ok(hit.includes(`call("${n}"`), n)
+  })
+
+  test('4: above 400 names the line ends with the count of the rest', () => {
+    const states: ServerState[] = [{ key: serverKey('big')!, status: 'connected', tools: toolsOf(450) }]
+    const line = searchResult(states, 'big', 40).split('\n')[1]!
+    assert.ok(line.endsWith(' (+50 more)'), line.slice(-40))
+    assert.equal(line.split(', ').length, 400)
+  })
+
+  test('5: a key with 3 tools shows full blocks, and a failed, connecting or empty server has no tools listed', () => {
+    const states: ServerState[] = [
+      { key: serverKey('three')!, status: 'connected', tools: toolsOf(3) },
+      { key: serverKey('empty')!, status: 'connected', tools: [] },
+      down,
+      { key: serverKey('wait')!, status: 'connecting' },
+    ]
+    const text = searchResult(states, 'three', 15)
+    assert.ok(text.startsWith(`three: 3 tools, this server only. ${WAY}\n\n### mcp__three__`), text)
+    assert.equal(text.split('\ncall(').length - 1, 3, text)
+    assert.ok(text.endsWith('\n\n## Not connected\n- down: boom\n- wait: still connecting. Search again in a moment.'))
+    assert.equal(searchResult(states, 'down', 15).split('\n\n')[0], 'down: no tools listed.')
+    assert.ok(
+      searchResult(states, 'down', 15).endsWith('- down: boom\n- wait: still connecting. Search again in a moment.'),
+    )
+    assert.ok(searchResult(states, 'wait', 15).startsWith('wait: no tools listed.'))
+    assert.ok(searchResult(states, 'empty', 15).startsWith('empty: no tools listed.'))
+  })
+
+  test('5: an asleep server lists its cached names, as the display shows it', () => {
+    const states = shownStates([{ key: serverKey('nap')!, status: 'asleep', tools: toolsOf(5) }])
+    const text = searchResult(states, 'nap', 15)
+    assert.ok(text.startsWith(`nap: 5 tools, this server only. ${WAY}`), text)
+    assert.ok(searchResult(states, '', 15).includes('nap: 5 tools: '))
+  })
+
+  test('6: a name with a line separator stays out, and two keys that differ in case keep their own tools', () => {
+    const sep = String.fromCharCode(0x2028)
+    const states: ServerState[] = [
+      { key: serverKey('Ab')!, status: 'connected', tools: [{ name: 'upper' }, { name: `bad${sep}name` }] },
+      { key: serverKey('ab')!, status: 'connected', tools: [{ name: 'lower' }] },
+    ]
+    assert.ok(searchResult(states, '', 15).includes(`Ab: 1 tool: upper\nab: 1 tool: lower`))
+    assert.ok(!searchResult(states, '', 15).includes(sep))
+    const upper = searchResult(states, 'Ab', 15)
+    assert.ok(upper.includes('mcp__Ab__upper') && !upper.includes('lower') && !upper.includes(sep), upper)
+    const lower = searchResult(states, 'ab', 15)
+    assert.ok(lower.includes('mcp__ab__lower') && !lower.includes('upper'), lower)
+    // Neither spelling is exact, so the query ranks across the servers.
+    assert.doesNotMatch(searchResult(states, 'AB', 15), /this server only|names only/)
   })
 })
