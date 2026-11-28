@@ -345,6 +345,20 @@ describe('modern rules', () => {
     assert.equal(router.open(), 3)
   })
 
+  test('rule 4: a stamped cancel of the child gets the stamp set back to the link id, never the router id', () => {
+    const router = modern('a')
+    const rid = send(router, 'a', 'listen:1', 'subscriptions/listen', { notifications: {} })
+    const out = router.fromChild(note('notifications/cancelled', { requestId: rid, _meta: { [STAMP]: rid, keep: 1 } }))
+    assert.deepEqual(toLink(out, 'a'), [
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/cancelled',
+        params: { requestId: 'listen:1', _meta: { [STAMP]: 'listen:1', keep: 1 } },
+      },
+    ])
+    assert.equal(router.open(), 0)
+  })
+
   test('rule 4: a death gives each open request and each stream one error, then nothing', () => {
     const router = modern('a', 'b')
     send(router, 'a', 'listen:1', 'subscriptions/listen', { notifications: {} })
@@ -597,7 +611,13 @@ describe('modern property test', () => {
           const streamRids = [...rids.entries()].filter(([, info]) => info.stream)
           const [rid] = streamRids.length > 0 && g.chance(0.8) ? g.pick(streamRids) : g.pick([...rids.entries()])
           const requestId = g.pick<unknown>([rid, rid, rid, String(rid), 4242])
-          check(router.fromChild(note('notifications/cancelled', { requestId })), step, 'child cancel')
+          check(
+            router.fromChild(
+              note('notifications/cancelled', { requestId, ...(g.chance(0.5) && { _meta: { [STAMP]: rid } }) }),
+            ),
+            step,
+            'child cancel',
+          )
         } else if (roll < 92) {
           check(router.fromChild(note('notifications/tools/list_changed')), step, 'unstamped list change')
         } else if (roll < 94) {

@@ -272,7 +272,13 @@ export const createRouter = (): Router => {
     streams.delete(entry.link)
     const held = links.get(entry.link)
     if (held !== undefined) release(held, entry.id)
-    return [{ to: 'link', link: entry.link, msg: { ...msg, params: { ...params, requestId: entry.id } } }]
+    return [
+      {
+        to: 'link',
+        link: entry.link,
+        msg: restamped({ ...msg, params: { ...params, requestId: entry.id } }, entry.id),
+      },
+    ]
   }
 
   /** A notification of the child on a modern child: only a stamp of an open stream takes it to a link, and to that one. */
