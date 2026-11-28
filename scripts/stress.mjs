@@ -106,7 +106,12 @@ export const summarize = runs => {
     .sort((a, b) => b.rate - a.rate || (a.name < b.name ? -1 : 1))
 }
 
-const cell = text => String(text).replace(/\|/g, '\\|').replace(/\n/g, ' ')
+// The backslash first: a name with \| or a trailing \ must stay one cell.
+export const cell = text =>
+  String(text)
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/[\r\n]+/g, ' ')
 const pct = rate => (rate * 100).toFixed(rate < 0.1 && rate > 0 ? 1 : 0) + '%'
 
 /** The markdown of a result: a line for the target, and a table with the first failures when any test failed. */

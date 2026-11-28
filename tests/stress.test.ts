@@ -7,6 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   anyFailed,
+  cell,
   decode,
   hostBytes,
   judge,
@@ -265,6 +266,16 @@ describe('runTarget', () => {
     const [row] = summarize(bad.runs)
     assert.deepEqual([row!.name, row!.runs, row!.fails, row!.first.run], ['bad', 3, 1, 2])
     assert.match(row!.first.lines, /bad run 2/)
+  })
+})
+
+describe('the table cell', () => {
+  test('a backslash, a pipe and a line end stay inside one cell', () => {
+    assert.equal(cell('a\\|b'), 'a\\\\\\|b')
+    assert.equal(cell('end\\'), 'end\\\\')
+    assert.equal(cell('a|b\r\nc'), 'a\\|b c')
+    // Read back as markdown, the escapes give the text again: no pipe is left bare.
+    for (const text of ['a\\|b', 'end\\', 'x||y', '\\\\|']) assert.ok(!/(?<!\\)(?:\\\\)*\|/.test(cell(text)), text)
   })
 })
 
