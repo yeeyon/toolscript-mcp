@@ -1,0 +1,346 @@
+{
+  "modern/empty": [
+    {
+      "conn": 0,
+      "method": "server/discover",
+      "reply": {
+        "result": {
+          "supportedVersions": ["2026-07-28"],
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "instructions": "toolscript connects to other MCP servers. Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.",
+          "resultType": "complete",
+          "ttlMs": 0,
+          "cacheScope": "private",
+          "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+              "name": "toolscript-mcp",
+              "version": "<version>"
+            }
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 1
+      }
+    },
+    {
+      "conn": 0,
+      "method": "tools/list",
+      "reply": {
+        "result": {
+          "tools": [
+            {
+              "name": "run_code",
+              "description": "Run a JavaScript program that calls MCP tools, and get back only what it returns. Use it in place of direct MCP tool calls: intermediate data stays out of the context.\n\nThe program is the body of an async function. Available:\n- await call(\"mcp__<server>__<tool>\", args) -> the tool result (parsed JSON when the tool returns JSON, else text)\n- await recall(n) -> result #n of an earlier run, with no new call\n- await sleep(ms) -> waits, to poll a slow job; the time limit of the run still applies\n- await saveFile(name, data) -> writes data to a file and returns its path: text as it is, CSV or JSON lines for an array with a .csv or .jsonl name, else JSON; use it for data too large to return\n- await readFile(path) -> the text of a file from saveFile\n- console.log(...) -> shown after the result\n- return <value> -> the result, as JSON\n\nA result with images, audio or binary resources is { value, attachments }: each attachment has a file path, not the data. Return an image attachment to see the image.\n\nA failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process or setTimeout: only these functions.\n\nWrite each tool name as a string in call(\"…\"): a name built at run time is refused unless the config allows it.\n\nFind tools and their argument types with search_tools first.\n\nExamples:\n// several reads, slimmed\nconst issues = await Promise.all([\"A-1\", \"A-2\"].map(key => call(\"mcp__tracker__get_issue\", { key })))\nreturn issues.map(i => ({ key: i.key, status: i.status }))\n// a write and its check\nawait call(\"mcp__tracker__add_comment\", { key: \"A-1\", body: \"Fixed\" })\nreturn (await call(\"mcp__tracker__list_comments\", { key: \"A-1\" })).some(c => c.body === \"Fixed\")\n// a part of a large result\nconst log = await call(\"mcp__ci__get_log\", { run: 42 })\nreturn log.split(\"\\n\").filter(l => /error/i.test(l))",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "Body of an async JavaScript function."
+                  }
+                },
+                "required": ["code"]
+              },
+              "_meta": {
+                "anthropic/alwaysLoad": true
+              }
+            },
+            {
+              "name": "search_tools",
+              "description": "Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example \"jira issue create\"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. An empty query lists the servers, and \"Not connected\" the ones still down after a reconnect. A server key lists its tools.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "description": "Keywords; empty lists every MCP tool."
+                  },
+                  "limit": {
+                    "type": "number",
+                    "description": "Most tools to return (default 15)."
+                  }
+                },
+                "required": ["query"]
+              },
+              "_meta": {
+                "anthropic/alwaysLoad": true
+              }
+            }
+          ],
+          "resultType": "complete",
+          "ttlMs": 0,
+          "cacheScope": "private",
+          "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+              "name": "toolscript-mcp",
+              "version": "<version>"
+            }
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 2
+      }
+    }
+  ],
+  "claude-code-auto/empty": [
+    {
+      "conn": 0,
+      "method": "server/discover",
+      "reply": {
+        "result": {
+          "supportedVersions": ["2026-07-28"],
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "instructions": "toolscript connects to other MCP servers. Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.",
+          "resultType": "complete",
+          "ttlMs": 0,
+          "cacheScope": "private",
+          "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+              "name": "toolscript-mcp",
+              "version": "<version>"
+            }
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 1
+      }
+    },
+    {
+      "conn": 0,
+      "method": "subscriptions/listen",
+      "reply": {
+        "ack": {
+          "jsonrpc": "2.0",
+          "method": "notifications/subscriptions/acknowledged",
+          "params": {
+            "notifications": {
+              "toolsListChanged": true
+            },
+            "_meta": {
+              "io.modelcontextprotocol/subscriptionId": "listen:1"
+            }
+          }
+        },
+        "notifications": []
+      }
+    },
+    {
+      "conn": 0,
+      "method": "server/discover",
+      "reply": {
+        "result": {
+          "supportedVersions": ["2026-07-28"],
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "instructions": "toolscript connects to other MCP servers. Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.",
+          "resultType": "complete",
+          "ttlMs": 0,
+          "cacheScope": "private",
+          "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+              "name": "toolscript-mcp",
+              "version": "<version>"
+            }
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 2
+      }
+    },
+    {
+      "conn": 0,
+      "method": "resources/list",
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32601,
+          "message": "Method not found"
+        }
+      }
+    }
+  ],
+  "modern/demo": [
+    {
+      "conn": 0,
+      "method": "server/discover",
+      "reply": {
+        "result": {
+          "supportedVersions": ["2026-07-28"],
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "instructions": "toolscript connects to these MCP servers: demo. Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.",
+          "resultType": "complete",
+          "ttlMs": 0,
+          "cacheScope": "private",
+          "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+              "name": "toolscript-mcp",
+              "version": "<version>"
+            }
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 1
+      }
+    },
+    {
+      "conn": 0,
+      "method": "tools/list",
+      "reply": {
+        "result": {
+          "tools": [
+            {
+              "name": "run_code",
+              "description": "Run a JavaScript program that calls MCP tools, and get back only what it returns. Use it in place of direct MCP tool calls: intermediate data stays out of the context.\n\nThe program is the body of an async function. Available:\n- await call(\"mcp__<server>__<tool>\", args) -> the tool result (parsed JSON when the tool returns JSON, else text)\n- await recall(n) -> result #n of an earlier run, with no new call\n- await sleep(ms) -> waits, to poll a slow job; the time limit of the run still applies\n- await saveFile(name, data) -> writes data to a file and returns its path: text as it is, CSV or JSON lines for an array with a .csv or .jsonl name, else JSON; use it for data too large to return\n- await readFile(path) -> the text of a file from saveFile\n- console.log(...) -> shown after the result\n- return <value> -> the result, as JSON\n\nA result with images, audio or binary resources is { value, attachments }: each attachment has a file path, not the data. Return an image attachment to see the image.\n\nA failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process or setTimeout: only these functions.\n\nWrite each tool name as a string in call(\"…\"): a name built at run time is refused unless the config allows it.\n\nFind tools and their argument types with search_tools first.\n\nExamples:\n// several reads, slimmed\nconst issues = await Promise.all([\"A-1\", \"A-2\"].map(key => call(\"mcp__tracker__get_issue\", { key })))\nreturn issues.map(i => ({ key: i.key, status: i.status }))\n// a write and its check\nawait call(\"mcp__tracker__add_comment\", { key: \"A-1\", body: \"Fixed\" })\nreturn (await call(\"mcp__tracker__list_comments\", { key: \"A-1\" })).some(c => c.body === \"Fixed\")\n// a part of a large result\nconst log = await call(\"mcp__ci__get_log\", { run: 42 })\nreturn log.split(\"\\n\").filter(l => /error/i.test(l))",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "Body of an async JavaScript function."
+                  }
+                },
+                "required": ["code"]
+              },
+              "_meta": {
+                "anthropic/alwaysLoad": true
+              }
+            },
+            {
+              "name": "search_tools",
+              "description": "Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example \"jira issue create\"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. An empty query lists the servers, and \"Not connected\" the ones still down after a reconnect. A server key lists its tools.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "description": "Keywords; empty lists every MCP tool."
+                  },
+                  "limit": {
+                    "type": "number",
+                    "description": "Most tools to return (default 15)."
+                  }
+                },
+                "required": ["query"]
+              },
+              "_meta": {
+                "anthropic/alwaysLoad": true
+              }
+            }
+          ],
+          "resultType": "complete",
+          "ttlMs": 0,
+          "cacheScope": "private",
+          "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+              "name": "toolscript-mcp",
+              "version": "<version>"
+            }
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 2
+      }
+    }
+  ],
+  "claude-code-auto/demo": [
+    {
+      "conn": 0,
+      "method": "server/discover",
+      "reply": {
+        "result": {
+          "supportedVersions": ["2026-07-28"],
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "instructions": "toolscript connects to these MCP servers: demo. Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.",
+          "resultType": "complete",
+          "ttlMs": 0,
+          "cacheScope": "private",
+          "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+              "name": "toolscript-mcp",
+              "version": "<version>"
+            }
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 1
+      }
+    },
+    {
+      "conn": 0,
+      "method": "subscriptions/listen",
+      "reply": {
+        "ack": {
+          "jsonrpc": "2.0",
+          "method": "notifications/subscriptions/acknowledged",
+          "params": {
+            "notifications": {
+              "toolsListChanged": true
+            },
+            "_meta": {
+              "io.modelcontextprotocol/subscriptionId": "listen:1"
+            }
+          }
+        },
+        "notifications": []
+      }
+    },
+    {
+      "conn": 0,
+      "method": "server/discover",
+      "reply": {
+        "result": {
+          "supportedVersions": ["2026-07-28"],
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "instructions": "toolscript connects to these MCP servers: demo. Find their tools with search_tools, then call them from one JavaScript program with run_code: only what the program returns comes back. Prefer run_code to their direct tools for several calls, a write and its check, or a part of a large result.",
+          "resultType": "complete",
+          "ttlMs": 0,
+          "cacheScope": "private",
+          "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+              "name": "toolscript-mcp",
+              "version": "<version>"
+            }
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 2
+      }
+    },
+    {
+      "conn": 0,
+      "method": "resources/list",
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32601,
+          "message": "Method not found"
+        }
+      }
+    }
+  ]
+}

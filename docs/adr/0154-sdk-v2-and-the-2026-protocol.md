@@ -124,6 +124,20 @@ answers `ping`, and fans out `tools/list_changed`. That stays, byte for byte, as
 | Recall results (#90); Tasks (Phase 4) | host process, handles and `taskId` qualified by a process nonce and the link | process; `ttlMs` |
 | Tool lists | downstream link; the display cache `tools.json` stays display-only | `ttlMs` when the server gives one |
 
+What lives outside the factory (PR 13). With `auto`, `serveStdio` runs the server factory for a `server/discover` probe and again for
+the connection, and throws the probe instance away when the client falls back to `initialize` (an opening with a probe and then an
+`initialize` on one connection is served as a legacy session). So `createHost` (`src/host/server.ts`) makes the state of the process one
+time: the kept results of `recall`, the `saveFile` folder and the written files, the learned shapes and their load, the policy and its
+reload, the runs in flight and their stop signal, the downstream links, the Workspace bind and the orphan sweep. The factory only
+builds an instance (`HostServer`) and sets its two handlers, so closing a discarded instance stops no run, closes no child and removes
+no file. Both eras get the same surface (`tools` only, no `resources`, no `extensions`) and the same instructions. Until the next two
+changes of the release, a modern instance cannot ask (`elicitInput` throws on a 2026-07-28 request, so `canAsk` is false and an `ask`
+decision gets the refusal for a client that cannot ask), and it has no Workspace: roots/list does not exist in that era, so a modern
+instance hides the Workspace link (it is not listed and a call of it is refused as an unknown server) and the bind, which waits for the
+roots, ends with no Workspace when the first request other than `server/discover` shows the connection is in use. A request of
+`serveStdio` that is not 2026-07-28 and not a legacy opening is answered by the entry itself, with the errors of the SDK: a probe with
+a partial envelope gets -32602 (a malformed envelope) where the legacy server answered -32601.
+
 The server package has an opt-in HMAC codec for `requestState` (`createRequestStateCodec`, server 2.4.0 `dist/index.d.mts:357` to 446).
 Phase 3 decides whether to use it or to keep our own signing: not decided here.
 

@@ -1272,8 +1272,9 @@
       "flag": "auto",
       "expect": "legacy session",
       "source": "an initialize first message pins the 2025 era: docs/adr/0154-sdk-v2-and-the-2026-protocol.md section 11, answer 2",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/upstream-golden-auto.test.ts",
+      "test": "the whole result, for each version a client can ask"
     },
     {
       "side": "upstream",
@@ -1282,8 +1283,9 @@
       "flag": "legacy",
       "expect": "error: any code (the client falls back)",
       "source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning (the stdio fallback: a server of the old revision answers server/discover with an error; the fallback must not be keyed to one specific error code)",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/modern-upstream.e2e.mjs",
+      "test": "with the variable unset or legacy, server/discover gets the error of 1.0.5"
     },
     {
       "side": "upstream",
@@ -1292,8 +1294,9 @@
       "flag": "auto",
       "expect": "modern session",
       "source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/modern-upstream.e2e.mjs",
+      "test": "rule 5: discover, tools/list and a table of programs equal the legacy ones"
     },
     {
       "side": "upstream",
@@ -1302,18 +1305,20 @@
       "flag": "legacy",
       "expect": "legacy session",
       "source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning (probe fails, initialize on the same connection works)",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/upstream-golden.test.ts",
+      "test": "server/discover first, then initialize, initialized and tools/list"
     },
     {
       "side": "upstream",
       "kind": "probe-then-initialize",
       "link": "upstream-stdio",
       "flag": "auto",
-      "expect": "error: -32022 unsupported protocol version (initialize has no envelope)",
-      "source": "docs/adr/0154-sdk-v2-and-the-2026-protocol.md section 4 and 11, answer 2 (one era for each connection, pinned by the first message); the v2 SDK ladder: src-CeKsbNLO.mjs:4614-4624 of the v2 client package answers an envelope-less request, initialize included, with -32022 and data.supported",
-      "status": "pending",
-      "owner": "13"
+      "expect": "legacy session",
+      "source": "src-DdvbAHrR serveStdio (stdio.mjs processMessage): a probe that is answered, then an initialize with no envelope: the probe instance is discarded and the connection is pinned to the legacy era (legacy: serve). The answer to the probe itself is a 2026-07-28 result.",
+      "status": "covered",
+      "file": "tests/upstream-golden-auto.test.ts",
+      "test": "server/discover first, bare and with the envelope, then a normal session"
     },
     {
       "side": "upstream",
@@ -1322,8 +1327,9 @@
       "flag": "legacy",
       "expect": "legacy session",
       "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2506-2517 (the probe runs on a sibling process, the session on a new one)",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/upstream-golden.test.ts",
+      "test": "the whole result, for each version a client can ask"
     },
     {
       "side": "upstream",
@@ -1332,8 +1338,9 @@
       "flag": "auto",
       "expect": "legacy session",
       "source": "client 2.4.0 dist/public-CvV4ZHkX.mjs:2506-2517 (the new process gets an initialize first: pinned to 2025)",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/upstream-golden-auto.test.ts",
+      "test": "the whole result, for each version a client can ask"
     },
     {
       "side": "upstream",
@@ -1342,8 +1349,9 @@
       "flag": "legacy",
       "expect": "error: any code (the client falls back)",
       "source": "tests/modern-client.mjs OPENINGS (the S0 probe of Claude Code 2.1.332): the old era answers discover and listen with an error; the fallback must not be keyed to one specific error code",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/modern-upstream.e2e.mjs",
+      "test": "with the variable unset or legacy, server/discover gets the error of 1.0.5"
     },
     {
       "side": "upstream",
@@ -1352,8 +1360,9 @@
       "flag": "auto",
       "expect": "modern session",
       "source": "tests/modern-client.mjs OPENINGS (the S0 probe of Claude Code 2.1.332)",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/upstream-modern-golden.test.ts",
+      "test": "the modern openings on the built server"
     },
     {
       "side": "upstream",
@@ -1362,8 +1371,9 @@
       "flag": "legacy",
       "expect": "legacy session",
       "source": "tests/modern-client.mjs OPENINGS (the S0 probe of Claude Code 2.1.332)",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/upstream-golden.test.ts",
+      "test": "tools/list, ping, an unknown method"
     },
     {
       "side": "upstream",
@@ -1372,8 +1382,9 @@
       "flag": "auto",
       "expect": "legacy session",
       "source": "an initialize first message pins the 2025 era: docs/adr/0154-sdk-v2-and-the-2026-protocol.md section 11, answer 2",
-      "status": "pending",
-      "owner": "13"
+      "status": "covered",
+      "file": "tests/upstream-golden-auto.test.ts",
+      "test": "tools/list, ping, an unknown method"
     }
   ]
 }

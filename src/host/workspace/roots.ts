@@ -15,7 +15,12 @@ export const INITIALIZED_WAIT_MS = 10_000
 
 export type Roots = {
   /** The `uri` of at most `LIMITS.roots` client roots, as the client sent them. Empty for no capability, an error or a timeout. */
-  readonly read: () => Promise<readonly string[]>
+  readonly read: () => Promise<readonly string[] | 'modern'>
+  /**
+   * Settles the list as `'modern'`: the connection is of the 2026-07-28 era, which has no `roots/list`, so the bind gives no
+   * Workspace and never the bound root that no client root narrowed. Does nothing after the list settled.
+   */
+  readonly modern: () => void
   /** Starts the request when the client has initialized. Call it before `connect`. */
   readonly attach: (server: Server) => void
   /** Settles the list with no root, so a waiting bind ends. */
@@ -31,11 +36,15 @@ export const createRoots = ({
   readonly waitMs?: number
   readonly initializedWaitMs?: number
 }): Roots => {
-  let settle!: (uris: readonly string[]) => void
+  let settle!: (uris: readonly string[] | 'modern') => void
   let never: ReturnType<typeof setTimeout> | undefined
-  const settled = new Promise<readonly string[]>(resolve => (settle = resolve))
+  const settled = new Promise<readonly string[] | 'modern'>(resolve => (settle = resolve))
   return {
     read: () => settled,
+    modern: () => {
+      clearTimeout(never)
+      settle('modern')
+    },
     close: () => {
       clearTimeout(never)
       settle([])

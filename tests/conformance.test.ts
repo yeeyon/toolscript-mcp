@@ -105,8 +105,11 @@ describe('the matrix', () => {
   })
 
   test('the legacy rows that a test of today proves are covered, and the others of the modern work are pending', () => {
-    // The flag `legacy` is the behavior of 1.0.x, which today's tests prove; no row of `auto` can be covered before PR 10 to 13.
-    for (const r of matrix.rows.filter(r => r.status === 'covered')) assert.equal(r.flag, 'legacy', key(r))
-    for (const r of matrix.rows.filter(r => r.flag === 'auto')) assert.notEqual(r.status, 'covered', key(r))
+    // The flag `legacy` is the behavior of 1.0.x, which today's tests prove. A row of `auto` is covered by the PR that gives its
+    // side the modern protocol: the upstream rows with PR 13, the downstream rows with PR 10 and 12.
+    for (const r of matrix.rows.filter(r => r.status === 'covered' && r.side !== 'upstream'))
+      assert.equal(r.flag, 'legacy', key(r))
+    for (const r of matrix.rows.filter(r => r.flag === 'auto' && r.side !== 'upstream'))
+      assert.notEqual(r.status, 'covered', key(r))
   })
 })

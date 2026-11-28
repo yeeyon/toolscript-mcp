@@ -2,6 +2,10 @@
 // answers their calls. The schemas come from TOOLS as JSON Schema, so the
 // handlers are set on a Server of the SDK: McpServer.registerTool
 // takes only Zod schemas.
+//
+// `createHost` makes the state of the process one time (the kept results, the saveFile folder, the learned shapes, the policy
+// and the runs in flight) and gives a factory of instances. `serveStdio` calls the factory for a probe and again for the
+// connection (issue #154, PR 13), so an instance holds no state of its own: it builds a `HostServer` and sets its two handlers.
 
 import { HostServer, onCallTool, onListTools, type CallToolResult } from './sdk/server.ts'
 import { randomUUID } from 'node:crypto'
@@ -24,6 +28,7 @@ import {
 } from '../core/policy.ts'
 import { errorText, newKept, serverInstructions, type Written } from '../core/protocol.ts'
 import { SEARCH_LIMIT, SERVED, parseInput, registration, type ServedName } from '../core/tools.ts'
+import { WORKSPACE_KEY } from '../core/workspace.ts'
 import type { Downstream } from './downstream.ts'
 import { runCode, type Approval, type RunContext } from './run.ts'
 import { SHAPES_WAIT_MS, loadShapes, removeOrphans, schemaHash, within } from './shapes.ts'
@@ -61,13 +66,32 @@ const HANDLERS: Record<ServedName, Handler> = {
 
 const isServed = (name: string): name is ServedName => (SERVED as readonly string[]).includes(name)
 
+/** The era of the connection that an instance serves: `legacy` is the 2025 protocol, `modern` is 2026-07-28. */
+export type Era = 'legacy' | 'modern'
+
+export type Host = {
+  /**
+   * A new instance for a connection of `era`. It builds a server and sets two handlers: no file is read, no child starts, no
+   * timer or listener is made, and closing the instance stops no run and removes no file.
+   */
+  readonly make: (era: Era) => HostServer
+  /** Kills the sandbox of each run in flight and waits until its exchange dir is gone. */
+  readonly stopRuns: () => Promise<void>
+}
+
+/** What the caller hears of a modern connection. */
+export type HostHooks = {
+  /** Called one time, when a modern instance gets a request other than `server/discover`: the connection is in use. */
+  readonly modernInUse?: () => void
+}
+
 export type Served = {
   readonly server: HostServer
   /** Kills the sandbox of each run in flight and waits until its exchange dir is gone. */
   readonly stopRuns: () => Promise<void>
 }
 
-export const createServer = (
+export const createHost = (
   downstream: Downstream,
   config: Config,
   configFile: string,
@@ -80,16 +104,10 @@ export const createServer = (
   workspace?: Promise<{ readonly root: string; readonly tasks: readonly string[] } | undefined>,
   /** True when the config part of the Workspace bind failed (`bindStep`): the instructions say it is not available. */
   workspaceDown = false,
-): Served => {
-  const mcp = new HostServer(
-    { name: 'toolscript-mcp', version },
-    {
-      // listChanged: as the capabilities that McpServer of the first SDK declared for its tools, and clients saw.
-      capabilities: { tools: { listChanged: true } },
-      instructions: serverInstructions([...config.servers.keys()], config.bridges, workspaceDown),
-    },
-  )
-  // One server process serves one client session: its kept results and its saveFile folder.
+  hooks: HostHooks = {},
+): Host => {
+  // One server process serves one client session: its kept results and its saveFile folder. All of it is made one time
+  // here, whatever the number of instances that the factory makes.
   const kept = newKept()
   const written: Written = new Map()
   const untrustedFiles = new Set<string>()
@@ -105,26 +123,6 @@ export const createServer = (
   const stopping = new AbortController()
   const runs = new Set<Promise<unknown>>()
 
-  const canAsk = () => mcp.getClientCapabilities()?.elicitation?.form !== undefined
-  // 'unanswered': the person dismissed the prompt, or it failed, timed out or was cancelled.
-  const prompt = async (extra: Extra, message: string): Promise<Approval | 'unanswered'> => {
-    if (!canAsk()) return 'unsupported'
-    try {
-      const r = await mcp.elicitInput(
-        { mode: 'form', message, requestedSchema: { type: 'object', properties: {} } },
-        { signal: extra.signal, timeout: ASK_TIMEOUT_MS, relatedRequestId: extra.requestId },
-      )
-      return r.action === 'accept' ? 'accept' : r.action === 'decline' ? 'decline' : 'unanswered'
-    } catch (err) {
-      log(`the approval prompt failed: ${errorText(err)}`)
-      return 'unanswered'
-    }
-  }
-  const elicit = async (extra: Extra, message: string): Promise<Approval> => {
-    const answer = await prompt(extra, message)
-    return answer === 'unanswered' ? 'decline' : answer
-  }
-
   // The policy is read again at each run, so an edit needs no restart. A
   // program can write the config through a tool that the policy allows, so a
   // looser policy applies only when the person approves it, or at a restart.
@@ -132,7 +130,8 @@ export const createServer = (
   // A policy that the person declined is not asked again until the file holds another one.
   let policy = config.policy
   let declined: Policy | undefined
-  const reload = async (extra: Extra): Promise<{ policy: Policy; note: string }> => {
+  type Prompter = (extra: Extra, message: string) => Promise<Approval | 'unanswered'>
+  const reload = async (extra: Extra, prompt: Prompter): Promise<{ policy: Policy; note: string }> => {
     const read = await fs.promises.readFile(configFile, 'utf8').then(policyOf, err => ({
       ok: false as const,
       errors: [`cannot read the config: ${errorText(err)}`],
@@ -173,64 +172,120 @@ export const createServer = (
   }
   // One reload at a time: two runs never ask at once, and a run sees the answer to the prompt before it.
   let reloading: Promise<unknown> = Promise.resolve()
-  const freshPolicy = (extra: Extra): Promise<{ policy: Policy; note: string }> => {
-    const fresh = reloading.then(() => reload(extra))
+  const freshPolicy = (extra: Extra, prompt: Prompter): Promise<{ policy: Policy; note: string }> => {
+    const fresh = reloading.then(() => reload(extra, prompt))
     reloading = fresh.catch(() => {})
     return fresh
   }
 
-  const run = async (code: string, extra: Extra): Promise<CallToolResult> => {
-    const fresh = await freshPolicy(extra)
-    // No run starts on a root wider than the effective one: the prompt and the guard use the settled root.
-    const bound = await workspace
-    const workspaceRoot = bound?.root
-    const workspaceTasks = bound?.tasks
-    const ctx: RunContext = {
-      downstream,
-      config: { ...config, policy: fresh.policy },
-      kept,
-      written,
-      untrustedFiles,
-      shapes,
-      filesDir,
-      policyNote: fresh.note,
-      ask: (needed, code) =>
-        elicit(
-          extra,
-          askText(needed, code, config.guards, {
-            ...(workspaceRoot !== undefined && { root: workspaceRoot }),
-            ...(workspaceTasks !== undefined && { tasks: workspaceTasks }),
-          }),
-        ),
-      canAsk,
-      signal: AbortSignal.any([extra.signal, stopping.signal]),
-      log,
-      home,
-      ...(workspaceRoot !== undefined && { workspaceRoot }),
+  let modernUsed = false
+
+  const make = (era: Era): HostServer => {
+    // A modern connection has no Workspace until the client's roots come with the next change of this release: the
+    // roots/list request does not exist in that era, and the bound root without them is wider than a client roots give.
+    // Its instructions say what they say for a Workspace that is not available, and its tools are not listed or callable.
+    const noWorkspace = era === 'modern' && config.workspace !== undefined
+    const mcp = new HostServer(
+      { name: 'toolscript-mcp', version },
+      {
+        // listChanged: as the capabilities that McpServer of the first SDK declared for its tools, and clients saw.
+        capabilities: { tools: { listChanged: true } },
+        instructions: serverInstructions([...config.servers.keys()], config.bridges, workspaceDown || noWorkspace),
+      },
+    )
+    const view: Downstream = noWorkspace
+      ? { ...downstream, states: () => downstream.states().filter(s => s.key !== WORKSPACE_KEY) }
+      : downstream
+    // A modern request cannot be asked a question in this change: the SDK throws on `elicitInput` in that era. So an `ask`
+    // decision gets the refusal for a client that cannot ask, and never an allow.
+    const canAsk = () => era === 'legacy' && mcp.getClientCapabilities()?.elicitation?.form !== undefined
+    // 'unanswered': the person dismissed the prompt, or it failed, timed out or was cancelled.
+    const prompt: Prompter = async (extra, message) => {
+      if (!canAsk()) return 'unsupported'
+      try {
+        const r = await mcp.elicitInput(
+          { mode: 'form', message, requestedSchema: { type: 'object', properties: {} } },
+          { signal: extra.signal, timeout: ASK_TIMEOUT_MS, relatedRequestId: extra.requestId },
+        )
+        return r.action === 'accept' ? 'accept' : r.action === 'decline' ? 'decline' : 'unanswered'
+      } catch (err) {
+        log(`the approval prompt failed: ${errorText(err)}`)
+        return 'unanswered'
+      }
     }
-    const running = runCode(ctx, code)
-    runs.add(running)
-    try {
-      const r = await running
-      const result = text(r.text, r.isError)
-      return { ...result, content: [...result.content, ...r.images.map(i => ({ type: 'image' as const, ...i }))] }
-    } finally {
-      runs.delete(running)
+    const elicit = async (extra: Extra, message: string): Promise<Approval> => {
+      const answer = await prompt(extra, message)
+      return answer === 'unanswered' ? 'decline' : answer
     }
+
+    const run = async (code: string, extra: Extra): Promise<CallToolResult> => {
+      const fresh = await freshPolicy(extra, prompt)
+      // No run starts on a root wider than the effective one: the prompt and the guard use the settled root. A modern
+      // connection waits for none: it has no Workspace.
+      const bound = noWorkspace ? undefined : await workspace
+      const workspaceRoot = bound?.root
+      const workspaceTasks = bound?.tasks
+      const ctx: RunContext = {
+        downstream: view,
+        config: { ...config, policy: fresh.policy },
+        kept,
+        written,
+        untrustedFiles,
+        shapes,
+        filesDir,
+        policyNote: fresh.note,
+        ask: (needed, code) =>
+          elicit(
+            extra,
+            askText(needed, code, config.guards, {
+              ...(workspaceRoot !== undefined && { root: workspaceRoot }),
+              ...(workspaceTasks !== undefined && { tasks: workspaceTasks }),
+            }),
+          ),
+        canAsk,
+        signal: AbortSignal.any([extra.signal, stopping.signal]),
+        log,
+        home,
+        ...(workspaceRoot !== undefined && { workspaceRoot }),
+      }
+      const running = runCode(ctx, code)
+      runs.add(running)
+      try {
+        const r = await running
+        const result = text(r.text, r.isError)
+        return { ...result, content: [...result.content, ...r.images.map(i => ({ type: 'image' as const, ...i }))] }
+      } finally {
+        runs.delete(running)
+      }
+    }
+
+    if (era === 'modern')
+      mcp.onRequest = method => {
+        if (method === 'server/discover' || modernUsed) return
+        modernUsed = true
+        hooks.modernInUse?.()
+      }
+    onListTools(mcp, () => ({ tools: SERVED.map(registration) }))
+    onCallTool(mcp, (req, extra) => {
+      const { name, arguments: args = {} } = req.params
+      return isServed(name)
+        ? HANDLERS[name](args, { downstream: view, shapes: shownNow, canAsk, run, extra })
+        : text(`Unknown tool: ${name}`, true)
+    })
+    return mcp
   }
 
-  onListTools(mcp, () => ({ tools: SERVED.map(registration) }))
-  onCallTool(mcp, (req, extra) => {
-    const { name, arguments: args = {} } = req.params
-    return isServed(name)
-      ? HANDLERS[name](args, { downstream, shapes: shownNow, canAsk, run, extra })
-      : text(`Unknown tool: ${name}`, true)
-  })
   return {
-    server: mcp,
+    make,
     stopRuns: async () => {
       stopping.abort()
       await Promise.allSettled(runs)
     },
   }
+}
+
+/** One instance of the legacy era, for a caller that connects it to a transport at once. */
+export const createServer = (...args: Parameters<typeof createHost>): Served => {
+  const host = createHost(...args)
+  return { server: host.make('legacy'), stopRuns: host.stopRuns }
 }

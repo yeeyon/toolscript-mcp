@@ -10,6 +10,7 @@
 // `toolscript-mcp --version` prints the package version.
 
 import { StdioServerTransport } from './sdk/server.ts'
+import { serveBoth } from './serve.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import { parseArgs } from 'node:util'
@@ -25,7 +26,7 @@ import { lazyIdleMs } from '../core/lazy.ts'
 import { toolsStore } from './toolscache.ts'
 import { INIT_USAGE, runInit } from './init.ts'
 import { LOGIN_USAGE, runLogin } from './login.ts'
-import { createServer } from './server.ts'
+import { createHost } from './server.ts'
 import { detectLaunch, loadConfig, loginFor } from './start.ts'
 import type { WorkspaceConfig } from '../core/workspace.ts'
 import { within } from './shapes.ts'
@@ -162,7 +163,10 @@ const downstream = connectAll(config.servers, version, log, {
 })
 // The downstream servers have started: only now does the server wait for the step, at most 2 s.
 const workspaceDown = step !== undefined && (await within<Step | undefined>(step, 2000, undefined))?.ok === false
-const { server, stopRuns } = createServer(
+// The state of the process is made one time here. With `auto`, `serveStdio` calls the factory for a probe and again for the
+// connection, so the factory only makes an instance (src/host/server.ts). With `legacy` or no variable the server is wired
+// as PR 7 left it: one instance of the legacy era on a stdio transport.
+const { make, stopRuns } = createHost(
   downstream,
   config,
   file,
@@ -170,8 +174,23 @@ const { server, stopRuns } = createServer(
   log,
   workspace?.then(w => (w.ok ? { root: w.bound.root, tasks: w.bound.tasks.names } : undefined)),
   workspaceDown,
+  // A modern connection has no roots/list: the bind then gives no Workspace.
+  { modernInUse: () => roots?.modern() },
 )
-roots?.attach(server)
+let closeServer: () => Promise<void> = async () => {}
+let startServer: () => Promise<void>
+if (config.protocol?.value === 'auto') {
+  // The era of an instance is the one that the opening exchange picked. A legacy instance asks the roots as before.
+  startServer = async () => {
+    const handle = serveBoth({ make }, { attachRoots: instance => roots?.attach(instance), log })
+    closeServer = () => handle.close()
+  }
+} else {
+  const server = make('legacy')
+  roots?.attach(server)
+  closeServer = () => server.close()
+  startServer = () => server.connect(new StdioServerTransport())
+}
 
 // A run in flight gets its sandbox killed and its exchange dir removed before the exit.
 let closing: Promise<void> | undefined
@@ -180,7 +199,7 @@ const shutdown = () => {
   roots?.close()
   return (closing ??= Promise.allSettled([
     stopRuns(),
-    server.close(),
+    closeServer(),
     downstream.close(),
     // A task ends with its tree before the exit, whatever the other closes wait for.
     workspace?.then(w => (w.ok ? w.bound.provider.stopTasks() : undefined)),
@@ -199,4 +218,4 @@ process.on('SIGTERM', shutdown)
 // A direct child runs in its own process group outside Windows, so the SIGHUP of a closed terminal no longer reaches it.
 process.on('SIGHUP', shutdown)
 
-await server.connect(new StdioServerTransport())
+await startServer()

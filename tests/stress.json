@@ -105,6 +105,12 @@
       "note": "the protocol switch: 2 cases, about 38 s a run, 10 processes (PR 9)"
     },
     {
+      "target": "tests/modern-upstream.e2e.mjs",
+      "count": 3,
+      "box": 1,
+      "note": "the 2026-07-28 upstream on auto: 9 cases, about 15 s a run, 17 processes (PR 13)"
+    },
+    {
       "target": "tests/share.e2e.mjs",
       "count": 3,
       "box": 2

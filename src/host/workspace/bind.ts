@@ -71,7 +71,7 @@ export type BindInput = {
    * The `uri` of the client roots (issue #150), settled one time. They only narrow the root of the session: each one
    * is proven here, and one that fails a step grants nothing. Absent: the root is the bound root.
    */
-  readonly clientRoots?: () => Promise<readonly unknown[]>
+  readonly clientRoots?: () => Promise<readonly unknown[] | 'modern'>
   /** The result of `bindStep` for this config, when the caller ran it already. Absent: `bindWorkspace` runs it. */
   readonly step?: Step
 }
@@ -225,6 +225,8 @@ export const bindWorkspace = async ({
   if (clientRoots !== undefined) {
     try {
       const uris = await clientRoots().catch(() => [])
+      // A modern connection has no roots/list: no Workspace, and never the bound root that no client root narrowed.
+      if (uris === 'modern') return refuse('the client of a 2026-07-28 connection gives no roots')
       root = await narrowed(bound.root, uris, homeReal, platform, log, hidden, entry.folds)
     } catch {
       root = bound.root

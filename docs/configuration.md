@@ -289,6 +289,22 @@ connect, the result has no such section.
 The description of `search_tools` tells the model to read "Not connected" after a reconnect. On a catalog of 640 tools on 10
 servers, the empty query returned 1,409 characters. The key of the server with 210 tools returned 4,106.
 
+## The protocol of the client
+
+The environment variable `TOOLSCRIPT_PROTOCOL` is `legacy` or `auto`. With no value, it is `legacy`. It is not a config key, so a
+config that you write for it stays valid for 1.0.5.
+
+- With `legacy`, toolscript-mcp serves the protocol of 1.0.5. A client that sends `server/discover` first gets an error and then
+  uses `initialize`.
+- With `auto`, a client that sends `server/discover` first gets a session of the 2026-07-28 protocol. Claude Code does this.
+  It has the same two tools, the same instructions and the same results. A client that sends `initialize` first gets the session
+  of 1.0.5.
+- On a 2026-07-28 session, an `ask` rule refuses the call with the text for a client that cannot ask. It never allows the call.
+  The built-in Workspace is not available on that session. Both come back with the next two changes of the same release.
+
+To go back to the old protocol, set `TOOLSCRIPT_PROTOCOL=legacy` in the entry of your client and restart the client.
+`TOOLSCRIPT_LEGACY_SERVERS` keeps named servers on `legacy`. It does not change what a client sees of toolscript-mcp.
+
 ## Run log
 
 toolscript-mcp writes one line to `~/.toolscript-mcp/runs.jsonl` for each `run_code` call.

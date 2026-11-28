@@ -56,9 +56,13 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     broken by rename (`takeLock`), and a socket left by a kill is linked back or swept at the next start. `doctor`
     names the way out for a taken name and reads the Windows access rules of the broker folder (never the server).
     `scripts/broker-proc.mjs` is how `scripts/start-time.mjs` checks a pid before it ends the broker.
-  - `server.ts`: `HostServer` (a v2 `Server`, legacy era, built in `sdk/server.ts`), with a handler for each tool in `SERVED`, the approval prompt (elicitation),
-    the policy read again at each run (a looser one waits for the person or a restart) and the runs in flight, which
-    `main.ts` stops at shutdown.
+  - `server.ts`: `createHost` makes the state of the process one time (the kept results, the `saveFile` folder, the learned shapes, the
+    policy and the runs in flight) and gives `make(era)`, a factory of `HostServer` instances (a v2 `Server`, built in `sdk/server.ts`),
+    each with a handler for each tool in `SERVED`, the approval prompt (elicitation, legacy era only) and the policy read again at each
+    run (a looser one waits for the person or a restart). `main.ts` stops the runs at shutdown. `createServer` is one legacy instance.
+    `serve.ts` (issue #154, PR 13): with `TOOLSCRIPT_PROTOCOL=auto`, `serveStdio` calls the factory for a `server/discover` probe and
+    again for the connection, so the factory only builds an instance (no file, child, log line or timer). A modern instance cannot ask
+    and has no Workspace until the next two changes of the release. With `legacy` or no variable, one legacy instance on a stdio transport.
   - `run.ts`: one `run_code` call: the check before a run, the policy, the sandbox, the nested calls, saveFile,
     readFile, recall and the result.
   - `downstream.ts`: connects to the servers of the config in parallel. A failed or closed server connects again on
@@ -191,6 +195,11 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `node tests/protocol-flag.e2e.mjs` runs the built server with `TOOLSCRIPT_PROTOCOL` unset, `legacy` and `auto`: the same first message
   and hashes for a direct, a lazy, a shared and an HTTP link, the answers to what a downstream server may not ask, and the child count
   of a shared server. Run `npm run build` first.
+- `node tests/modern-upstream.e2e.mjs` runs the built server with `TOOLSCRIPT_PROTOCOL=auto` and the raw client of C0: a 2026-07-28 session
+  against a legacy one (discover, `tools/list`, a table of programs), `ask` and the Workspace on a modern connection, the stream, cancel and
+  close, and the error of 1.0.5 for `server/discover` with the variable unset. `tests/upstream-golden-auto.test.ts` is the golden of PR 7
+  again through `serveStdio` (G2), `tests/upstream-modern-golden.test.ts` the golden of the modern openings, `tests/modern-upstream.test.ts`
+  the factory rule (three instances, one state). Run `npm run build` first.
 - `node tests/upgrade.e2e.mjs --base <built 1.0.5 dir> --head <built dir>` runs both builds on one HOME with raw JSON-RPC:
   an OAuth store refreshed both ways, a 1.0.5 host and a head host on one broker or two, and the rollback read (doctor,
   `tools/list`, `run_code`, `search_tools` of one build on the files of the other). With no `--base` it prints one line and
