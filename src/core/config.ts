@@ -771,7 +771,7 @@ const parsePolicy = (raw: unknown, errors: string[]): Rule[] => {
   })
 }
 
-/** The key of the Claude Code bridge in the README and the setup skill. */
+/** The key of the Claude Code bridge in `docs/claude-code-bridge.md` and the setup skill. */
 const BRIDGE_KEY = 'claude-code'
 
 // Claude Code, in any case: `claude`, `claude.exe`, `claude.cmd` or `claude.ps1`, alone or at the end of a path; the

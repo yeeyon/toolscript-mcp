@@ -1006,7 +1006,7 @@ describe('the printed commands in each shell', () => {
           fs.readdirSync(dir).filter(f => f.startsWith('PWN')),
           [],
         )
-        // dash, the sh of Debian and Ubuntu, has no pushd. The README names the shells of a remove step.
+        // dash, the sh of Debian and Ubuntu, has no pushd. `docs/cli.md` names the shells of a remove step.
         if (shell === 'sh' && spawnSync('sh', ['-c', 'command -v pushd'], hidden).status !== 0) return
 
         const listed = await list(config)

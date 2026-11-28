@@ -26,7 +26,7 @@ The names in the commands:
 - `<config>` is the toolscript-mcp config file.
 - `<helper>` is `${CLAUDE_SKILL_DIR}/../setup/config.mjs`, the config helper of the setup skill.
 - `<folder>` is the project folder. If it holds `$`, a backtick, `"`, `%`, `!`, a curly quote or a long dash, stop. A shell
-  can change such a path. Tell the person to add the root in an editor, as README "Turn it on" shows.
+  can change such a path. Tell the person to add the root in an editor, as docs/workspace.md "Turn it on" shows.
 - `<tmp>` is the output of `node -p "require('os').tmpdir()"`.
 
 ## 1. Find the state
@@ -73,7 +73,7 @@ home folder, a drive, a network path or a `.git` part, ask for a project folder.
 
 Ask one question, with the default no. Say first: `edit` and `write` are then listed, and each program that changes a
 file asks first. Windows and macOS write in place. A change can touch a build script that a later test run starts.
-README "Change files" has the details. On yes, with approval, run `node "<helper>" "<config>" workspace write "<folder>"`.
+docs/workspace.md "Change files" has the details. On yes, with approval, run `node "<helper>" "<config>" workspace write "<folder>"`.
 
 ## 5. Named task
 
@@ -87,7 +87,7 @@ Nothing contains it, and each program that calls it asks first.
 - `timeoutSeconds` is a whole number from 1 to the call limit. The limit is `sandbox.callTimeoutSeconds`. Without it,
   the limit is the smaller of 60 and `sandbox.timeoutSeconds`.
 - On Windows, refuse `npm`, `npx`, `pnpm`, `yarn` and any `.cmd`, `.bat` or `.ps1` file as `command`. Use `node` with the
-  script. README "Set a task up safely" says why. Read `package.json` of the folder only when the person asks for a proposal.
+  script. docs/workspace.md "Set a task up safely" says why. Read `package.json` of the folder only when the person asks for a proposal.
 - Never ask for a secret value. Write `${NAME}` in `env`, as `/toolscript:setup` step 9 does.
 - Show the JSON. With approval, write it to `<tmp>/toolscript-task.json`, then run
   `node "<helper>" "<config>" workspace task "<folder>" test "<tmp>/toolscript-task.json"`, then delete the file.
@@ -99,8 +99,8 @@ Nothing contains it, and each program that calls it asks first.
 Run `npx -y toolscript-mcp doctor --config "<config>"` from the folder of step 3. Show the lines of the check
 `workspace`. A line `ok root` is the pass.
 
-- For `unavailable: <reason>`, show it and name the cause from README "The root of a session". Offer `workspace remove`.
-- For a `warn` on the access rules of the root, or on a task that cannot run, show it with the README fix. Go on.
+- For `unavailable: <reason>`, show it and name the cause from docs/workspace.md "The root of a session". Offer `workspace remove`.
+- For a `warn` on the access rules of the root, or on a task that cannot run, show it with the fix in docs/workspace.md. Go on.
 - With no `workspace` line, the section is invalid, and Workspace is off. Show the line for the server `workspace` in
   the check `servers`. Run `workspace task` again with a fixed task file, because it replaces the task. Or offer
   `workspace remove`.

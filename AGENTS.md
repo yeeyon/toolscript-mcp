@@ -115,6 +115,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     pure parts (reports, decision, frames, environment block) are in `src/core/taskjob.ts`. `tests/workspace-rig.ts` is
     the helper of its tests, `tests/task-child.mjs` the child of the task tests, and `tests/task-host-child.ts` the host
     that the hard-kill test kills.
+- `docs/` holds the user docs, one page for each topic, with the index in `README.md`. A new page needs no edit of
+  `tests/docs.check.mjs`: it reads every `docs/*.md`. `docs/adr/` holds the design records and is checked for links only.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only. `runtime/task-job.ps1` is the warm Windows PowerShell 5.1

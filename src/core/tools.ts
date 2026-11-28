@@ -11,7 +11,7 @@ import { RUN_DESCRIPTION, SEARCH_DESCRIPTION } from './protocol.ts'
 /** The tools search_tools returns when the model gives no limit. */
 export const SEARCH_LIMIT = 15
 
-/** The server key that the README gives toolscript-mcp in a client config. */
+/** The server key that `docs/install.md` gives toolscript-mcp in a client config. */
 export const SERVER_NAME = 'toolscript'
 
 type Property =
