@@ -62,7 +62,31 @@ export class IssuerRefused extends OAuthError {
 
 /** The text that the SDK prints after `Cause:`, which is the error text of the authorization server. */
 const SDK_CAUSE = /^(\[mcp-sdk\][\s\S]*? Cause: )[\s\S]*$/u
+/** The code in a line that names one, `[mcp-sdk] OAuth "<code>" ...`: the `error` field of the server, which can be any text. */
+const SDK_CODE = /^(\[mcp-sdk\] OAuth )("(?:[^"\\]|\\.)*")/u
+const KNOWN_CODES: ReadonlySet<string> = new Set<string>(Object.values(OAuthErrorCode))
+/**
+ * The line of the SDK that a 1.0.x store causes: its tokens have no `issuer` stamp, the SDK stamps them and asks the
+ * provider to save them, and the running server saves nothing of that. The advice in the line does not fit a user.
+ */
+const SDK_UNSTAMPED = /^\[mcp-sdk\] SEP-2352: stored OAuth credential has no 'issuer' stamp/u
 let guarded = false
+
+/** `text` as the log may show it, or undefined when the line is dropped. */
+const scrubSdkWarning = (text: string): string | undefined => {
+  if (SDK_UNSTAMPED.test(text)) return undefined
+  return text
+    .replace(SDK_CODE, (whole, head: string, quoted: string) => {
+      try {
+        return KNOWN_CODES.has(JSON.parse(quoted) as string)
+          ? whole
+          : `${head}"(a code that is not an OAuth error code)"`
+      } catch {
+        return `${head}"(a code that is not an OAuth error code)"`
+      }
+    })
+    .replace(SDK_CAUSE, '$1(its text is not shown)')
+}
 
 /**
  * The SDK warns on stderr through `console.warn` when it falls back or retries after an error of the authorization
@@ -73,8 +97,10 @@ const guardSdkWarnings = (): void => {
   if (guarded) return
   guarded = true
   const warn = console.warn.bind(console)
-  console.warn = (...args: unknown[]) =>
-    warn(...args.map(arg => (typeof arg === 'string' ? arg.replace(SDK_CAUSE, '$1(its text is not shown)') : arg)))
+  console.warn = (...args: unknown[]) => {
+    const first = typeof args[0] === 'string' ? scrubSdkWarning(args[0]) : args[0]
+    if (first !== undefined) warn(first, ...args.slice(1))
+  }
 }
 
 /** The refresh token that a refresh request of the SDK sends, or undefined for any other request. */

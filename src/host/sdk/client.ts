@@ -41,14 +41,14 @@ type DoubleShape = {
  * its schema is refused as before. A target that is not a v2 client is a test double of the first SDK's shape.
  */
 export const callClientTool = (
-  target: HostClient,
+  target: HostClient | DoubleShape,
   params: CallToolRequestParams,
   options?: CallToolOptions,
   tool?: DownstreamTool,
 ) =>
   target instanceof Client
     ? target.callTool(params, { ...options, ...(tool !== undefined && { toolDefinition: toolOf(tool) }) })
-    : (target as DoubleShape).callTool(params, undefined, options)
+    : target.callTool(params, undefined, options)
 
 /**
  * One page of the tool list. The v2 client walks every page itself when `listTools` has no cursor, up to its own cap and

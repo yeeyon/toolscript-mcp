@@ -22,7 +22,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   texts of the cap and of an unknown task), `taskjob.ts` (the reports of the task helpers, the decision from them, the
   frames and the environment block), `roots.ts` (issue #150: `fileUriPath`, the path of a client root URI, and
   `narrowRoot`, the root that client roots narrow to, never wider than the bound root) and `ignore.ts` (the parse of a
-  `.gitignore` and the test of a path, for `list` and `search` only). An allow
+  `.gitignore` and the test of a path, for `list` and `search` only), `childenv.ts` (the variables that a stdio child inherits: the
+  list of the first SDK, as our own constant) and `issuer.ts` (the texts of the two issuer checks of a login). An allow
   rule allows a tool of the exec class (`run_task`) only when its match is the exact name. An allow rule allows a tool
   of a bridge or a change tool of Workspace only when its match starts with `mcp__<key>__` (`needs` and `counts` in
   `policy.ts`). `policy.ts` takes one `Guards` value: the bridges, and whether the built-in Workspace is on, so that
@@ -177,7 +178,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - Read `CODING_STANDARDS.md` before a change to code, tests or model-facing text.
 - Only `src/host/sdk/` imports the MCP SDK. Callers import from its files (`client.ts`, `server.ts`, `transport.ts`,
   `auth.ts`, `errors.ts`; no barrel). A stdio, shared or Workspace link has the v2 `@modelcontextprotocol/client` (legacy era); an HTTP link and
-  `login` keep the v1 client until PR 6. Nothing outside the folder asks which one a client is. The tests and `bench/walks.mjs` import the SDK only through `tests/sdk.mjs` (the SDK package
+  `login` are on it too (PR 6); only the server side is still v1. Nothing outside the folder asks which one a client is. The tests and `bench/walks.mjs` import the SDK only through `tests/sdk.mjs` (the SDK package
   itself, never `src/host/sdk/`, so the test peers stay on v1 while the host moves). `tests/code.check.mjs` enforces both (issue #154).
 - Never weaken a sandbox layer to make a test pass.
 - stdout carries only MCP JSON-RPC. Log to stderr.
