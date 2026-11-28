@@ -911,6 +911,8 @@ describe('the handshake limits and a peer that is not the broker', () => {
     fs.mkdirSync(path.dirname(endpoint), { recursive: true })
     const received: string[] = []
     const squatter = net.createServer(socket => {
+      // The host closes its end as soon as it has read this line, so a write of the fake can meet a closed socket (EPIPE).
+      socket.on('error', () => {})
       socket.on('data', d => received.push(String(d)))
       socket.write('{"t":"hello","n":"' + 'c'.repeat(32) + '","p":"' + 'd'.repeat(64) + '"}\n')
     })
@@ -963,6 +965,37 @@ describe('the handshake limits and a peer that is not the broker', () => {
     assert.ok(received.length > 1, 'the host dialled again after each close')
     assert.equal(started(marker), 0, 'no broker was started')
     assert.ok(!received.join('').includes('"entry"'), 'no entry frame')
+  })
+
+  test('a peer that closes at once, and writes into the closed socket, never raises an uncaught exception in the host', async () => {
+    const home = fs.mkdtempSync(path.join(root, 'sq-'))
+    const { file, marker, endpoint } = markerBroker(home, '')
+    const uncaught: Error[] = []
+    const onUncaught = (err: Error): void => void uncaught.push(err)
+    // node:test hands an uncaught exception to the running test: listen first, so it is seen here and not by the runner.
+    const listeners = process.listeners('uncaughtException')
+    process.removeAllListeners('uncaughtException')
+    process.on('uncaughtException', onUncaught)
+    try {
+      const squatter = net.createServer(socket => {
+        socket.on('error', () => {})
+        // Close before the host's hello can be read, then answer anyway: the host writes into a socket that the peer closed.
+        socket.destroy()
+      })
+      await new Promise<void>(r => squatter.listen(endpoint, r))
+      closers.push(() => void squatter.close())
+      await assert.rejects(openLink({ home, brokerFile: file, entry: entryOf() }), BrokerError)
+      await new Promise(r => setTimeout(r, 300))
+      assert.equal(started(marker), 0, 'no broker was started')
+      assert.deepEqual(
+        uncaught.map(e => e.message),
+        [],
+        'no write of the host to a closed socket reached uncaughtException',
+      )
+    } finally {
+      process.off('uncaughtException', onUncaught)
+      for (const l of listeners) process.on('uncaughtException', l)
+    }
   })
 
   test(
