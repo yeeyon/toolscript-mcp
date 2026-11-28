@@ -126,7 +126,7 @@ export const open = async (root: string, options: RigOptions = {}): Promise<Open
   const client = new Client({ name: 'workspace-test', version: '0' })
   await client.connect(await bound.provider.serve())
   const run = async (tool: string, args: Record<string, unknown>, signal?: AbortSignal) =>
-    client.callTool({ name: tool, arguments: args }, undefined, signal === undefined ? undefined : { signal })
+    client.callTool({ name: tool, arguments: args }, signal === undefined ? undefined : { signal })
   return {
     rig: {
       root,

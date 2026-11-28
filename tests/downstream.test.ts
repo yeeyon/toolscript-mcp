@@ -12,18 +12,15 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import {
-  Server,
-  McpServer,
-  StreamableHTTPClientTransport,
-  StreamableHTTPServerTransport,
-  ListToolsRequestSchema,
-} from './sdk.mjs'
+import { StreamableHTTPClientTransport } from './sdk.mjs'
+// The HTTP fakes below are the old kind of server, SDK v1 (see tests/sdk-v1.mjs).
+import { Server, McpServer, StreamableHTTPServerTransport, ListToolsRequestSchema } from './sdk-v1.mjs'
 import { getEventListeners } from 'node:events'
 import type { ServerConfig, ServerKey } from '../src/core/config.ts'
 import { connectAll, serverFetch, startLists, type Downstream } from '../src/host/downstream.ts'
 
 const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
+const V1_STDIO = path.join(import.meta.dirname, 'v1-stdio-server.mjs')
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'toolscript-downstream-test-'))
 const KEY = 'p' as ServerKey
 const opened: Downstream[] = []
@@ -56,6 +53,22 @@ const setup = () => {
   }
   return { downstream, clock, starts, closed }
 }
+
+describe('an old kind of server (SDK v1, issue #154, gate G4)', () => {
+  test('a v1 McpServer over stdio connects, lists its tool and answers a call', async () => {
+    const server: ServerConfig = { kind: 'stdio', command: process.execPath, args: [V1_STDIO], env: {} }
+    const downstream = connectAll(new Map([[KEY, server]]), '0', () => {})
+    opened.push(downstream)
+    await downstream.settled
+    const state = downstream.states()[0]
+    assert.equal(state?.status, 'connected')
+    assert.deepEqual(state?.status === 'connected' ? state.tools.map(t => t.name) : [], ['ping'])
+    const link = await downstream.client(KEY)
+    if (!link.ok) throw new Error(link.reason)
+    const result = await link.client.callTool({ name: 'ping', arguments: {} })
+    assert.deepEqual(result.content, [{ type: 'text', text: 'pong' }])
+  })
+})
 
 describe('reconnect', () => {
   test('a server whose connection closed connects again on next use, one time for all callers', async () => {

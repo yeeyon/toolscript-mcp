@@ -173,7 +173,7 @@ describe('a real broker', () => {
         await new Promise(r => setTimeout(r, 50))
       }
     })()
-    const result = await flooder.callTool({ name: 'flood', arguments: {} }, undefined, { timeout: 20_000 }).then(
+    const result = await flooder.callTool({ name: 'flood', arguments: {} }, { timeout: 20_000 }).then(
       () => 'answered',
       (e: Error) => e.message,
     )
@@ -206,7 +206,7 @@ describe('a real broker', () => {
         await new Promise(r => setTimeout(r, 100))
       }
     })()
-    await noisy.callTool({ name: 'noise', arguments: { ms: 5000, mb: 1 } }, undefined, { timeout: 30_000 })
+    await noisy.callTool({ name: 'noise', arguments: { ms: 5000, mb: 1 } }, { timeout: 30_000 })
     running = false
     await pinger
     assert.ok(worst < 1000, `the other server waited ${Math.round(worst)} ms`)

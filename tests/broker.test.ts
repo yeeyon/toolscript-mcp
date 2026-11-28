@@ -728,9 +728,7 @@ describe('child stderr, forged frames and the caps', () => {
     const errors: string[] = []
     client.onerror = e => errors.push(e.message)
     // The SDK may refuse a line with extra keys, as it does from a direct child: that call then ends at its own timeout.
-    const answer = await client
-      .callTool({ name: 'forge', arguments: {} }, undefined, { timeout: 1000 })
-      .catch((e: Error) => e)
+    const answer = await client.callTool({ name: 'forge', arguments: {} }, { timeout: 1000 }).catch((e: Error) => e)
     assert.ok(!JSON.stringify(answer instanceof Error ? answer.message : answer).includes('FORGED-REASON'))
     assert.ok(!errors.join('|').includes('FORGED-REASON'), errors.join('|'))
     assert.match(await text(client, 'pid'), /^\d+$/, 'the link goes on')
@@ -792,7 +790,7 @@ describe('child stderr, forged frames and the caps', () => {
     const gone = new Promise<void>(r => (client.onclose = r))
     for (let i = 0; i < 40; i++)
       void client
-        .callTool({ name: 'pid', arguments: { pad: 'x'.repeat(512 * 1024) } }, undefined, { timeout: 3000 })
+        .callTool({ name: 'pid', arguments: { pad: 'x'.repeat(512 * 1024) } }, { timeout: 3000 })
         .catch(() => {})
     let shut = false
     void gone.then(() => (shut = true))
@@ -804,7 +802,7 @@ describe('child stderr, forged frames and the caps', () => {
     const rig = await startRig()
     const seen = sink()
     const client = await connect(rig, entryOf(), seen.on)
-    await client.callTool({ name: 'noise', arguments: { ms: 1500, mb: 2 } }, undefined, { timeout: 30000 })
+    await client.callTool({ name: 'noise', arguments: { ms: 1500, mb: 2 } }, { timeout: 30000 })
     await until('the count arrives', () => /bytes of the server's stderr were dropped/.test(seen.text()), 15000)
     assert.ok(Buffer.byteLength(seen.text()) < 400 * 1024, 'about the rate and not the whole flood')
     assert.ok(!logOf(rig).includes('zzzz'))

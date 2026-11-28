@@ -2,7 +2,7 @@
 // check what a call lists and what the log says, with fake client answers for `bindWorkspace` and a real SDK client and
 // server pair for `createRoots`.
 
-import { Client, InMemoryTransport, Server, ListRootsRequestSchema } from './sdk.mjs'
+import { Client, InMemoryTransport, Server } from './sdk.mjs'
 import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -281,7 +281,7 @@ describe('createRoots over a real client and server', () => {
     let calls = 0
     if (options.capable !== false)
       client.setRequestHandler(
-        ListRootsRequestSchema,
+        'roots/list',
         async () => (await (options.answer ?? (() => ({ roots: [] })))(++calls)) as never,
       )
     const [a, b] = InMemoryTransport.createLinkedPair()

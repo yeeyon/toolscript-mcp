@@ -96,7 +96,20 @@ const codeProblems = (rel, text) => {
 const SDK_DIR = 'src/host/sdk/'
 const TOPS = ['src', 'runtime', 'tests', 'bench', 'demo', 'scripts', 'plugin']
 const SEAM_EXCEPTION = 'tests/code.check.mjs'
-const isHelper = rel => /^tests\/sdk\.[\w.]+$/.test(rel)
+const isHelperV2 = rel => /^tests\/sdk\.[\w.]+$/.test(rel)
+const isHelperV1 = rel => /^tests\/sdk-v1\.[\w.]+$/.test(rel)
+const isHelper = rel => isHelperV2(rel) || isHelperV1(rel)
+// The files that may import tests/sdk-v1.mjs, each for a v1 peer that stays (named in the comment of that file).
+const V1_USERS = new Set([
+  'tests/server.e2e.mjs',
+  'tests/downstream.test.ts',
+  'tests/v1-stdio-server.mjs',
+  'tests/fake-oauth.ts',
+  'tests/codec.test.ts',
+  'tests/childenv-child.mjs',
+])
+// Build scripts that must name the SDK packages: one finds the SDK's files to bundle and to prove that none is the first SDK's.
+const SCRIPT_EXCEPTIONS = new Set(['scripts/build.mjs', 'scripts/pack-check.mjs'])
 const SHIPS_NO_TEST = ['src/', 'runtime/', 'demo/']
 const SDK_SOURCE = /\.(?:[cm]?[jt]s)$/
 const MODULE = /\b(?:from|import|require)\s*\(?\s*(['"`])([^'"`\n]*)\1/g
@@ -117,7 +130,8 @@ const FOLDER_PACKAGES = ['client', 'core', 'server']
 // The exact specifiers that the folder imports: no other subpath (`server/ext/skills` waits for S2, `server/_shims` and
 // `server/validators/*` are internals).
 const FOLDER_SPECIFIERS = ['client', 'core', 'server', 'server/stdio']
-const HELPER_PACKAGES = ['sdk', 'client']
+const HELPER_PACKAGES = ['client', 'server']
+const HELPER_V1_PACKAGES = ['sdk']
 const lineOf = (text, index) => text.slice(0, index).split('\n').length
 
 // The problems of the SDK seam in the tree under `root`, as "file:line: message".
@@ -127,13 +141,17 @@ const sdkProblems = root =>
       if (rel === SEAM_EXCEPTION) return []
       const text = fs.readFileSync(path.join(root, rel), 'utf8')
       const sealedTop = rel.startsWith('src/') || rel.startsWith('runtime/')
-      const named = [...text.matchAll(PACKAGE)].flatMap(m => {
+      const named = [...(SCRIPT_EXCEPTIONS.has(rel) ? [] : text.matchAll(PACKAGE))].flatMap(m => {
         const at = `${rel}:${lineOf(text, m.index)}: `
         if (!sealedTop && /^server-/.test(m[1])) return []
         if (!rel.startsWith(SDK_DIR) && !isHelper(rel))
           return [`${at}names ${m[0]} outside src/host/sdk/ and tests/sdk.*: use src/host/sdk/ (tests: tests/sdk.mjs)`]
         // The folder also names core, whose schemas of the stored OAuth values the client package does not export.
-        const places = rel.startsWith(SDK_DIR) ? FOLDER_PACKAGES : HELPER_PACKAGES
+        const places = rel.startsWith(SDK_DIR)
+          ? FOLDER_PACKAGES
+          : isHelperV1(rel)
+            ? HELPER_V1_PACKAGES
+            : HELPER_PACKAGES
         if (m[1] === 'sdk' && rel.startsWith(SDK_DIR))
           return [`${at}names ${m[0]}: the first SDK is gone from src/, use the server or client package`]
         if (rel.startsWith(SDK_DIR) && places.includes(m[1]) && !FOLDER_SPECIFIERS.includes(m[1] + (m[2] ?? '')))
@@ -150,6 +168,10 @@ const sdkProblems = root =>
           return [`${at}imports ${m[2]}: the broker and src/core never load the SDK folder`]
         if (shipped && m[2].startsWith('.') && /(^|\/)tests\//.test(m[2]))
           return [`${at}imports ${m[2]}: the package ships no test file`]
+        if (SCRIPT_EXCEPTIONS.has(rel) && m[2].startsWith('@modelcontextprotocol'))
+          return [`${at}imports ${m[2]}: a build script names the SDK files as paths, it never imports the SDK`]
+        if (m[2].startsWith('.') && /(^|\/)sdk-v1(\.mjs)?$/.test(m[2]) && !V1_USERS.has(rel) && !isHelper(rel))
+          return [`${at}imports ${m[2]}: only the files in V1_USERS of tests/code.check.mjs take a v1 peer`]
         if (isHelper(rel) && m[2].startsWith('.') && /(^|\/)src\/host\/sdk(\/|$)/.test(m[2]))
           return [`${at}imports ${m[2]}: the test helper takes the SDK package, never the adapter`]
         return []
@@ -363,22 +385,67 @@ const tests = {
       // Another host file may use the folder.
       put('src/host/downstream.ts', "import { X } from './sdk/client.ts'\n")
       assert.deepEqual(sdkProblems(root), [])
-      // The test helper names the sdk package, and no other. Its own folder-relative imports are fine, the adapter is not.
-      put('tests/sdk.mjs', `export { X } from '${sdk}'\n`)
-      put('tests/sdk.d.mts', `export { X } from '${sdk}'\n`)
-      assert.deepEqual(sdkProblems(root), [], 'the test helper names the sdk package')
+      // The v2 helper names the client and server packages, and no other. Its own folder-relative imports are fine, the adapter is not.
+      put(
+        'tests/sdk.mjs',
+        "export { X } from '@modelcontextprotocol/client'\nexport { Y } from '@modelcontextprotocol/server'\n",
+      )
+      put('tests/sdk.d.mts', "export { X } from '@modelcontextprotocol/client/stdio'\n")
+      assert.deepEqual(sdkProblems(root), [], 'the test helper names the client and server packages')
       for (const bad of ["'../src/host/sdk/client.ts'", "'../src/host/sdk'"]) {
         put('tests/sdk.mjs', `export { X } from ${bad}\n`)
         assert.equal(sdkProblems(root).length, 1, `the test helper imports ${bad}`)
       }
-      put('tests/sdk.mjs', "export { X } from '@modelcontextprotocol/client'\n")
-      assert.deepEqual(sdkProblems(root), [], 'the test helper names the client package')
-      for (const other of ['server', 'core']) {
+      for (const other of ['sdk', 'core']) {
         put('tests/sdk.mjs', `export { X } from '@modelcontextprotocol/${other}'\n`)
-        assert.equal(sdkProblems(root).length, 1, `the test helper names no @modelcontextprotocol/${other}`)
+        assert.equal(sdkProblems(root).length, 1, `tests/sdk.mjs names no @modelcontextprotocol/${other}`)
       }
       drop('tests/sdk.mjs')
       drop('tests/sdk.d.mts')
+      // The v1 helper is the one place that names the first SDK, and no other package.
+      put('tests/sdk-v1.mjs', `export { X } from '${sdk}'\n`)
+      assert.deepEqual(sdkProblems(root), [], 'tests/sdk-v1.mjs names the sdk package')
+      for (const other of ['client', 'server', 'core']) {
+        put('tests/sdk-v1.mjs', `export { X } from '@modelcontextprotocol/${other}'\n`)
+        assert.equal(sdkProblems(root).length, 1, `tests/sdk-v1.mjs names no @modelcontextprotocol/${other}`)
+      }
+      put('tests/sdk-v1.mjs', `export { X } from '${sdk}'\n`)
+      // Only the files in V1_USERS import it.
+      for (const rel of [
+        'tests/server.e2e.mjs',
+        'tests/downstream.test.ts',
+        'tests/fake-oauth.ts',
+        'tests/codec.test.ts',
+        'tests/v1-stdio-server.mjs',
+        'tests/childenv-child.mjs',
+      ]) {
+        put(rel, "import { X } from './sdk-v1.mjs'\n")
+        assert.deepEqual(sdkProblems(root), [], `${rel} takes a v1 peer`)
+        drop(rel)
+      }
+      for (const rel of ['tests/run.test.ts', 'tests/other.e2e.mjs', 'bench/b.mjs']) {
+        put(rel, "import { X } from './sdk-v1.mjs'\n")
+        assert.equal(sdkProblems(root).length, 1, `${rel} takes no v1 peer`)
+        drop(rel)
+      }
+      drop('tests/sdk-v1.mjs')
+      // The two build scripts name the packages to find and to check the SDK files; no other script does.
+      for (const rel of ['scripts/build.mjs', 'scripts/pack-check.mjs']) {
+        put(rel, `const a = '${sdk}'\n`)
+        assert.deepEqual(sdkProblems(root), [], `${rel} names the package`)
+        // A name in a path string is fine; an import of any package of the SDK is not.
+        for (const spec of [sdk, '@modelcontextprotocol/client', '@modelcontextprotocol/server/stdio']) {
+          for (const line of [
+            `import { X } from '${spec}'`,
+            `const m = await import('${spec}')`,
+            `const m = require('${spec}')`,
+          ]) {
+            put(rel, `${line}\n`)
+            assert.equal(sdkProblems(root).length, 1, `${rel} imports ${spec}: ${line}`)
+          }
+        }
+        drop(rel)
+      }
       // The one named file, and the reference servers that a test names as sample data.
       put('tests/code.check.mjs', `const a = '${sdk}'; const b = '@modelcontextprotocol/client'\n`)
       assert.deepEqual(sdkProblems(root), [], 'the check file names the package')
