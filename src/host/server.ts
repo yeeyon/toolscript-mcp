@@ -3,8 +3,7 @@
 // handlers are set on the SDK's underlying Server: McpServer.registerTool
 // takes only Zod schemas.
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+import { McpServer, onCallTool, onListTools, type CallToolResult } from './sdk/server.ts'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -219,8 +218,8 @@ export const createServer = (
     }
   }
 
-  mcp.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: SERVED.map(registration) }))
-  mcp.server.setRequestHandler(CallToolRequestSchema, (req, extra) => {
+  onListTools(mcp.server, () => ({ tools: SERVED.map(registration) }))
+  onCallTool(mcp.server, (req, extra) => {
     const { name, arguments: args = {} } = req.params
     return isServed(name)
       ? HANDLERS[name](args, { downstream, shapes: shownNow, canAsk, run, extra })

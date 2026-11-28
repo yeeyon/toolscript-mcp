@@ -4,7 +4,7 @@
 
 import { createHash, createHmac } from 'node:crypto'
 import crossSpawn from 'cross-spawn'
-import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
+import type { FetchLike } from './sdk/transport.ts'
 import { hideArgSecrets, type SigV4 } from '../core/config.ts'
 import { endTree } from './broker.ts'
 

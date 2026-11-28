@@ -2,7 +2,8 @@
 // that no policy rule allows, runs the program in the sandbox and answers its
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { callClientTool } from './sdk/client.ts'
+import { PROTOCOL_CODES, isProtocolError, protocolCode } from './sdk/errors.ts'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -607,10 +608,14 @@ const execute = async (
     cancel.signal.addEventListener('abort', stop, { once: true })
     try {
       // At the timeout the SDK sends notifications/cancelled, so the server can stop the work.
-      const r = await link.client.callTool({ name: target.name, arguments: args }, undefined, {
-        timeout: callSeconds * 1000,
-        signal: own.signal,
-      })
+      const r = await callClientTool(
+        link.client,
+        { name: target.name, arguments: args },
+        {
+          timeout: callSeconds * 1000,
+          signal: own.signal,
+        },
+      )
       const { reply, files, ...mark } = mcpReply(
         {
           content: Array.isArray(r.content) ? r.content : [],
@@ -635,8 +640,8 @@ const execute = async (
       // `data`. A server can send the same code for its own error (mcp-remote does, for a failed login): its text stays.
       if (
         !own.signal.aborted &&
-        err instanceof McpError &&
-        err.code === ErrorCode.RequestTimeout &&
+        isProtocolError(err) &&
+        err.code === PROTOCOL_CODES.RequestTimeout &&
         (err.data as { timeout?: unknown } | undefined)?.timeout === callSeconds * 1000
       )
         return {
@@ -650,9 +655,7 @@ const execute = async (
         ok: false,
         error,
         code: own.signal.aborted ? 'cancelled' : 'failed',
-        ...(own.signal.aborted
-          ? {}
-          : { cls: classifyCallError(error, err instanceof McpError ? err.code : undefined) }),
+        ...(own.signal.aborted ? {} : { cls: classifyCallError(error, protocolCode(err)) }),
         ...fromUntrusted(),
       }
     } finally {

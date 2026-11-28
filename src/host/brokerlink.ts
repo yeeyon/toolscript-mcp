@@ -9,10 +9,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { deserializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import { deserializeMessage, getDefaultEnvironment } from './sdk/transport.ts'
+import type { JSONRPCMessage, Transport } from './sdk/transport.ts'
 import {
   BROKER_START_MS,
   CHILD_INIT_MS,

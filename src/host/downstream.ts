@@ -9,10 +9,9 @@
 
 import fs from 'node:fs'
 import os from 'node:os'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Client, onToolListChanged } from './sdk/client.ts'
+import { StreamableHTTPClientTransport, StreamableHTTPError } from './sdk/transport.ts'
+import type { FetchLike, Transport } from './sdk/transport.ts'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import { cachedTools, isLazy, sameTools, type ToolsCache } from '../core/lazy.ts'
 import {
@@ -630,9 +629,7 @@ export const connectAll = (
     // A change before the lists start, in the connect or in its list, lists once more after it.
     let lists: Lists | undefined
     let early = false
-    client.setNotificationHandler(ToolListChangedNotificationSchema, () =>
-      lists === undefined ? void (early = true) : lists.changed(),
-    )
+    onToolListChanged(client, () => (lists === undefined ? void (early = true) : lists.changed()))
     let lastError = () => ''
     let started: ChildTransport | undefined
     try {

@@ -10,14 +10,9 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import {
-  auth,
-  discoverOAuthProtectedResourceMetadata,
-  UnauthorizedError,
-} from '@modelcontextprotocol/sdk/client/auth.js'
-import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { OAuthError, UnauthorizedError, auth, discoverOAuthProtectedResourceMetadata } from './sdk/auth.ts'
+import { Client } from './sdk/client.ts'
+import { StreamableHTTPClientTransport } from './sdk/transport.ts'
 import {
   configPath,
   hideClientSecret,
@@ -29,7 +24,7 @@ import {
   type OAuth,
   type ServerKey,
 } from '../core/config.ts'
-import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
+import type { FetchLike } from './sdk/transport.ts'
 import { printableText } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { CONNECT_TIMEOUT_MS, listAll, serverFetch } from './downstream.ts'

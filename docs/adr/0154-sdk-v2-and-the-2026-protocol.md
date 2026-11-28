@@ -344,6 +344,18 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
 
 1. Baseline and this ADR: the numbers of section 9, the matrix of section 7, the decision that replaces 031. Docs only.
 2. Adapter seam on v1: every SDK import of `src/host` moves behind `src/host/sdk/`, with the check. No behaviour change.
+   Done. Rule 3 names (not in the table of section 3, re-exported under their own name, for PR 5 to read): `Client`,
+   `getDefaultEnvironment`, `StreamableHTTPClientTransport`, `StreamableHTTPError`, `InMemoryTransport`, `McpServer`, `Server`,
+   `StdioServerTransport`, `auth`, `discoverOAuthProtectedResourceMetadata`, `UnauthorizedError`, `OAuthClientProvider` and the
+   schemas `OAuthClientInformationFullSchema`, `OAuthClientInformationSchema`, `OAuthTokensSchema`. Rule 2 names that stay in
+   the folder: `McpError`, `ErrorCode` (as `isProtocolError`, `protocolCode`, `PROTOCOL_CODES`), `ListToolsRequestSchema` and
+   `CallToolRequestSchema` (as `onListTools`, `onCallTool`), `ToolListChangedNotificationSchema` (as `onToolListChanged`),
+   and the result-schema slot of `callTool` (as `callClientTool`).
+   For PR 7: callers still use v1 members of the server side that stay outside the folder: `extra.signal` and
+   `extra.requestId` (`server.ts`, `workspace/provider.ts`; v2 has `ctx.mcpReq.signal` and `ctx.mcpReq.id`),
+   `mcp.server.getClientCapabilities()` and `elicitInput` (`server.ts`), `oninitialized`, `onclose` and `listRoots`
+   (`workspace/roots.ts`), and `client.listTools` (`downstream.ts`). PR 7 leaves the callers alone only if `onCallTool`
+   hands them a v1-shaped `extra` built from the v2 ctx.
 3. Own line codec in `src/core` for childtransport.ts and brokerlink.ts. No behaviour change.
 4. Test seam: the tests take the SDK through one helper file.
 5. v2 packages beside v1 (lockfile and pack review); the downstream client side on `@modelcontextprotocol/client`, legacy only; the

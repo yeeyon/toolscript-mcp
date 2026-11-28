@@ -9,16 +9,16 @@
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
-import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import {
   OAuthClientInformationFullSchema,
   OAuthClientInformationSchema,
+  OAuthError,
   OAuthTokensSchema,
   type OAuthClientInformationMixed,
+  type OAuthClientProvider,
   type OAuthTokens,
-} from '@modelcontextprotocol/sdk/shared/auth.js'
-import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
+} from './sdk/auth.ts'
+import type { FetchLike } from './sdk/transport.ts'
 import {
   basicCredentials,
   parseJson,

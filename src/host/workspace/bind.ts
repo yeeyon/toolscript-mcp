@@ -3,7 +3,7 @@
 // file system, and the provider. The result is either a `Bound` workspace or a reason in our own text. Each reason names
 // the entry by its place and never shows a path. The server never reads the section again after this.
 
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import type { Transport } from '../sdk/transport.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
