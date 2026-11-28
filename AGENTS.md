@@ -11,7 +11,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   (config parse, `${VAR}` expansion, config location, self-loop guard, the Claude Code bridges), `catalog.ts`
   (downstream tools, the `search_tools` result, argument specs from input schemas), `policy.ts` (the allow, deny and
   ask rules: the decision before a run, the check of each call and the refusal texts), `mux.ts` (the router of one
-  child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
+  child process that several sessions share, pure; it speaks the legacy era or the 2026-07-28 era to its child, fixed once, and `muxmodern.ts`
+  holds the parts of the modern era: the discover test, the `_meta` size, the stream stamp and the `requestState` set. The legacy effects are
+  those of 1.0.5, kept in `tests/fixtures/mux-1.0.5.ts` and compared by `tests/mux-diff.test.ts`), `share.ts` (the class of a stdio server when sharing is on and the
   text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
   proof of the key, the entry, `PATH` resolve), `lock.ts` (the content of the OAuth refresh lock file, its parse and
   the stale decision, and the reason text of a silent token endpoint), `spawn.ts` (the reason text of a stdio command that cannot start: the command only, never an argument or a variable), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
