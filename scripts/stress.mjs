@@ -373,18 +373,26 @@ export const measuresMemory = platform => platform === 'win32' || platform === '
 /**
  * The idle sample of 6 hosts in the JSON of bench/memory.mjs, in bytes: private bytes, else the private memory of Linux. Null
  * unless the round is healthy: 6 sessions that all started (the bench did not stop early on free RAM), each with every
- * server connected. A smaller process total divided by 6 would look like a saving.
+ * server connected except the ones that the bench makes fail on purpose. A smaller process total divided by 6 would look like
+ * a saving. The fixture of bench/memory.mjs has one such server, the HTTP entry `down` that nothing answers (a healthy
+ * session of v1.0.4 and of main both record `failed: ["down"]`), so a fixture session is healthy with exactly that failure.
  */
 export const hostBytes = data => {
   const round = data?.rounds?.find(r => r.count === 6)
   const sessions = round?.sessions
+  const expected = data?.meta?.mode === 'fixture' ? ['down'] : []
   const healthy =
     Array.isArray(sessions) &&
     sessions.length === 6 &&
     round.stoppedAt === undefined &&
     sessions.every(
       x =>
-        x.ok === true && Array.isArray(x.failed) && x.failed.length === 0 && !x.connectTimeout && x.error === undefined,
+        x.ok === true &&
+        Array.isArray(x.failed) &&
+        x.failed.length === expected.length &&
+        expected.every(k => x.failed.includes(k)) &&
+        !x.connectTimeout &&
+        x.error === undefined,
     )
   if (!healthy) return null
   const idle = round.samples?.idle
