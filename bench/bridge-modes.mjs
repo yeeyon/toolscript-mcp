@@ -11,7 +11,9 @@
 // with --pty-dir (see bench/interactive.mjs). Run npm run build first.
 //
 // Safety: every cell has a temp HOME for toolscript-mcp and the bridge, a fixture project, and a cwd for Claude Code
-// under --root, which must be outside the home folder. Claude Code runs with --setting-sources project,
+// under --root, which must be outside the home folder. On Windows the default root is C:/tsbench94, not the temp
+// folder, because TEMP is inside the home folder and a cwd inside it would load the user's own CLAUDE.md as ancestor
+// memory. Elsewhere --root is required. Each cell's folder is removed after the cell, and the root at the end of a run. Claude Code runs with --setting-sources project,
 // --strict-mcp-config and --tools "", so toolscript-mcp is the only tool that it lists. The project folder of each cwd
 // is removed after the cell (forget.mjs). Nothing here reads the real toolscript config or ~/.claude.json. The
 // evidence is one text file for each cell, with the home folder replaced.
@@ -136,6 +138,8 @@ const { values: opts, positionals } = parseArgs({
   },
 })
 const COMMAND = positionals[0]
+if (opts.root === undefined && process.platform !== 'win32')
+  throw new Error('--root is required: a folder outside the home folder')
 const ROOT = path.resolve(opts.root ?? 'C:/tsbench94')
 const OUT = path.resolve(opts.out ?? path.join(os.tmpdir(), 'bridge-modes-out'))
 const MODEL = opts.model ?? 'haiku'
@@ -474,6 +478,7 @@ const runCell = async ({ mode, kind, runCode }) => {
         ? 'the model made no run_code call in ' + attempt + ' try'
         : 'the screen could not be read: ' + evidence.at(-4)
     forgetRuns([cell.cwd])
+    fs.rmSync(cell.base, { recursive: true, force: true })
   }
   result.spent = spent
   if (!result.observed)
@@ -539,13 +544,15 @@ const runPrintCell = async ({ mode, runCode }) => {
   if (calls === 0) evidence.push('NOT OBSERVED: the model made no run_code call')
   saveEvidence(name, evidence)
   forgetRuns([cell.cwd])
-  return {
+  const row = {
     name,
     observed: calls > 0,
     fileChanged: fs.readFileSync(cell.file, 'utf8') === FIXED,
     runLog: summaryOfRuns(cell.home),
     spent,
   }
+  fs.rmSync(cell.base, { recursive: true, force: true })
+  return row
 }
 
 // --- G10: two sessions on one broker --------------------------------------------------------------------------
@@ -740,6 +747,7 @@ const runG10 = async () => {
     result.spent = costOf(A.cwd) + costOf(B.cwd)
     spent += result.spent
     forgetRuns([A.cwd, B.cwd])
+    for (const gone of [A.base, B.base, base]) fs.rmSync(gone, { recursive: true, force: true })
   }
   log('steps: ' + JSON.stringify(result.steps) + '; spend USD ' + result.spent.toFixed(4))
   saveEvidence('g10', evidence)
@@ -778,5 +786,9 @@ if (COMMAND === 'cell') {
   console.error('usage: node bench/bridge-modes.mjs cell|print|matrix|g10 ...')
   process.exit(2)
 }
+// The root goes when no cell folder is left in it (a folder that the person made keeps it).
+try {
+  fs.rmdirSync(ROOT)
+} catch {}
 // node-pty keeps the event loop alive after its child exited.
 process.exit(0)

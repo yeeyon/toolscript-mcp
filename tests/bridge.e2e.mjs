@@ -79,82 +79,89 @@ const runLines = home =>
     .split('\n')
     .map(l => JSON.parse(l))
 
-// Case 1: the real bridge.
-const real = await start(
-  'real',
-  {
-    command: claude,
-    args: ['mcp', 'serve'],
-    cwd: PROJECT,
-    env: { HOME: path.join(dir, 'claude-home'), USERPROFILE: path.join(dir, 'claude-home') },
-  },
-  TOOLS.map(t => ({ match: 'mcp__' + KEY + '__' + t, action: 'allow' })),
-)
 try {
-  const listed = await real.client.callTool({ name: 'search_tools', arguments: { query: '', limit: 100 } })
-  const names = [...textOf(listed).matchAll(/^### (mcp__claude-code__\S+)$/gm)].map(m => m[1])
-  console.log('claude mcp serve lists ' + names.length + ' tools: ' + names.join(', '))
-  assert.ok(names.includes('mcp__' + KEY + '__' + SHELL), 'the bridge lists ' + SHELL)
-  const q = JSON.stringify
-  const program = [
-    'const g = await call("mcp__claude-code__Grep", { pattern: "function add", path: ' +
-      q(forward(PROJECT)) +
-      ', output_mode: "files_with_matches" })',
-    'const r = await call("mcp__claude-code__Read", { file_path: ' + q(forward(SOURCE)) + ' })',
-    'const e = await call("mcp__claude-code__Edit", { file_path: ' +
-      q(forward(SOURCE)) +
-      ', old_string: "return a - b", new_string: "return a + b" })',
-    'const t = await call("mcp__claude-code__' + SHELL + '", { command: "node --test" })',
-    'const out = JSON.stringify(t)',
-    'if (!/pass 1/.test(out) || !/fail 0/.test(out)) throw new Error("the test did not pass: " + out.slice(0, 800))',
-    'return { grep: JSON.stringify(g).includes("calc.mjs"), pass: /pass 1/.test(out), fail0: /fail 0/.test(out) }',
-  ].join('\n')
-  const result = await real.client.callTool({ name: 'run_code', arguments: { code: program } })
-  const text = textOf(result)
-  console.log('run_code result:\n' + text.split('\n\n---')[0])
-  assert.notEqual(result.isError, true, text)
-  assert.match(text, /"grep": ?true/)
-  assert.match(text, /"pass": ?true/)
-  assert.match(text, /"fail0": ?true/)
-  assert.equal(fs.readFileSync(SOURCE, 'utf8'), BROKEN.replace('a - b', 'a + b'), 'the file on disk holds the new text')
-  const last = runLines(real.home).at(-1)
-  assert.deepEqual(
-    last.calls.map(c => c.tool),
-    TOOLS.map(t => 'mcp__' + KEY + '__' + t),
-    'the run log lists the four tools in order',
-  )
-  assert.ok(
-    last.calls.every(c => c.ok === true),
-    JSON.stringify(last.calls),
-  )
-  console.log(
-    'case 1 passed: run log tools ' +
-      last.calls.map(c => c.tool.replace('mcp__claude-code__', '') + ':' + c.ok).join(', '),
-  )
-} finally {
-  await real.close()
-}
-
-// Case 2: the command does not exist.
-const missing = await start('missing', { command: 'claude-does-not-exist-' + process.pid, args: ['mcp', 'serve'] }, [
-  { match: 'mcp__' + KEY + '__Read', action: 'allow' },
-])
-try {
-  const found = await missing.client.callTool({ name: 'search_tools', arguments: { query: 'Read file' } })
-  assert.notEqual(found.isError, true, textOf(found))
-  console.log('missing binary, search_tools: ' + textOf(found))
-  const result = await missing.client.callTool({
-    name: 'run_code',
-    arguments: {
-      code: 'try { return await call("mcp__claude-code__Read", { file_path: "x" }) } catch (e) { return "THROWN: " + e.message }',
+  // Case 1: the real bridge.
+  const real = await start(
+    'real',
+    {
+      command: claude,
+      args: ['mcp', 'serve'],
+      cwd: PROJECT,
+      env: { HOME: path.join(dir, 'claude-home'), USERPROFILE: path.join(dir, 'claude-home') },
     },
-  })
-  const text = textOf(result)
-  console.log('missing binary, call: ' + text.split('\n\n---')[0])
-  assert.match(text, /claude-code/, 'the reason names the server key')
-  console.log('case 2 passed')
+    TOOLS.map(t => ({ match: 'mcp__' + KEY + '__' + t, action: 'allow' })),
+  )
+  try {
+    const listed = await real.client.callTool({ name: 'search_tools', arguments: { query: '', limit: 100 } })
+    const names = [...textOf(listed).matchAll(/^### (mcp__claude-code__\S+)$/gm)].map(m => m[1])
+    console.log('claude mcp serve lists ' + names.length + ' tools: ' + names.join(', '))
+    assert.ok(names.includes('mcp__' + KEY + '__' + SHELL), 'the bridge lists ' + SHELL)
+    const q = JSON.stringify
+    const program = [
+      'const g = await call("mcp__claude-code__Grep", { pattern: "function add", path: ' +
+        q(forward(PROJECT)) +
+        ', output_mode: "files_with_matches" })',
+      'const r = await call("mcp__claude-code__Read", { file_path: ' + q(forward(SOURCE)) + ' })',
+      'const e = await call("mcp__claude-code__Edit", { file_path: ' +
+        q(forward(SOURCE)) +
+        ', old_string: "return a - b", new_string: "return a + b" })',
+      'const t = await call("mcp__claude-code__' + SHELL + '", { command: "node --test" })',
+      'const out = JSON.stringify(t)',
+      'if (!/pass 1/.test(out) || !/fail 0/.test(out)) throw new Error("the test did not pass: " + out.slice(0, 800))',
+      'return { grep: JSON.stringify(g).includes("calc.mjs"), pass: /pass 1/.test(out), fail0: /fail 0/.test(out) }',
+    ].join('\n')
+    const result = await real.client.callTool({ name: 'run_code', arguments: { code: program } })
+    const text = textOf(result)
+    console.log('run_code result:\n' + text.split('\n\n---')[0])
+    assert.notEqual(result.isError, true, text)
+    assert.match(text, /"grep": ?true/)
+    assert.match(text, /"pass": ?true/)
+    assert.match(text, /"fail0": ?true/)
+    assert.equal(
+      fs.readFileSync(SOURCE, 'utf8'),
+      BROKEN.replace('a - b', 'a + b'),
+      'the file on disk holds the new text',
+    )
+    const last = runLines(real.home).at(-1)
+    assert.deepEqual(
+      last.calls.map(c => c.tool),
+      TOOLS.map(t => 'mcp__' + KEY + '__' + t),
+      'the run log lists the four tools in order',
+    )
+    assert.ok(
+      last.calls.every(c => c.ok === true),
+      JSON.stringify(last.calls),
+    )
+    console.log(
+      'case 1 passed: run log tools ' +
+        last.calls.map(c => c.tool.replace('mcp__claude-code__', '') + ':' + c.ok).join(', '),
+    )
+  } finally {
+    await real.close()
+  }
+
+  // Case 2: the command does not exist.
+  const missing = await start('missing', { command: 'claude-does-not-exist-' + process.pid, args: ['mcp', 'serve'] }, [
+    { match: 'mcp__' + KEY + '__Read', action: 'allow' },
+  ])
+  try {
+    const found = await missing.client.callTool({ name: 'search_tools', arguments: { query: 'Read file' } })
+    assert.notEqual(found.isError, true, textOf(found))
+    console.log('missing binary, search_tools: ' + textOf(found))
+    const result = await missing.client.callTool({
+      name: 'run_code',
+      arguments: {
+        code: 'try { return await call("mcp__claude-code__Read", { file_path: "x" }) } catch (e) { return "THROWN: " + e.message }',
+      },
+    })
+    const text = textOf(result)
+    console.log('missing binary, call: ' + text.split('\n\n---')[0])
+    assert.match(text, /the MCP server "claude-code" is not connected/, 'the reason names the server key')
+    console.log('case 2 passed')
+  } finally {
+    await missing.close()
+  }
+  console.log('ok')
 } finally {
-  await missing.close()
+  fs.rmSync(dir, { recursive: true, force: true })
 }
-fs.rmSync(dir, { recursive: true, force: true })
-console.log('ok')

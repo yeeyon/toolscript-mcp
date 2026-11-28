@@ -277,7 +277,7 @@ Each case ran 3 times (3 rounds). Private bytes (commit), mean with the min and 
   The one exception is round 1 of the first run (10 processes, 414 MB): the bridge started once in a fresh temp home. The
   likely cause is that no learned tool list existed yet, but I did not check it. The 2 later rounds had 8 processes.
 - One call of the bridge adds 2 processes for each session and about 286 MB of private bytes for each (6 sessions:
-  2431 against 714 MB, 12 more processes, 6 wakes). This matches the README figure of about 315 MB.
+  2431 against 714 MB, 12 more processes, 6 wakes). This is close to the 315 MB in docs/sharing.md:51.
 - Start time did not change: the slowest `tools/list` of a round was 250 ms (234-273) at 1 session and 236 to 341 ms at 6, with
   or without the entry. The wake of a called bridge happens inside the first `run_code`.
 - No failed server, no unmeasured process and no leftover after the hosts ended, in all 18 rounds.

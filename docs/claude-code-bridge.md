@@ -147,7 +147,7 @@ SendMessage, Skill, TaskStop, ToolSearch, WebFetch, WebSearch, Workflow and Writ
 
 The allow rules were `mcp__claude-code__Grep`, `Read`, `Edit` and `PowerShell`, and no broader rule. One program found
 `function add` with Grep, read the file, changed `return a - b` to `return a + b` with Edit, and ran `node --test`
-with PowerShell. It threw if the output lacked `pass 1` and `fail 0`. It passed in 4 of 4 runs and returned this:
+with PowerShell. It threw if the output lacked `pass 1` and `fail 0`. It passed in 3 of 3 runs and returned this:
 
 ```json
 { "grep": true, "pass": true, "fail0": true }
@@ -161,13 +161,15 @@ If the command of the bridge does not exist, toolscript-mcp still starts and `se
 server under `Not connected`:
 
 ```text
-- claude-code: MCP error -32000: Connection closed. Its stderr is not shown here. ...
+- claude-code: MCP error -32000: Connection closed. Its stderr is not shown here. To read it, run the command of the server in a terminal. When the client starts toolscript-mcp, its log also holds it
 ```
 
-A program that calls a bridge tool then gets this error. The text names the key, and it does not name the command:
+A run_code program that calls a bridge tool is refused before it starts, so the program never sees the error. The
+result is this text. It names the key, and it does not name the command:
 
 ```text
-the MCP server "claude-code" is not connected: MCP error -32000: Connection closed. ...
+Error: the program did not run, because of the calls below. No call was made.
+- line 1: the MCP server "claude-code" is not connected: MCP error -32000: Connection closed. Its stderr is not shown here. To read it, run the command of the server in a terminal. When the client starts toolscript-mcp, its log also holds it
 ```
 
 ### What prompts in each permission mode
@@ -181,7 +183,8 @@ policy was `Read` allow, `Edit` ask and the rest of the bridge deny. Two prompts
   tool that no rule allows, and has Accept and Decline.
 
 In a W cell the program read the file and edited it. In the first run the script accepted each prompt. In a second run
-in the same session it declined the form, and the run log showed `unapproved` for Edit.
+in the same session it declined the form, and the run log showed `unapproved` for Edit. The cell plan W with `run_code`
+allowed is the exception: the model made no call in the first run, so only the decline run was observed.
 
 | Mode | Program | `run_code` in `--allowedTools` | Host prompt | Form of toolscript-mcp |
 | --- | --- | --- | --- | --- |
@@ -196,7 +199,7 @@ in the same session it declined the form, and the run log showed `unapproved` fo
 | plan | R (Read) | no | yes | no |
 | plan | R (Read) | yes | yes | no |
 | plan | W (Edit) | no | not observed | not observed |
-| plan | W (Edit) | yes | yes (second try only) | yes (second try only) |
+| plan | W (Edit) | yes | yes (Sonnet, decline step only) | yes (Sonnet, decline step only) |
 | dontAsk | R (Read) | no | no, denied | no |
 | dontAsk | R (Read) | yes | no | no |
 | dontAsk | W (Edit) | no | no, denied | no |
@@ -224,8 +227,10 @@ there. Read [The risks](#the-risks) first.
 
 ### Not observed
 
-- Plan mode with an Edit program: the model made no `run_code` call in 2 tries on Haiku and 2 on Sonnet. It said that plan
-  mode forbids the edit. The accept path of this cell was not shown. The `claude -p` plan cells also made no call.
+- Plan mode with an Edit program and `run_code` not allowed: the model made no `run_code` call in 2 tries on Haiku and 2 on
+  Sonnet. It said that plan mode forbids the edit.
+- The accept path of plan mode with an Edit program and `run_code` allowed. Only the decline step ran, on Sonnet.
+- The `claude -p` plan cells: the model made no call.
 - Which model plan mode runs in the TUI. The `claude -p` result named Sonnet 5.5, although Haiku was set.
 - Linux and macOS.
 - The answer "Yes, and do not ask again" of the host prompt.
