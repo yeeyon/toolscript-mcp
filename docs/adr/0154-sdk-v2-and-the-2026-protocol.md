@@ -412,7 +412,51 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
      budget +10) and +3.2 MB on Windows; the sharing saving on Windows is 57.4 against 58.1 MB, which fails the strict rule; the package
      is +35 % and `main.js` +43 %, which fail as expected until PR 8 removes v1.
 6. OAuth, login, `StreamableHTTPClientTransport` and the SigV4 fetch on the v2 client, with `iss` validation, in one PR: the HTTP link
-   leaves v1 there. SigV4 header test.
+   leaves v1 there. SigV4 header test. Done, in one PR because the transport, the provider and `auth` are one SDK version. After it
+   no file in `src/` names `sdk/client/`, `sdk/shared/` or `sdk/server/auth/` (`tests/code.check.mjs`, a row for each); the folder
+   imports from v1 only `server/index.js`, `server/mcp.js`, `server/stdio.js` and `types.js`, which PR 7 moves. `HostClient` is
+   the v2 `Client` and `newClient` takes no link kind; the one v1 shape that stays is the test double of `tests/run.test.ts` in
+   `callClientTool`. Findings of PR 6, read in client 2.4.0 and tested:
+   - Lockfile: no package gained or changed. `@modelcontextprotocol/core` 2.4.0 (in the lockfile since PR 5) is now a pinned
+     dependency of the repository, one root line, because the client package does not export the schemas of the stored values
+     (`OAuthTokensSchema`, `OAuthClientInformationSchema`, `OAuthClientInformationFullSchema`); only `src/host/sdk/auth.ts` names core.
+     `parseStored` keeps and drops the same parts at base and head (`tests/store-golden.test.ts`, 19 store files). Core's schemas
+     leave out the `issuer` stamp, so `oauth.ts` puts a string stamp back (`stampOf`), as v1's schemas kept it.
+   - `getDefaultEnvironment`: the list is now our own constant (`src/core/childenv.ts`), the v1 list. `tests/childenv.test.ts` runs the v1
+     function in a child on `win32`, `linux` and `darwin` with every variable set and compares: no child sees a new variable.
+   - Provider: same methods in the same order. `OAuthError` is `(code, message)` with `.code` (v1 `.errorCode`): `LoginNeeded`,
+     `RefreshFailed` and the new `IssuerRefused` take `invalid_request`, a code that makes `auth` neither retry nor start a login, so the
+     message stays the whole reason. `auth` calls `invalidateCredentials('client')` then `('tokens')`, never `'all'`: the two refusal
+     texts of `oauth.ts` stay, and the `client` branch also clears the tokens of the login. The running server still starts no login,
+     registers no client and opens no browser: `state`, `redirectToAuthorization`, `saveCodeVerifier` and `invalidateCredentials` throw `LoginNeeded`.
+     The login provider keeps `discoveryState` and `saveDiscoveryState` in memory, so the callback leg is bound to its server and the
+     `[mcp-sdk]` warning about a provider without them never prints.
+   - HTTP errors: `SdkHttpError` (`.status`) and `SdkError` `CLIENT_HTTP_UNEXPECTED_CONTENT` replace `StreamableHTTPError`. `sdkErrorText` gives
+     the v1 text (`Streamable HTTP error: <message>`, `after successful authentication`, `after trying upscoping`, and the redirect text without
+     the hint that v2 adds). `tests/errors-golden.test.ts` has 17 HTTP cases (401 without OAuth, with OAuth and no token, after a refresh,
+     403, 404 with and without a session, 400 with an unknown session, 500, 503, `text/html`, a body that is not JSON, a dropped connection,
+     a 307 to another origin, an SSE answer that ends early, a refused connection at connect and at a call, SigV4): the same bytes at base
+     and head, from a raw `node:http` fake with no SDK. One v2 text had to be mapped for that (the redirect hint).
+   - First requests: `tests/initialize-golden.test.ts` records the `initialize` body and the header names and values of the first three
+     requests with and without OAuth. They are equal; no `server/discover`, `mcp-method` or `mcp-name` is sent.
+   - Server-visible change, forced: the registration body gains `application_type: "native"` (v2 derives it from the loopback redirect).
+     `tests/login-golden.test.ts` records the registration, the authorization URL and the code exchange at base; the only difference at
+     head is that field. The `[mcp-sdk]` lines on stderr: the text after `Cause:` is the error text of the authorization server and can echo
+     a code or a client secret, so `oauth.ts` leaves it out once per process (`guardSdkWarnings`, which wraps `console.warn`).
+     `tests/issuer.test.ts` echoes the code and the secret with `invalid_client` and `invalid_grant` and finds neither on stderr.
+   - `iss` (RFC 9207), new: `login` reads `iss` from the callback and checks it against the metadata before it sends the code, and before it
+     prints the `error` text of an error answer. No metadata or no `issuer`: no check. No flag and no `iss`: works as before. The flag
+     `authorization_response_iss_parameter_supported: true` with no `iss`, or any `iss` that is not the exact issuer (also with no flag, as v2 does):
+     exit 1, no code sent, no tokens stored, the received value never printed.
+   - The `issuer` of the metadata must equal the URL it was read from, one trailing `/` apart, at login and at each refresh, with no skip
+     option. A server whose metadata names another issuer, and worked on v1, now fails with `the authorization server metadata of <url>
+     names another issuer (<received>), so toolscript-mcp sends it no login and no token`, in `login` and as the link reason. An opt-out
+     is a later decision of the owner. A store stamped by v1 with and without the trailing `/` still refreshes (tested).
+   - SigV4: v2 sets `mcp-method` and `mcp-name` only on a request with a modern envelope, so never here. The signature covers `host`,
+     `x-amz-*` and `content-type`, so it is the same; the test recomputes the signature of each request the transport sent and compares the
+     other headers with the recording of base.
+   - Refresh under the lock is unchanged: the refresh request body is still a `URLSearchParams` at `fetchWithinOrigin`, `src/core/lock.ts` and
+     `oauthlock.ts` have 0 changed lines, and `oauth-lock*.test.ts`, `oauthlock.test.ts` and `oauth.test.ts` pass unchanged on the v2 flow.
 7. The server side (server.ts, main.ts, the Workspace provider and roots) on `@modelcontextprotocol/server`.
 8. Remove SDK v1, re-measure section 9, update the bench results.
 9. The flag: `TOOLSCRIPT_PROTOCOL` and the config key, default `legacy`, in the entry frame and the share key, with the documented
