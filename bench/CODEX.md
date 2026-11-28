@@ -1,6 +1,6 @@
 # Bench target: Codex
 
-This file is the test plan for the Codex arms of the bench. Run it on a machine with Codex and an OpenAI login. It
+Run this bench on a machine with Codex and a paid ChatGPT login. It
 uses the same 6 tasks, the same fake MCP server and the same checks as `bench/run.mjs`, so the results compare with
 the Claude Code arms in `bench/RESULTS.md` and `bench/RESULTS-codemode.md`.
 
@@ -26,14 +26,40 @@ Use one model for all three arms. Write down its exact name and the Codex versio
    npm run build
    ```
 
-3. Find the name of the code mode feature in your Codex version. Look in `codex --help`, `codex features list` (if
-   your version has it) and the Codex release notes. Code mode is experimental and opt-in. Write down the exact flag
-   or config key that turns it on.
-4. Check that code mode turns on with that flag. In a test run, the event stream must show the code mode tool (an
-   `exec` or JavaScript tool), not only direct MCP tool calls. If it does not turn on, stop and record why.
-5. List the tasks with `node bench/check.mjs --list`. Each line has the task id, the prompt and the expected answer.
+3. Check the model in `codex debug models`. Choose a model in the picker for which the CLI can switch tool modes.
+   The model's `tool_mode` takes precedence over the feature flags on CLI 0.172.0. A model with `code_mode_only`
+   cannot run the direct or ToolScript arms of this comparison. See the [Codex issue](https://github.com/openai/codex/issues/63611).
+4. Print the schedule with `node bench/codex.mjs --dry-run`. It starts no Codex process.
+5. List the tasks with `node bench/check.mjs --list`. Each line has the task ID, the prompt and the expected answer.
 
-## One run
+## Run with the CLI runner
+
+The runner uses `codex exec` with `--ignore-user-config` and an empty work folder for each run. It uses your existing
+Codex login and loads one fixture MCP server per arm. It disables apps, plugins, hooks, web search and shell tools.
+The direct and ToolScript arms omit their fixture tools from native Code Mode. The native arm omits them from direct
+and deferred calls. A successful fixture call in that arm is evidence that Codex used native Code Mode.
+
+Run one task on each arm first. Check that each row has `correct: true` and at least one fixture call.
+
+```sh
+node bench/codex.mjs --model <model> --reps 1 --tasks ticket
+```
+
+Run the full 54-run comparison when that check passes:
+
+```sh
+node bench/codex.mjs --model <model> --reps 3
+```
+
+If the login has a model that supports direct tools but cannot use native Code Mode, document the reason. Pass
+`--arms codex-direct,codex-toolscript` for a 36-run comparison on that same model.
+
+The runner prints its result directory. Pass `--out <new-folder>` to choose the location. Every run keeps
+`events.jsonl`, `stderr.txt`, `answer.txt` and the fixture's `calls.jsonl` when the fixture receives calls. A CLI
+failure stops the series and preserves the earlier rows and the failed run's logs. Keep raw logs local and review
+them before sharing. The runner does not calculate API charges for subscription usage.
+
+## One manual run
 
 Do each run in a new empty folder, with a new log file. `<repo>` is the full path of the clone.
 
@@ -48,6 +74,9 @@ Do each run in a new empty folder, with a new log file. `<repo>` is the full pat
    ```
 
    Keep `default_tools_approval_mode = "approve"` in every arm. Without it, `codex exec` refuses every MCP call.
+
+   Set `omit_tools_from = ["code_mode"]` for `codex-direct`. Set `omit_tools_from = ["direct", "deferred"]` for
+   `codex-codemode` and enable `code_mode` for that arm.
 
    For `codex-toolscript`, write a toolscript-mcp config file `<run folder>/toolscript.json`:
 
@@ -71,6 +100,7 @@ Do each run in a new empty folder, with a new log file. `<repo>` is the full pat
    command = "node"
    args = ["<repo>/dist/host/main.js", "--config", "<run folder>/toolscript.json"]
    default_tools_approval_mode = "approve"
+   omit_tools_from = ["code_mode"]
    ```
 
    The toolscript-mcp policy still decides each nested call, so the `allow` rule above stays.
@@ -110,10 +140,10 @@ Write one JSON line for each run in `results.jsonl`:
 | `task`, `arm`, `rep` | The run |
 | `correct`, `mcpCalls`, `serverChars` | The output of `bench/check.mjs` |
 | `inputTokens`, `cachedInputTokens`, `outputTokens` | The token usage events in `events.jsonl` |
-| `costUsd` | The tokens times the price of the model. Write down the prices that you used. |
-| `turns` | The number of model calls in `events.jsonl` |
-| `toolCalls` | The tool calls in `events.jsonl`, by tool name |
-| `toolResultChars` | The characters of the tool results that went back to the model |
+| `costUsd` | Optional API-equivalent estimate. Write down the pricing and distinguish it from subscription charges. |
+| `turns` | Provider requests, if present in a separate trace. One `turn.completed` event covers the whole CLI turn. |
+| `toolCalls` | MCP calls visible in `events.jsonl`. The CLI can omit the native Code Mode wrapper. |
+| `toolResultChars` | Text characters visible in completed MCP events. The runner leaves this blank for native Code Mode. |
 | `seconds` | The wall time of the run |
 | `codexVersion`, `model` | `codex --version` and the model name |
 
@@ -125,6 +155,14 @@ login, API keys or any file outside the run folders.
 - The fake server data is fixed and fake. No real account or service is used.
 - Codex and Claude Code use different models, so compare the arms inside one agent first. Compare across agents only
   for the relative change from the direct arm.
+
+## Paid run status
+
+The 2026-11-29 Work workspace built commit `4920f67` on Node 24.22.3 and passed all 37 server end-to-end checks.
+Codex CLI `0.172.0-alpha.2` could not start a nested turn. The workspace's Bubblewrap helper failed with
+`Failed to create NETLINK_ROUTE socket: Operation not permitted`. The CLI's Codex Cloud endpoint also rejected the
+workspace login with HTTP 401. Separately, the CLI reported `code_mode_only` for all 10 models it listed in the picker.
+These checks produced zero paid benchmark runs. See [issue #87](https://github.com/yeeyon/toolscript-mcp/issues/87).
 
 ## Smoke test result
 
