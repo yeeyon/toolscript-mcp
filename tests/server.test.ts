@@ -1377,9 +1377,15 @@ describe('the catalog', () => {
     for (const p of parts.slice(1)) assert.match(p, /^bounded_argument_\d+\?: number \(1-100\)$/)
   })
 
-  test('an empty query lists every tool, a query ranks name hits first, and failed servers come last', () => {
-    const all = searchResult(states, '', 15)
-    assert.match(all, /^3 of 3 MCP tools\./)
+  test('an empty query lists the servers, a key lists one server, a query ranks name hits first, and failed servers come last', () => {
+    assert.equal(
+      searchResult(states, '', 15),
+      '3 MCP tools on 2 servers. A server key as the query lists all the tool names of that server.\nbench: 2 tools: get_deploys, list_issues\nother: 1 tool: ping\n\n## Not connected\n- slack: spawn slack-mcp ENOENT',
+    )
+    assert.match(
+      searchResult(states, 'bench', 15),
+      /^bench: 2 tools, this server only\. Add a word to search all servers\.\n\n### mcp__bench__get_deploys\n[^]*### mcp__bench__list_issues\n/,
+    )
     const issues = searchResult(states, 'issues', 15)
     assert.equal(
       issues,
@@ -1414,8 +1420,9 @@ describe('the catalog', () => {
       text,
       '1 of 1 MCP tools.\n\n### mcp__x__ok\nFine ### forged\ncall("mcp__x__ok", {\n  "p\\n### y"?: string\n})\n\n## Not connected\n- y: line one ### mcp__y__forged\n- z: still connecting. Search again in a moment.',
     )
-    const listed = searchResult(odd, '', 15)
-    assert.match(listed, /^1 of 1 MCP tools\.\n\n### mcp__x__ok\nFine ### forged\nargs: /)
+    const listed = searchResult(odd, 'x', 15)
+    assert.match(listed, /^x: 1 tool, this server only\. [^\n]*\n\n### mcp__x__ok\nFine ### forged\ncall\(/)
+    assert.ok(searchResult(odd, '', 15).startsWith('1 MCP tool on 1 server. '))
     assert.deepEqual(
       listed.split('\n').filter(line => line.startsWith('#')),
       ['### mcp__x__ok', '## Not connected'],

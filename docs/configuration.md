@@ -279,12 +279,15 @@ toolscript-mcp refuses to start from its own config, so it cannot start copies o
 If a server fails or stops, toolscript-mcp connects to it again on the next search or call. It tries at most 3 times
 in 60 seconds for each server. Then `search_tools` shows the time until the next attempt.
 
-`search_tools` with an empty query shows one summary of each tool, and never a tool in full. With `limit` 1, it is a
-short check of the servers. It tries each failed server again. Its "Not connected" section lists the servers that are
-still not connected. If all servers connect, the result has no such section.
+`search_tools` with an empty query shows one line for each server: its tool count and its first 5 tool names, and
+nothing from a tool's description. `limit` plays no part, and the result stays short with hundreds of tools. A query
+that is exactly a server key, such as `github` or `mcp__github__`, lists that server only: its tools (in full for 3 or
+fewer), or all its names when it has more tools than `limit`. Add a word to the key to search all servers. The empty query tries
+each failed server again. Its "Not connected" section lists the servers that are still not connected. If all servers
+connect, the result has no such section.
 
-The description of `search_tools` tells the model to use this check after a reconnect. With four sets of fake
-servers, the check returned 86 to 820 characters. An empty query with the default limit returned 1,039 to 8,512.
+The description of `search_tools` tells the model to read "Not connected" after a reconnect. On a catalog of 640 tools on 10
+servers, the empty query returned 1,409 characters. The key of the server with 210 tools returned 4,106.
 
 ## Run log
 

@@ -266,7 +266,9 @@ describe('the built server with the Workspace', () => {
     for (const name of ['list', 'search', 'read', 'stat', 'diff'])
       assert.match(shown, new RegExp(`### mcp__workspace__${name}\\n`))
     assert.doesNotMatch(shown, /mcp__workspace__(edit|write)/, 'no write grant, so no change tool')
-    assert.match(shown, /}\): Promise<\{\n {2}path: string\n {2}content: string\n {2}hash: string/)
+    // The key of the server lists its tools as summaries (#208). A full name shows one tool with its result type.
+    const read = await session.search('mcp__workspace__read')
+    assert.match(read, /}\): Promise<\{\n {2}path: string\n {2}content: string\n {2}hash: string/)
     const tools = await session.client.listTools()
     assert.deepEqual(tools.tools.map(t => t.name).sort(), ['run_code', 'search_tools'])
   })
