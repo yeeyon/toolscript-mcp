@@ -44,3 +44,22 @@ Two walks together run past 10 s where one alone does not (no include, 5.5 to 6.
 Longest call of any batch: 43.2 s, under the 60 s call limit. Eight walks of 10 s each would be 80 s, past it, but a
 walk that runs to 10 s alone is cut either way and a batch of 8 never ran that long here.
 The wall time of a batch is longer than before because the calls that were cut at 10 s now finish.
+
+## Issue #180: 1 slot against 2 slots, in CI
+
+GitHub Actions run 46121218159 on the merged head (the 4-open `search` of `searchInFlight` 4). Median of 6 runs for each cell
+(2 passes of 3 at each slot count, in the order 2, 1, 2, 1). Seconds: alone / batch of 8, slots 1 then 2. Cuts were 0 in every cell.
+
+| Runner                  | Tree  | no include 1 slot | no include 2 slots | include 1 slot | include 2 slots |
+| ----------------------- | ----- | ----------------- | ------------------ | -------------- | --------------- |
+| ubuntu, 4 CPUs          | 2500  | 0.30 / 2.40       | 0.30 / 1.50        | 0.10 / 2.00    | 0.10 / 0.80     |
+| ubuntu, 4 CPUs          | 5500  | 0.40 / 3.30       | 0.40 / 2.70        | 0.20 / 1.75    | 0.20 / 1.40     |
+| windows, 4 CPUs         | 2500  | 2.65 / 21.75      | 2.50 / 18.05       | 1.30 / 11.55   | 1.60 / 9.00     |
+| windows, 4 CPUs         | 5500  | 2.40 / 24.00      | 2.50 / 22.10       | 1.55 / 11.90   | 1.70 / 11.40    |
+| Docker `--cpus 2`       | 2500  | 0.30 / 4.60       | 0.40 / 1.90        | 0.35 / 2.10    | 0.20 / 0.90     |
+
+The batch median is lower at 2 slots in all 10 cells (3 % to 60 %). The alone median is higher at 2 slots in 4 cells
+(Windows 2500 include 1.30 to 1.60, Windows 5500 1.55 to 1.70 and 2.40 to 2.50, Docker no include 0.30 to 0.40) and lower
+or equal in the rest. A search alone takes one slot, so it runs the same code at both counts: the passes of one slot count
+differ from each other by as much (Windows 2500 include at 2 slots: 1.2 s in pass 1, 1.8 s in pass 3), so these are noise.
+The longest alone search was 2.9 s, under 40 % of `searchMs`, so the near-budget tree of 5500 files did not reach 60 %.
