@@ -15,7 +15,7 @@ Sources: issue #154 and the issues #90 to #93 and #147, PR #198, the code of mai
 `npm pack <package>@2.4.0` into a new empty folder (no script was run), on 2026-11-28. A name in this ADR is "found" when it is
 in a file of that package, "not found" when it is in none of the three, and "not checked" when PR 1 did not look. The public pages
 that were read, on 2026-11-28: the Claude Code MCP page, the Codex MCP page, the MCP specification changelog of 2026-07-28 and
-the MCP clients page (URLs in section 7).
+the MCP clients page (URLs in section 7). `npm run check` resolves the relative links of `docs/adr/` (they are in `LINK_ONLY`) and does not check external URLs.
 
 ## 1. Pinned versions
 
@@ -36,10 +36,12 @@ the MCP clients page (URLs in section 7).
 - Legacy era: 2025-11-25 and what the SDK negotiates below it. Modern era: 2026-07-28 (no `initialize`, no session, per-request
   `_meta`, `server/discover` optional).
 - Upstream: modern needs `serveStdio(factory)` of `@modelcontextprotocol/server/stdio`. A server on `StdioServerTransport` (main.ts
-  today) stays 2025.
+  today) stays 2025. Both names: found, server 2.4.0 `dist/stdio.d.mts` (`serveStdio`, `StdioServerTransport`).
 - Downstream: `ClientOptions.versionNegotiation` is an object `{ mode, probe? }` with `mode` `'legacy'` (default), `'auto'` (probes
   `server/discover`, falls back) or `{ pin }`. `client.getProtocolEra()` returns `ProtocolEra | undefined`. The first draft wrote
-  the option as the bare string: that is corrected here.
+  the option as the bare string: that is corrected here. Sources, all found, client 2.4.0: `dist/client-BTIWJvaF.d.mts:189` to 250
+  (`VersionNegotiationOptions` and the modes `'legacy'`, `'auto'`, `{ pin }`), `:327` (the option `versionNegotiation`), `:769`
+  (`getProtocolEra(): ProtocolEra | undefined`), and `dist/index-BCNZS4Ap.d.mts:2493` (`type ProtocolEra = 'legacy' | 'modern'`).
 - 1.1.0 is SDK v2 always. Modern is opt-in behind one flag, in both directions and through the broker (section 8). Nothing is
   advertised that the host cannot do: on a modern link roots, push elicitation and sampling do not exist.
 
@@ -166,10 +168,9 @@ Notes. All five Claude Code sources are `https://code.claude.com/docs/en/mcp`, r
 
 Legacy era with our current server: verified for Claude Code 2.1.332 (`bench/RESULTS.md`, the rerun of 2026-11-27: 150 runs, all answers
 of the toolscript arms correct; the runtime of Claude Code and the era were not recorded) and for the SDK 1.32.2 client. Finding for
-PR 13 and the release: Claude Code states that on its v2 runtime it asks stdio servers for the newer revision by default ("Claude Code
-asks stdio servers for that revision by default", and "A channel server that doesn't support that revision connects on the earlier
-handshake"). So today a probe may already reach our v1 stdio server. Observed in use on 2026-11-28 (Claude Code 2.1.332, Windows, SDK 1.32.2 server, one working day of `run_code` calls), no test in this repo: the session worked. Which runtime that session used is not recorded. The gap stays: its answer to `server/discover` is not verified in a test, and PR 13 adds a test that sends `server/discover` to the built server and checks the answer that the stdio fallback of the spec expects.
-The setting that keeps a client on the earlier handshake is `MCP_PROTOCOL_NEGOTIATION=legacy` (same page). The same page also says "Claude Code connects to every other server as v1 does."
+PR 13 and the release: Claude Code states that on its v2 runtime it "Asks HTTP, stdio, and claude.ai connector servers whether they support the newer
+revision and uses it with those that do." It adds: "Claude Code asks stdio servers for that revision by default." So today a probe may already reach our v1 stdio server. Observed in use on 2026-11-28 (Claude Code 2.1.332, Windows, SDK 1.32.2 server, one working day of `run_code` calls), no test in this repo: the session worked. Which runtime that session used is not recorded. The gap stays: its answer to `server/discover` is not verified in a test, and PR 13 adds a test that sends `server/discover` to the built server and checks the answer that the stdio fallback of the spec expects.
+The same page says: "To decide whether Claude Code asks servers about the newer revision, set MCP_PROTOCOL_NEGOTIATION to auto or legacy." The same page also says "Claude Code connects to every other server as v1 does."
 
 The extension matrix of the MCP site (`https://modelcontextprotocol.io/extensions/client-matrix`, read 2026-11-28) marks ChatGPT Skills "Partial" and leaves the cells of the other clients blank. It does not say what blank means, and no row names the protocol era, MRTR or `listen`: it changes no cell above. The announcement (`https://blog.modelcontextprotocol.io/posts/2026-07-28/`, read 2026-11-28) says "All four Tier 1 SDKs speak 2026-07-28 as of today" (stated).
 
@@ -210,10 +211,10 @@ start budget needs a sturdier measure on macOS (the stress script gets a fix for
 
 | Metric | Value at REF | Unit | Source (command or run) | Date | Spread | Budget |
 |---|---|---|---|---|---|---|
-| Start, `tools/list` reply, median, head at REF (base `v1.0.4` in brackets), Node 24 | Run 1 (46130315779): Windows 150.5 (154.0); Ubuntu 158.5 (154.5); macOS 156.0 (214.0). Run 2 (46131176322): Windows 134.0 (142.0); Ubuntu 147.0 (141.0); macOS 258.5 (189.5) | ms | `baseline` profile, run 46130315779 (https://github.com/yeeyon/toolscript-mcp/actions/runs/46130315779), jobs 140933837726, 140933837802, 140933837708; head at REF, base at the tag `v1.0.4`, built and measured in turns on one runner | 2026-11-28 | two runs, one median for each side in each: Windows 134.0 to 150.5, Ubuntu 147.0 to 158.5, macOS 156.0 to 258.5 | +10% or +50 ms |
+| Start, `tools/list` reply, median, head at REF (base `v1.0.4` in brackets), Node 24. Head of run 1 is `5b9e4ff`, the same product code as REF | Run 1 (46130315779): Windows 150.5 (154.0); Ubuntu 158.5 (154.5); macOS 156.0 (214.0). Run 2 (46131176322): Windows 134.0 (142.0); Ubuntu 147.0 (141.0); macOS 258.5 (189.5) | ms | `baseline` profile, run 46130315779 (https://github.com/yeeyon/toolscript-mcp/actions/runs/46130315779), jobs 140933837726, 140933837802, 140933837708; head at REF, base at the tag `v1.0.4`, built and measured in turns on one runner | 2026-11-28 | two runs, one median for each side in each: Windows 134.0 to 150.5, Ubuntu 147.0 to 158.5, macOS 156.0 to 258.5 | +10% or +50 ms |
 | Host private bytes, head (base `v1.0.4`), 6 hosts, Node 24 | Ubuntu 74.7 (73.6); Windows 159.5 (159.8); macOS not judged: the system has no private memory number for a process | MB a host | `baseline` profile, run 46131176322 (https://github.com/yeeyon/toolscript-mcp/actions/runs/46131176322). Same product code as REF: only `scripts/stress.mjs` differs, with the fix of the memory check. Run 46130315779 did not measure memory (a bug of the stress script) | 2026-11-28 | one value for each side in one run | +10 MB a host |
 | Sharing saving, head (base) | Ubuntu 26.6 (26.5); Windows 57.9 (58.2); macOS not judged, same reason | MB saved a host | same run | 2026-11-28 | one value for each side in one run | modern child: the same saving as legacy |
-| Bytes of the `baseline` profile, head (base in brackets), same run | `tools/list` 2849 (2862); instructions 296 (296); `search_tools` 233 (790) | bytes | same run, all three OS print the same | 2026-11-28 | exact | 0 on legacy |
+| Bytes of the `baseline` profile, head (base in brackets), same run | `tools/list` 2849 (2862); instructions 296 (296); `search_tools` 233 (790; the empty-query overview that #208 rewrote) | bytes | same run, all three OS print the same. A size guard, see the rule below | 2026-11-28 | exact | 0 on legacy |
 | Start, "laptop" second reference | no number recorded | | `node scripts/start-time.mjs` was not run in PR 1 | | | |
 | Host private bytes, "laptop" | 61.1 (60.7 to 61.3), fixture, commit 028435a; 66.7, owner config, commit 726eab2 | MB a host | `bench/RESULTS-memory.md` (2026-11-21, 2026-11-22) | 2026-11-21, 2026-11-22 | as listed | |
 | Windows session, "laptop" | 121.0 idle, guard off, 1 session | MB | `bench/RESULTS-memory.md`, "Child guard on Windows" (commit 2818203) | 2026-11-27 | one run | |
@@ -227,7 +228,7 @@ start budget needs a sturdier measure on macOS (the stress script gets a fix for
 | Direct arm, for reference | 30 of 30; median 89,471 input tokens; mean cost 0.0058 USD | | same report | 2026-11-27 | | |
 
 Tokens and cost, which commit. The rerun used main `ed604f6` plus the lean arms of its own change. Registration bytes changed
-since that commit: #212 (`84cc1bc`) rewrote the end of `SEARCH_DESCRIPTION` in `src/core/protocol.ts` (the literal went from 416 to 403
+since that commit: #212 (`84cc1bc`) rewrote the end of `SEARCH_DESCRIPTION` in `src/core/protocol.ts` (the literal went from 381 to 368
 characters: "Use an empty query to list all tools. After a reconnect, use an empty query with limit 1" became "An empty query lists the
 servers, and "Not connected" the ones still down after a reconnect. A server key lists its tools."). So the numbers above are not the
 registration cost of REF. No paid run happens in PR 1. PR 8 and PR 14 measure base REF and head in one bench session, inside the caps
@@ -247,12 +248,14 @@ newer than all five). Seconds, median and range. Budget +10% for each row.
 | macos-latest | 24 | 202 | 126 to 204 |
 
 `tools/list` and instructions of the built server at REF, on the legacy era (the client asks 2025-06-18 and the server answers it).
-Rule: a v2 PR changes 0 of these bytes. A feature PR that changes them records the new hash in this ADR.
+Rule: a v2 PR changes 0 of these bytes. The rule is judged by equal SHA-256, from the hash command below with the configs of this table.
+The byte rows of the `baseline` profile (`scripts/stress.mjs:449` to 451, `head <= base` on the length) are a size guard only, not this proof.
+A feature PR that changes the bytes records the new hash in this ADR.
 
 | Config | `tools/list` result bytes | SHA-256 | Instructions bytes | SHA-256 |
 |---|---|---|---|---|
 | empty: `{"mcpServers":{}}` | 2849 | `a158f339e944a5fa7387b5ce38005b4955fa12a5670d4ef29639e2951d59a420` | 286 | `3c677dd15356ec0047d4fb6716bea6d6a39080f396b37ab5219c2cbf84542f84` |
-| demo: one server `demo` at `demo/server.mjs` | 2849 | `a158f339e944a5fa7387b5ce38005b4955fa12a5670d4ef29639e2951d59a420` | 292 | `59c786973984b1a9d194a2ad7560c38bcc5713965bb6acf05c00a581af4247c0` |
+| demo: `{"mcpServers":{"demo":{"command":"node","args":["<abs>/demo/server.mjs"]}}}` | 2849 | `a158f339e944a5fa7387b5ce38005b4955fa12a5670d4ef29639e2951d59a420` | 292 | `59c786973984b1a9d194a2ad7560c38bcc5713965bb6acf05c00a581af4247c0` |
 
 The run 46130315779 prints 296 instructions bytes at REF and at `v1.0.4`: its stress script uses its own config, so the number differs from the two rows above, which use the configs named there. A later PR compares like with like, with the same config on both sides. The `tools/list` bytes of that run are 2849 at REF and 2862 at `v1.0.4`: the 13 bytes are the change of #212 (section 9, tokens and cost).
 
@@ -310,7 +313,7 @@ send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', cap
 - #90 -> first PR of Phase 3: session-qualified handles, since `requestState` and Tasks need the same nonce.
 - #91 -> Phase 4: a long command is a task (`tasks/get`, `tasks/update`, `tasks/cancel`). The synchronous path stays. Finding of PR 1:
   the task methods are "2025-11-25 wire vocabulary with no SDK runtime" in the typed surface of server 2.4.0
-  (`dist/mcp-BCJHyo7l.d.mts:725`), so Phase 4 depends on `@modelcontextprotocol/ext-tasks` and not on the SDK packages alone.
+  (`dist/mcp-BCJHyo7l.d.mts:723`), so Phase 4 depends on `@modelcontextprotocol/ext-tasks` and not on the SDK packages alone.
 - #147 (decided): on Windows a compile-on-first-use opt-in helper, the path of PR #198. It does the confined read and write itself and
   passes bytes on a pipe. macOS needs no helper (plain Node). Outside 1.1.0. No prebuilt signed helper.
 
@@ -324,8 +327,8 @@ stays possible as cut.
 | Do the three packages exist at 2.4.0 with the dependencies of section 1? | Yes. The dependency list is longer than the draft said (section 1). | `npm view @modelcontextprotocol/<client,server,core>@2.4.0` |
 | Does the `serveStdio` factory run one time or for each request? | One time for each connection, plus one time for a `server/discover` probe instance that is discarded if the client falls back to `initialize`. The factory gets `ctx.era` (`'legacy'` or `'modern'`). A factory must therefore have no side effect that matters twice. | server 2.4.0 `dist/createMcpHandler-DzlXH0KL.d.mts:193` to 209 and `dist/stdio.d.mts` |
 | Does one stdio server answer both eras? | The same factory serves both eras, but one connection is pinned to the era of its opening exchange: "the opening exchange selects the era, ONE instance from the factory is pinned for the connection lifetime". A 2025 opening is served by default (`legacy: 'serve'`) or refused (`'reject'`). So one child, which has one connection to the router, has one era. This is the rule of section 4. The spec page says the same for the process: "A dual-era server MAY serve both eras concurrently on the same endpoint or process." (stated, not verified). On stdio a client must "probe with server/discover and fall back on any error that is not a recognized modern error". | server 2.4.0 `dist/stdio.d.mts` (`ServeStdioOptions`, `serveStdio`); `https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning` |
-| How does a `subscriptions/listen` notification name its stream on stdio? | `_meta["io.modelcontextprotocol/subscriptionId"]` holds the JSON-RPC id of the listen request, verbatim, on every notification of the stream and on the first `notifications/subscriptions/acknowledged`. The graceful end result carries it too. | core 2.4.0 `dist/internal.d.mts:44` to 54 and `dist/schemas-DBHuY3cl.d.mts:1637` to 1660 |
-| Where do `requestState` and the progress token sit? | `requestState` is at the top of an `input_required` result and in the params of the retried request, with `inputResponses`. The progress token is `params._meta.progressToken`, a string or a number. | server 2.4.0 `dist/mcp-BCJHyo7l.d.mts:685` to 711 and 1003 to 1016; core 2.4.0 `dist/schemas-DBHuY3cl.d.mts:39` |
+| How does a `subscriptions/listen` notification name its stream on stdio? | `_meta["io.modelcontextprotocol/subscriptionId"]` holds the JSON-RPC id of the listen request, verbatim, on every notification of the stream and on the first `notifications/subscriptions/acknowledged`. The graceful end result carries it too. | core 2.4.0 `dist/internal.d.mts:44` to 54 and `dist/schemas-DBHuY3cl.d.mts:1610` to 1616 and 1637 to 1660 |
+| Where do `requestState` and the progress token sit? | `requestState` is at the top of an `input_required` result and in the params of the retried request, with `inputResponses`. The progress token is `params._meta.progressToken`, a string or a number. | server 2.4.0 `dist/mcp-BCJHyo7l.d.mts:655` to 661, 685 to 711 and 1003 to 1016; core 2.4.0 `dist/schemas-DBHuY3cl.d.mts:39` |
 
 What waits, each with its PR. Items that PR 1 already found are noted, and the PR still confirms them with a test.
 - The stdio codec and `OAuthError`: found public in the client package (section 3). PR 3 and PR 6.
