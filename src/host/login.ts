@@ -59,7 +59,7 @@ const notStarted = (err: unknown, url: string): string => {
   if (err instanceof Reason) return err.message
   const text = failure(err)
   if (text === NO_REGISTRATION)
-    return 'its authorization server has no dynamic client registration. Calls that need a token need "clientId" in "oauth": see "OAuth login" in the README'
+    return 'its authorization server has no dynamic client registration. Calls that need a token need "clientId" in "oauth": see "OAuth login" in docs/auth.md'
   const other = OTHER_RESOURCE.exec(text)?.[1]
   if (other !== undefined) return `its protected-resource metadata is for ${other}, not ${url}`
   return `the login did not start: ${text.replace(/\.$/, '')}`

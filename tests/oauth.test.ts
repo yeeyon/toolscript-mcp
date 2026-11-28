@@ -140,7 +140,7 @@ const setup = (fake: Fake, entry: Record<string, unknown> = {}, env: Record<stri
 }
 
 const PONG = JSON.stringify([{ type: 'text', text: 'pong' }])
-/** The reason of a server that needs a login, with the command as the README installs toolscript-mcp. */
+/** The reason of a server that needs a login, with the command as `docs/install.md` installs toolscript-mcp. */
 const LOGIN_REASON = /needs an OAuth login.*`npx -y toolscript-mcp login fake`/
 
 describe('login', () => {
@@ -374,7 +374,7 @@ describe('login', () => {
       assert.equal(await s.login(cancel()), 1, s.lines.join('\n'))
       assert.equal(
         s.lines.join('\n'),
-        'login to fake failed: it answered without a token and has 1 tool, but its authorization server has no dynamic client registration. Calls that need a token need "clientId" in "oauth": see "OAuth login" in the README. No tokens were stored.',
+        'login to fake failed: it answered without a token and has 1 tool, but its authorization server has no dynamic client registration. Calls that need a token need "clientId" in "oauth": see "OAuth login" in docs/auth.md. No tokens were stored.',
       )
       assert.equal(fake.seen.authorizations.length, 0)
       assert.equal(storedTokens(s), undefined)

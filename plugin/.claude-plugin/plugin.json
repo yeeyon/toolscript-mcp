@@ -1,6 +1,6 @@
 {
   "name": "toolscript",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Set up toolscript-mcp from npm and register it with Claude Code. /toolscript:start guides the first run. /toolscript:doctor checks the setup. /toolscript:workspace turns on the built-in Workspace for a project folder.",
   "author": {
     "name": "yeeyon",

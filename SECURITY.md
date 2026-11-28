@@ -60,7 +60,7 @@ Include:
   URL- or form-encoded, and as the Basic header value of the client ID and secret. Only the authorization URL that
   login prints for the browser holds the state. A leak of one of them is in scope.
 - The running server only reads the store and saves refreshed tokens. It never opens a browser or registers a client.
-- Sharing (`"share"`, `TOOLSCRIPT_SHARE`, README "Shared servers") is opt-in. With it on, one broker process of your
+- Sharing (`"share"`, `TOOLSCRIPT_SHARE`, docs/sharing.md "Shared servers") is opt-in. With it on, one broker process of your
   user holds one copy of each shared server for all sessions. A session sends the entry of a server, with its `env`
   values, over the endpoint. The values stay in the memory of the broker. Nothing with a value goes to disk, and
   `broker.log` holds lifecycle lines only.
