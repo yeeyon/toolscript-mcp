@@ -117,6 +117,7 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     that the hard-kill test kills.
 - `docs/` holds the user docs, one page for each topic, with the index in `README.md`. A new page needs no edit of
   `tests/docs.check.mjs`: it reads every `docs/*.md`. `docs/adr/` holds the design records and is checked for links only.
+  `docs/adr/0154-sdk-v2-and-the-2026-protocol.md` is the plan of issue #154 (SDK v2, protocol 2026-07-28) with its baseline numbers and budgets.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only. `runtime/task-job.ps1` is the warm Windows PowerShell 5.1
