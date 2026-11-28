@@ -93,7 +93,10 @@ const batch = async (n, include) => {
   const calls = await Promise.all(
     Array.from({ length: n }, async (_, k) => {
       const start = performance.now()
-      const r = await client.callTool({ name: 'search', arguments: { query: `needle-${k}`, include } })
+      // The client gives a call 60 s. A call that waits longer fails with a timeout, and it counts as a failed call.
+      const r = await client
+        .callTool({ name: 'search', arguments: { query: `needle-${k}`, include } })
+        .catch(e => ({ isError: true, content: String(e?.message ?? e) }))
       if (r.isError === true) {
         // An error is counted as a cut call, and its text is printed once, so a limit that binds is named.
         if (!failed.seen) console.log(`call failed: ${JSON.stringify(r.content).slice(0, 300)}`)
