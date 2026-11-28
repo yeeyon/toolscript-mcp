@@ -10,12 +10,17 @@ import {
   cell,
   checkedBytes,
   decode,
+  hashMetric,
+  HASH_METRICS,
   hostBytes,
   judge,
+  judgeHashes,
+  maskVersion,
   measuresMemory,
   median,
   newestTag,
   pairedStart,
+  parseDiffers,
   parseJunit,
   planOf,
   planOutputs,
@@ -23,7 +28,9 @@ import {
   renderBaseline,
   renderSummary,
   runProfile,
+  replyHashes,
   runTarget,
+  sha256,
   SYSTEMS,
   summarize,
 } from '../scripts/stress.mjs'
@@ -283,10 +290,17 @@ describe('the table cell', () => {
 
 describe('the profiles', () => {
   const config = JSON.parse(fs.readFileSync(path.join(REPO, 'tests', 'stress.json'), 'utf8'))
+  const PROFILES = Object.keys(config).filter(name => name !== 'baseline')
 
   test('tests/stress.json: each profile has entries that name a target and a count, and the files exist', () => {
-    assert.deepEqual(Object.keys(config).sort(), ['bench', 'cpu1', 'flakes', 'load'])
-    for (const name of Object.keys(config))
+    // `baseline` is not a list of targets: its `differs` names the rows of the baseline that may differ on purpose.
+    assert.deepEqual(Object.keys(config).sort(), ['baseline', 'bench', 'cpu1', 'flakes', 'load'])
+    assert.deepEqual(
+      parseDiffers(config).map((d: { row: string; pr: number }) => [d.row, d.pr]),
+      [['dist/host/broker.js sha256', 234]],
+      'the list names the rows that a PR changes on purpose',
+    )
+    for (const name of PROFILES)
       for (const e of profileOf(config, name)) {
         assert.ok(typeof e.target === 'string' && e.count >= 1, name + ' ' + e.target)
         if (!e.optional && !/[*{]/.test(e.target)) assert.ok(fs.existsSync(path.join(REPO, e.target)), e.target)
@@ -302,7 +316,7 @@ describe('the profiles', () => {
     assert.ok(deadlines.length >= 5)
     const profileDeadline = Math.min(...deadlines.filter(d => d >= 45))
     assert.equal(profileDeadline, 45, 'the profile steps use --deadline 45')
-    for (const name of Object.keys(config)) {
+    for (const name of PROFILES) {
       const minutes = profileOf(config, name).reduce((n, e) => n + (e.box ?? (e.timeout ?? 600) / 60), 0)
       assert.ok(minutes <= profileDeadline - 5, name + ' needs ' + minutes + ' min')
     }
@@ -765,5 +779,111 @@ describe('the plan of a run', () => {
       planOutputs(planOf({ event: 'workflow_dispatch', inputs: { profile: 'baseline' } })).split('\n')[1],
       'has_stress=false',
     )
+  })
+})
+
+describe('the hash rows of the upgrade gate', () => {
+  const same = (hash: string | null = sha256('same')) => Object.fromEntries(HASH_METRICS.map(m => [m, hash]))
+  const withRow = (metric: string, hash: string | null) => ({ ...same(), [metric]: hash })
+  const instruction = hashMetric('instructions', 'demo', 'legacy')
+  const rowOf = (rows: ReturnType<typeof judgeHashes>, metric: string) => rows.find(r => r.metric === metric)!
+
+  test('equal hashes pass, and a row is judged on the hash, not on the length', () => {
+    const rows = judgeHashes(same(), same())
+    assert.equal(rows.length, HASH_METRICS.length)
+    assert.ok(rows.every(r => r.ok && !r.na && r.budget === 'equal'))
+    // Two texts of one length: a judgement on length would pass them.
+    assert.equal('instructions A'.length, 'instructions B'.length)
+    assert.equal(rowOf(judgeHashes(withRow(instruction, sha256('instructions A')), same()), instruction).ok, false)
+  })
+
+  test('one changed byte fails the row of that metric only', () => {
+    const rows = judgeHashes(same(), withRow(instruction, sha256('instructiont')))
+    assert.deepEqual(
+      rows.filter(r => !r.ok).map(r => r.metric),
+      [instruction],
+    )
+  })
+
+  test('a null on either side fails, also two nulls', () => {
+    for (const [b, h] of [
+      [null, sha256('x')],
+      [sha256('x'), null],
+      [null, null],
+    ] as const) {
+      const row = rowOf(judgeHashes(withRow(instruction, b), withRow(instruction, h)), instruction)
+      assert.equal(row.ok, false)
+      assert.equal(row.na, true)
+    }
+    // A metric that is missing from a build was not measured.
+    const missing = Object.fromEntries(HASH_METRICS.slice(1).map(m => [m, sha256('same')]))
+    assert.equal(judgeHashes(missing, same())[0]!.ok, false)
+  })
+
+  test('a row in differs that differs passes with its reason, one that is equal fails as stale', () => {
+    const differs = [{ row: instruction, reason: 'the text names the new protocol', pr: 13 }]
+    const row = rowOf(judgeHashes(same(), withRow(instruction, sha256('other')), differs), instruction)
+    assert.equal(row.ok, true)
+    assert.equal(row.differs, 'the text names the new protocol, PR 13')
+    assert.match(renderBaseline([row]), /\| differs \(expected: the text names the new protocol, PR 13\) \|/)
+    const stale = rowOf(judgeHashes(same(), same(), differs), instruction)
+    assert.equal(stale.ok, false)
+    assert.equal(stale.stale, true)
+    assert.match(renderBaseline([stale]), /FAIL \(listed in baseline\.differs but equal/)
+    // The list names one row: another differing row still fails.
+    const other = hashMetric('tools/list', 'demo', 'legacy')
+    assert.equal(rowOf(judgeHashes(same(), withRow(other, sha256('o')), differs), other).ok, false)
+  })
+
+  test('the list is checked: a known row, a reason and a PR number', () => {
+    const ok = { row: instruction, reason: 'why', pr: 13 }
+    assert.deepEqual(parseDiffers({ baseline: { differs: [ok] } }), [ok])
+    assert.deepEqual(parseDiffers({}), [])
+    for (const bad of [
+      { ...ok, row: 'no such row' },
+      { ...ok, reason: ' ' },
+      { ...ok, pr: 0 },
+      { ...ok, pr: '13' },
+    ])
+      assert.throws(() => parseDiffers({ baseline: { differs: [bad] } }), /baseline\.differs/)
+    assert.throws(() => parseDiffers({ baseline: { differs: 'x' } }), /must be a list/)
+  })
+
+  test('the version mask hides the toolscript version and nothing else', () => {
+    const result = {
+      protocolVersion: '2025-06-18',
+      serverInfo: { name: 'toolscript-mcp', version: '1.0.5' },
+      instructions: 'a 1.0.5 b',
+    }
+    const masked = maskVersion(result)
+    assert.deepEqual(masked, { ...result, serverInfo: { name: 'toolscript-mcp', version: '<version>' } })
+    assert.equal(masked.instructions, 'a 1.0.5 b')
+    const hash = (version: string, name = 'toolscript-mcp') =>
+      replyHashes({ result: { ...result, serverInfo: { name, version } } }, undefined, undefined).initialize
+    assert.equal(hash('1.0.5'), hash('1.1.0'))
+    assert.notEqual(hash('1.0.5'), hash('1.0.5', 'other'))
+    assert.equal(
+      replyHashes({ result: { ...result, instructions: 'a 1.1.0 b' } }, undefined, undefined).initialize !==
+        replyHashes({ result }, undefined, undefined).initialize,
+      true,
+    )
+  })
+
+  test('the four hashes of a session are null for a reply that is not a real one', () => {
+    const init = { result: { serverInfo: { name: 'x', version: '1' }, instructions: 'i' } }
+    const list = { result: { tools: [{ name: 't' }] } }
+    const search = { result: { content: [{ type: 'text', text: 'found' }] } }
+    const real = replyHashes(init, list, search)
+    assert.deepEqual(Object.keys(real), ['initialize', 'tools/list', 'instructions', 'search_tools'])
+    assert.ok(Object.values(real).every(v => typeof v === 'string' && v.length === 64))
+    assert.equal(real.instructions, sha256('i'))
+    assert.equal(replyHashes({ error: { code: -1 } }, list, search).initialize, null)
+    assert.equal(replyHashes({ error: { code: -1 } }, list, search).instructions, null)
+    assert.equal(replyHashes(init, { result: { tools: [] } }, search)['tools/list'], null)
+    assert.equal(
+      replyHashes(init, list, { result: { isError: true, content: [{ type: 'text', text: 'e' }] } }).search_tools,
+      null,
+    )
+    assert.equal(replyHashes(init, list, { error: { code: -1 } }).search_tools, null)
   })
 })

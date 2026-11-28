@@ -58,6 +58,12 @@
       "note": "slow, many processes"
     },
     {
+      "target": "tests/modern-peers.test.ts",
+      "count": 4,
+      "box": 2,
+      "note": "raw fake servers, 60 processes, about 24 s a run (C0)"
+    },
+    {
       "target": "tests/childguard.test.ts",
       "count": 10,
       "box": 2,
@@ -91,6 +97,12 @@
       "target": "tests/memory.e2e.mjs",
       "count": 3,
       "box": 2
+    },
+    {
+      "target": "tests/protocol-flag.e2e.mjs",
+      "count": 3,
+      "box": 2,
+      "note": "the protocol switch: 2 cases, about 38 s a run, 10 processes (PR 9)"
     },
     {
       "target": "tests/share.e2e.mjs",
@@ -147,5 +159,14 @@
       "timeout": 1200,
       "note": "fixture mode"
     }
-  ]
+  ],
+  "baseline": {
+    "differs": [
+      {
+        "row": "dist/host/broker.js sha256",
+        "reason": "parseEntry reads the protocol of an entry, so legacy and auto links never share a child",
+        "pr": 234
+      }
+    ]
+  }
 }
