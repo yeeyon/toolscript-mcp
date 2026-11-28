@@ -1368,8 +1368,8 @@ describe('calls of one tool one after another', () => {
       after.push(await samples(`await call("mcp__f__sized", {})\n${batch}`))
     }
     // The reply and the 16 new values are inside the scan limits, and one scan takes about 10 ms. The host scans for
-    // the first call sent after the reply only. Without that rule, the scans still stop within the 200 ms gap, so this
-    // test cannot see that rule: it bounds the whole cost.
+    // the first call sent after the reply only. With the gap of a minute, a host without that rule scans for each of
+    // the 100 calls, about a second more, which the bound catches.
     const baseMs = Math.min(...base)
     const ms = Math.min(...after)
     assert.ok(ms < baseMs * 3 + 500, `${after.join(', ')} ms after the large reply, ${base.join(', ')} ms without it`)
