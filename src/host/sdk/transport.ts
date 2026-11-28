@@ -2,6 +2,6 @@
 export { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 export { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 export { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-export { ReadBuffer, deserializeMessage, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
+export { deserializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 export type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 export type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
