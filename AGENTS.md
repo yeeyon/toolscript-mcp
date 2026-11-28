@@ -62,7 +62,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     run (a looser one waits for the person or a restart). `main.ts` stops the runs at shutdown. `createServer` is one legacy instance.
     `serve.ts` (issue #154, PR 13): with `TOOLSCRIPT_PROTOCOL=auto`, `serveStdio` calls the factory for a `server/discover` probe and
     again for the connection, so the factory only builds an instance (no file, child, log line or timer). A modern instance cannot ask
-    and has no Workspace until the next two changes of the release. With `legacy` or no variable, one legacy instance on a stdio transport.
+    until the next change of the release. Its Workspace follows the roots of its client: the first call returns `input_required` with a roots
+    request and a sealed state (`workspace/rootsstate.ts`), the retry settles the list (`workspace/rootsround.ts`, issue #154, P3-2). With `legacy` or no variable, one legacy instance on a stdio transport.
   - `run.ts`: one `run_code` call: the check before a run, the policy, the sandbox, the nested calls, saveFile,
     readFile, recall and the result.
   - `downstream.ts`: connects to the servers of the config in parallel. A failed or closed server connects again on

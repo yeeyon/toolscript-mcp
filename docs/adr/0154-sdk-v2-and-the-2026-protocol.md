@@ -132,9 +132,16 @@ reload, the runs in flight and their stop signal, the downstream links, the Work
 builds an instance (`HostServer`) and sets its two handlers, so closing a discarded instance stops no run, closes no child and removes
 no file. Both eras get the same surface (`tools` only, no `resources`, no `extensions`) and the same instructions. Until the next two
 changes of the release, a modern instance cannot ask (`elicitInput` throws on a 2026-07-28 request, so `canAsk` is false and an `ask`
-decision gets the refusal for a client that cannot ask), and it has no Workspace: roots/list does not exist in that era, so a modern
-instance hides the Workspace link (it is not listed and a call of it is refused as an unknown server) and the bind, which waits for the
-roots, ends with no Workspace when the first request other than `server/discover` shows the connection is in use. A request of
+decision gets the refusal for a client that cannot ask). Its Workspace follows the roots of the client (P3-2): roots/list does not exist in
+that era, so the first `tools/call` that needs the Workspace of a connection whose request declares `roots` in its envelope returns
+`input_required` with a roots request (`inputRequired.listRoots()`) and a sealed, used-once state of kind `roots` bound to the tool
+and the arguments (HMAC-SHA256, a key of 32 random bytes made at the start, 10 minutes, at most 256 open; `src/host/workspace/rootsstate.ts`),
+and does nothing else. The retry's `inputResponses.roots` settles the same list that the legacy push settles, through `narrowRoot`, so a
+root is the bound root or inside it. The first answer of the process stays. No `roots` declared, or a retry with no usable `roots` entry
+(none, an error, another shape), or a third call after two roots requests with no good retry, ends with no Workspace for the process: the
+bind refuses (never the bound root), its tools are not listed, a nested call of one is refused as a server that is not available, and one
+fixed line on stderr says so. So a client that declares roots and never answers loses at most two calls. Rows: `tests/workspace-roots-modern.test.ts`
+(the state, the decisions, gate G6 with a legacy and a modern column) and `tests/modern-upstream.e2e.mjs` (the built server). A request of
 `serveStdio` that is not 2026-07-28 and not a legacy opening is answered by the entry itself, with the errors of the SDK: a probe with
 a partial envelope gets -32602 (a malformed envelope) where the legacy server answered -32601.
 

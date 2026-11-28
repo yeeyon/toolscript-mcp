@@ -55,7 +55,7 @@ Roots of the client can make the root smaller, and never larger. If your client 
 server asks for its roots one time, after the client starts. The root becomes the deepest folder that holds every client
 root inside the bound root. A client root outside the bound root, a link to a folder outside it, a file, or a refused
 folder grants nothing. The server waits at most 2 seconds for the answer. Until then no Workspace call runs. After that
-time, or after an error, the bound root stays. A change of the roots needs a restart of toolscript-mcp. A task still runs
+time, or after an error, the bound root stays. On a 2026-07-28 connection there is no `roots/list`. The first tool call is answered with a request for the roots. A client that declares `roots` answers it at once. A client that declares none has no Workspace on that connection, and `TOOLSCRIPT_PROTOCOL=legacy` gives it the bound root. A change of the roots needs a restart of toolscript-mcp. A task still runs
 in its `cwd` under the entry, which can be outside a smaller root. The prompt and the stderr log show the root.
 
 ## The tools

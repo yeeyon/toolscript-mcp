@@ -257,33 +257,175 @@ test('rule 6: an ask never allows on a modern connection, for a server tool and 
   }
 })
 
-// --- rule 7: roots until the next change -----------------------------------------------------------------------------------
+// --- rule 7 and P3-2: the roots of a modern connection, by the round of its first call -------------------------------------------
 
 const WORKSPACE = project => ({ roots: [{ path: project }] })
+const rootsUri = dir => new URL(`file:///${dir.replaceAll('\\', '/')}`).href
+/** What Claude Code 2.1.332 declares on every request (probe D): roots, elicitation, and the tasks extension. */
+const ROOTS_CAPS = { ...CLAUDE_CODE_CAPABILITIES, roots: { listChanged: true }, elicitation: { form: {}, url: {} } }
+const RETRY = (call, state, roots) => ({
+  ...call,
+  requestState: state,
+  inputResponses: { roots: { roots: roots.map(uri => ({ uri })) } },
+})
+const LIST = RUN('return await call("mcp__workspace__list", { path: "." })').arguments
 
-test('rule 7: a modern connection has no Workspace, and a legacy opening on auto still asks the roots', async () => {
+test('P3-2: a modern client that declares roots is asked once, answers silently, and gets the Workspace on the folder it named', async () => {
+  const project = tempDir('project')
+  fs.mkdirSync(path.join(project, 'app'))
+  fs.writeFileSync(path.join(project, 'readme.txt'), 'hello')
+  fs.writeFileSync(path.join(project, 'app', 'inner.txt'), 'inner')
+  const host = start(CONFIGS.bench, { protocol: 'auto', workspace: WORKSPACE(project), capabilities: ROOTS_CAPS })
+  try {
+    const found = await host.client.discover()
+    assert.ok(
+      !/workspace server is not available/.test(found.result.instructions),
+      'the instructions name the Workspace as on legacy',
+    )
+    // The first call: input_required with a roots request and a state, and nothing else (no run, no log line).
+    const first = await host.client.request('tools/call', RUN('return 1'))
+    assert.equal(first.result.resultType, 'input_required', JSON.stringify(first))
+    assert.deepEqual(Object.keys(first.result.inputRequests), ['roots'])
+    assert.equal(first.result.inputRequests.roots.method, 'roots/list')
+    assert.equal(typeof first.result.requestState, 'string')
+    assert.ok(first.result.requestState.length <= 512)
+    assert.ok(
+      !fs.existsSync(path.join(host.home, '.toolscript-mcp', 'runs.jsonl')),
+      'no run-log line from the roots round',
+    )
+    // The retry as probe E shows it: the same arguments, the state verbatim, one root (the session folder), no name.
+    const retried = await host.client.request(
+      'tools/call',
+      RETRY(RUN('return 1'), first.result.requestState, [rootsUri(project)]),
+    )
+    assert.ok(!retried.error, JSON.stringify(retried))
+    assert.match(textOf(retried.result), /1/)
+    const list = await host.modernCall('run_code', LIST.code === undefined ? LIST : { code: LIST.code })
+    assert.match(textOf(list), /readme\.txt/)
+    assert.match(textOf(list), /app/)
+    // The same state again is a replay: -32602, nothing more.
+    const replay = await host.client.request(
+      'tools/call',
+      RETRY(RUN('return 2'), first.result.requestState, [rootsUri(project)]),
+    )
+    assert.equal(replay.error?.code, -32602)
+    // No later call asks again.
+    const next = await host.modernCall('run_code', { code: 'return 3' })
+    assert.notEqual(next.resultType, 'input_required')
+  } finally {
+    await host.close()
+  }
+})
+
+test('P3-2: the roots narrow the bound root, and a path outside them is refused as on legacy', async () => {
+  const project = tempDir('project')
+  fs.mkdirSync(path.join(project, 'app'))
+  fs.writeFileSync(path.join(project, 'readme.txt'), 'hello')
+  fs.writeFileSync(path.join(project, 'app', 'inner.txt'), 'inner')
+  const host = start(CONFIGS.bench, { protocol: 'auto', workspace: WORKSPACE(project), capabilities: ROOTS_CAPS })
+  try {
+    const call = RUN('return await call("mcp__workspace__list", { path: "." })')
+    const first = await host.client.request('tools/call', call)
+    const retried = await host.client.request(
+      'tools/call',
+      RETRY(call, first.result.requestState, [rootsUri(path.join(project, 'app'))]),
+    )
+    assert.ok(!retried.error, JSON.stringify(retried))
+    assert.match(textOf(retried.result), /inner\.txt/)
+    assert.ok(!/readme\.txt/.test(textOf(retried.result)), 'only the narrowed root')
+    const outside = await host.modernCall('run_code', {
+      code: 'return await call("mcp__workspace__read", { path: "readme.txt" })',
+    })
+    assert.equal(outside.isError, true)
+    assert.ok(!textOf(outside).includes('hello'))
+  } finally {
+    await host.close()
+  }
+})
+
+test('P3-2: a client that declares no roots is never asked, and has no Workspace, with one fixed line', async () => {
   const project = tempDir('project')
   fs.writeFileSync(path.join(project, 'readme.txt'), 'hello')
-  const modern = start(CONFIGS.bench, { protocol: 'auto', workspace: WORKSPACE(project) })
+  const host = start(CONFIGS.bench, { protocol: 'auto', workspace: WORKSPACE(project) })
+  try {
+    const found = await host.client.discover()
+    const run = await host.modernCall('run_code', { code: 'return 1' })
+    assert.notEqual(run.resultType, 'input_required', 'the call goes on')
+    const search = await host.modernCall('search_tools', { query: '' })
+    assert.ok(!/mcp__workspace__/.test(textOf(search)), `no Workspace in search_tools: ${textOf(search)}`)
+    const refused = await host.modernCall('run_code', { code: 'return await call("mcp__workspace__list", {})' })
+    assert.equal(refused.isError, true)
+    // The reason of a Workspace that is not available (the text of the bind that gave no Workspace), never a listing.
+    assert.match(
+      textOf(refused),
+      /the MCP server "workspace" is not connected: the client of a 2026-07-28 connection gives no roots/,
+    )
+    assert.ok(!textOf(refused).includes(project) && !textOf(refused).includes('readme.txt'), 'never the bound root')
+    const lines = host
+      .stderr()
+      .split('\n')
+      .filter(l => /this connection has no Workspace/.test(l))
+    assert.equal(lines.length, 1, host.stderr())
+    assert.ok(!lines[0].includes(project))
+    assert.ok(found.result.instructions.length > 0)
+  } finally {
+    await host.close()
+  }
+})
+
+test('P3-2: a client that declares roots and never answers loses two calls, then has no Workspace and its calls run', async () => {
+  const project = tempDir('project')
+  fs.writeFileSync(path.join(project, 'readme.txt'), 'hello')
+  const host = start(CONFIGS.bench, { protocol: 'auto', workspace: WORKSPACE(project), capabilities: ROOTS_CAPS })
+  try {
+    const one = await host.client.request('tools/call', RUN('return 1'))
+    const two = await host.client.request('tools/call', RUN('return 1'))
+    assert.equal(one.result.resultType, 'input_required')
+    assert.equal(two.result.resultType, 'input_required')
+    const three = await host.modernCall('run_code', { code: 'return 3' })
+    assert.notEqual(three.resultType, 'input_required')
+    assert.match(textOf(three), /3/)
+    const refused = await host.modernCall('run_code', { code: 'return await call("mcp__workspace__list", {})' })
+    assert.equal(refused.isError, true)
+    assert.ok(!textOf(refused).includes('readme.txt'))
+    assert.equal(
+      host
+        .stderr()
+        .split('\n')
+        .filter(l => /this connection has no Workspace/.test(l)).length,
+      1,
+    )
+  } finally {
+    await host.close()
+  }
+})
+
+test('P3-2: a retry with an error or no roots entry ends with no Workspace, and the call goes on', async () => {
+  const project = tempDir('project')
+  fs.writeFileSync(path.join(project, 'readme.txt'), 'hello')
+  const host = start(CONFIGS.bench, { protocol: 'auto', workspace: WORKSPACE(project), capabilities: ROOTS_CAPS })
+  try {
+    const first = await host.client.request('tools/call', RUN('return 1'))
+    const retried = await host.client.request('tools/call', {
+      ...RUN('return 1'),
+      requestState: first.result.requestState,
+      inputResponses: { roots: { code: -32601, message: 'no' } },
+    })
+    assert.ok(!retried.error, JSON.stringify(retried))
+    assert.match(textOf(retried.result), /1/)
+    const refused = await host.modernCall('run_code', { code: 'return await call("mcp__workspace__list", {})' })
+    assert.equal(refused.isError, true)
+    assert.ok(!textOf(refused).includes('readme.txt'))
+  } finally {
+    await host.close()
+  }
+})
+
+test('rule 7: a legacy opening on auto still asks the roots with the push, as before', async () => {
+  const project = tempDir('project')
+  fs.writeFileSync(path.join(project, 'readme.txt'), 'hello')
   const legacy = start(CONFIGS.bench, { protocol: 'auto', workspace: WORKSPACE(project), capabilities: { roots: {} } })
   try {
-    const found = await modern.client.discover()
-    const search = await modern.modernCall('search_tools', { query: '' })
-    assert.ok(
-      !/workspace/i.test(textOf(search).replace(/Workspace is not available[^\n]*/g, '')),
-      `no Workspace in search_tools: ${textOf(search)}`,
-    )
-    assert.match(
-      found.result.instructions,
-      /built-in workspace server is not available/,
-      'the existing sentence for a Workspace that is not available',
-    )
-    const refused = await modern.modernCall('run_code', { code: 'return await call("mcp__workspace__list", {})' })
-    const unknown = await modern.modernCall('run_code', { code: 'return await call("mcp__nosuch__list", {})' })
-    assert.equal(refused.isError, true)
-    assert.equal(textOf(refused).replace(/workspace/g, 'nosuch'), textOf(unknown), 'refused as an unknown server is')
-    assert.ok(!textOf(refused).includes(project) && !textOf(refused).includes('readme.txt'), 'never the bound root')
-    // A legacy opening under the same wiring asks the roots, as before, and has the Workspace.
     const asked = []
     legacy.client.transport.onMessage = (inner => message => {
       if (message.method === 'roots/list') {
@@ -310,7 +452,7 @@ test('rule 7: a modern connection has no Workspace, and a legacy opening on auto
     })
     assert.match(textOf(list), /readme\.txt/)
   } finally {
-    await Promise.all([modern.close(), legacy.close()])
+    await legacy.close()
   }
 })
 
