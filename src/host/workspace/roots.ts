@@ -21,6 +21,13 @@ export type Roots = {
    * Workspace and never the bound root that no client root narrowed. Does nothing after the list settled.
    */
   readonly modern: () => void
+  /**
+   * Settles the list with the roots that a 2026-07-28 client answered to the roots request of a call (`inputResponses.roots`), at
+   * most `LIMITS.roots` of them. Does nothing after the list settled: the first answer of the process stays.
+   */
+  readonly answer: (uris: readonly string[]) => void
+  /** True once the list settled, by an answer, a failure, a timeout, `modern` or `close`. */
+  readonly isSettled: () => boolean
   /** Starts the request when the client has initialized. Call it before `connect`. */
   readonly attach: (server: Server) => void
   /** Settles the list with no root, so a waiting bind ends. */
@@ -36,11 +43,22 @@ export const createRoots = ({
   readonly waitMs?: number
   readonly initializedWaitMs?: number
 }): Roots => {
-  let settle!: (uris: readonly string[] | 'modern') => void
+  let resolveList!: (uris: readonly string[] | 'modern') => void
   let never: ReturnType<typeof setTimeout> | undefined
-  const settled = new Promise<readonly string[] | 'modern'>(resolve => (settle = resolve))
+  let done = false
+  const settled = new Promise<readonly string[] | 'modern'>(resolve => (resolveList = resolve))
+  const settle = (uris: readonly string[] | 'modern'): void => {
+    done = true
+    resolveList(uris)
+  }
   return {
     read: () => settled,
+    isSettled: () => done,
+    answer: uris => {
+      if (done) return
+      clearTimeout(never)
+      settle(uris.slice(0, LIMITS.roots))
+    },
     modern: () => {
       clearTimeout(never)
       settle('modern')

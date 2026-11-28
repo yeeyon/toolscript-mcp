@@ -7,7 +7,15 @@
 // and the runs in flight) and gives a factory of instances. `serveStdio` calls the factory for a probe and again for the
 // connection (issue #154, PR 13), so an instance holds no state of its own: it builds a `HostServer` and sets its two handlers.
 
-import { HostServer, onCallTool, onListTools, type CallToolResult } from './sdk/server.ts'
+import {
+  HostServer,
+  ProtocolError,
+  ProtocolErrorCode,
+  inputRequired,
+  onCallTool,
+  onListTools,
+  type CallToolResult,
+} from './sdk/server.ts'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -32,6 +40,8 @@ import { WORKSPACE_KEY } from '../core/workspace.ts'
 import type { Downstream } from './downstream.ts'
 import { runCode, type Approval, type RunContext } from './run.ts'
 import { SHAPES_WAIT_MS, loadShapes, removeOrphans, schemaHash, within } from './shapes.ts'
+import type { Roots } from './workspace/roots.ts'
+import { createRootsRound } from './workspace/rootsround.ts'
 
 const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], isError })
 
@@ -83,6 +93,11 @@ export type Host = {
 export type HostHooks = {
   /** Called one time, when a modern instance gets a request other than `server/discover`: the connection is in use. */
   readonly modernInUse?: () => void
+  /**
+   * The roots of the Workspace (issue #154, P3-2). With them, a modern connection asks the client for its roots at the first call
+   * (`input_required`) and the Workspace follows the answer. Without them, a modern connection has no Workspace.
+   */
+  readonly roots?: Pick<Roots, 'isSettled' | 'answer' | 'modern'>
 }
 
 export type Served = {
@@ -179,12 +194,18 @@ export const createHost = (
   }
 
   let modernUsed = false
+  // The roots round of a modern connection: only when the config has the Workspace and the caller gave its roots.
+  const rootsRound =
+    config.workspace !== undefined && hooks.roots !== undefined
+      ? createRootsRound({ roots: hooks.roots, log })
+      : undefined
 
   const make = (era: Era): HostServer => {
-    // A modern connection has no Workspace until the client's roots come with the next change of this release: the
-    // roots/list request does not exist in that era, and the bound root without them is wider than a client roots give.
-    // Its instructions say what they say for a Workspace that is not available, and its tools are not listed or callable.
-    const noWorkspace = era === 'modern' && config.workspace !== undefined
+    // A modern connection has the Workspace once its client gave the roots (the roots round of its first call). With no way to ask
+    // (no roots in the hooks) it has none: the roots/list request does not exist in that era, and the bound root without them is
+    // wider than a client roots give. Its instructions say what they say for a Workspace that is not available, and its tools are
+    // not listed or callable.
+    const noWorkspace = era === 'modern' && config.workspace !== undefined && rootsRound === undefined
     const mcp = new HostServer(
       { name: 'toolscript-mcp', version },
       {
@@ -268,6 +289,16 @@ export const createHost = (
     onListTools(mcp, () => ({ tools: SERVED.map(registration) }))
     onCallTool(mcp, (req, extra) => {
       const { name, arguments: args = {} } = req.params
+      // The roots round comes before everything else of the call: no plan, no prompt, no sandbox, no run-log line.
+      if (era === 'modern' && rootsRound !== undefined && isServed(name)) {
+        const step = rootsRound.round(name, args, extra)
+        if (step.kind === 'refused')
+          throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Invalid or expired requestState', {
+            reason: 'invalid_request_state',
+          })
+        if (step.kind === 'ask')
+          return inputRequired({ inputRequests: { roots: inputRequired.listRoots() }, requestState: step.state })
+      }
       return isServed(name)
         ? HANDLERS[name](args, { downstream: view, shapes: shownNow, canAsk, run, extra })
         : text(`Unknown tool: ${name}`, true)

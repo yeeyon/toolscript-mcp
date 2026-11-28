@@ -174,8 +174,9 @@ const { make, stopRuns } = createHost(
   log,
   workspace?.then(w => (w.ok ? { root: w.bound.root, tasks: w.bound.tasks.names } : undefined)),
   workspaceDown,
-  // A modern connection has no roots/list: the bind then gives no Workspace.
-  { modernInUse: () => roots?.modern() },
+  // A modern connection has no roots/list: its first call asks the client for the roots (P3-2), and with none the bind gives no
+  // Workspace.
+  { ...(roots !== undefined && { roots }) },
 )
 let closeServer: () => Promise<void> = async () => {}
 let startServer: () => Promise<void>

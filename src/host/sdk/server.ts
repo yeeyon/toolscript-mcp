@@ -2,6 +2,7 @@
 // protocol era (issue #154, PR 7): an instance made by hand lists no 2026 revision, so it installs no `server/discover`
 // handler and answers that method with -32601, as the first SDK did.
 import {
+  inputRequired,
   isJSONRPCRequest,
   ProtocolError,
   ProtocolErrorCode,
@@ -9,6 +10,7 @@ import {
   type Transport,
   type CallToolRequest,
   type CallToolResult,
+  type InputRequiredResult,
   type JSONRPCRequest,
   type ListToolsResult,
   type RequestId,
@@ -16,9 +18,9 @@ import {
   type ServerContext,
 } from '@modelcontextprotocol/server'
 
-export { Server }
+export { Server, inputRequired, ProtocolError, ProtocolErrorCode }
 export { StdioServerTransport, serveStdio } from '@modelcontextprotocol/server/stdio'
-export type { CallToolResult, Transport } from '@modelcontextprotocol/server'
+export type { CallToolResult, InputRequiredResult, Transport } from '@modelcontextprotocol/server'
 
 const BAD_CALL = 'Invalid tools/call request: '
 
@@ -67,8 +69,20 @@ export class HostServer extends Server {
   }
 }
 
-/** What a handler of `tools/call` reads of the request: the cancel signal and the id of the request. */
-export type CallExtra = { readonly signal: AbortSignal; readonly requestId: RequestId }
+const CLIENT_CAPABILITIES = 'io.modelcontextprotocol/clientCapabilities'
+
+/**
+ * What a handler of `tools/call` reads of the request: the cancel signal and the id of the request, and on a 2026-07-28 request
+ * the client capabilities of that request's envelope, the `inputResponses` of a retry and its `requestState` string (raw: the host
+ * checks it itself). All of the three are client data and untrusted. A 2025 request has none of them.
+ */
+export type CallExtra = {
+  readonly signal: AbortSignal
+  readonly requestId: RequestId
+  readonly capabilities?: unknown
+  readonly inputResponses?: Record<string, unknown>
+  readonly requestState?: string
+}
 
 /** The tool list that a handler gives: tables with `as const` arrays, which the v2 type of a tool (mutable) does not take. */
 export type ListedTools = { readonly tools: readonly { readonly name: string; readonly inputSchema: object }[] }
@@ -80,8 +94,20 @@ export const onListTools = (target: Server, handler: () => ListedTools): void =>
 /** Answers `tools/call`. */
 export const onCallTool = (
   target: Server,
-  handler: (request: CallToolRequest, extra: CallExtra) => CallToolResult | Promise<CallToolResult>,
+  handler: (
+    request: CallToolRequest,
+    extra: CallExtra,
+  ) => CallToolResult | InputRequiredResult | Promise<CallToolResult | InputRequiredResult>,
 ): void =>
-  target.setRequestHandler('tools/call', (request, ctx) =>
-    handler(request, { signal: ctx.mcpReq.signal, requestId: ctx.mcpReq.id }),
-  )
+  target.setRequestHandler('tools/call', (request, ctx) => {
+    const { envelope, inputResponses } = ctx.mcpReq
+    const capabilities = (envelope as Record<string, unknown> | undefined)?.[CLIENT_CAPABILITIES]
+    const state = ctx.mcpReq.requestState<unknown>()
+    return handler(request, {
+      signal: ctx.mcpReq.signal,
+      requestId: ctx.mcpReq.id,
+      ...(capabilities !== undefined && { capabilities }),
+      ...(inputResponses !== undefined && { inputResponses }),
+      ...(typeof state === 'string' && { requestState: state }),
+    })
+  })
