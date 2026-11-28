@@ -29,7 +29,11 @@ the MCP clients page (URLs in section 7). `npm run check` resolves the relative 
 - Node floor stays 22.13. `@modelcontextprotocol/ext-tasks` exists (versions 0.1.0, 0.2.2, 0.2.3; its dependency is `zod ^4.5.4`, a
   higher floor than the SDK packages). It is pinned in Phase 4, Skills in Phase 2. The server package has an export
   `@modelcontextprotocol/server/ext/skills` (package.json of server 2.4.0).
-- SDK 1.32.2 leaves at the end of Phase 1. Until then v1 and v2 coexist, and no object crosses (`instanceof`).
+- SDK 1.32.2 leaves the product at PR 8: it is not in `dist/host/main.js` and no file of `src/` names it. It stays as a dev dependency
+  (exact pin) for the peers that tests keep on v1, because the old kind of peer is what the host meets in the field: a v1 client over
+  stdio (gate G2), a v1 `McpServer` over stdio and the v1 HTTP server transport as downstream servers (gate G4, the OAuth and refresh
+  tests), the v1 `ReadBuffer` and `getDefaultEnvironment` as the references of `tests/codec.test.ts` and `tests/childenv.test.ts`. They
+  are all in `tests/sdk-v1.mjs`, and `tests/code.check.mjs` lists the files that may import it.
 
 ## 2. Protocol revisions
 
@@ -232,6 +236,19 @@ start budget needs a sturdier measure on macOS (the stress script gets a fix for
 | Tokens and cost, toolscript arm | 30 of 30 correct; median 56,972 input tokens, mean 70,537 (54,865 to 122,328); mean cost 0.0024 USD (median 0.0021) | tokens, USD | `bench/RESULTS.md` rerun of #89 and `bench/rerun-2026-11-27/headless-report.txt`, Claude Code 2.1.332, Haiku 5.5, 6 tasks, 5 reps | 2026-11-27 | min to max as listed | 30 of 30, tokens +2% |
 | Registration, first-call input of the toolscript arm | 18,052 | tokens | same report, "first-call input" (min 18,037, max 18,063) | 2026-11-27 | as listed | tokens +2% |
 | Direct arm, for reference | 30 of 30; median 89,471 input tokens; mean cost 0.0058 USD | | same report | 2026-11-27 | | |
+
+Measured at PR 8 (head `fa8ceac`+docs, Windows 11, Node 22.23.3, `npm pack --dry-run --json` after `npm run build`), against the limits of this section:
+
+| Metric | REF | PR 8 | Limit | |
+|---|---|---|---|---|
+| Packed | 382,836 | 453,567 | 478,545 | within |
+| Unpacked | 1,647,215 | 1,951,054 | 2,059,018 | within |
+| `dist/host/main.js` | 1,488,784 | 1,756,962 | 1,860,980 | within |
+| Files | 16 | 16 | 16 | equal |
+| `dist/host/broker.js` | 80,510, `8e677c76...` | 80,510, same hash | SHA-256 of REF | equal |
+
+The rows that need the CI `baseline` run (start, host memory, sharing saving, the byte rows), the CI `npm test` step and the bench
+(tokens) are judged on the run of this PR and are not in this table.
 
 Tokens and cost, which commit. The rerun used main `ed604f6` plus the lean arms of its own change. Registration bytes changed
 since that commit: #212 (`84cc1bc`) rewrote the end of `SEARCH_DESCRIPTION` in `src/core/protocol.ts` (the literal went from 381 to 368
@@ -479,7 +496,21 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
      `fast-uri`, `zod-to-json-schema` and a part of `zod` (332 to 213 KB) are gone; the server adds `ajv` 289 KB, `src` 189 KB, `mcp` 49 KB and
      `stdio` 3 KB. The client and the server each hold an `ajv` of 289 KB: one validator could serve both (the `jsonSchemaValidator` option
      of the server); measured here, not applied. PR 8 takes it.
-8. Remove SDK v1, re-measure section 9, update the bench results.
+8. Remove SDK v1, re-measure section 9, update the bench results. Done (PR 8), except the CI and bench rows named below.
+   - The bundle holds one SDK generation: `scripts/build.mjs` asserts that no input of `main.js` is a file of the first SDK, and
+     `scripts/pack-check.mjs` asserts 16 files and no first-SDK file marker in `main.js`.
+   - One validator. The client and the server package each inline ajv through their own `_shims`. Shown before the fix: the two
+     `ajvProvider-*.mjs` files (294,862 bytes each) are the same code, 104 identical sources in their source maps (ajv 8.18.0,
+     ajv-formats 3.0.1, fast-uri 3.1.8, fast-deep-equal 3.1.3, json-schema-traverse 1.0.0), and differ only in the two imports of
+     a helper chunk (`chunk-*`, `dialects-*`, themselves byte-equal) and the source map comment. The build compares the two files and
+     stops if a new SDK release makes them differ; an esbuild plugin then sends the server's import to the client's file. The
+     metafile shows one `ajvProvider`.
+   - `dist/third-party-licenses.txt` names the packages of the bundle and, from the source maps of the SDK files in the bundle, what
+     the SDK packages inline: ajv, ajv-formats, fast-uri (BSD-3-Clause), fast-deep-equal, json-schema-traverse and content-type. The text is
+     from the installed copy of the same package (ajv 8.20.0 and fast-uri 3.1.9 for the inlined 8.18.0 and 3.1.8: the same licence).
+     SDK 1.32.2 and its own dependencies are gone from the file.
+   - Test peers: `tests/sdk.mjs` re-exports the v2 client and server packages, the tests show a v2 host against v2 peers. Every changed
+     assertion and every other change is listed in the report of the PR.
 9. The flag: `TOOLSCRIPT_PROTOCOL` and the config key, default `legacy`, in the entry frame and the share key, with the documented
    list of unsupported methods (#93 part 1). `auto` does nothing yet.
 10. Modern downstream for direct and lazy links (`auto`, `listen`, `ttlMs`), with the conformance tests.

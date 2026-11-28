@@ -179,8 +179,10 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - Only `src/host/sdk/` imports the MCP SDK. Callers import from its files (`client.ts`, `server.ts`, `transport.ts`,
   `auth.ts`, `errors.ts`; no barrel). The host is on SDK v2 in the legacy era: `@modelcontextprotocol/client` for every
   link and `login`, `@modelcontextprotocol/server` for the server, the Workspace provider and roots (PR 7). No file of `src/` imports the
-  first SDK, and nothing outside the folder reads `ctx.mcpReq`. The tests and `bench/walks.mjs` import the SDK only through `tests/sdk.mjs` (the SDK package
-  itself, never `src/host/sdk/`, so the test peers stay on v1 while the host moves). `tests/code.check.mjs` enforces both (issue #154).
+  first SDK, and nothing outside the folder reads `ctx.mcpReq`. The tests and `bench/walks.mjs` import SDK v2 only through `tests/sdk.mjs` (the packages
+  themselves, never `src/host/sdk/`). The few peers that stay on SDK v1 (a dev dependency, exact pin) are in `tests/sdk-v1.mjs`, and only the
+  files in `V1_USERS` of `tests/code.check.mjs` import it. The build holds one SDK generation and one JSON schema validator
+  (`scripts/build.mjs`). `tests/code.check.mjs` enforces all of it (issue #154).
 - Never weaken a sandbox layer to make a test pass.
 - stdout carries only MCP JSON-RPC. Log to stderr.
 - A user-visible change adds a file in `changes/`, and never edits `CHANGELOG.md`. The version-bump PR runs
