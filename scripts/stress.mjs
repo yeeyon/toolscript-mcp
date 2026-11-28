@@ -422,12 +422,16 @@ export const judge = (base, head, { memory = true } = {}) => {
           na: false,
           skipped: 'not judged: this system has no private memory number for a process',
         })
+  // The start is judged by the median of the paired differences (head minus base of one round), not by the two medians: a slow
+  // stretch of the runner hits both builds of a round, so it cancels in the difference. See pairedStart.
+  const paired = typeof head.startDiffMs === 'number'
   row(
     'start: tools/list ms (median)',
     base.startMs,
     head.startMs,
-    '+10% or +50 ms',
-    (b, h) => h <= b + Math.max(b * 0.1, 50),
+    '+10% or +50 ms' +
+      (paired ? ', median of ' + head.startPairs + ' paired differences: ' + head.startDiffMs.toFixed(1) + ' ms' : ''),
+    (b, h) => (paired ? head.startDiffMs : h - b) <= Math.max(b * 0.1, 50),
     'ms',
   )
   memoryRow(
@@ -492,6 +496,31 @@ const runNode = (args, cwd, env = {}) => {
     windowsHide: true,
     maxBuffer: 64 * MB,
   })
+}
+
+/** The rounds of the start measurement: one start of each build, base first in the odd rounds and head first in the even ones. */
+export const START_PAIRS = 30
+const MIN_PAIRS = 10
+
+/**
+ * The start numbers of the rounds, `pairs` being [base ms, head ms] of each round: the median of each build and the median of
+ * the differences. Null with fewer than MIN_PAIRS rounds, so the start row fails as not measured.
+ *
+ * Why this and not two medians of consecutive starts: a runner is slow in stretches (a neighbour on the host, a cache). The same
+ * code gave head 156 against base 214 in one run and 258.5 against 189.5 in the next on macOS, which fails the +50 ms budget for
+ * no change. In a simulation with such stretches (a shared offset that changes at random, spikes on single starts) the old
+ * design (2 turns of 10 starts for each build) failed an unchanged build in 14% of runs, and this one (30 interleaved rounds)
+ * in under 0.1%, while a build that is 60 ms slower fails 87% and one that is 80 ms slower 100% of the time.
+ */
+export const pairedStart = pairs => {
+  const good = pairs.filter(p => Array.isArray(p) && p.every(v => typeof v === 'number' && Number.isFinite(v)))
+  if (good.length < MIN_PAIRS) return { startMs: null, headStartMs: null, startDiffMs: null, startPairs: good.length }
+  return {
+    startMs: median(good.map(p => p[0])),
+    headStartMs: median(good.map(p => p[1])),
+    startDiffMs: median(good.map(p => p[1] - p[0])),
+    startPairs: good.length,
+  }
 }
 
 /** The median tools/list time of `runs` starts, from the output of scripts/start-time.mjs. */
@@ -612,7 +641,6 @@ const packBytes = dir => {
 
 /** The metrics of one build, measured with the turns of `runs` already taken: lists of samples. */
 const gather = (samples, dir, tmp) => ({
-  startMs: median(samples.start),
   hostMb: median(samples.mem),
   sharedSavingMb:
     samples.mem.length > 0 && samples.shared.length > 0 ? median(samples.mem) - median(samples.shared) : null,
@@ -625,24 +653,32 @@ const gather = (samples, dir, tmp) => ({
 export const baseline = async (baseDir, headDir, out, deadline = Infinity) => {
   baselineEnd = deadline
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stress-baseline-'))
-  const samples = { base: { start: [], mem: [], shared: [] }, head: { start: [], mem: [], shared: [] } }
+  const samples = { base: { mem: [], shared: [] }, head: { mem: [], shared: [] } }
   const dirs = { base: baseDir, head: headDir }
-  // A, B, A, B: the noise of the runner hits both builds.
+  // One start of each build in a round, the order swapped every round: the noise of the runner hits both builds of a round.
+  const startPairs = []
+  for (let i = 0; i < START_PAIRS; i++) {
+    const order = i % 2 === 0 ? ['base', 'head'] : ['head', 'base']
+    const got = {}
+    for (const turn of order) got[turn] = startMs(dirs[turn], 1)
+    startPairs.push([got.base, got.head])
+  }
+  // A, B, A, B for the memory.
   for (const turn of ['base', 'head', 'base', 'head'])
-    for (const [key, list] of [
-      ['start', 10],
-      ['mem', 1],
-      ['shared', 1],
-    ]) {
-      const dir = dirs[turn]
-      const v = key === 'start' ? startMs(dir, list) : hostMb(dir, key === 'shared', tmp)
+    for (const key of ['mem', 'shared']) {
+      const v = hostMb(dirs[turn], key === 'shared', tmp)
       if (v !== null) samples[turn][key].push(v)
     }
+  const start = pairedStart(startPairs)
   const result = {}
   for (const key of ['base', 'head']) {
     const g = gather(samples[key], dirs[key], tmp)
     result[key] = { ...g, ...(await textBytes(dirs[key]).catch(() => NO_TEXT)) }
+    result[key].startMs = key === 'base' ? start.startMs : start.headStartMs
   }
+  result.head.startDiffMs = start.startDiffMs
+  result.head.startPairs = start.startPairs
+  result.startPairs = startPairs
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
   baselineEnd = Infinity
   const rows = judge(result.base, result.head, { memory: measuresMemory(process.platform) })
