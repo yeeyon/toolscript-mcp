@@ -846,7 +846,7 @@ describe('a swap of a folder while a file is changed', () => {
 
   test('a loop that swaps the folder for at most 1 s while at most 300 edits run changes no outside byte', async t => {
     // The outside file holds bytes that no write of the loop expects. On Windows a swap can make a write change an outside
-    // file whose bytes match expectedHash (README, "What stays possible"; ADR 0144, decision 034), so the bound is: no
+    // file whose bytes match expectedHash (`docs/workspace.md`, "What stays possible"; ADR 0144, decision 034), so the bound is: no
     // outside byte changes unless its hash matched.
     const OUTSIDE = 'outside text\n'
     const { root, outside, swap } = setup(t, OUTSIDE)

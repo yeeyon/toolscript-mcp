@@ -1,4 +1,4 @@
-// The user docs (README.md, FAQ.md and the setup, start, doctor and workspace skills) follow the rules in
+// The user docs (README.md, FAQ.md, every docs/*.md page and the setup, start, doctor and workspace skills) follow the rules in
 // CODING_STANDARDS.md, section "Docs".
 //
 // Checked here: front matter and H1, GitHub-safe MDX, the mechanical
@@ -17,16 +17,28 @@ import { FRAGMENT_NAME, fragmentProblems, ignoredName, lf } from '../scripts/cha
 import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+// Every page of docs/ is read from the folder, so a new page is checked with no edit here. docs/adr/ is not a user doc.
+const markdownIn = folder =>
+  fs
+    .readdirSync(path.join(ROOT, folder))
+    .filter(name => name.endsWith('.md'))
+    .sort()
+    .map(name => path.join(ROOT, folder, name))
 const USER_DOCS = [
-  'README.md',
-  'FAQ.md',
-  'plugin/skills/setup/SKILL.md',
-  'plugin/skills/start/SKILL.md',
-  'plugin/skills/doctor/SKILL.md',
-  'plugin/skills/workspace/SKILL.md',
-].map(f => path.join(ROOT, f))
+  ...['README.md', 'FAQ.md'].map(f => path.join(ROOT, f)),
+  ...markdownIn('docs'),
+  ...[
+    'plugin/skills/setup/SKILL.md',
+    'plugin/skills/start/SKILL.md',
+    'plugin/skills/doctor/SKILL.md',
+    'plugin/skills/workspace/SKILL.md',
+  ].map(f => path.join(ROOT, f)),
+]
 // Not written to the STE rules, but their links must keep working.
-const LINK_ONLY = ['AGENTS.md', 'CODING_STANDARDS.md', 'CONTRIBUTING.md', 'SECURITY.md'].map(f => path.join(ROOT, f))
+const LINK_ONLY = [
+  ...['AGENTS.md', 'CODING_STANDARDS.md', 'CONTRIBUTING.md', 'SECURITY.md'].map(f => path.join(ROOT, f)),
+  ...markdownIn('docs/adr'),
+]
 
 const MAX_WORDS = 25
 const FRONT_MATTER = /^---\n([\s\S]*?)\n---\n/
@@ -195,6 +207,19 @@ const tests = {
       assert.ok(found.includes(message), message)
     }
     assert.ok(!found.includes(':12:'))
+  },
+  'the link check resolves a relative file and its anchor in a subfolder': () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-links-'))
+    fs.mkdirSync(path.join(dir, 'docs'))
+    fs.writeFileSync(path.join(dir, 'x.md'), '# X\n\n## Present\n')
+    const doc = path.join(dir, 'docs', 'y.md')
+    fs.writeFileSync(doc, '# Y\n\nSee [a](../x.md#present).\n')
+    assert.deepEqual(linkProblems(doc), [])
+    fs.writeFileSync(doc, '# Y\n\nSee [a](../x.md#missing) and [b](../none.md).\n')
+    const found = linkProblems(doc).join('\n')
+    assert.ok(found.includes('a link to a missing heading: ../x.md#missing'), found)
+    assert.ok(found.includes('a link to a missing file: ../none.md'), found)
+    fs.rmSync(dir, { recursive: true, force: true })
   },
   'the fragment checks catch each rule': () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-changes-'))

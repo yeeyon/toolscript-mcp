@@ -1905,7 +1905,7 @@ return (await call("mcp__tracker__list_comments", { key: "A-1" })).some(c => c.b
 const log = await call("mcp__ci__get_log", { run: 42 })
 return log.split("\\n").filter(l => /error/i.test(l))`
 
-export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. Use an empty query to list all tools. After a reconnect, use an empty query with limit 1: "Not connected" lists the servers still down.`
+export const SEARCH_DESCRIPTION = `Find the tools of the MCP servers that toolscript connects to, to call them in run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and argument types, and the servers that failed to connect. An empty query lists the servers, and "Not connected" the ones still down after a reconnect. A server key lists its tools.`
 
 // Claude Code cuts the instructions of a server at this length.
 const INSTRUCTIONS_MAX = 4096

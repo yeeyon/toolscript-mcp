@@ -40,11 +40,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `brokerlink.ts`: the host side of sharing (issue #63): `entryOf` (the entry of a server with its `PATH` resolved),
     `openLink` (find or start the broker, the mutual proof of the key, the entry) and `BrokerTransport`, an SDK
     `Transport` over one connection. `downstream.ts` uses it for a shared or per-folder server when sharing is on. A
-    broker that cannot be reached fails the link with a reason (decision 024): it starts no direct child.
+    broker that cannot be reached fails the link with a reason (decision 024): it starts no direct child. A peer that closes before it sends one line is a broker that was killed a moment ago: `openLink` dials again on the same 10 s clock (one start of a broker for the whole link), and a silent or wrong peer is never taken for a dead one.
     `brokerwire.ts` holds the key file, the build id (SHA-256 of `broker.js`) and the endpoint name.
   - `broker.ts`: the broker process, built from `brokermain.ts` into `dist/host/broker.js`, a second bundle with Node
     built-ins and `cross-spawn` only. One router (`src/core/mux.ts`) and one child for each share key. The listen is the
-    lock. `TOOLSCRIPT_BROKER_IDLE_MS` (at least 1000) shortens the 10-minute idle time, for tests and the bench. Log:
+    lock. A socket file that refuses a connect is removed only after the same file has refused for `guardMs` (1 s), because
+    a broker between its bind and its listen refuses too (issue #133). `TOOLSCRIPT_BROKER_IDLE_MS` (at least 1000) shortens the 10-minute idle time, for tests and the bench. Log:
     `~/.toolscript-mcp/broker/broker.log`, lifecycle lines only. Frames of the broker to a host start with `MARK`
     (`src/core/broker.ts`), so no server line passes as one (`WIRE` 2). Child stderr goes to the hosts as `stderr`
     frames (rate, backlog and tail limits in `src/core/broker.ts`), never to the log. The caps `LINKS_MAX`,
@@ -114,6 +115,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     pure parts (reports, decision, frames, environment block) are in `src/core/taskjob.ts`. `tests/workspace-rig.ts` is
     the helper of its tests, `tests/task-child.mjs` the child of the task tests, and `tests/task-host-child.ts` the host
     that the hard-kill test kills.
+- `docs/` holds the user docs, one page for each topic, with the index in `README.md`. A new page needs no edit of
+  `tests/docs.check.mjs`: it reads every `docs/*.md`. `docs/adr/` holds the design records and is checked for links only.
 - `demo/` holds a read-only demo MCP server with fixed sample data, for a first run without an account. The package
   ships it. `demo/data.mjs` exports the answer of its first task.
 - `runtime/runner.mjs` is the sandbox. Node built-ins only. `runtime/task-job.ps1` is the warm Windows PowerShell 5.1
@@ -137,6 +140,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   - `memory.mjs`: what N sessions cost in private bytes, processes and start time, with no model and no spend.
     Fixture mode by default; `--config <file>` is real mode, for the owner only. Results in `RESULTS-memory.md`.
     `tests/memory.e2e.mjs` runs its smoke and the hard-kill case.
+  - `broker-race.mjs`: N brokers started at once on a fresh HOME, R rounds, counts the rounds with two brokers at once
+    (issue #133). Linux and macOS; no model and no spend. `--contenders 20 --rounds 300` is the case that reproduced it.
   - `walks.mjs`: N parallel Workspace `search` calls on one tree, in Docker with `--cpus 1` only. Results in `RESULTS-walks.md`.
   - `CODEX.md`: the test plan for the same arms in Codex, and the result of the Codex smoke test. `check.mjs`
     judges an answer of another agent.

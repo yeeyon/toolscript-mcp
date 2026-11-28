@@ -424,7 +424,7 @@ describe('attach and routing', () => {
     assert.equal(await startBroker({ home: rig.home, idleMs: 600_000, file: rig.file }), undefined)
   })
 
-  describe('a stale socket file', { skip: process.platform === 'win32' }, () => {
+  describe('a stale socket file', { skip: process.platform === 'win32' && 'pipes vanish with their process' }, () => {
     const dials = (endpoint: string): Promise<boolean> =>
       new Promise(resolve => {
         const probe = net.connect(endpoint)
@@ -533,6 +533,116 @@ describe('attach and routing', () => {
       await first.stop()
       assert.ok(fs.existsSync(endpoint), 'the socket file of the second broker stays')
       assert.ok(await dials(endpoint), 'and it answers')
+    })
+
+    const nap = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    const stale = async (name: string) => {
+      const home = fs.mkdtempSync(path.join(root, 'h-'))
+      const file = path.join(home, 'broker.js')
+      fs.writeFileSync(file, name)
+      const endpoint = endpointFor(home, loadKey(home), buildId(file))
+      await staleSocket(endpoint)
+      return { home, file, endpoint }
+    }
+
+    // The state of the gap between the bind and the listen of another broker is a young file that refuses a connect.
+    test('a young socket file that refuses a connect is kept until the same file has refused for the guard, then removed and listened on', async () => {
+      const { home, file, endpoint } = await stale('build young')
+      const guardMs = 700
+      const started = Date.now()
+      let result: Broker | undefined | 'pending' = 'pending'
+      const run = startBroker({ home, idleMs: 600_000, file, guardMs }).then(b => (result = b))
+      await nap(guardMs / 2)
+      assert.equal(result, 'pending', 'the broker still waits')
+      assert.ok(fs.existsSync(endpoint), 'the file is not removed before the guard')
+      assert.ok(!(await dials(endpoint)), 'and it still refuses')
+      const broker = await run
+      assert.ok(broker, 'after the guard the broker listens')
+      closers.push(() => broker.stop())
+      assert.ok(Date.now() - started >= guardMs - 30, 'it waited for the guard')
+      assert.ok(await dials(endpoint), 'the file that refused is replaced by one that answers')
+    })
+
+    test('a different refusing file that replaces the first one is kept for a full guard from its own first refusal', async () => {
+      const { home, file, endpoint } = await stale('build replaced')
+      const guardMs = 800
+      // File B is made beside the path before the broker starts: making it takes as long as a child takes to start and
+      // die, and that time must not count against the guard of file A.
+      const spare = endpoint + '.b'
+      await staleSocket(spare)
+      const run = startBroker({ home, idleMs: 600_000, file, guardMs })
+      await nap(guardMs / 2)
+      // File B takes the path at half the guard of file A: the count starts again.
+      // It is renamed over file A, so the path is never empty for the broker.
+      const swapped = Date.now()
+      fs.renameSync(spare, endpoint)
+      // The guard of file A would end at half the guard from now. File B refuses first after that, so it is removed
+      // no earlier than a full guard after it.
+      const broker = await run
+      assert.ok(broker, 'after its own guard the broker listens')
+      closers.push(() => broker.stop())
+      assert.ok(Date.now() - swapped >= guardMs - 30, 'file B refused for a full guard')
+      assert.ok(await dials(endpoint))
+    })
+
+    test('a young file that turns into a live broker within the guard is left alone, and the starting broker does not start', async () => {
+      const { home, file, endpoint } = await stale('build takeover')
+      const run = startBroker({ home, idleMs: 600_000, file, guardMs: 3000 })
+      await nap(200)
+      // The broker that made the file finishes its listen: a socket that answers is at the path now.
+      fs.rmSync(endpoint)
+      const live = net.createServer(() => {})
+      await new Promise<void>(resolve => live.listen(endpoint, resolve))
+      closers.push(() => void live.close())
+      assert.equal(await run, undefined)
+      assert.ok(fs.existsSync(endpoint), 'the live socket file is untouched')
+      assert.ok(await dials(endpoint), 'and it answers')
+    })
+
+    test('a broker whose file another broker removed right after its listen leaves, and leaves the path to the other', async () => {
+      const home = fs.mkdtempSync(path.join(root, 'h-'))
+      const file = path.join(home, 'broker.js')
+      fs.writeFileSync(file, 'build lost name')
+      const endpoint = endpointFor(home, loadKey(home), buildId(file))
+      const other = net.createServer(() => {})
+      closers.push(() => void other.close())
+      const lost = await startBroker({
+        home,
+        idleMs: 600_000,
+        file,
+        guardMs: 0,
+        afterListen: () => {
+          // The other broker removes the file and binds a new one, both before this broker looks again.
+          fs.rmSync(endpoint)
+          other.listen(endpoint)
+        },
+      })
+      assert.equal(lost, undefined, 'it does not serve')
+      const logFile = `${brokerFolder(home)}/broker.log`
+      const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''
+      assert.ok(!/start pid/.test(log), 'it logged no start')
+      assert.ok(fs.existsSync(endpoint), "the path is still the other broker's")
+      assert.ok(await dials(endpoint), 'and it answers')
+    })
+
+    test('a broker that lost its name ends when its links are gone, its child ends, and the broker at the path serves the next host', async () => {
+      const first = await startRig(300)
+      const client = await connect(first)
+      const child = Number(await text(client, 'pid'))
+      // Another broker removes the file and binds its own: the first one has no name now.
+      fs.rmSync(first.broker.endpoint)
+      const second = await startBroker({ home: first.home, idleMs: 600_000, file: first.file, guardMs: 0 })
+      assert.ok(second, 'a second broker binds the path')
+      closers.push(() => second.stop())
+      await client.close()
+      await Promise.race([
+        first.broker.done,
+        new Promise((_, no) => setTimeout(() => no(new Error('the first broker stayed')), 8000)),
+      ])
+      await until('its child ends', () => !alive(child), 8000)
+      assert.ok(fs.existsSync(first.broker.endpoint), 'the file of the second broker stays')
+      const next = await connect(first)
+      assert.notEqual(Number(await text(next, 'pid')), child, 'the next host is served by the broker at the path')
     })
   })
 
@@ -694,7 +804,7 @@ describe('child stderr, forged frames and the caps', () => {
   test(
     'a dead socket file of another build is removed by the next broker, and a live or a young one is not',
     {
-      skip: process.platform === 'win32',
+      skip: process.platform === 'win32' && 'pipes vanish with their process',
     },
     async () => {
       const live = await startRig(600_000, 'build live')
@@ -796,6 +906,62 @@ describe('the handshake limits and a peer that is not the broker', () => {
     assert.equal(received.length, 1, 'only the hello')
     assert.ok(!received.join('').includes('hunter2-value') && !received.join('').includes('"entry"'))
   })
+
+  // A broker.js that leaves a line in a marker file each time it starts, so a test counts the brokers that were started.
+  const markerBroker = (home: string, body: string): { file: string; marker: string; id: string; endpoint: string } => {
+    const marker = path.join(home, 'started')
+    const file = path.join(home, 'broker.js')
+    const code = `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x\\n')\n${body}\n`
+    fs.writeFileSync(file, code)
+    const id = crypto.createHash('sha256').update(code).digest('hex')
+    const endpoint = endpointFor(home, loadKey(home), id)
+    fs.mkdirSync(path.dirname(endpoint), { recursive: true })
+    return { file, marker, id, endpoint }
+  }
+  const started = (marker: string): number =>
+    fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').split('\n').length - 1 : 0
+
+  test('a squatter that closes every connection after the hello fails the link with the closed reason, starts no broker and gets no entry', async () => {
+    const home = fs.mkdtempSync(path.join(root, 'sq-'))
+    const { file, marker, endpoint } = markerBroker(home, '')
+    const received: string[] = []
+    const squatter = net.createServer(socket => {
+      socket.on('error', () => {})
+      // The host writes its hello first, and an entry frame could follow only a proof: close on the first data.
+      socket.on('data', d => {
+        received.push(String(d))
+        socket.destroy()
+      })
+    })
+    await new Promise<void>(r => squatter.listen(endpoint, r))
+    closers.push(() => void squatter.close())
+    const start = Date.now()
+    await assert.rejects(openLink({ home, brokerFile: file, entry: entryOf() }), /closed the connection/)
+    assert.ok(Date.now() - start < 12_500)
+    assert.ok(received.length > 1, 'the host dialled again after each close')
+    assert.equal(started(marker), 0, 'no broker was started')
+    assert.ok(!received.join('').includes('"entry"'), 'no entry frame')
+  })
+
+  test(
+    'a broker that closes its first connection and ends, again and again, is started once for one link',
+    { skip: process.platform === 'win32' && 'pipes vanish with their process' },
+    async () => {
+      const home = fs.mkdtempSync(path.join(root, 'sq-'))
+      // It listens, closes the first connection and is killed, so the file stays and refuses: the next dial starts another
+      // broker unless the link remembers that it started one.
+      const body =
+        "const s = require('net').createServer(c => { c.destroy(); process.kill(process.pid, 'SIGKILL') });" +
+        's.listen(process.env.TS_TEST_ENDPOINT)'
+      const { file, marker, endpoint } = markerBroker(home, body)
+      process.env.TS_TEST_ENDPOINT = endpoint
+      closers.push(() => void delete process.env.TS_TEST_ENDPOINT)
+      const start = Date.now()
+      await assert.rejects(openLink({ home, brokerFile: file, entry: entryOf() }), /none listened within 10 s/)
+      assert.ok(Date.now() - start < 12_500)
+      assert.equal(started(marker), 1, 'one broker was started for the whole link')
+    },
+  )
 
   test('a silent squatter fails the link within the handshake time', async () => {
     const home = fs.mkdtempSync(path.join(root, 'sq-'))

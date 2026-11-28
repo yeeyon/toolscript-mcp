@@ -1,6 +1,51 @@
 # Bench results: direct MCP tools, Claude Code Code Mode and toolscript-mcp
 
-## Setup
+## Rerun for issue #89 (2026-11-28)
+
+The numbers in this section replace the ones in the earlier run below. The earlier run is kept as it was, with its commit.
+
+- Date: 2026-11-28. Windows 11, Node v22.23.3, Claude Code 2.1.332 (interactive TUI).
+- Model: `--model sonnet`, which ran as `claude-sonnet-5-5` in every API call. Effort was the TUI default (medium).
+- toolscript-mcp at `29790a0` (main, before PR #207), built with `npm run build`.
+- Command: `node bench/interactive.mjs --model sonnet --reps 3 --max-spend 7 --arms direct,codemode,toolscript,direct-lean,toolscript-lean`.
+  6 tasks, 3 reps, 5 arms: 90 runs, one at a time. Spend: $6.2517. Raw rows and the printed tables:
+  `bench/rerun-2026-11-27/interactive/results.jsonl` and `interactive-report.txt`. The per-run transcripts, screens and
+  call logs (29 MB) are not committed.
+- The arms `direct-lean` and `toolscript-lean` did not exist in the earlier run. `-lean` starts Claude Code with
+  `--tools ""`, so it lists none of its built-in tools.
+- Claude Code 2.1.332 ignores keys until the terminal answers its queries (cursor position, device attributes). The
+  harness now sends the answers of the `@xterm/headless` terminal back to the pty (`bench/interactive.mjs`). Before
+  that change, the first run timed out at "the typed prompt".
+- The first run of 4 arms (`messages` in direct, codemode, direct-lean and toolscript-lean) was cold. The table below
+  uses the 86 warm runs. The script did not exit after the last run; this change makes the harness end the pty, so it exits by itself.
+
+86 of 90 answers were correct. The 4 wrong answers are all `direct-lean`: 3 on `deploys` (it has no tool to read the
+saved 70,000-character result) and 1 miscount on `messages`. The other 4 arms were correct in every run.
+
+### Warm runs per arm, mean
+
+| metric | direct | codemode | toolscript | direct-lean | toolscript-lean |
+|---|---:|---:|---:|---:|---:|
+| runs | 17 | 17 | 18 | 17 | 17 |
+| correct | 17/17 | 17/17 | 18/18 | 13/17 | 17/17 |
+| cost USD | 0.1244 | 0.0613 | 0.0513 | 0.0719 | 0.0186 |
+| tool result chars in context | 34,636 | 13,916 | 1,812 | 30,145 | 1,711 |
+| API calls | 4.6 | 4.2 | 3.4 | 3.0 | 3.2 |
+| first-call input tokens | 39,630 | 21,687 | 40,747 | 17,150 | 17,764 |
+| seconds | 11.6 | 8.1 | 7.0 | 7.1 | 7.1 |
+
+Median cost per task, USD (direct / codemode / toolscript): messages 0.1349 / 0.0672 / 0.0491, issues 0.1389 /
+0.0629 / 0.0514, logs 0.0482 / 0.0396 / 0.0500, ticket 0.0426 / 0.0507 / 0.0430, deploys 0.1486 / 0.0554 / 0.0550,
+cross 0.2325 / 0.0914 / 0.0614. toolscript costs less than Code Mode on messages, issues, ticket and cross, about
+the same on deploys (0.0550 against 0.0554), and 26% more on logs.
+
+Before against after (warm means, direct / codemode / toolscript): at `49d871f` (Claude Code 2.1.325) cost was $0.1247 /
+$0.0604 / $0.0616 and chars in context 39,041 / 15,728 / 5,669. At `bb01025` (Claude Code 2.1.331) cost was $0.1257 /
+$0.0654 / $0.0503. Now it is $0.1244 / $0.0613 / $0.0513 and 34,636 / 13,916 / 1,812.
+
+## Earlier run (2026-11-24, `bb01025`, Claude Code 2.1.331)
+
+### Setup
 
 - Date: 2026-11-24. Windows 11, Node v22.23.3, Claude Code 2.1.331 (interactive TUI).
 - Model: `--model sonnet`, which ran as `claude-sonnet-5-5` in every API call. Effort was the TUI default
@@ -17,10 +62,10 @@
   dontAsk --strict-mcp-config --mcp-config <arm file> --allowedTools <arm tools>`. The allowed tools are the arm's
   MCP tools, `REPL` in the codemode arm, and `Read`, `Grep` and `Glob` in every arm.
 - Rerun: `npm run build`, then `node bench/interactive.mjs --reps 3 --max-spend 6 --out <dir>`. Print the tables
-  again with `node bench/interactive.mjs --report <out dir>`. On Windows the script does not exit after the last
-  run (node-pty keeps the event loop alive): end it once `results.jsonl` has 54 rows.
+  again with `node bench/interactive.mjs --report <out dir>`. Before the 2026-11-28 rerun the script did not
+  exit after the last run on Windows (node-pty kept the event loop alive): end it once `results.jsonl` has 54 rows.
 
-### How the harness works
+#### How the harness works
 
 Code Mode exists only in the interactive TUI. `bench/interactive.mjs` drives `claude` in a pseudo-terminal
 (node-pty) and reads the screen with `@xterm/headless`. Neither is a dependency of this repo. The script loads them
@@ -44,13 +89,13 @@ from a folder outside the repo (`--pty-dir`, default `%TEMP%\ptytry`).
 - "Tool result chars in context" is the text of the tool results that the model got. Code Mode's calls inside a
   program show in the transcript as `<synthetic>` entries with no usage. They are counted apart.
 
-### Code Mode
+#### Code Mode
 
 All 18 codemode transcripts have `replMode: true`. The other 36 have `replMode: false`. The TUI showed "Code Mode
 (experimental) is on". Code Mode reaches the MCP tools from inside the program with `await searchTools(query, n)`
 and `await tools.mcp__bench__<tool>(args)`, and the REPL keeps variables between calls.
 
-## Result
+### Result
 
 All 54 answers were correct. toolscript-mcp adds the fewest tokens to the context, makes the fewest API calls and
 is the fastest. Code Mode reads the fewest input tokens in all, because its fixed context is half the size. Most of
@@ -66,7 +111,7 @@ that difference is Claude Code's `Artifact` tool: with it off, toolscript reads 
 - Median seconds: 8.4 direct, 8.2 codemode, 7.4 toolscript.
 - toolscript costs less than Code Mode on messages, issues, ticket, deploys and cross. It costs 5% more on logs.
 
-### Warm runs per arm
+#### Warm runs per arm
 
 Mean / median / min-max. 18 runs per arm.
 
@@ -90,7 +135,7 @@ Mean / median / min-max. 18 runs per arm.
 | tool result chars in context | 35,383 / 40,482 | 16,497 / 15,225 | 1,956 / 1,724 |
 | seconds | 11.6 / 8.4 / 4.1-35.3 | 8.5 / 8.2 / 3.8-14.9 | 7.8 / 7.4 / 4.1-10.9 |
 
-### Warm runs per task
+#### Warm runs per task
 
 Median cost USD (min-max), then correct answers.
 
@@ -129,7 +174,7 @@ Median API calls / output tokens.
 toolscript against codemode: on messages, issues, ticket and cross the 3 costs of one arm do not overlap the 3
 costs of the other. On deploys and logs they overlap.
 
-## Rerun with Artifact off
+### Rerun with Artifact off
 
 The account of this bench has Claude Code's `Artifact` tool. Its schema is about 38,000 characters, and normal
 mode lists it in full on every API call. Code Mode hides it behind `searchTools`. A user who sets
@@ -173,7 +218,7 @@ wrote 0 to 1,992 tokens in reps 2 and 3, against 7,382 to 8,746 in rep 1. The ru
 every rep. The cause was not checked. So the mean of all 18 runs is not comparable with the run above. The mean of
 rep 1 is, and the input tokens read in all do not depend on the cache.
 
-## What the numbers are made of
+### What the numbers are made of
 
 **Two kinds of tokens.** The tokens a task adds to the context are written to the cache once and read again on
 each later call. The fixed context (the system prompt, the tool list) is read on every API call. toolscript adds
@@ -200,7 +245,7 @@ on every task, whatever the size of the server's result.
 fewer tokens per task than Code Mode (median, these 6 tasks). The difference in tokens read in all depends on how
 many API calls a session makes. In this bench, with 3 to 5 calls per task, Code Mode read 20% fewer tokens in all.
 
-## Memory
+### Memory
 
 Measured after the bench with the same flags and MCP configs: one interactive session per arm on the deploys task
 (the largest result), 2 sessions per arm, in the order direct, codemode, toolscript, then toolscript, codemode,
@@ -221,7 +266,7 @@ after the turn ended.
   reaches its servers through a shared HTTP bridge adds no process, so toolscript-mcp stays about 60 MB per session
   behind it.
 
-## Against the run of 2026-11-14
+### Against the run of 2026-11-14
 
 That run used Claude Code 2.1.325 and toolscript-mcp at `49d871f` (PR #9). Mean cost per warm run then: $0.1247
 direct, $0.0604 codemode, $0.0616 toolscript. Now: $0.1257, $0.0654, $0.0503. It listed 4 gaps of toolscript-mcp
@@ -237,7 +282,7 @@ against Code Mode:
 Code Mode in 2.1.331 had 0 failed tool calls. In 2.1.325, 12 of 18 runs started with `return await searchTools(...)`,
 which the REPL refused.
 
-## Gaps of toolscript-mcp against Code Mode
+### Gaps of toolscript-mcp against Code Mode
 
 1. **The fixed context.** About 19,000 more tokens read on every API call with `Artifact` on, and 8,590 with it off
    (see "Rerun with Artifact off"). It is Claude Code's built-in tool list, not toolscript-mcp's code: toolscript-mcp's
@@ -245,7 +290,7 @@ which the REPL refused.
    Next to try: deny the other built-in tools a session does not use, and trim toolscript-mcp's own text.
 2. **Memory.** About 60 MB per session for the host, which sharing does not remove.
 
-## Fairness and limits
+### Fairness and limits
 
 - **Permission mode.** The runs used `--permission-mode dontAsk`, not `default`. A tool that is not allowed is
   refused without a prompt, as in `claude -p`. Code Mode stayed on in this mode.
@@ -264,7 +309,7 @@ which the REPL refused.
   sharing removes.
 - **Loose answer checks.** The checks in `bench/data.mjs` look for key words and numbers.
 
-## Spend
+### Spend
 
 $4.8066 in all, under the cap of $6.00:
 
@@ -275,7 +320,7 @@ $4.8066 in all, under the cap of $6.00:
 Rerun with Artifact off: $2.7810 in all, under its cap of $6.00. A smoke run of the ticket task in the 3 arms,
 all cold: $0.3249. The 54 runs: $2.4561.
 
-## Every run
+### Every run
 
 | run | cold | USD | API | cache write | cache read | output | chars in context | tools called by the model | calls inside a program | failed | s |
 |---|---|---:|---:|---:|---:|---:|---:|---|---|---|---:|
