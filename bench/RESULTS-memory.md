@@ -225,6 +225,64 @@ lived when the session that started it exited (4 runs) and when its `claude` pro
 session reused the same broker each time. A broker ended alone left no process behind, the same as a host with the
 switch off.
 
+### G10: two interactive sessions on one broker
+
+2026-11-28, Claude Code 2.1.332 (Haiku 5.5), Windows 11 (10.0.26300), Node v22.23.3, branch bridge-validate off main
+(1.0.4). `node bench/bridge-modes.mjs g10` drives two real interactive sessions through node-pty, one after the other,
+each with only toolscript-mcp as MCP server. The config has `"share": true` on the one shared stdio server
+(`bench/fake-server.mjs`, with `"share": true` on its entry), and both hosts use one temp HOME and
+`TOOLSCRIPT_BROKER_IDLE_MS=5000`. Each session asked for one `run_code` call of `get_deploys`. The pids come from
+`broker.log` and the process list (pid and creation time).
+
+| Step | Check | Result |
+| --- | --- | --- |
+| 1 | A answered with the fixture data (400 deploys). One `start pid` line, one broker, one child. | passed |
+| 2 | B answered too, while A was open. Still one `start pid` line, one broker (same pid), one child (same pid), 2 hosts. | passed |
+| 3 | A exited: the broker and the child lived. B answered a second call from the same child pid (fake server calls 2 to 3). | passed |
+| 4 | B exited: 3 s later the child was gone, 5 s later the broker. No toolscript-mcp host, broker or child was left. | passed |
+
+The broker log of that run: `start pid`, `listen`, one `child start`, `attach` with links=1, `attach` with links=2,
+`detach` with links=1, `detach` with links=0, `child stop` 5 s later, `exit` 2 s after that. All four steps passed in one run.
+Windows only: no socket file exists there, and this run did not check Linux or macOS.
+
+Two earlier runs of the same rig are not counted. The first had no `"share": true` on the server entry: a server with no `cwd`
+is per folder, and the two sessions ran in two folders, so the broker held two children (as the rules say). The second
+passed no step 1 and 2 check because Haiku sent a wrong program once in each session and the run waited for no retry.
+Spend of the three runs: under 0.01 USD.
+
+### The real Claude Code bridge: 1 and 6 sessions, with and without the entry
+
+2026-11-28, Windows_NT 10.0.26300 x64, Node v22.23.3, Claude Code 2.1.332, commit 22e6711, sharing off, idle 15 s, laptop
+quiet (about 14 GB free). Real mode of `bench/memory.mjs` with a temp config and a temp HOME (`HOME` and `USERPROFILE` of
+the bench process, and of `claude mcp serve` by its entry `env`), so the owner's config and home were never read. The
+servers are 3 fake stdio servers. The bridge entry is the real `claude.exe mcp serve`, key `claude-code`, so it is lazy.
+Each case ran 3 times (3 rounds). Private bytes (commit), mean with the min and max of the 3 rounds. Never RSS.
+
+| Case | Sessions | Phase | Private bytes (MB) | Processes |
+| --- | ---: | --- | --- | --- |
+| no bridge entry | 1 | idle | 123 (118-126) | 8 |
+| no bridge entry | 1 | after-run | 117 (117-118) | 8 |
+| no bridge entry | 6 | idle | 712 (711-713) | 48 |
+| no bridge entry | 6 | after-run | 703 (702-704) | 48 |
+| bridge entry, never called | 1 | idle | 222 (126-414) | 8, 8, 10 |
+| bridge entry, never called | 1 | after-run | 216 (117-412) | 8, 8, 10 |
+| bridge entry, never called | 6 | idle | 713 (713-714) | 48 |
+| bridge entry, never called | 6 | after-run | 705 (705-707) | 48 |
+| bridge entry, called once (CronList) | 1 | idle | 126 (126-126) | 8 |
+| bridge entry, called once (CronList) | 1 | after-run | 405 (404-409) | 10 |
+| bridge entry, called once (CronList) | 6 | idle | 714 (714-714) | 48 |
+| bridge entry, called once (CronList) | 6 | after-run | 2431 (2422-2436) | 60 |
+
+- A bridge that no program called costs no process and no bytes: 6 sessions held 713 MB against 712 MB with no entry.
+  The one exception is round 1 of the first run (10 processes, 414 MB): the bridge started once in a fresh temp home. The
+  likely cause is that no learned tool list existed yet, but I did not check it. The 2 later rounds had 8 processes.
+- One call of the bridge adds 2 processes for each session and about 286 MB of private bytes for each (6 sessions:
+  2431 against 714 MB, 12 more processes, 6 wakes). This is close to the 315 MB in docs/sharing.md:51.
+- Start time did not change: the slowest `tools/list` of a round was 250 ms (234-273) at 1 session and 236 to 341 ms at 6, with
+  or without the entry. The wake of a called bridge happens inside the first `run_code`.
+- No failed server, no unmeasured process and no leftover after the hosts ended, in all 18 rounds.
+- Sharing was off in every case. Windows only.
+
 
 ## Child guard on Windows: on and off
 

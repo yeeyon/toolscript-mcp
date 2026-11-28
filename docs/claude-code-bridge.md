@@ -127,6 +127,114 @@ try {
 return { path, line, lines: file.file.numLines, test: test.split('\n').filter(l => /^# (pass|fail)/.test(l)) }
 ```
 
+## Tested with Claude Code 2.1.332
+
+An agent ran these tests on 2026-11-28 with no person at the keyboard. The platform is Windows 11 (10.0.26300) with Node 22.
+Nothing was run on Linux or macOS. A fact that no run checked again keeps its version in
+[Measured with Claude Code 2.1.325](#measured-with-claude-code-21325).
+
+The launch command was `claude.exe mcp serve`, with `cwd` set to a test project. The entry used the full path of
+`claude.exe`, found by a search of `PATH`. The `claude.ps1` shim was never started.
+
+### The tools
+
+On Windows, `claude mcp serve` listed 24 tools: Agent, CronCreate, CronDelete, CronList, DesignSync, Edit,
+EnterWorktree, ExitWorktree, Glob, Grep, ListAgents, NotebookEdit, PowerShell, Read, ReportFindings, ScheduleWakeup,
+SendMessage, Skill, TaskStop, ToolSearch, WebFetch, WebSearch, Workflow and Write. There was no `Bash` tool. Use
+`PowerShell` on Windows. The test file `tests/bridge.e2e.mjs` runs this case and needs `claude` on `PATH`.
+
+### One program through the bridge
+
+The allow rules were `mcp__claude-code__Grep`, `Read`, `Edit` and `PowerShell`, and no broader rule. One program found
+`function add` with Grep, read the file, changed `return a - b` to `return a + b` with Edit, and ran `node --test`
+with PowerShell. It threw if the output lacked `pass 1` and `fail 0`. It passed in 3 of 3 runs and returned this:
+
+```json
+{ "grep": true, "pass": true, "fail0": true }
+```
+
+The file on disk held the new text. The run log listed Grep, Read, Edit and PowerShell in order, each with `ok: true`.
+
+### A missing command
+
+If the command of the bridge does not exist, toolscript-mcp still starts and `search_tools` answers. It lists the
+server under `Not connected`:
+
+```text
+- claude-code: MCP error -32000: Connection closed. Its stderr is not shown here. To read it, run the command of the server in a terminal. When the client starts toolscript-mcp, its log also holds it
+```
+
+A run_code program that calls a bridge tool is refused before it starts, so the program never sees the error. The
+result is this text. It names the key, and it does not name the command:
+
+```text
+Error: the program did not run, because of the calls below. No call was made.
+- line 1: the MCP server "claude-code" is not connected: MCP error -32000: Connection closed. Its stderr is not shown here. To read it, run the command of the server in a terminal. When the client starts toolscript-mcp, its log also holds it
+```
+
+### What prompts in each permission mode
+
+Each run used only toolscript-mcp as the MCP server in Claude Code. The model was asked for one `run_code` call. The
+policy was `Read` allow, `Edit` ask and the rest of the bridge deny. Two prompts can show:
+
+- The host prompt of Claude Code: `Do you want to proceed?` for the tool of toolscript-mcp, with the choices Yes, Yes and
+  do not ask again, and No.
+- The form of toolscript-mcp, which Claude Code shows as `MCP server "toolscript" requests your input`. It names the
+  tool that no rule allows, and has Accept and Decline.
+
+In a W cell the program read the file and edited it. In the first run the script accepted each prompt. In a second run
+in the same session it declined the form, and the run log showed `unapproved` for Edit. The cell plan W with `run_code`
+allowed is the exception: the model made no call in the first run, so only the decline run was observed.
+
+| Mode | Program | `run_code` in `--allowedTools` | Host prompt | Form of toolscript-mcp |
+| --- | --- | --- | --- | --- |
+| default | R (Read) | no | yes | no |
+| default | R (Read) | yes | no | no |
+| default | W (Edit) | no | yes | yes |
+| default | W (Edit) | yes | no | yes |
+| auto | R (Read) | no | no | no |
+| auto | R (Read) | yes | no | no |
+| auto | W (Edit) | no | no | yes |
+| auto | W (Edit) | yes | no | yes |
+| plan | R (Read) | no | yes | no |
+| plan | R (Read) | yes | yes | no |
+| plan | W (Edit) | no | not observed | not observed |
+| plan | W (Edit) | yes | yes (Sonnet, decline step only) | yes (Sonnet, decline step only) |
+| dontAsk | R (Read) | no | no, denied | no |
+| dontAsk | R (Read) | yes | no | no |
+| dontAsk | W (Edit) | no | no, denied | no |
+| dontAsk | W (Edit) | yes | no | yes |
+
+- Accept ran the call, and Edit changed the file. Decline refused the call, and the file did not change again.
+- In dontAsk mode with `run_code` not allowed, Claude Code denied the tool with this text, and the run log stayed empty:
+  `Permission to use mcp__toolscript__run_code has been denied because Claude Code is running in don't ask mode.`
+- In plan mode, the host prompt showed also when `run_code` was in `--allowedTools`.
+- In auto mode, no host prompt showed for `run_code`, with or without `--allowedTools`.
+
+With `claude -p` there is no screen, so no prompt can show. The W program ran with these results:
+
+| Mode | `run_code` in `--allowedTools` | Result |
+| --- | --- | --- |
+| default | no | Claude Code refused: `Claude requested permissions to use mcp__toolscript__run_code, but you haven't granted it yet.` |
+| default | yes | The program did not run. toolscript-mcp refused Edit as not approved. |
+| auto | no or yes | The program did not run. toolscript-mcp refused Edit as not approved. |
+| dontAsk | no | Claude Code denied the tool, as in the table above. |
+| dontAsk | yes | The program did not run. toolscript-mcp refused Edit as not approved. |
+| plan | no or yes | Not observed. |
+
+So in `claude -p`, an `ask` tool of the bridge never runs. Put an `allow` rule for it in the config if you need it
+there. Read [The risks](#the-risks) first.
+
+### Not observed
+
+- Plan mode with an Edit program and `run_code` not allowed: the model made no `run_code` call in 2 tries on Haiku and 2 on
+  Sonnet. It said that plan mode forbids the edit.
+- The accept path of plan mode with an Edit program and `run_code` allowed. Only the decline step ran, on Sonnet.
+- The `claude -p` plan cells: the model made no call.
+- Which model plan mode runs in the TUI. The `claude -p` result named Sonnet 5.5, although Haiku was set.
+- Linux and macOS.
+- The answer "Yes, and do not ask again" of the host prompt.
+
 ## Measured with Claude Code 2.1.325
 
 These numbers are from Claude Code 2.1.325 on Windows 11, with Node 22.
