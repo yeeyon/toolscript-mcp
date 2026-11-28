@@ -97,7 +97,7 @@ import {
   type TimedCall,
 } from '../core/serial.ts'
 import { SERVER_NAME } from '../core/tools.ts'
-import { appliedChange, type AppliedChange } from '../core/workspace.ts'
+import { appliedChange, WORKSPACE_KEY, WORKSPACE_TOOLS, type AppliedChange } from '../core/workspace.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
 import { appendRunLog } from './runlog.ts'
@@ -370,6 +370,9 @@ const showImages = async (
   return { images, note: hiddenImagesNote(hidden, returned.unsearched) }
 }
 
+/** Most characters of the asked path that a refusal echoes, as the search echo of a long query. */
+const ASKED_MAX = 200
+
 // readFile reads only a file in the session's saveFile folder: a program can
 // send what it reads to an MCP tool. The real paths stop a link out of the folder.
 // `untrusted`: the file is one of `untrustedFiles`.
@@ -377,9 +380,17 @@ const readFile = async (
   dir: string,
   asked: string,
   untrustedFiles: ReadonlySet<string>,
+  workspaceOn: boolean,
 ): Promise<{ reply: Reply; untrusted: boolean }> => {
   const fail = (error: string) => ({ reply: { ok: false, error } as const, untrusted: false })
-  const refusal = fail(`readFile: ${asked} is not a file from saveFile in this session`)
+  // One text for every refused path, so it tells a program nothing about the path. It names the next step.
+  const next = workspaceOn
+    ? `, or read a file inside the Workspace root with mcp__${WORKSPACE_KEY}__${'read' satisfies keyof typeof WORKSPACE_TOOLS}`
+    : ''
+  const shown = asked.length > ASKED_MAX ? `${asked.slice(0, ASKED_MAX)}... (${asked.length} characters)` : asked
+  const refusal = fail(
+    `readFile: ${shown} is not a file from saveFile in this session. Put the text in the program as a string literal${next}`,
+  )
   const [real, realDir] = await Promise.all([
     fs.promises.realpath(path.resolve(dir, asked)).catch(() => undefined),
     fs.promises.realpath(dir).catch(() => undefined),
@@ -434,6 +445,9 @@ const execute = async (
   known: ReadonlySet<string>,
 ): Promise<Ran> => {
   const { config, downstream, kept } = ctx
+  // The Workspace is listed for this run: readFile may name its read tool.
+  const workspaceOn =
+    config.servers.get(WORKSPACE_KEY as ServerKey)?.kind === 'workspace' && ctx.workspaceRoot !== undefined
   const limitSeconds = config.sandbox.timeoutSeconds
   const timeoutMs = limitSeconds * 1000
   const callSeconds = config.sandbox.callTimeoutSeconds
@@ -797,7 +811,7 @@ const execute = async (
       case 'read':
         answer(
           answerLocal(m.id, async () => {
-            const read = await readFile(ctx.filesDir, m.path, ctx.untrustedFiles)
+            const read = await readFile(ctx.filesDir, m.path, ctx.untrustedFiles, workspaceOn)
             if (read.untrusted) untrusted = true
             return read.reply
           }),
