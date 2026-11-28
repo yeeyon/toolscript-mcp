@@ -2,18 +2,18 @@
 
 One measurement on one Windows laptop, by `bench/workspace-bridge.mjs`. It asks the same four questions about one
 disposable repository through toolscript-mcp hosts that have (a) the built-in Workspace, or (b) the Claude Code bridge
-(`claude mcp serve` as the downstream server `claude-code`). It is a single run of each arm, with no repeat of the whole
-run, so a gap of the size of its spread is not a result. No model runs, and nothing is spent.
+(`claude mcp serve` as the downstream server `claude-code`). It holds two runs of each arm (run 2 first, then run 1), with no repeat inside a run, so a gap of the size of its spread
+is not a result. No model runs, and nothing is spent.
 
 ## Versions and machine
 
 | | |
 |---|---|
-| toolscript-mcp | this branch (`dist/host/main.js` after `npm run build`), version 1.0.4 |
+| toolscript-mcp | this branch (`dist/host/main.js` after `npm run build`), version 1.0.4. Run 2 has origin/main merged in, with issue #206 (4 files of a walk at once). Run 1 does not |
 | Claude Code (the bridge) | 2.1.332 |
 | Node | v22.23.3 |
 | System | Windows_NT 10.0.26300, 8 CPUs |
-| Other load | the laptop was in use by other work of the same session (no benchmark run at the same time on purpose) |
+| Other load | run 2: a quiet laptop, no other bench or test run, only idle agents. Run 1: the laptop was in use by other work of the same session (no benchmark run at the same time on purpose) |
 
 ## Fixture and method
 
@@ -48,7 +48,45 @@ run, so a gap of the size of its spread is not a result. No model runs, and noth
   program and it is counted. The script ends only the hosts that it started, and the processes below them that its table
   shows (by pid and creation time). Leftovers were 0 in every round, and a check of the process table after the run found none.
 
-## Numbers
+## Numbers, run 2 (quiet laptop, with issue #206)
+
+Times are in ms. "Max" is the slowest call of that question in that round.
+
+| arm | sessions | question | result chars | cold median | cold max | warm median | warm max |
+|---|---|---|---|---|---|---|---|
+| Workspace | 1 | list | 1466 | 195 | 195 | 127 | 235 |
+| Workspace | 1 | find | 3452 | 220 | 220 | 238 | 276 |
+| Workspace | 1 | search | 1739 | 905 | 905 | 989 | 1082 |
+| Workspace | 1 | read | 2182 | 142 | 142 | 112 | 141 |
+| bridge | 1 | list | 657 | 721 | 721 | 181 | 223 |
+| bridge | 1 | find | 2892 | 295 | 295 | 178 | 230 |
+| bridge | 1 | search | 1023 | 228 | 228 | 220 | 296 |
+| bridge | 1 | read | 2127 | 140 | 140 | 126 | 189 |
+| Workspace | 6 | list | 1466 | 205 | 231 | 160 | 241 |
+| Workspace | 6 | find | 3452 | 330 | 386 | 290 | 930 |
+| Workspace | 6 | search | 1739 | 1689 | 2465 | 1310 | 2075 |
+| Workspace | 6 | read | 2182 | 163 | 193 | 167 | 298 |
+| bridge | 6 | list | 658 | 1769 | 3058 | 224 | 739 |
+| bridge | 6 | find | 2893 | 555 | 789 | 223 | 403 |
+| bridge | 6 | search | 1023 | 698 | 1238 | 257 | 488 |
+| bridge | 6 | read | 2127 | 449 | 607 | 161 | 358 |
+
+| arm | sessions | host ready ms (median) | calls | failed | processes idle | private MB idle | processes after calls | private MB after | private working set MB after |
+|---|---|---|---|---|---|---|---|---|---|
+| Workspace | 1 | 260 | 24 | 0 | 2 | 72 | 2 | 126 | 84 |
+| bridge | 1 | 245 | 24 | 0 | 2 | 70 | 4 | 357 | 118 |
+| Workspace | 6 | 200 | 144 | 0 | 12 | 438 | 12 | 701 | 418 |
+| bridge | 6 | 274 | 144 | 0 | 12 | 422 | 24 | 2076 | 712 |
+
+Processes after the calls: Workspace 1 `node.exe` and 1 `conhost.exe` for each session. Bridge, for each session, 1
+`node.exe`, 2 `conhost.exe` and 1 `claude.exe`. Leftovers were 0 in every round.
+
+First start of a host with an empty tool list: the host starts the bridge at once. It was ready in 168 ms and held 4
+processes, 372 MB of private bytes and 120 MB of private working set.
+
+## Numbers, run 1 (laptop in use, before issue #206)
+
+The first run, kept as it was. The method and the machine are the same, except for the load and the code of Workspace.
 
 Times are in ms. "Max" is the slowest call of that question in that round.
 
@@ -84,7 +122,28 @@ Processes after the calls: Workspace 1 `node.exe` and 1 `conhost.exe` for each s
 First start of a host with an empty tool list: the host starts the bridge at once. It was ready in 300 ms and held 4
 processes, 378 MB of private bytes and 119 MB of private working set (one host, 4 s after it was ready).
 
-## What the numbers show
+## What run 2 shows
+
+- Before the first call the two arms cost the same, as in run 1: 2 processes and 70 to 72 MB for one session, 12 processes
+  and 422 to 438 MB for six.
+- After the 24 calls: 1 session, Workspace 126 MB of private bytes (84 MB private working set) against 357 MB (118 MB)
+  for the bridge. 6 sessions, Workspace 701 MB (418 MB) against 2076 MB (712 MB). The bridge adds 2 processes for each
+  session and about 290 MB of private bytes for each session. Workspace grew by 54 MB (1 session) and 263 MB (6 sessions).
+- `search` is still the large gap, but smaller. Warm median, 1 session: Workspace 989 ms against 220 ms for the bridge
+  (run 1: 3683 ms against 216 ms). 6 sessions: 1310 ms against 257 ms, slowest call 2075 ms against 488 ms (run 1: 2631 ms,
+  slowest 9206 ms). So Workspace `search` is about 4.5 times the bridge at one session and 5 times at six.
+- `list`, `find` and `read` took 110 to 330 ms warm in both arms, and Workspace is within 60 ms of the bridge for each.
+- The cold first question of the bridge includes the start of `claude.exe`: 721 ms with one session, 1769 ms (slowest
+  3058 ms) with six, against 195 and 205 ms for Workspace.
+- 0 of the 336 calls failed.
+- Run 2 against run 1: the machine was quiet in run 2 (no other bench or test run, only idle agents) and Workspace has the
+  change of issue #206 (4 files of a walk at once). This bench cannot say how much of the `search` gain is the change and
+  how much is the quiet laptop: the bridge arm did not move for `search` (216 to 220 ms), which suggests that the load
+  was small for a process that does little work, and that most of the Workspace gain is the change. That is an
+  inference. The private working set of Workspace at 6 sessions is 418 MB against 271 MB in run 1, which this bench
+  does not explain.
+
+## What run 1 showed
 
 - Before the first call the two arms cost the same: 2 processes and 68 to 70 MB for one session, 12 processes and 410 to
   424 MB for six. The bridge is asleep until a call needs it, so a session that never reads a file pays nothing for it.
@@ -113,7 +172,7 @@ processes, 378 MB of private bytes and 119 MB of private working set (one host, 
   different size costs. It measures one idle host and then 24 calls, with no concurrent calls.
 - The bridge here is Claude Code 2.1.332 with its tools `Glob`, `Grep` and `Read`. It has no tool that only lists a folder.
   Another version has other tools and another memory.
-- Not run: Linux and macOS (the memory columns are Windows only), a repeat of the whole run, the shared-server broker.
+- Not run: Linux and macOS (the memory columns are Windows only), a third run, the shared-server broker.
 
 ## Reproduce
 
