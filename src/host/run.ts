@@ -97,7 +97,7 @@ import {
   type TimedCall,
 } from '../core/serial.ts'
 import { SERVER_NAME } from '../core/tools.ts'
-import { appliedChange, type AppliedChange } from '../core/workspace.ts'
+import { appliedChange, WORKSPACE_KEY, WORKSPACE_TOOLS, type AppliedChange } from '../core/workspace.ts'
 import type { Downstream } from './downstream.ts'
 import { RUNNER, launch, makeExchangeDir, removeExchangeDir, type Ending } from './launch.ts'
 import { appendRunLog } from './runlog.ts'
@@ -377,9 +377,16 @@ const readFile = async (
   dir: string,
   asked: string,
   untrustedFiles: ReadonlySet<string>,
+  workspaceOn: boolean,
 ): Promise<{ reply: Reply; untrusted: boolean }> => {
   const fail = (error: string) => ({ reply: { ok: false, error } as const, untrusted: false })
-  const refusal = fail(`readFile: ${asked} is not a file from saveFile in this session`)
+  // One text for every refused path, so it tells a program nothing about the path. It names the next step.
+  const next = workspaceOn
+    ? `, or read a file inside the Workspace root with mcp__${WORKSPACE_KEY}__${'read' satisfies keyof typeof WORKSPACE_TOOLS}`
+    : ''
+  const refusal = fail(
+    `readFile: ${asked} is not a file from saveFile in this session. Put the text in the program as a string literal${next}`,
+  )
   const [real, realDir] = await Promise.all([
     fs.promises.realpath(path.resolve(dir, asked)).catch(() => undefined),
     fs.promises.realpath(dir).catch(() => undefined),
@@ -797,7 +804,9 @@ const execute = async (
       case 'read':
         answer(
           answerLocal(m.id, async () => {
-            const read = await readFile(ctx.filesDir, m.path, ctx.untrustedFiles)
+            const workspaceOn =
+              config.servers.get(WORKSPACE_KEY as ServerKey)?.kind === 'workspace' && ctx.workspaceRoot !== undefined
+            const read = await readFile(ctx.filesDir, m.path, ctx.untrustedFiles, workspaceOn)
             if (read.untrusted) untrusted = true
             return read.reply
           }),
