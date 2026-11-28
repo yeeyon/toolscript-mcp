@@ -401,8 +401,25 @@ describe('the profiles', () => {
   })
 })
 
-const sessions = (n: number) => Array.from({ length: n }, () => ({ ok: true, failed: [], connected: ['bench1'] }))
-const data = (idle: object, round: object = {}) => ({
+// A session as bench/memory.mjs records it in fixture mode (v1.0.4 and main alike, from a real run): the HTTP entry `down` that
+// nothing answers is always in `failed`, and the run still is healthy.
+const session = (n: number) => ({
+  n,
+  ok: true,
+  pid: 5560 + n,
+  initializeMs: 379,
+  toolsListMs: 385,
+  failed: ['down'],
+  connected: ['bench1', 'bench2', 'bench3', 'bench4', 'claude-code'],
+  tools: { bench1: 5, bench2: 5, bench3: 5, bench4: 5, 'claude-code': 5 },
+  run1Ms: 238,
+  runOk: true,
+  run2Ms: 120,
+  exitCode: 0,
+})
+const sessions = (n: number) => Array.from({ length: n }, (_, k) => session(k + 1))
+const data = (idle: object, round: object = {}, mode = 'fixture') => ({
+  meta: { mode, keys: ['bench1', 'bench2', 'bench3', 'bench4', 'claude-code', 'down'] },
   rounds: [
     { count: 1, sessions: sessions(1), samples: { idle: { privateBytes: 1 } } },
     { count: 6, sessions: sessions(6), samples: { idle }, ...round },
@@ -483,6 +500,16 @@ describe('the baseline budgets', () => {
     assert.equal(hostBytes({}), null)
   })
 
+  test('a healthy fixture round, with the failed down entry of every session, gives its memory', () => {
+    const real = { privateBytes: 134549504, workingSetPrivate: 79306752 }
+    assert.equal(hostBytes(data(real)), 134549504)
+    assert.equal(hostBytes(data({ privateBytes: null, workingSetPrivate: 79306752 })), 79306752)
+    // In real mode (--config) nothing fails on purpose: a failed key is a broken run there.
+    const clean = sessions(6).map(x => ({ ...x, failed: [] }))
+    assert.equal(hostBytes(data(real, { sessions: clean }, 'real')), 134549504)
+    assert.equal(hostBytes(data(real, {}, 'real')), null)
+  })
+
   test('a round that is not 6 healthy sessions gives no host memory, so its row fails', () => {
     const idle = { privateBytes: 600 }
     assert.equal(hostBytes(data(idle, { sessions: sessions(5) })), null, 'fewer than 6 sessions')
@@ -490,6 +517,8 @@ describe('the baseline budgets', () => {
     for (const bad of [
       { ok: false, error: 'exited' },
       { failed: ['bench2'] },
+      { failed: ['down', 'bench2'] },
+      { failed: [] },
       { connectTimeout: true },
       { failed: undefined },
     ]) {
