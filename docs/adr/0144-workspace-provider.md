@@ -446,7 +446,7 @@ of the error, as the open for writing does on Windows and macOS.
 - One task runs at a time in a session. A second call waits for its turn, and a call that ends while it waits starts
   nothing. Each stream keeps the first 64 KiB and the last 192 KiB, with a note of the cut bytes between them.
   A non-zero exit code is data, not an error. An unknown task fails and lists the task names.
-- A task runs project code with the rights of the user. The prompt and the README say so. No text claims containment.
+- A task runs project code with the rights of the user. The prompt and `docs/workspace.md` say so. No text claims containment.
 
 Decisions that the code made while it built pull request C (this section holds them, so the ADR matches the code):
 

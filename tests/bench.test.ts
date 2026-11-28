@@ -112,7 +112,7 @@ exports.spawn = (file, args, { cwd }) => {
   setImmediate(() => onExit?.({ exitCode: 1 }))
   return { onData() {}, onExit: f => (onExit = f), write() {}, kill() {} }
 }`
-const FAKE_TERMINAL = `exports.Terminal = class { buffer = { active: { length: 0 } }; write() {} }`
+const FAKE_TERMINAL = `exports.Terminal = class { buffer = { active: { length: 0 } }; write() {}; onData() {} }`
 
 test('interactive.mjs saves the cost of a run that fails, and a resumed --out counts it', () => {
   const pty = path.join(ROOT, 'fake-pty')
@@ -319,4 +319,26 @@ test('memory.mjs counts a broker that a live host started as its own tree, with 
     update(tracker, table).map(i => `${i.pid} ${i.role} ${i.session}`),
     ['5000 host 1', '5100 broker null', '5101 server grafana null', '5102 server grafana null'],
   )
+})
+
+test('scrub.mjs writes the home folder as ~ in each form a saved answer or a removed folder can hold', async () => {
+  const { scrubHome } = (await import('../bench/scrub.mjs')) as { scrubHome: (text: string, home?: string) => string }
+  const home = 'C:\\Users\\someone'
+  const text = [
+    'C:\\Users\\someone\\.claude\\projects\\C--Users-someone-tmp-run',
+    'C:\\\\Users\\\\someone\\\\.claude',
+    'C:/Users/someone/.claude',
+    'C:\\Users\\other\\x',
+  ].join('\n')
+  assert.equal(
+    scrubHome(text, home),
+    ['~\\.claude\\projects\\~-tmp-run', '~\\\\.claude', '~/.claude', 'C:\\Users\\other\\x'].join('\n'),
+  )
+  assert.equal(scrubHome('no home here', home), 'no home here')
+  // A short home, a name that only starts like the home, and a name that contains the home's dash form stay as they are.
+  assert.equal(scrubHome('-62.8% a/b', '/'), '-62.8% a/b')
+  assert.equal(scrubHome('non-root /rooted', '/root', false), 'non-root /rooted')
+  assert.equal(scrubHome('C:\\Users\\bob\\y', 'C:\\Users\\bo'), 'C:\\Users\\bob\\y')
+  assert.equal(scrubHome('c:\\users\\Someone\\x', home, true), '~\\x')
+  assert.equal(scrubHome('c:\\users\\Someone\\x', home, false), 'c:\\users\\Someone\\x')
 })

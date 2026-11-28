@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { TASKS } from './data.mjs'
 import { forgetRuns } from './forget.mjs'
+import { scrubHome } from './scrub.mjs'
 import { estimate, spentSoFar } from './spend.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -47,7 +48,7 @@ const PRICES = {
 }
 
 const USAGE = `usage: node bench/interactive.mjs [--reps N] [--max-spend USD] [--spent USD] [--model NAME]
-       [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,codemode,toolscript]
+       [--tasks ${TASKS.map(t => t.id).join(',')}] [--arms direct,codemode,toolscript,direct-lean,toolscript-lean]
        [--root DIR] [--pty-dir DIR] [--bash PATH] [--out DIR]
        node bench/interactive.mjs --report DIR
 Each run starts interactive Claude Code and costs money. Before each run, the bench adds the most that a
@@ -93,6 +94,7 @@ const cwdOf = arm => path.join(ROOT, arm, 'cwd')
 const benchServer = log => ({ command: 'node', args: [FAKE_SERVER], env: { BENCH_LOG: log } })
 const BENCH_TOOLS = ['search_messages', 'list_issues', 'query_logs', 'create_ticket', 'get_deploys']
 const FILE_TOOLS = ['Read', 'Grep', 'Glob']
+// The lean host (#4, #89): `--tools ""`, so Claude Code lists none of its built-in tools.
 
 // What each arm puts in front of the model. `allowed` is the whole --allowedTools list.
 const ARMS = {
@@ -120,6 +122,18 @@ const ARMS = {
       return { toolscript: { command: 'node', args: [TOOLSCRIPT, '--config', config] } }
     },
     allowed: ['mcp__toolscript__run_code', 'mcp__toolscript__search_tools', ...FILE_TOOLS],
+  },
+  'direct-lean': {
+    lean: true,
+    codeMode: false,
+    servers: ({ log }) => ({ bench: benchServer(log) }),
+    allowed: BENCH_TOOLS.map(t => `mcp__bench__${t}`),
+  },
+  'toolscript-lean': {
+    lean: true,
+    codeMode: false,
+    servers: ({ dir, log }) => ARMS.toolscript.servers({ dir, log }),
+    allowed: ['mcp__toolscript__run_code', 'mcp__toolscript__search_tools'],
   },
 }
 
@@ -248,7 +262,7 @@ const measure = ({ task, arm, rep, main, all, calls, seconds }) => {
     replMode: main.some(e => e.type === 'repl-mode' && e.replMode === true),
     turnSeconds: (turn?.durationMs ?? NaN) / 1000,
     seconds,
-    answer: answer.slice(0, 600),
+    answer: scrubHome(answer).slice(0, 600),
   }
 }
 
@@ -298,6 +312,9 @@ const drive = async ({ term: { pty, Terminal }, bash, arm, argv, prompt, dir }) 
   })
   let exited = false
   child.onData(d => term.write(d))
+  // Claude Code 2.1.332 asks the terminal questions (cursor position, device attributes) and ignores keys until they
+  // are answered, so the answers of the emulator go back to the pty.
+  term.onData(d => child.write(d))
   child.onExit(() => (exited = true))
   const screen = () => {
     const b = term.buffer.active
@@ -374,6 +391,9 @@ const drive = async ({ term: { pty, Terminal }, bash, arm, argv, prompt, dir }) 
     await sleep(1500)
   }
   if (!exited) child.kill()
+  // On Windows node-pty keeps its ConPTY pipe server and socket open after the child exits, and they hold the event
+  // loop, so the script would not end. destroy() closes them.
+  child.destroy?.()
   const saved = path.join(dir, 'transcript')
   fs.mkdirSync(saved, { recursive: true })
   for (const f of jsonlFiles(projectDir(cwd)))
@@ -481,7 +501,8 @@ const report = all => {
   const wrong = rows.filter(r => !r.correct)
   if (wrong.length) {
     console.log('\n### Wrong answers\n')
-    for (const r of wrong) console.log(`- ${r.task}-${r.arm}-${r.rep}: ${r.answer.replace(/\s+/g, ' ').slice(0, 300)}`)
+    for (const r of wrong)
+      console.log(`- ${r.task}-${r.arm}-${r.rep}: ${scrubHome(r.answer).replace(/\s+/g, ' ').slice(0, 300)}`)
   }
 }
 
@@ -554,7 +575,7 @@ const todo = jobs.filter(
   j => !done.some(r => r.error === undefined && r.task === j.task.id && r.arm === j.arm && r.rep === j.rep),
 )
 const rows = [...done]
-console.log(`${todo.length} runs to do into ${out}; spent so far $${spent.toFixed(4)}, cap $${maxSpend}`)
+console.log(`${todo.length} runs to do into ${scrubHome(out)}; spent so far $${spent.toFixed(4)}, cap $${maxSpend}`)
 
 for (const [i, { task, arm, rep }] of todo.entries()) {
   const est = estimate(rows, arm, task.id)
@@ -579,6 +600,7 @@ for (const [i, { task, arm, rep }] of todo.entries()) {
     'Bash,PowerShell',
     '--permission-mode',
     'dontAsk',
+    ...(ARMS[arm].lean ? ['--tools', ''] : []),
     '--strict-mcp-config',
     '--mcp-config',
     mcp,
@@ -590,7 +612,7 @@ for (const [i, { task, arm, rep }] of todo.entries()) {
   try {
     result = await drive({ term, bash, arm, argv, prompt: task.prompt, dir })
   } catch (err) {
-    console.error(`${task.id}-${arm}-${rep}: ${err.message}`)
+    console.error(`${task.id}-${arm}-${rep}: ${scrubHome(err.message)}`)
     const files = jsonlFiles(projectDir(cwdOf(arm)))
     const partial = files.flatMap(readJsonl)
     const cost = [
@@ -601,7 +623,7 @@ for (const [i, { task, arm, rep }] of todo.entries()) {
       ).values(),
     ].reduce((n, m) => n + priceOf(m.model, m.usage ?? {}), 0)
     spent += cost
-    const row = { task: task.id, arm, rep, correct: false, costUsd: cost, error: err.message }
+    const row = { task: task.id, arm, rep, correct: false, costUsd: cost, error: scrubHome(err.message) }
     fs.appendFileSync(resultsFile, `${JSON.stringify(row)}\n`)
     console.error(`stopped; that run cost $${cost.toFixed(4)}; total $${spent.toFixed(4)}`)
     forgetRuns([cwdOf(arm)])
@@ -613,7 +635,7 @@ for (const [i, { task, arm, rep }] of todo.entries()) {
   const all = files.flatMap(readJsonl)
   const calls = fs.existsSync(log) ? readJsonl(log) : []
   const row = { ...measure({ task, arm, rep, main, all, calls, seconds: result.seconds }), accepted: result.accepted }
-  for (const removed of forgetRuns([cwdOf(arm)])) console.log(`removed ${removed}`)
+  for (const removed of forgetRuns([cwdOf(arm)])) console.log(`removed ${scrubHome(removed)}`)
   rows.push(row)
   spent += row.costUsd
   fs.appendFileSync(resultsFile, `${JSON.stringify(row)}\n`)
