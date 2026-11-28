@@ -3,7 +3,8 @@
 // sealed (HMAC-SHA256 with a key made at process start, never written or logged) and used once, and it is bound to the call: the
 // tool name and the SHA-256 of the canonical JSON of its arguments. The client can read the payload: it holds a version, the kind,
 // a random number, the expiry and the one hash, and nothing from the call itself. A restart ends every open state.
-// This file holds the kind `roots` only: the approval rounds of P3-1 keep their own kinds, and one codec will serve both.
+// The sealing is one pair, `seal(kind, fields)` and `open(kind, text)`, that holds no meaning of its own: the kind names what the state is for
+// (`roots` here, `approval` for P3-1), and `fields` are the strings and numbers that the kind needs. Only `roots` is built on it so far.
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 
@@ -32,6 +33,87 @@ export const canonical = (value: unknown): string => {
 export const callHash = (tool: string, args: unknown): string =>
   createHash('sha256').update(canonical({ tool, args })).digest('hex')
 
+/** The fields of a state: strings and numbers only, so nothing but what the kind names can be in it. */
+export type Fields = Readonly<Record<string, string | number>>
+
+export type Opened = { readonly ok: true; readonly fields: Fields } | { readonly ok: false; readonly reason: Refusal }
+
+export type Sealer = {
+  /** A sealed, used-once state of `kind` that carries `fields`: base64url(payload) + '.' + base64url(HMAC-SHA256), payload `{ v, k, n, e, f }`. */
+  readonly seal: (kind: string, fields: Fields) => string
+  /** Opens a state of `kind` and uses it up: it is removed from the table whatever the outcome. */
+  readonly open: (kind: string, text: string) => Opened
+  /** The states that are open. */
+  readonly count: () => number
+}
+
+const b64 = (bytes: Buffer): string => bytes.toString('base64url')
+
+export const createSealer = ({
+  now = Date.now,
+  key = randomBytes(32),
+}: {
+  /** Tests set the clock. */
+  readonly now?: () => number
+  readonly key?: Buffer
+} = {}): Sealer => {
+  // nonce -> expiry. A Map keeps the order of insertion, so the first key is the oldest.
+  const table = new Map<string, number>()
+  const mac = (body: string): Buffer => createHmac('sha256', key).update(body).digest()
+  const sweep = (): void => {
+    for (const [nonce, expires] of table) if (expires <= now()) table.delete(nonce)
+  }
+  return {
+    seal: (kind, fields) => {
+      sweep()
+      const nonce = randomBytes(16).toString('hex')
+      const expires = now() + STATE_TTL_MS
+      while (table.size >= STATES_OPEN_MAX) table.delete(table.keys().next().value as string)
+      table.set(nonce, expires)
+      const body = b64(Buffer.from(JSON.stringify({ v: VERSION, k: kind, n: nonce, e: expires, f: fields })))
+      return `${body}.${b64(mac(body))}`
+    },
+    open: (kind, text) => {
+      const [body, tag, extra] = text.split('.')
+      if (body === undefined || tag === undefined || extra !== undefined || text.length > 512) {
+        return { ok: false, reason: 'malformed' }
+      }
+      const given = Buffer.from(tag, 'base64url')
+      const wanted = mac(body)
+      if (given.length !== wanted.length || !timingSafeEqual(given, wanted)) return { ok: false, reason: 'mac' }
+      let payload: { v?: unknown; k?: unknown; n?: unknown; e?: unknown; f?: unknown }
+      try {
+        payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as typeof payload
+      } catch {
+        return { ok: false, reason: 'malformed' }
+      }
+      const fields = payload.f
+      if (
+        payload.v !== VERSION ||
+        typeof payload.n !== 'string' ||
+        typeof payload.e !== 'number' ||
+        typeof fields !== 'object' ||
+        fields === null ||
+        Array.isArray(fields)
+      ) {
+        return { ok: false, reason: 'malformed' }
+      }
+      // Used up from here on, whatever follows.
+      const known = table.delete(payload.n)
+      if (payload.k !== kind) return { ok: false, reason: 'kind' }
+      if (payload.e <= now()) return { ok: false, reason: 'expired' }
+      if (!known) return { ok: false, reason: 'used' }
+      return { ok: true, fields: fields as Fields }
+    },
+    count: () => (sweep(), table.size),
+  }
+}
+
+// The sealer of the process: the key is made when the module loads, at the start of the process, and is never written or logged.
+const processSealer = createSealer()
+export const seal = (kind: string, fields: Fields): string => processSealer.seal(kind, fields)
+export const open = (kind: string, text: string): Opened => processSealer.open(kind, text)
+
 export type RootsState = {
   /** A new state for the call `tool` with `args`. */
   readonly mint: (tool: string, args: unknown) => string
@@ -41,54 +123,16 @@ export type RootsState = {
   readonly open: () => number
 }
 
-const b64 = (bytes: Buffer): string => bytes.toString('base64url')
-
-export const createRootsState = ({
-  now = Date.now,
-  key = randomBytes(32),
-}: {
-  /** Tests set the clock. */
-  readonly now?: () => number
-  readonly key?: Buffer
-} = {}): RootsState => {
-  // nonce -> expiry. A Map keeps the order of insertion, so the first key is the oldest.
-  const open = new Map<string, number>()
-  const mac = (body: string): Buffer => createHmac('sha256', key).update(body).digest()
-  const sweep = (): void => {
-    for (const [nonce, expires] of open) if (expires <= now()) open.delete(nonce)
-  }
+/** The state of kind `roots`: one field, the hash that binds it to the call. */
+export const createRootsState = (options: Parameters<typeof createSealer>[0] = {}): RootsState => {
+  const sealer = createSealer(options)
   return {
-    mint: (tool, args) => {
-      sweep()
-      const nonce = randomBytes(16).toString('hex')
-      const expires = now() + STATE_TTL_MS
-      while (open.size >= STATES_OPEN_MAX) open.delete(open.keys().next().value as string)
-      open.set(nonce, expires)
-      const body = b64(
-        Buffer.from(JSON.stringify({ v: VERSION, k: KIND, n: nonce, e: expires, c: callHash(tool, args) })),
-      )
-      return `${body}.${b64(mac(body))}`
-    },
+    mint: (tool, args) => sealer.seal(KIND, { c: callHash(tool, args) }),
     take: (state, tool, args) => {
-      const [body, tag, extra] = state.split('.')
-      if (body === undefined || tag === undefined || extra !== undefined || state.length > 512) return 'malformed'
-      const given = Buffer.from(tag, 'base64url')
-      const wanted = mac(body)
-      if (given.length !== wanted.length || !timingSafeEqual(given, wanted)) return 'mac'
-      let payload: { v?: unknown; k?: unknown; n?: unknown; e?: unknown; c?: unknown }
-      try {
-        payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as typeof payload
-      } catch {
-        return 'malformed'
-      }
-      if (payload.v !== VERSION || typeof payload.n !== 'string' || typeof payload.e !== 'number') return 'malformed'
-      // Used up from here on, whatever follows.
-      const known = open.delete(payload.n)
-      if (payload.k !== KIND) return 'kind'
-      if (payload.e <= now()) return 'expired'
-      if (!known) return 'used'
-      return payload.c === callHash(tool, args) ? 'ok' : 'call'
+      const opened = sealer.open(KIND, state)
+      if (!opened.ok) return opened.reason
+      return opened.fields['c'] === callHash(tool, args) ? 'ok' : 'call'
     },
-    open: () => (sweep(), open.size),
+    open: sealer.count,
   }
 }

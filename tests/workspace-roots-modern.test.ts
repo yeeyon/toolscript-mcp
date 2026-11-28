@@ -23,10 +23,43 @@ import {
   callHash,
   canonical,
   createRootsState,
+  createSealer,
+  open as openState,
+  seal as sealState,
 } from '../src/host/workspace/rootsstate.ts'
 import { open, rm, tempDir, write, type Rig } from './workspace-rig.ts'
 
 const b64 = (s: string | Buffer): string => Buffer.from(s).toString('base64url')
+
+describe('seal and open, the pair that a kind is built on', () => {
+  test('a state carries its kind and its fields, opens once, and only for its own kind', () => {
+    const sealer = createSealer()
+    const text = sealer.seal('roots', { c: 'abc', n: 7 })
+    assert.equal(JSON.parse(Buffer.from(text.split('.')[0]!, 'base64url').toString()).k, 'roots')
+    assert.deepEqual(
+      sealer.open('approval', text),
+      { ok: false, reason: 'kind' },
+      'another kind is refused and the state is used up',
+    )
+    assert.deepEqual(sealer.open('roots', text), { ok: false, reason: 'used' })
+    const again = sealer.seal('approval', { a: 'x' })
+    assert.deepEqual(sealer.open('approval', again), { ok: true, fields: { a: 'x' } })
+    assert.equal(sealer.count(), 0)
+    const fields = sealer.seal('roots', { c: 'abc', n: 7 })
+    assert.deepEqual(sealer.open('roots', fields), { ok: true, fields: { c: 'abc', n: 7 } })
+  })
+
+  test('the pair of the process works with the key that was made at the start', () => {
+    const text = sealState('approval', { c: 'x' })
+    assert.deepEqual(openState('approval', text), { ok: true, fields: { c: 'x' } })
+    assert.deepEqual(openState('approval', text), { ok: false, reason: 'used' })
+    assert.equal(
+      createSealer().open('approval', sealState('approval', { c: 'y' })).ok,
+      false,
+      'another sealer has another key',
+    )
+  })
+})
 
 describe('the sealed state', () => {
   const ARGS = { code: 'return 1' }
@@ -108,7 +141,7 @@ describe('the sealed state', () => {
     const minted = state.mint('run_code', { code: 'SECRET-PROGRAM-TEXT /home/secret/path' })
     assert.ok(minted.length <= 512, String(minted.length))
     const text = Buffer.from(minted.split('.')[0]!, 'base64url').toString()
-    assert.deepEqual(Object.keys(JSON.parse(text)).sort(), ['c', 'e', 'k', 'n', 'v'])
+    assert.deepEqual(Object.keys(JSON.parse(text)).sort(), ['e', 'f', 'k', 'n', 'v'])
     assert.ok(!/SECRET|secret|run_code/.test(text))
   })
 })
