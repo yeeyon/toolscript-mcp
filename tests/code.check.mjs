@@ -168,6 +168,8 @@ const sdkProblems = root =>
           return [`${at}imports ${m[2]}: the broker and src/core never load the SDK folder`]
         if (shipped && m[2].startsWith('.') && /(^|\/)tests\//.test(m[2]))
           return [`${at}imports ${m[2]}: the package ships no test file`]
+        if (SCRIPT_EXCEPTIONS.has(rel) && m[2].startsWith('@modelcontextprotocol'))
+          return [`${at}imports ${m[2]}: a build script names the SDK files as paths, it never imports the SDK`]
         if (m[2].startsWith('.') && /(^|\/)sdk-v1(\.mjs)?$/.test(m[2]) && !V1_USERS.has(rel) && !isHelper(rel))
           return [`${at}imports ${m[2]}: only the files in V1_USERS of tests/code.check.mjs take a v1 peer`]
         if (isHelper(rel) && m[2].startsWith('.') && /(^|\/)src\/host\/sdk(\/|$)/.test(m[2]))
@@ -414,6 +416,8 @@ const tests = {
         'tests/downstream.test.ts',
         'tests/fake-oauth.ts',
         'tests/codec.test.ts',
+        'tests/v1-stdio-server.mjs',
+        'tests/childenv-child.mjs',
       ]) {
         put(rel, "import { X } from './sdk-v1.mjs'\n")
         assert.deepEqual(sdkProblems(root), [], `${rel} takes a v1 peer`)
@@ -429,6 +433,17 @@ const tests = {
       for (const rel of ['scripts/build.mjs', 'scripts/pack-check.mjs']) {
         put(rel, `const a = '${sdk}'\n`)
         assert.deepEqual(sdkProblems(root), [], `${rel} names the package`)
+        // A name in a path string is fine; an import of any package of the SDK is not.
+        for (const spec of [sdk, '@modelcontextprotocol/client', '@modelcontextprotocol/server/stdio']) {
+          for (const line of [
+            `import { X } from '${spec}'`,
+            `const m = await import('${spec}')`,
+            `const m = require('${spec}')`,
+          ]) {
+            put(rel, `${line}\n`)
+            assert.equal(sdkProblems(root).length, 1, `${rel} imports ${spec}: ${line}`)
+          }
+        }
         drop(rel)
       }
       // The one named file, and the reference servers that a test names as sample data.

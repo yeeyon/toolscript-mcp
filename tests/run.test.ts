@@ -3,7 +3,7 @@
 // and approval tests that apply to a standalone server. tests/server.e2e.mjs
 // runs the same path through the built server over stdio.
 
-import { ProtocolError, ProtocolErrorCode } from './sdk.mjs'
+import { ProtocolError, ProtocolErrorCode, SdkError, SdkErrorCode } from './sdk.mjs'
 
 // The JSON-RPC code that SDK v1 called ErrorCode.RequestTimeout: a server can send it as its own error.
 const REQUEST_TIMEOUT = -32001
@@ -212,11 +212,11 @@ const fakeDownstream = (others: readonly ServerState[] = [], servers: Config['se
       options: { signal: AbortSignal; timeout?: number },
     ) => {
       called.push(name)
-      // `stall` never answers: like the SDK, end it at the call limit with the timeout that the SDK puts in `data`.
+      // `stall` never answers: like the SDK client, end it at the call limit with the SdkError that it raises, the timeout in `data`.
       if (name === 'stall')
         return await new Promise<never>((_r, reject) =>
           setTimeout(
-            () => reject(new ProtocolError(REQUEST_TIMEOUT, 'Request timed out', { timeout: options.timeout })),
+            () => reject(new SdkError(SdkErrorCode.RequestTimeout, 'Request timed out', { timeout: options.timeout })),
             options.timeout,
           ),
         )
