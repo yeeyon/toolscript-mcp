@@ -11,7 +11,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   (config parse, `${VAR}` expansion, config location, self-loop guard, the Claude Code bridges), `catalog.ts`
   (downstream tools, the `search_tools` result, argument specs from input schemas), `policy.ts` (the allow, deny and
   ask rules: the decision before a run, the check of each call and the refusal texts), `mux.ts` (the router of one
-  child process that several sessions share, pure), `share.ts` (the class of a stdio server when sharing is on and the
+  child process that several sessions share, pure; it speaks the legacy era or the 2026-07-28 era to its child, fixed once, and `muxmodern.ts`
+  holds the parts of the modern era: the discover test, the `_meta` size, the stream stamp and the `requestState` set. The legacy effects are
+  those of 1.0.5, kept in `tests/fixtures/mux-1.0.5.ts` and compared by `tests/mux-diff.test.ts`), `share.ts` (the class of a stdio server when sharing is on and the
   text of its share key), `broker.ts` (the wire of the broker: limits, endpoint name, the mutual
   proof of the key, the entry, `PATH` resolve), `lock.ts` (the content of the OAuth refresh lock file, its parse and
   the stale decision, and the reason text of a silent token endpoint), `spawn.ts` (the reason text of a stdio command that cannot start: the command only, never an argument or a variable), `serial.ts` (the calls of one tool that a program awaited one after another, for the footer
@@ -174,6 +176,12 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   `baseline` (with the SHA-256 rows of the upgrade gate: a row that may differ on purpose is named in `baseline.differs` of
   `tests/stress.json`, with a reason and a PR number), and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
   `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
+- The protocol switch (#154, PR 9) is two environment variables and never a config key (1.0.5 refuses an unknown key, and turns an
+  entry with one into an invalid server): `TOOLSCRIPT_PROTOCOL=legacy|auto` (default `legacy`) and `TOOLSCRIPT_LEGACY_SERVERS=<key>,<key>`
+  (servers that stay on `legacy`). `parseProtocol` in `src/core/config.ts` reads them into `Config.protocol`, and `protocolOf` gives the
+  value of one link. It changes no wire yet: only an `auto` link writes `protocol` in its broker entry frame and share key, so a
+  `legacy` and an `auto` link never share a child. `legacy` has the bytes of 1.0.5. `doctor` prints a `protocol` line only when a
+  variable is set. Tests: `tests/protocol-flag.test.ts` and `tests/protocol-flag.e2e.mjs` (it needs `tests/first-message-server.mjs`).
 - `tests/modern-server.mjs`, `modern-http.mjs`, `modern-client.mjs` and `modern-core.mjs` are the raw JSON-RPC peers of the 2026-07-28 revision (issue #154, C0), plain `.mjs`
   with no SDK: a stdio fake (kinds `modern`, `dual` and the old-server kinds, by argument), an HTTP fake (`startHttp(kind)`, with a record of every
   request), a raw client with the openings as data (`OPENINGS`, `replay`, Claude Code's two among them), and the engine they share.
@@ -189,6 +197,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `node tests/bridge.e2e.mjs` runs one program through the real `claude mcp serve` bridge (Grep, Read, Edit, a shell test run)
   and the missing-binary case. It needs `claude` on PATH, else it prints one line and exits 0. It is not in `npm test`.
 - `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
+- `node tests/protocol-flag.e2e.mjs` runs the built server with `TOOLSCRIPT_PROTOCOL` unset, `legacy` and `auto`: the same first message
+  and hashes for a direct, a lazy, a shared and an HTTP link, the answers to what a downstream server may not ask, and the child count
+  of a shared server. Run `npm run build` first.
 - `node tests/upgrade.e2e.mjs --base <built 1.0.5 dir> --head <built dir>` runs both builds on one HOME with raw JSON-RPC:
   an OAuth store refreshed both ways, a 1.0.5 host and a head host on one broker or two, and the rollback read (doctor,
   `tools/list`, `run_code`, `search_tools` of one build on the files of the other). With no `--base` it prints one line and

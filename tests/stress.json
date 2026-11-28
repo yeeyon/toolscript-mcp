@@ -99,6 +99,12 @@
       "box": 2
     },
     {
+      "target": "tests/protocol-flag.e2e.mjs",
+      "count": 3,
+      "box": 2,
+      "note": "the protocol switch: 2 cases, about 38 s a run, 10 processes (PR 9)"
+    },
+    {
       "target": "tests/share.e2e.mjs",
       "count": 3,
       "box": 2
@@ -155,6 +161,12 @@
     }
   ],
   "baseline": {
-    "differs": []
+    "differs": [
+      {
+        "row": "dist/host/broker.js sha256",
+        "reason": "parseEntry reads the protocol of an entry, so legacy and auto links never share a child (PR 234), and the router knows the 2026-07-28 era (PR 232)",
+        "pr": 234
+      }
+    ]
   }
 }

@@ -97,8 +97,9 @@ answers `ping`, and fans out `tools/list_changed`. That stays, byte for byte, as
   inside `LINKS_MAX`. Finding of PR 1: the child stamps each stream notification, the first `notifications/subscriptions/acknowledged`
   too, with `_meta["io.modelcontextprotocol/subscriptionId"]`, the JSON-RPC id of the listen request, verbatim. The child sees the
   router id, so PR 11 must map the stamp back to the id that the link sent before it forwards the notification.
-- MRTR: an `input_required` result goes back by id to the link that asked. The router records a hash of its `requestState` for that
-  link (bounded: 64 for each link, 10 minutes). A retry with `inputResponses` whose `requestState` belongs to another link gets
+- MRTR: an `input_required` result goes back by id to the link that asked. The router keeps the `requestState` string itself for that
+  link (bounded: 64 for each link, the oldest goes, each at most 8,192 characters; a longer one is not kept). Changed in PR 11: no 10-minute
+  expiry and no hash, because the router has no clock and no crypto; the child signs and expires its own state. A retry with `inputResponses` whose `requestState` belongs to another link gets
   -32602 and reaches no child. The router never changes `requestState` or `inputResponses`. Phase 4 adds the same rule for a `taskId`.
   Finding of PR 1: `requestState` is a string at the top of the `input_required` result (`{ resultType, inputRequests?, requestState? }`), and
   a retry is a new request that carries `inputResponses` and `requestState` in its params. The progress token stays in
@@ -193,11 +194,14 @@ No server of our tests serves the modern era today. PR 10 and PR 12 add a modern
 
 ## 8. Rollout and rollback
 
-- Release line (decision 043 replaces decision 031). 1.1.0 is a minor release with SDK v2 and `TOOLSCRIPT_PROTOCOL=legacy|auto` (and the
-  same key in the config), default `legacy`. Then come 1.1.x patch releases. A 1.1.x patch flips the default to `auto`, and only on
-  the evidence below. In plain words: this flip changes a default in a patch release, which decision 031 did not allow and decision
-  043 does. Semantic versioning stays as `docs/sandbox.md` says: the new key is an addition, the flag keeps both values, and
-  `legacy` stays.
+- Release line (decision 043 replaces decision 031). 1.1.0 is a minor release with SDK v2 and `TOOLSCRIPT_PROTOCOL=legacy|auto` (the
+  environment only, never a config key: 1.0.5 refuses a config with an unknown key, so a key would break a rollback to it, and 1.0.5
+  ignores a variable), default `legacy`. `TOOLSCRIPT_LEGACY_SERVERS=<key>,<key>` keeps the named servers on `legacy` whatever the host
+  value is, so one old server that hangs on the probe does not force the whole host back. It is a variable and not a key on the entry,
+  for the same reason: 1.0.5 turns an entry with an unknown key into an invalid server. Then come 1.1.x patch releases. A 1.1.x patch
+  flips the default to `auto`, and only on the evidence below (decision 048 moves that flip into 1.1.0). In plain words: this flip
+  changes a default in a patch release, which decision 031 did not allow and decision 043 does. Semantic versioning stays as
+  `docs/sandbox.md` says: the flag keeps both values, and `legacy` stays.
 - `auto` turns on `versionNegotiation: { mode: 'auto' }` downstream, the modern router for shared children, and the modern server upstream.
 - On a modern upstream client before Phase 3, an `ask` decision gets the "client cannot ask" refusal, never an allow.
 - The evidence for the flip, all of it: the conformance matrix (legacy and modern, upstream and downstream, direct, lazy and shared)
@@ -370,8 +374,9 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
 6. OAuth and login on the v2 client auth, with `iss` validation. SigV4 header test.
 7. The server side (server.ts, main.ts, the Workspace provider and roots) on `@modelcontextprotocol/server`.
 8. Remove SDK v1, re-measure section 9, update the bench results.
-9. The flag: `TOOLSCRIPT_PROTOCOL` and the config key, default `legacy`, in the entry frame and the share key, with the documented
-   list of unsupported methods (#93 part 1). `auto` does nothing yet.
+9. The flag: `TOOLSCRIPT_PROTOCOL` and `TOOLSCRIPT_LEGACY_SERVERS` (environment only, no config key), default `legacy`, in the entry
+   frame and the share key when `auto` (a `legacy` link has the bytes of 1.0.5, so a `legacy` and an `auto` link never share a child),
+   with the documented list of unsupported methods (#93 part 1, `docs/sandbox.md`). `auto` changes no byte of a message yet.
 10. Modern downstream for direct and lazy links (`auto`, `listen`, `ttlMs`), with the conformance tests.
 11. The era-aware router in `src/core/mux.ts` (pure) with its table and property tests. No host change.
 12. The broker on the modern era: the `ready` rule, the router wired in, share e2e with a modern child, the memory bench.
