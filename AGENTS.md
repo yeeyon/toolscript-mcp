@@ -163,7 +163,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   Windows), from the Actions tab, from a push to `stress/**`, and every Sunday on main (flakes and baseline). Its profiles are
   `tests/stress.json`. `scripts/stress.mjs` (Node built-ins only; `tests/stress.test.ts`) repeats one target with the junit
   reporter and writes the summary of each test that failed (runs, fails, rate, first failing run and seed), the budgets of
-  `baseline`, and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
+  `baseline` (with the SHA-256 rows of the upgrade gate: a row that may differ on purpose is named in `baseline.differs` of
+  `tests/stress.json`, with a reason and a PR number), and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
   `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
 - `tests/modern-server.mjs`, `modern-http.mjs`, `modern-client.mjs` and `modern-core.mjs` are the raw JSON-RPC peers of the 2026-07-28 revision (issue #154, C0), plain `.mjs`
   with no SDK: a stdio fake (kinds `modern`, `dual` and the old-server kinds, by argument), an HTTP fake (`startHttp(kind)`, with a record of every
@@ -180,6 +181,10 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `node tests/bridge.e2e.mjs` runs one program through the real `claude mcp serve` bridge (Grep, Read, Edit, a shell test run)
   and the missing-binary case. It needs `claude` on PATH, else it prints one line and exits 0. It is not in `npm test`.
 - `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
+- `node tests/upgrade.e2e.mjs --base <built 1.0.5 dir> --head <built dir>` runs both builds on one HOME with raw JSON-RPC:
+  an OAuth store refreshed both ways, a 1.0.5 host and a head host on one broker or two, and the rollback read (doctor,
+  `tools/list`, `run_code`, `search_tools` of one build on the files of the other). With no `--base` it prints one line and
+  exits 0. It is not in `npm test`: the `baseline` job of `stress.yml` runs it, beside the SHA-256 rows of the baseline.
 - After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
 - `node scripts/start-time.mjs` measures the start, from the spawn to the `tools/list` reply. Run `npm run build` first.
 
