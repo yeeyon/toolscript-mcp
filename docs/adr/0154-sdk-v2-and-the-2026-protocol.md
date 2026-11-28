@@ -501,16 +501,18 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
      `scripts/pack-check.mjs` asserts 16 files and no first-SDK file marker in `main.js`.
    - One validator. The client and the server package each inline ajv through their own `_shims`. Shown before the fix: the two
      `ajvProvider-*.mjs` files (294,862 bytes each) are the same code, 104 identical sources in their source maps (ajv 8.18.0,
-     ajv-formats 3.0.1, fast-uri 3.1.8, fast-deep-equal 3.1.3, json-schema-traverse 1.0.0), and differ only in the two imports of
-     a helper chunk (`chunk-*`, `dialects-*`, themselves byte-equal) and the source map comment. The build compares the two files and
-     stops if a new SDK release makes them differ; an esbuild plugin then sends the server's import to the client's file. The
+     ajv-formats 3.0.1, fast-uri 3.1.8, fast-deep-equal 3.1.3, json-schema-traverse 1.0.0), and differ only in the hash of the
+     two helper files that they import (`chunk-*`, `dialects-*`, themselves byte-equal) and the source map comment. The build compares the
+     two files and every file behind them, and stops if a new SDK release makes any of them differ; an esbuild plugin then sends the server's import to the client's file. The
      metafile shows one `ajvProvider`.
    - `dist/third-party-licenses.txt` names the packages of the bundle and, from the source maps of the SDK files in the bundle, what
      the SDK packages inline: ajv, ajv-formats, fast-uri (BSD-3-Clause), fast-deep-equal, json-schema-traverse and content-type. The text is
      from the installed copy of the same package (ajv 8.20.0 and fast-uri 3.1.9 for the inlined 8.18.0 and 3.1.8: the same licence).
      SDK 1.32.2 and its own dependencies are gone from the file.
    - Test peers: `tests/sdk.mjs` re-exports the v2 client and server packages, the tests show a v2 host against v2 peers. Every changed
-     assertion and every other change is listed in the report of the PR.
+     assertion and every other change is listed in the report of the PR. Left over: `firstSdkError` in `src/host/sdk/errors.ts` (the
+     recognition of a v1 `McpError` by name and code) is reached by no test since the test doubles raise v2 errors, and no live link
+     raises that class. Remove it, or test it, in PR 9 or later.
 9. The flag: `TOOLSCRIPT_PROTOCOL` and the config key, default `legacy`, in the entry frame and the share key, with the documented
    list of unsupported methods (#93 part 1). `auto` does nothing yet.
 10. Modern downstream for direct and lazy links (`auto`, `listen`, `ttlMs`), with the conformance tests.
