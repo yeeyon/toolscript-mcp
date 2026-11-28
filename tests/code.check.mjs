@@ -111,9 +111,12 @@ const sourcesIn = (root, dir) =>
       })
     : []
 
-const PACKAGE = /@modelcontextprotocol\/([\w.-]*)/g
+const PACKAGE = /@modelcontextprotocol\/([\w.-]*)(\/[\w-]+(?:[./][\w-]+)*)?/g
 // The packages that each place may name. The first SDK (`sdk`) is gone from src/, runtime/ and demo/ since PR 7.
 const FOLDER_PACKAGES = ['client', 'core', 'server']
+// The exact specifiers that the folder imports: no other subpath (`server/ext/skills` waits for S2, `server/_shims` and
+// `server/validators/*` are internals).
+const FOLDER_SPECIFIERS = ['client', 'core', 'server', 'server/stdio']
 const HELPER_PACKAGES = ['sdk', 'client']
 const lineOf = (text, index) => text.slice(0, index).split('\n').length
 
@@ -133,6 +136,8 @@ const sdkProblems = root =>
         const places = rel.startsWith(SDK_DIR) ? FOLDER_PACKAGES : HELPER_PACKAGES
         if (m[1] === 'sdk' && rel.startsWith(SDK_DIR))
           return [`${at}names ${m[0]}: the first SDK is gone from src/, use the server or client package`]
+        if (rel.startsWith(SDK_DIR) && places.includes(m[1]) && !FOLDER_SPECIFIERS.includes(m[1] + (m[2] ?? '')))
+          return [`${at}names ${m[0]}: the folder imports only ${FOLDER_SPECIFIERS.join(', ')}`]
         return places.includes(m[1])
           ? []
           : [`${at}names ${m[0]}: this place names only the ${places.join(', ')} packages`]
@@ -299,11 +304,20 @@ const tests = {
         }
       }
       // The folder itself may name the client, core and server packages, and no other.
-      put(
-        'src/host/sdk/client.ts',
-        "import { X } from '@modelcontextprotocol/client'\nimport { Y } from '@modelcontextprotocol/client/stdio'\n",
-      )
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/client'\n")
       assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the client package')
+      for (const bad of [
+        '@modelcontextprotocol/server/ext/skills',
+        '@modelcontextprotocol/server/ext/skills/node',
+        '@modelcontextprotocol/server/_shims',
+        '@modelcontextprotocol/server/validators/cf-worker',
+        '@modelcontextprotocol/client/stdio',
+      ]) {
+        put('src/host/sdk/client.ts', `import { X } from '${bad}'\n`)
+        assert.equal(sdkProblems(root).length, 1, `the folder refuses ${bad}`)
+      }
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/server/stdio'\n")
+      assert.deepEqual(sdkProblems(root), [], 'the folder takes server/stdio')
       put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/core'\n")
       assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the core package')
       put(
