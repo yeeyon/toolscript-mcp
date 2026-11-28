@@ -610,6 +610,10 @@ describe('files', () => {
     assert.equal(new Set(msgs).size, 1, r.text)
     const [text] = msgs as [string]
     assert.equal(text, NO_WORKSPACE_REFUSAL)
+    const long = await setup().run(`try { await readFile("a".repeat(10000)) } catch (e) { return e.message }`)
+    const longText = JSON.parse(long.text.split('\n\n')[0] ?? '') as string
+    assert.ok(longText.length < 400, `${longText.length}`)
+    assert.ok(longText.endsWith(NO_WORKSPACE_REFUSAL.replace('readFile: X', '')), longText)
     assert.ok(text.replace('X', '').length <= 110, text)
   })
 
