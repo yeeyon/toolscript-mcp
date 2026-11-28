@@ -140,6 +140,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     `tests/memory.e2e.mjs` runs its smoke and the hard-kill case.
   - `broker-race.mjs`: N brokers started at once on a fresh HOME, R rounds, counts the rounds with two brokers at once
     (issue #133). Linux and macOS; no model and no spend. `--contenders 20 --rounds 300` is the case that reproduced it.
+  - `bridge-modes.mjs`: interactive Claude Code through node-pty, with the real `claude mcp serve` bridge behind toolscript-mcp
+    (issue #94): the permission-mode matrix (`matrix`, `cell`, `print`) and G10 of issue #63 (`g10`, two sessions on one
+    broker, Windows only). It spends money on Haiku and stops at `--max-spend` (default 3 USD). Temp HOME and fixture for each cell.
   - `walks.mjs`: N parallel Workspace `search` calls on one tree, in Docker with `--cpus 1` only. Results in `RESULTS-walks.md`.
   - `CODEX.md`: the test plan for the same arms in Codex, and the result of the Codex smoke test. `check.mjs`
     judges an answer of another agent.
@@ -152,6 +155,8 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `npm test`, `npm run typecheck`, `npm run build`, `npm run check`.
 - `node tests/runner.integration.mjs` runs the real sandbox on Linux, macOS and Windows.
 - `node tests/server.e2e.mjs` runs the built server over stdio. Run `npm run build` first.
+- `node tests/bridge.e2e.mjs` runs one program through the real `claude mcp serve` bridge (Grep, Read, Edit, a shell test run)
+  and the missing-binary case. It needs `claude` on PATH, else it prints one line and exits 0. It is not in `npm test`.
 - `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
 - After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
 - `node scripts/start-time.mjs` measures the start, from the spawn to the `tools/list` reply. Run `npm run build` first.

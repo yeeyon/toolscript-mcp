@@ -225,8 +225,31 @@ lived when the session that started it exited (4 runs) and when its `claude` pro
 session reused the same broker each time. A broker ended alone left no process behind, the same as a host with the
 switch off.
 
+### G10: two interactive sessions on one broker
 
-## Child guard on Windows: on and off
+2026-11-28, Claude Code 2.1.332 (Haiku 5.5), Windows 11 (10.0.26300), Node v22.23.3, branch bridge-validate off main
+(1.0.4). `node bench/bridge-modes.mjs g10` drives two real interactive sessions through node-pty, one after the other,
+each with only toolscript-mcp as MCP server. The config has `"share": true` on the one shared stdio server
+(`bench/fake-server.mjs`, with `"share": true` on its entry), and both hosts use one temp HOME and
+`TOOLSCRIPT_BROKER_IDLE_MS=5000`. Each session asked for one `run_code` call of `get_deploys`. The pids come from
+`broker.log` and the process list (pid and creation time).
+
+| Step | Check | Result |
+| --- | --- | --- |
+| 1 | A answered with the fixture data (400 deploys). One `start pid` line, one broker, one child. | passed |
+| 2 | B answered too, while A was open. Still one `start pid` line, one broker (same pid), one child (same pid), 2 hosts. | passed |
+| 3 | A exited: the broker and the child lived. B answered a second call from the same child pid (fake server calls 2 to 3). | passed |
+| 4 | B exited: 3 s later the child was gone, 5 s later the broker. No toolscript-mcp host, broker or child was left. | passed |
+
+The broker log of that run: `start pid`, `listen`, one `child start`, `attach` with links=1, `attach` with links=2,
+`detach` with links=1, `detach` with links=0, `child stop` 5 s later, `exit` 2 s after that. All four steps passed in one run.
+Windows only: no socket file exists there, and this run did not check Linux or macOS.
+
+Two earlier runs of the same rig are not counted. The first had no `"share": true` on the server entry: a server with no `cwd`
+is per folder, and the two sessions ran in two folders, so the broker held two children (as the rules say). The second
+passed no step 1 and 2 check because Haiku sent a wrong program once in each session and the run waited for no retry.
+Spend of the three runs: under 0.01 USD.
+
 
 2026-11-27, Windows_NT 10.0.26300 x64, Node v22.23.3, commit 2818203 plus the child guard, mode fixture. Command, one run with the guard off and one with `TOOLSCRIPT_CHILD_GUARD=1`:
 
