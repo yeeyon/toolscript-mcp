@@ -19,3 +19,6 @@ export {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
+// The one name of the v2 client package that a test reads: the line check of SDK v2, which tests/codec.test.ts compares with
+// v1's (#154, PR 5). The peers above stay on v1.
+export { deserializeMessage as deserializeMessageV2 } from '@modelcontextprotocol/client'

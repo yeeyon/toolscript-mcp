@@ -84,7 +84,7 @@ const codeProblems = (rel, text) => {
 }
 
 // The SDK seam (#154): only src/host/sdk/ and the test helper tests/sdk.* hold the text @modelcontextprotocol/, and only
-// of the `sdk` package. src/, runtime/, tests/, bench/, demo/, scripts/ and plugin/ are scanned as raw text, so no import
+// of the `sdk` and `client` packages. src/, runtime/, tests/, bench/, demo/, scripts/ and plugin/ are scanned as raw text, so no import
 // form can hide: import(variable), createRequire(...)(), a string with // or /* before the import. A comment that names
 // the package outside the two places fails too. The tests take the SDK through tests/sdk.mjs, which imports the package
 // itself and never src/host/sdk/: from PR 5 to PR 7 the host moves to SDK v2 while the test peers stay on v1.
@@ -126,7 +126,9 @@ const sdkProblems = root =>
         if (!sealedTop && /^server-/.test(m[1])) return []
         if (!rel.startsWith(SDK_DIR) && !isHelper(rel))
           return [`${at}names ${m[0]} outside src/host/sdk/ and tests/sdk.*: use src/host/sdk/ (tests: tests/sdk.mjs)`]
-        return m[1] === 'sdk' ? [] : [`${at}names ${m[0]}: this place names only the sdk package`]
+        return m[1] === 'sdk' || m[1] === 'client'
+          ? []
+          : [`${at}names ${m[0]}: this place names only the sdk and client packages`]
       })
       const sealed = NO_SDK_IMPORT.has(rel) || rel.startsWith('src/core/')
       const shipped = SHIPS_NO_TEST.some(p => rel.startsWith(p))
@@ -289,10 +291,15 @@ const tests = {
           drop(rel)
         }
       }
-      // The folder itself may name the sdk package, and no other.
+      // The folder itself may name the sdk and client packages, and no other.
       put('src/host/sdk/client.ts', `import { X } from '${sdk}'\nexport type { Y } from '${sdk}'\n`)
       assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the sdk package')
-      for (const other of ['client', 'server', 'core']) {
+      put(
+        'src/host/sdk/client.ts',
+        "import { X } from '@modelcontextprotocol/client'\nimport { Y } from '@modelcontextprotocol/client/stdio'\n",
+      )
+      assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the client package')
+      for (const other of ['server', 'core']) {
         put('src/host/sdk/client.ts', `import { X } from '@modelcontextprotocol/${other}'\n`)
         assert.equal(sdkProblems(root).length, 1, `the folder names @modelcontextprotocol/${other}`)
       }
@@ -320,7 +327,11 @@ const tests = {
         assert.equal(sdkProblems(root).length, 1, `the test helper imports ${bad}`)
       }
       put('tests/sdk.mjs', "export { X } from '@modelcontextprotocol/client'\n")
-      assert.equal(sdkProblems(root).length, 1, 'the test helper names no other package')
+      assert.deepEqual(sdkProblems(root), [], 'the test helper names the client package')
+      for (const other of ['server', 'core']) {
+        put('tests/sdk.mjs', `export { X } from '@modelcontextprotocol/${other}'\n`)
+        assert.equal(sdkProblems(root).length, 1, `the test helper names no @modelcontextprotocol/${other}`)
+      }
       drop('tests/sdk.mjs')
       drop('tests/sdk.d.mts')
       // The one named file, and the reference servers that a test names as sample data.

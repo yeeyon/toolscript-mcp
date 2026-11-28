@@ -1,0 +1,5 @@
+{
+  "stdio": "{\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"toolscript-mcp\",\"version\":\"0\"}},\"jsonrpc\":\"2.0\",\"id\":0}",
+  "shared": "{\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"toolscript-mcp\",\"version\":\"0\"}},\"jsonrpc\":\"2.0\",\"id\":0}",
+  "workspace": "{\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"toolscript-mcp\",\"version\":\"0\"}},\"jsonrpc\":\"2.0\",\"id\":0}"
+}

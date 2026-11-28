@@ -2,7 +2,7 @@
 // error names and texts, in the same order. A new SDK is compared with the codec by this file (issue #154).
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ReadBuffer, deserializeMessage, serializeMessage } from './sdk.mjs'
+import { ReadBuffer, deserializeMessage, deserializeMessageV2, serializeMessage } from './sdk.mjs'
 import { FRAME_MAX, FrameReader, frameOf } from '../src/core/codec.ts'
 
 type Outcome = { message: unknown } | { error: string; text: string }
@@ -59,37 +59,40 @@ const same = (chunks: readonly Chunk[], max?: number): Outcome[] => {
 const b = (...parts: (string | number[])[]): Buffer =>
   Buffer.concat(parts.map(p => (typeof p === 'string' ? Buffer.from(p, 'utf8') : Buffer.from(p))))
 
+const DIFFERENCES: string[] = []
 const PING = '{"jsonrpc":"2.0","method":"ping","id":1}'
 const DONE = '{"jsonrpc":"2.0","id":2,"result":{}}'
 const EMOJI = '{"jsonrpc":"2.0","method":"notifications/x","params":{"t":"\u{1F600}é漢"}}'
 
+// The table of the rows, for the SDK reader of the test and for the v2 deserializeMessage below.
+const rows: [string, Chunk[]][] = [
+  ['a line ends at LF', [b(`${PING}\n`)]],
+  ['CRLF: one CR before the LF goes', [b(`${PING}\r\n`)]],
+  ['two CRs: only the last goes, and the line is not JSON', [b(`${PING}\r\r\n`)]],
+  ['a CR inside a line stays', [b('{"jsonrpc":"2.0",\r"method":"ping","id":1}\n')]],
+  ['a partial line gives nothing until its LF', [b(PING.slice(0, 10)), b(PING.slice(10)), b('\n')]],
+  ['several lines in one chunk come out in order', [b(`${PING}\n${DONE}\n${PING}\n`)]],
+  ['text with no final LF is never a message', [b(`${PING}\n${DONE}`)]],
+  ['a character split over two chunks is whole', [b(`${EMOJI}\n`).subarray(0, 60), b(`${EMOJI}\n`).subarray(60)]],
+  ['a 4-byte character cut at every byte', Array.from(b(`${EMOJI}\n`), x => Buffer.from([x]))],
+  ['bad bytes become U+FFFD', [b('{"jsonrpc":"2.0","method":"p\u0000', [0xff, 0xfe, 0xf0, 0x9f], '","id":1}\n')]],
+  ['a BOM line is not JSON', [b([0xef, 0xbb, 0xbf], `${PING}\n`)]],
+  ['an empty line throws and is consumed', [b(`\n${PING}\n`)]],
+  ['a line of spaces throws', [b(`   \n${PING}\n`)]],
+  ['a lone CRLF line throws', [b(`\r\n${PING}\n`)]],
+  ['invalid JSON throws and the next line reads', [b(`{nope\n${PING}\n`)]],
+  ['valid JSON that is not a message throws the SDK check', [b('[]\n{}\n5\nnull\n"x"\n{"jsonrpc":"2.0"}\n')]],
+  ['a bad line, then good lines, in several chunks', [b('{"a"'), b(':1}\n' + PING), b('\n' + DONE + '\n')]],
+  ['an empty chunk changes nothing', [b(''), b(PING), b(''), b('\n')]],
+  ['a character cut at the LF: U+FFFD, then not JSON', [b('{"a":"', [0xf0, 0x9f], '\n')]],
+  [
+    'clear() drops a partial line, and new bytes start fresh',
+    [b(PING.slice(0, 10)), null, b(PING.slice(10) + '\n'), b(PING + '\n')],
+  ],
+  ['clear() with nothing held, and after a read', [null, b(PING + '\n'), null, b(DONE + '\n')]],
+]
+
 describe('the codec reads like the SDK reader', () => {
-  const rows: [string, Chunk[]][] = [
-    ['a line ends at LF', [b(`${PING}\n`)]],
-    ['CRLF: one CR before the LF goes', [b(`${PING}\r\n`)]],
-    ['two CRs: only the last goes, and the line is not JSON', [b(`${PING}\r\r\n`)]],
-    ['a CR inside a line stays', [b('{"jsonrpc":"2.0",\r"method":"ping","id":1}\n')]],
-    ['a partial line gives nothing until its LF', [b(PING.slice(0, 10)), b(PING.slice(10)), b('\n')]],
-    ['several lines in one chunk come out in order', [b(`${PING}\n${DONE}\n${PING}\n`)]],
-    ['text with no final LF is never a message', [b(`${PING}\n${DONE}`)]],
-    ['a character split over two chunks is whole', [b(`${EMOJI}\n`).subarray(0, 60), b(`${EMOJI}\n`).subarray(60)]],
-    ['a 4-byte character cut at every byte', Array.from(b(`${EMOJI}\n`), x => Buffer.from([x]))],
-    ['bad bytes become U+FFFD', [b('{"jsonrpc":"2.0","method":"p\u0000', [0xff, 0xfe, 0xf0, 0x9f], '","id":1}\n')]],
-    ['a BOM line is not JSON', [b([0xef, 0xbb, 0xbf], `${PING}\n`)]],
-    ['an empty line throws and is consumed', [b(`\n${PING}\n`)]],
-    ['a line of spaces throws', [b(`   \n${PING}\n`)]],
-    ['a lone CRLF line throws', [b(`\r\n${PING}\n`)]],
-    ['invalid JSON throws and the next line reads', [b(`{nope\n${PING}\n`)]],
-    ['valid JSON that is not a message throws the SDK check', [b('[]\n{}\n5\nnull\n"x"\n{"jsonrpc":"2.0"}\n')]],
-    ['a bad line, then good lines, in several chunks', [b('{"a"'), b(':1}\n' + PING), b('\n' + DONE + '\n')]],
-    ['an empty chunk changes nothing', [b(''), b(PING), b(''), b('\n')]],
-    ['a character cut at the LF: U+FFFD, then not JSON', [b('{"a":"', [0xf0, 0x9f], '\n')]],
-    [
-      'clear() drops a partial line, and new bytes start fresh',
-      [b(PING.slice(0, 10)), null, b(PING.slice(10) + '\n'), b(PING + '\n')],
-    ],
-    ['clear() with nothing held, and after a read', [null, b(PING + '\n'), null, b(DONE + '\n')]],
-  ]
   for (const [name, chunks] of rows)
     test(name, () => {
       const result = same(chunks)
@@ -240,4 +243,29 @@ describe('500 seeded streams cut at random places', () => {
       const max = rand() < 0.3 ? 30 + Math.floor(rand() * 200) : undefined
       same(chunks, max)
     })
+})
+
+// v2's deserializeMessage (client package 2.4.0) on the same rows, through the codec: the rows where its
+// outcome differs from v1's are listed here, so a difference that changes what happens to a real server's line is seen.
+describe('the codec with the deserializeMessage of v2', () => {
+  const theirs = (chunks: readonly Chunk[]) => run(sdk(), chunks)
+  const v2 = (chunks: readonly Chunk[]) => {
+    const reader = new FrameReader(deserializeMessageV2, utf8)
+    return run({ append: c => reader.append(c), read: () => reader.read(), clear: () => reader.clear() }, chunks)
+  }
+  const label = (o: Outcome): string => ('error' in o ? `${o.error}: ${o.text.slice(0, 40)}` : 'message')
+  test('every row gives the same messages, and the same errors but for the listed names', () => {
+    const differing: string[] = []
+    for (const [name, chunks] of rows) {
+      const one = theirs(chunks)
+      const two = v2(chunks)
+      assert.equal(two.length, one.length, `the number of outcomes of "${name}"`)
+      one.forEach((o, i) => {
+        const p = two[i]!
+        if ('message' in o || 'message' in p) assert.deepEqual(p, o, `the message of "${name}"`)
+        else if (o.error !== p.error) differing.push(`${name}: ${label(o)} -> ${label(p)}`)
+      })
+    }
+    assert.deepEqual(differing, DIFFERENCES)
+  })
 })

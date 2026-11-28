@@ -9,9 +9,9 @@
 
 import fs from 'node:fs'
 import os from 'node:os'
-import { Client, onToolListChanged } from './sdk/client.ts'
+import { listToolsPage, newClient, onToolListChanged, type HostClient } from './sdk/client.ts'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from './sdk/transport.ts'
-import type { FetchLike, Transport } from './sdk/transport.ts'
+import type { FetchLike, HttpWireTransport, Transport } from './sdk/transport.ts'
 import { notConnected, type DownstreamTool, type ServerState } from '../core/catalog.ts'
 import { cachedTools, isLazy, sameTools, type ToolsCache } from '../core/lazy.ts'
 import {
@@ -30,6 +30,7 @@ import {
 } from '../core/config.ts'
 import type { Bridges } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
+import { sdkErrorText } from './sdk/errors.ts'
 import { classify } from '../core/share.ts'
 import { BrokerError, BrokerTransport, entryOf } from './brokerlink.ts'
 import type { Guard } from './childguard.ts'
@@ -184,7 +185,7 @@ export const startLists = (
         endList()
       }
     } catch (err) {
-      halt(`could not list the tools again: ${errorText(err)}`, 'could not list the tools again')
+      halt(`could not list the tools again: ${sdkErrorText(err)}`, 'could not list the tools again')
     } finally {
       running = false
       endList()
@@ -216,7 +217,7 @@ type Link =
   | { readonly status: 'connecting'; readonly done: Promise<void>; readonly since: number }
   | {
       readonly status: 'connected'
-      readonly client: Client
+      readonly client: HostClient
       readonly hide: Hide
       readonly lists: Lists
       /** Sets the idle clock of a lazy server back: a call that reaches the link is activity. */
@@ -229,7 +230,7 @@ type Link =
 
 /** `tools`: the list after the last change of the server. */
 export type Linked =
-  | { readonly ok: true; readonly client: Client; readonly hide: Hide; readonly tools: readonly DownstreamTool[] }
+  | { readonly ok: true; readonly client: HostClient; readonly hide: Hide; readonly tools: readonly DownstreamTool[] }
   | { readonly ok: false; readonly reason: string }
 
 export type Downstream = {
@@ -379,7 +380,7 @@ const transportOf = (
   stderr: (chunk: Buffer) => void,
   share: ShareOptions | undefined,
   guard: Guard | undefined,
-): { transport: Transport; lastError: () => string; child?: ChildTransport } => {
+): { transport: Transport | HttpWireTransport; lastError: () => string; child?: ChildTransport } => {
   if (server.kind === 'http') return { transport: new HttpTransport(server, onSessionEnd, auth), lastError: () => '' }
   // With sharing on, a shared or per-folder server has one child in the broker and never a child of this process.
   const class_ = share === undefined ? undefined : classify(key, server, share.bridges)
@@ -443,13 +444,13 @@ const workspaceTransport = async (
 }
 
 /** `cut` runs when the list has more than MAX_PAGES pages. The whole list has CONNECT_TIMEOUT_MS. */
-export const listAll = async (client: Client, cut = () => {}): Promise<DownstreamTool[]> => {
+export const listAll = async (client: HostClient, cut = () => {}): Promise<DownstreamTool[]> => {
   const tools: DownstreamTool[] = []
   const end = performance.now() + CONNECT_TIMEOUT_MS
   let cursor: string | undefined
   for (let page = 0; page < MAX_PAGES; page++) {
     const timeout = Math.max(0, end - performance.now())
-    const result = await client.listTools(cursor === undefined ? {} : { cursor }, { timeout })
+    const result = await listToolsPage(client, cursor, { timeout })
     tools.push(...result.tools)
     cursor = result.nextCursor
     if (!cursor) break
@@ -544,7 +545,7 @@ export const connectAll = (
   const links = new Map<ServerKey, Link>()
   // The start times of the attempts of each server in the last window.
   const attempts = new Map<ServerKey, number[]>()
-  const opened = new Set<Client>()
+  const opened = new Set<HostClient>()
   // The time of the last list of each server for a name that its list lacked.
   const missed = new Map<ServerKey, number>()
 
@@ -562,7 +563,7 @@ export const connectAll = (
 
   const connect = async (key: ServerKey, server: Live, woke = false): Promise<void> => {
     const began = performance.now()
-    const client = new Client({ name: 'toolscript-mcp', version })
+    const client = newClient(server.kind === 'http' ? 'http' : 'link', { name: 'toolscript-mcp', version })
     opened.add(client)
     let secrets = (): readonly string[] => []
     // The built-in Workspace holds no secret of a config, and its reasons are our own text.
@@ -601,7 +602,7 @@ export const connectAll = (
     const sessionEnded = (err: Error) => {
       const ended = isOAuthStop(err)
         ? lost(err.message)
-        : lost(`the HTTP session ended: ${errorText(err)}`, 'the HTTP session ended')
+        : lost(`the HTTP session ended: ${sdkErrorText(err)}`, 'the HTTP session ended')
       if (!ended) return
       // Later, so the failed request rejects with its own error first: close()
       // rejects each open request with "Connection closed".
@@ -747,8 +748,12 @@ export const connectAll = (
         err instanceof BrokerError ||
         err instanceof AwsCredentialsError
       )
-        fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, undefined, unbound || undefined)
-      else fail(stderr === '' ? errorText(err) : `${errorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
+        fail(
+          stderr === '' ? sdkErrorText(err) : `${sdkErrorText(err)}. ${STDERR_UNSHOWN}`,
+          undefined,
+          unbound || undefined,
+        )
+      else fail(stderr === '' ? sdkErrorText(err) : `${sdkErrorText(err)}. ${STDERR_UNSHOWN}`, 'the connect failed')
     }
   }
 

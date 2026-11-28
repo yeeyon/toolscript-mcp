@@ -3,7 +3,7 @@
 // nested calls through the downstream clients. The exchange dir goes in every case.
 
 import { callClientTool } from './sdk/client.ts'
-import { PROTOCOL_CODES, isProtocolError, protocolCode } from './sdk/errors.ts'
+import { PROTOCOL_CODES, protocolFailure, sdkErrorText } from './sdk/errors.ts'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -615,6 +615,7 @@ const execute = async (
           timeout: callSeconds * 1000,
           signal: own.signal,
         },
+        link.tools.find(t => t.name === target.name),
       )
       const { reply, files, ...mark } = mcpReply(
         {
@@ -638,11 +639,11 @@ const execute = async (
     } catch (err) {
       // An abort at the end of the run is also a RequestTimeout to the SDK. The SDK's own timer puts the limit in
       // `data`. A server can send the same code for its own error (mcp-remote does, for a failed login): its text stays.
+      const failure = protocolFailure(err)
       if (
         !own.signal.aborted &&
-        isProtocolError(err) &&
-        err.code === PROTOCOL_CODES.RequestTimeout &&
-        (err.data as { timeout?: unknown } | undefined)?.timeout === callSeconds * 1000
+        failure?.code === PROTOCOL_CODES.RequestTimeout &&
+        (failure.data as { timeout?: unknown } | undefined)?.timeout === callSeconds * 1000
       )
         return {
           ok: false,
@@ -650,12 +651,12 @@ const execute = async (
           code: 'timeout',
         }
       // A server can echo a token of its own in an error, as an HTTP error body.
-      const error = link.hide(errorText(err))
+      const error = link.hide(sdkErrorText(err))
       return {
         ok: false,
         error,
         code: own.signal.aborted ? 'cancelled' : 'failed',
-        ...(own.signal.aborted ? {} : { cls: classifyCallError(error, protocolCode(err)) }),
+        ...(own.signal.aborted ? {} : { cls: classifyCallError(error, failure?.code) }),
         ...fromUntrusted(),
       }
     } finally {
