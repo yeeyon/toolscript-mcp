@@ -15,8 +15,7 @@ import path from 'node:path'
 import readline from 'node:readline'
 import { after, before, describe, test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { ElicitRequestSchema, ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Client, ElicitRequestSchema, ListRootsRequestSchema } from './sdk.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const MAIN = process.env.TOOLSCRIPT_E2E_MAIN || path.join(ROOT, 'dist', 'host', 'main.js')

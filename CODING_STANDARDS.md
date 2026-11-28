@@ -23,7 +23,7 @@ enforces; the others rely on discipline.
   `[test: code.check.mjs fails on a stdout write in src/host; tsc fails on console in src/core; server.e2e.mjs reads every stdout line]`
 - Only `src/host/sdk/` imports `@modelcontextprotocol/sdk`, and no other `@modelcontextprotocol/` package. The rest of
   `src/host` uses that folder. `src/core`, `broker.ts` and `brokermain.ts` never import it. The folder holds no state, no
-  branch on a protocol version and at most 200 lines. `[test: code.check.mjs scans src/ and runtime/ for every import form]`
+  branch on a protocol version and at most 200 lines. The tests, `bench/walks.mjs` and every other folder take the SDK only through `tests/sdk.mjs`, which imports the package itself (never `src/host/sdk/`), re-exports under the SDK's own names and holds no logic. Nothing in `src/`, `runtime/` or `demo/` imports from `tests/`. `[test: code.check.mjs scans src/, runtime/, tests/, bench/, demo/, scripts/ and plugin/ for every import form]`
 - A failed downstream server must not stop the others. `connectAll` catches each failure and keeps the server as
   failed. `[test: server.e2e.mjs]`
 - A failed or closed server connects again on next use: a search, or a call of a program. All callers wait for one

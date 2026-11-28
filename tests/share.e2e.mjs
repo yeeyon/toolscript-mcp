@@ -4,9 +4,7 @@
 //
 //   node tests/share.e2e.mjs
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Client, StdioClientTransport, ElicitRequestSchema } from './sdk.mjs'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import fs from 'node:fs'

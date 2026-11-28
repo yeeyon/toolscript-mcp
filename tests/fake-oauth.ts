@@ -5,8 +5,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { McpServer, StreamableHTTPServerTransport } from './sdk.mjs'
 
 export const STATIC_ID = 'fake-static-id'
 // A space and the characters that a URL, an HTML form and base64 each write in their own way.

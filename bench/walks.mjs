@@ -3,7 +3,7 @@
 //   docker run --rm --cpus 1 -v "$PWD:/app:ro" -w /app node:22-bookworm-slim \
 //     node --experimental-strip-types bench/walks.mjs [--files 10000] [--runs 3] [--tree /tmp/walks-tree]
 // The tree must be on the file system of the container. It is made once from a fixed seed, so a run repeats.
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { Client } from '../tests/sdk.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
