@@ -21,6 +21,9 @@ enforces; the others rely on discipline.
   key it is about. `[test: server.test.ts]`
 - stdout carries only MCP JSON-RPC. Log to stderr with `console.error`.
   `[test: code.check.mjs fails on a stdout write in src/host; tsc fails on console in src/core; server.e2e.mjs reads every stdout line]`
+- Only `src/host/sdk/` imports `@modelcontextprotocol/sdk`, and no other `@modelcontextprotocol/` package. The rest of
+  `src/host` uses that folder. `src/core`, `broker.ts` and `brokermain.ts` never import it. The folder holds no state, no
+  branch on a protocol version and at most 200 lines. `[test: code.check.mjs scans src/ and runtime/ for every import form]`
 - A failed downstream server must not stop the others. `connectAll` catches each failure and keeps the server as
   failed. `[test: server.e2e.mjs]`
 - A failed or closed server connects again on next use: a search, or a call of a program. All callers wait for one

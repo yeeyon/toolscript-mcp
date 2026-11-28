@@ -6,10 +6,8 @@
 
 import type { ChildProcess } from 'node:child_process'
 import { PassThrough } from 'node:stream'
-import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import { ReadBuffer, getDefaultEnvironment, serializeMessage } from './sdk/transport.ts'
+import type { JSONRPCMessage, Transport } from './sdk/transport.ts'
 import crossSpawn from 'cross-spawn'
 import { STOP_WAIT_MS } from '../core/broker.ts'
 import { spawnCode, spawnReason, trustedSpawnError } from '../core/spawn.ts'

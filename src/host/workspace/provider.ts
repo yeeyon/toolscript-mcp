@@ -4,10 +4,9 @@
 // comes through the confined file system (confined.ts), and no path in the arguments is trusted before it passed
 // `pathParts` and the exclusions.
 
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Server, onCallTool, onListTools } from '../sdk/server.ts'
+import { InMemoryTransport } from '../sdk/transport.ts'
+import type { Transport } from '../sdk/transport.ts'
 import { createHash } from 'node:crypto'
 import {
   LIMITS,
@@ -847,12 +846,12 @@ export const createProvider = (options: ProviderOptions): Provider => {
       { capabilities: { tools: {} } },
     )
     // The tool list is the capability list: a change tool is listed only with the `write` grant.
-    server.setRequestHandler(ListToolsRequestSchema, () => ({
+    onListTools(server, () => ({
       tools: WORKSPACE_TOOL_NAMES.filter(
         name => run[name] !== undefined && (options.write || WORKSPACE_TOOLS[name].class !== 'write'),
       ).map(described) as never,
     }))
-    server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => {
+    onCallTool(server, async ({ params }, extra) => {
       const fail = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true })
       const handler = Object.hasOwn(run, params.name) ? run[params.name as WorkspaceToolName] : undefined
       if (handler === undefined) return fail('bad-input: unknown tool')

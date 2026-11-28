@@ -4,7 +4,7 @@
 // narrows the root of the session (`bindWorkspace`): the provider is bound after the settle, so no call runs on a
 // wider root. The entries are untrusted text: `bindWorkspace` proves each one.
 
-import type { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import type { Server } from '../sdk/server.ts'
 import { LIMITS } from '../../core/workspace.ts'
 
 /** The longest wait for the answer to `roots/list`, counted from `notifications/initialized`. */

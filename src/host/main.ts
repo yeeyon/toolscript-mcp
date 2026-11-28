@@ -9,7 +9,7 @@
 // `toolscript-mcp doctor` checks the whole setup.
 // `toolscript-mcp --version` prints the package version.
 
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { StdioServerTransport } from './sdk/server.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import { parseArgs } from 'node:util'

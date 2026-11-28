@@ -8,13 +8,15 @@
 // server. Only src/core/hints.ts types out the `bundled:` prefix of a hint
 // ref. No file in src/host writes to stdout, which carries only MCP JSON-RPC.
 // The .mjs tests are not scanned. Only scripts/format.sh names a Prettier
-// version, so the hook and CI format alike.
+// version, so the hook and CI format alike. Only src/host/sdk/ names the MCP SDK, only the `sdk` package, and
+// the broker and src/core never import that folder (see sdkProblems).
 //
 //   node tests/code.check.mjs
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runChecks } from './check.mjs'
@@ -80,6 +82,47 @@ const codeProblems = (rel, text) => {
     return rules.filter(r => !(exempt && r.stdout) && r.pattern.test(line)).map(r => `${rel}:${i + 1}: ${r.message}`)
   })
 }
+
+// The SDK seam (#154): only src/host/sdk/ holds the text @modelcontextprotocol/, and only of the `sdk` package.
+// src/ and runtime/ are scanned as raw text, so no import form can hide: import(variable), createRequire(...)(), a string
+// with // or /* before the import. A comment that names the package outside the folder fails too.
+// tests/, bench/, demo/ and scripts/ are out of the check.
+const SDK_DIR = 'src/host/sdk/'
+const SDK_SOURCE = /\.(?:[cm]?[jt]s)$/
+const MODULE = /\b(?:from|import|require)\s*\(?\s*(['"`])([^'"`\n]*)\1/g
+const NO_SDK_IMPORT = new Set(['src/host/broker.ts', 'src/host/brokermain.ts'])
+
+const sourcesIn = (root, dir) =>
+  fs.existsSync(path.join(root, dir))
+    ? fs.readdirSync(path.join(root, dir), { withFileTypes: true }).flatMap(entry => {
+        const rel = `${dir}/${entry.name}`
+        if (entry.isDirectory()) return sourcesIn(root, rel)
+        return entry.isFile() && SDK_SOURCE.test(entry.name) ? [rel] : []
+      })
+    : []
+
+const PACKAGE = /@modelcontextprotocol\/([\w.-]*)/g
+const lineOf = (text, index) => text.slice(0, index).split('\n').length
+
+// The problems of the SDK seam in the tree under `root`, as "file:line: message".
+const sdkProblems = root =>
+  ['src', 'runtime'].flatMap(top =>
+    sourcesIn(root, top).flatMap(rel => {
+      const text = fs.readFileSync(path.join(root, rel), 'utf8')
+      const named = [...text.matchAll(PACKAGE)].flatMap(m => {
+        const at = `${rel}:${lineOf(text, m.index)}: `
+        if (!rel.startsWith(SDK_DIR)) return [`${at}names ${m[0]} outside src/host/sdk/: use that folder`]
+        return m[1] === 'sdk' ? [] : [`${at}names ${m[0]}: src/host/sdk/ names only the sdk package`]
+      })
+      const sealed = NO_SDK_IMPORT.has(rel) || rel.startsWith('src/core/')
+      const loaded = [...text.matchAll(MODULE)].flatMap(m =>
+        sealed && m[2].startsWith('.') && /(^|\/)sdk\//.test(m[2])
+          ? [`${rel}:${lineOf(text, m.index)}: imports ${m[2]}: the broker and src/core never load the SDK folder`]
+          : [],
+      )
+      return [...named, ...loaded]
+    }),
+  )
 
 // The line numbers in `code` (1-based) that `rel` reports.
 const flagged = (rel, code) => codeProblems(rel, code.join('\n')).map(p => Number(p.split(':')[1]))
@@ -173,6 +216,77 @@ const tests = {
       .filter(rel => rel && fs.statSync(path.join(ROOT, rel), { throwIfNoEntry: false })?.isFile())
     const pinned = files.filter(rel => /prettier@\d/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')))
     assert.deepEqual(pinned, ['scripts/format.sh'], 'call Prettier through scripts/format.sh')
+  },
+  'only src/host/sdk/ imports the SDK': () => {
+    const problems = sdkProblems(ROOT)
+    assert.deepEqual(problems, [], `${problems.join('\n')}\n\nThe rule is in CODING_STANDARDS.md, "SDK seam".`)
+  },
+  'the SDK seam check catches each form, and each fix passes': () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'seam-check-'))
+    const put = (rel, text) => {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true })
+      fs.writeFileSync(path.join(root, rel), text)
+    }
+    const drop = rel => fs.rmSync(path.join(root, rel))
+    const sdk = '@modelcontextprotocol/sdk/types.js'
+    try {
+      const outside = [
+        `import { X } from '${sdk}'`,
+        `import type { X } from '${sdk}'`,
+        `export { X } from '${sdk}'`,
+        `export type { X } from '${sdk}'`,
+        `const m = await import('${sdk}')`,
+        `const m = await import(\n  '${sdk}',\n)`,
+        `const m = require('${sdk}')`,
+        `import '${sdk}'`,
+        `import {\n  X,\n} from '${sdk}'`,
+        `import { X } from '@modelcontextprotocol/client'`,
+        `const p = '${sdk}'; const m = await import(p)`,
+        `const r = createRequire(import.meta.url)('${sdk}')`,
+        `const u = 'http://x'; const m = await import('${sdk}')`,
+        `const g = 'src/*'; const m = await import('${sdk}') /* end */`,
+        `const g = 'src/*'\nimport { X } from '${sdk}'\n/* end */`,
+      ]
+      for (const [i, line] of outside.entries()) {
+        for (const rel of ['src/host/x.ts', 'src/host/workspace/y.ts', 'src/core/z.ts', 'runtime/r.mjs']) {
+          put(rel, `${line}\n`)
+          const found = sdkProblems(root)
+          assert.equal(found.length, 1, `form ${i} in ${rel}: ${found.join('|')}`)
+          assert.ok(found[0].startsWith(`${rel}:`), found[0])
+          put(rel, "import { X } from './other.ts'\n")
+          assert.deepEqual(sdkProblems(root), [], `form ${i} fixed in ${rel}`)
+          drop(rel)
+        }
+      }
+      // The folder itself may name the sdk package, and no other.
+      put('src/host/sdk/client.ts', `import { X } from '${sdk}'\nexport type { Y } from '${sdk}'\n`)
+      assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the sdk package')
+      for (const other of ['client', 'server', 'core']) {
+        put('src/host/sdk/client.ts', `import { X } from '@modelcontextprotocol/${other}'\n`)
+        assert.equal(sdkProblems(root).length, 1, `the folder names @modelcontextprotocol/${other}`)
+      }
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/sdk/client/index.js'\n")
+      assert.deepEqual(sdkProblems(root), [], 'the fix passes')
+      // The broker and src/core never load the folder.
+      for (const rel of ['src/host/broker.ts', 'src/host/brokermain.ts', 'src/core/a.ts', 'src/core/sub/b.ts']) {
+        for (const bad of ["'./sdk/client.ts'", "'../host/sdk/client.ts'", "'../../host/sdk/errors.ts'"]) {
+          put(rel, `import { X } from ${bad}\n`)
+          assert.equal(sdkProblems(root).length, 1, `${rel} imports ${bad}`)
+        }
+        put(rel, "import { X } from './other.ts'\n")
+        assert.deepEqual(sdkProblems(root), [], `${rel} with a fixed line`)
+        drop(rel)
+      }
+      // Another host file may use the folder.
+      put('src/host/downstream.ts', "import { X } from './sdk/client.ts'\n")
+      assert.deepEqual(sdkProblems(root), [])
+      // Out of the check: tests, bench, demo and scripts.
+      for (const rel of ['tests/t.ts', 'bench/b.mjs', 'demo/d.mjs', 'scripts/s.mjs'])
+        put(rel, `import { X } from '${sdk}'\n`)
+      assert.deepEqual(sdkProblems(root), [])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   },
   'the hooks and tests follow the rules': () => {
     const problems = FILES.flatMap(rel => codeProblems(rel, fs.readFileSync(path.join(ROOT, rel), 'utf8')))
