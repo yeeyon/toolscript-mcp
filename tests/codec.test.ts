@@ -2,7 +2,7 @@
 // error names and texts, in the same order. A new SDK is compared with the codec by this file (issue #154).
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ReadBuffer, deserializeMessage, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
+import { ReadBuffer, deserializeMessage, serializeMessage } from './sdk.mjs'
 import { FRAME_MAX, FrameReader, frameOf } from '../src/core/codec.ts'
 
 type Outcome = { message: unknown } | { error: string; text: string }

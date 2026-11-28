@@ -5,8 +5,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { type Client, getDefaultEnvironment } from './sdk.mjs'
 import type { Entry } from '../src/core/broker.ts'
 
 export const SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'pid-server.mjs')

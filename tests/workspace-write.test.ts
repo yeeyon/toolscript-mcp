@@ -497,7 +497,7 @@ describe('confinement of the change tools', () => {
       return
     }
     t.after(() => binding.bound.provider.close())
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+    const { Client } = await import('./sdk.mjs')
     const client = new Client({ name: 't', version: '0' })
     await client.connect(await binding.bound.provider.serve())
     t.after(() => client.close())

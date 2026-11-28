@@ -7,8 +7,7 @@
 //
 //   node tests/lazy.e2e.mjs
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { Client, StdioClientTransport } from './sdk.mjs'
 import { spawn } from 'node:child_process'
 import { readTable } from '../bench/memory.mjs'
 import assert from 'node:assert/strict'
