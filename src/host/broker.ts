@@ -163,7 +163,7 @@ const RECOVER_MS = 8000
 /** A lock file older than this is stale whatever its pid says. Recovery takes milliseconds. */
 const LOCK_STALE_MS = 5000
 /**
- * A socket file that refuses a connect is a dead broker's only when the same file (same device and inode) has refused for
+ * A socket file that refuses a connect is a dead broker's only when the same file (same device, inode and birth time) has refused for
  * this long. A broker that has bound its file and not yet called listen refuses too, and that gap lasts microseconds, but
  * a busy single CPU can stretch it to some tens of milliseconds. The sum for a host that starts after a killed broker: this
  * guard plus a dial and a listen, about 1.1 s, well under `RECOVER_MS` (8 s), `LOCK_STALE_MS` (5 s, the recovery lock is
@@ -171,11 +171,16 @@ const LOCK_STALE_MS = 5000
  */
 const SOCKET_GUARD_MS = 1000
 
-/** dev and inode of a file as one text, or undefined when there is none. */
+/**
+ * dev, inode and birth time of a file as one text, or undefined when there is none. The inode alone is not an identity:
+ * a file system hands the inode of a file just removed to the next file made (Linux ext4 and overlayfs do it nearly
+ * every time), so a socket file that another broker removed and bound again would look like the one before. The birth
+ * time (statx on Linux, the file system on macOS) differs, and a hard link or a chmod does not change it.
+ */
 const fileId = (file: string): string | undefined => {
   try {
     const info = fs.statSync(file, { bigint: true })
-    return `${info.dev}:${info.ino}`
+    return `${info.dev}:${info.ino}:${info.birthtimeNs}`
   } catch {
     return undefined
   }

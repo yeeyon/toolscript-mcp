@@ -536,7 +536,6 @@ describe('attach and routing', () => {
     })
 
     const nap = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-    const inode = (file: string): number => fs.statSync(file).ino
     const stale = async (name: string) => {
       const home = fs.mkdtempSync(path.join(root, 'h-'))
       const file = path.join(home, 'broker.js')
@@ -549,20 +548,19 @@ describe('attach and routing', () => {
     // The state of the gap between the bind and the listen of another broker is a young file that refuses a connect.
     test('a young socket file that refuses a connect is kept until the same file has refused for the guard, then removed and listened on', async () => {
       const { home, file, endpoint } = await stale('build young')
-      const before = inode(endpoint)
       const guardMs = 700
       const started = Date.now()
       let result: Broker | undefined | 'pending' = 'pending'
       const run = startBroker({ home, idleMs: 600_000, file, guardMs }).then(b => (result = b))
       await nap(guardMs / 2)
       assert.equal(result, 'pending', 'the broker still waits')
-      assert.equal(inode(endpoint), before, 'the file is not removed before the guard')
+      assert.ok(fs.existsSync(endpoint), 'the file is not removed before the guard')
+      assert.ok(!(await dials(endpoint)), 'and it still refuses')
       const broker = await run
       assert.ok(broker, 'after the guard the broker listens')
       closers.push(() => broker.stop())
       assert.ok(Date.now() - started >= guardMs - 30, 'it waited for the guard')
-      assert.notEqual(inode(endpoint), before, 'the file that refused is gone, and this broker has its own')
-      assert.ok(await dials(endpoint))
+      assert.ok(await dials(endpoint), 'the file that refused is replaced by one that answers')
     })
 
     test('a young file that turns into a live broker within the guard is left alone, and the starting broker does not start', async () => {
@@ -573,11 +571,10 @@ describe('attach and routing', () => {
       fs.rmSync(endpoint)
       const live = net.createServer(() => {})
       await new Promise<void>(resolve => live.listen(endpoint, resolve))
-      const mine = inode(endpoint)
+      closers.push(() => void live.close())
       assert.equal(await run, undefined)
-      assert.equal(inode(endpoint), mine, 'the live socket file is untouched')
-      assert.ok(await dials(endpoint))
-      live.close()
+      assert.ok(fs.existsSync(endpoint), 'the live socket file is untouched')
+      assert.ok(await dials(endpoint), 'and it answers')
     })
 
     test('a broker whose file another broker removed right after its listen leaves, and leaves the path to the other', async () => {
@@ -586,6 +583,7 @@ describe('attach and routing', () => {
       fs.writeFileSync(file, 'build lost name')
       const endpoint = endpointFor(home, loadKey(home), buildId(file))
       const other = net.createServer(() => {})
+      closers.push(() => void other.close())
       const lost = await startBroker({
         home,
         idleMs: 600_000,
@@ -598,10 +596,11 @@ describe('attach and routing', () => {
         },
       })
       assert.equal(lost, undefined, 'it does not serve')
-      assert.ok(!/start pid/.test(fs.readFileSync(`${brokerFolder(home)}/broker.log`, 'utf8')), 'it logged no start')
+      const logFile = `${brokerFolder(home)}/broker.log`
+      const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''
+      assert.ok(!/start pid/.test(log), 'it logged no start')
       assert.ok(fs.existsSync(endpoint), "the path is still the other broker's")
       assert.ok(await dials(endpoint), 'and it answers')
-      other.close()
     })
 
     test('a broker that lost its name ends when its links are gone, its child ends, and the broker at the path serves the next host', async () => {
@@ -610,7 +609,7 @@ describe('attach and routing', () => {
       const child = Number(await text(client, 'pid'))
       // Another broker removes the file and binds its own: the first one has no name now.
       fs.rmSync(first.broker.endpoint)
-      const second = await startBroker({ home: first.home, idleMs: 300, file: first.file, guardMs: 0 })
+      const second = await startBroker({ home: first.home, idleMs: 600_000, file: first.file, guardMs: 0 })
       assert.ok(second, 'a second broker binds the path')
       closers.push(() => second.stop())
       await client.close()
