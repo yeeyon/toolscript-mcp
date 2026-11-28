@@ -10,8 +10,15 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { OAuthError, UnauthorizedError, auth, discoverOAuthProtectedResourceMetadata } from './sdk/auth.ts'
-import { Client } from './sdk/client.ts'
+import {
+  IssuerMismatchError,
+  OAuthError,
+  UnauthorizedError,
+  auth,
+  discoverOAuthProtectedResourceMetadata,
+  validateAuthorizationResponseIssuer,
+} from './sdk/auth.ts'
+import { newClient, type HostClient } from './sdk/client.ts'
 import { StreamableHTTPClientTransport } from './sdk/transport.ts'
 import {
   configPath,
@@ -25,6 +32,7 @@ import {
   type ServerKey,
 } from '../core/config.ts'
 import type { FetchLike } from './sdk/transport.ts'
+import { metadataIssuerText, responseIssuerText } from '../core/issuer.ts'
 import { printableText } from '../core/policy.ts'
 import { errorText } from '../core/protocol.ts'
 import { CONNECT_TIMEOUT_MS, listAll, serverFetch } from './downstream.ts'
@@ -33,12 +41,20 @@ import { loadConfig } from './start.ts'
 
 export const LOGIN_USAGE = 'usage: toolscript-mcp login <server> [--config <path>] [--help]'
 
-/** The reason of a failed login. The SDK gives an OAuth error without an error_description an empty message. */
-const failure = (err: unknown): string =>
-  errorText(err) ||
-  (err instanceof OAuthError && err.errorCode
-    ? `the authorization server answered ${err.errorCode}`
-    : 'no reason given')
+/**
+ * The reason of a failed login. The SDK gives an OAuth error without an error_description the error code as its message,
+ * and the first SDK gave it none. An issuer check that failed has its own text, which holds no value of the browser.
+ */
+const failure = (err: unknown): string => {
+  if (err instanceof IssuerMismatchError)
+    return err.kind === 'metadata'
+      ? metadataIssuerText(err.expected ?? '', err.received)
+      : responseIssuerText(err.expected ?? '', err.received)
+  const text = errorText(err)
+  if (err instanceof OAuthError && (text === '' || text === err.code))
+    return `the authorization server answered ${err.code}`
+  return text || 'no reason given'
+}
 
 // The texts of the SDK errors that login explains. Its errors have no codes.
 const NO_REGISTRATION = 'Incompatible auth server: does not support dynamic client registration'
@@ -113,7 +129,10 @@ const openBrowser =
     child.unref()
   }
 
-type Callback = { readonly ok: true; readonly code: string } | { readonly ok: false; readonly why: string }
+/** The answer of the browser, with its `iss` (RFC 9207), or the end of the wait, which has none. */
+type Callback =
+  | { readonly ok: true; readonly code: string; readonly iss: string | undefined }
+  | { readonly ok: false; readonly why: string; readonly browser: boolean; readonly iss?: string }
 
 /** Listens on 127.0.0.1:`port` for the one callback of the login. Rejects with EADDRINUSE when the port is taken. */
 const listen = async (port: number, state: string) => {
@@ -137,12 +156,14 @@ const listen = async (port: number, state: string) => {
       const detail = q.get('error_description')
       settle({
         ok: false,
+        browser: true,
+        iss: q.get('iss') ?? undefined,
         // Text from the browser: printed, it cannot move the cursor, fake a line or turn text around.
         why: printableText(`the authorization server answered ${error ?? 'no code'}${detail ? `: ${detail}` : ''}`),
       })
       return reply(400, 'login failed. See the terminal.')
     }
-    settle({ ok: true, code })
+    settle({ ok: true, code, iss: q.get('iss') ?? undefined })
     reply(200, 'login done. You can close this tab.')
   })
   await new Promise<void>((resolve, reject) => {
@@ -327,7 +348,7 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
             ? plain(url, init).then(r => (r.status === 401 ? new Response(null, { status: 403 }) : r))
             : Promise.resolve(new Response(null, { status: 405 }))
     const transport = new StreamableHTTPClientTransport(new URL(server.url), { authProvider: provider, fetch: fetchFn })
-    const client = new Client({ name: 'toolscript-mcp', version: io.version })
+    const client = newClient({ name: 'toolscript-mcp', version: io.version })
     try {
       await client.connect(transport, { timeout: limitMs })
       return { client, transport }
@@ -339,7 +360,7 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
   }
 
   let timer: NodeJS.Timeout | undefined
-  let client: Client | undefined
+  let client: HostClient | undefined
   let code: string | undefined
   // A server can echo the request in an error: the state, the code, the verifier, the client secret or a token.
   const hide = (text: string) =>
@@ -386,16 +407,36 @@ export const runLogin = async (args: readonly string[], io: LoginIo): Promise<nu
       }
     }
     const timeout = new Promise<Callback>(resolve => {
-      timer = setTimeout(() => resolve({ ok: false, why: 'no login in the browser in 5 minutes' }), LOGIN_TIMEOUT_MS)
+      timer = setTimeout(
+        () => resolve({ ok: false, browser: false, why: 'no login in the browser in 5 minutes' }),
+        LOGIN_TIMEOUT_MS,
+      )
     })
     const answer = await Promise.race([callback.answer, timeout])
+    // The answer of the browser names its authorization server (RFC 9207), or it must not be used: not its code, and
+    // not its error text, which a server that the person did not choose can write. The value is never printed.
+    if (answer.ok || answer.browser) {
+      const metadata = provider.discovery()?.authorizationServerMetadata
+      if (metadata?.issuer !== undefined) {
+        try {
+          validateAuthorizationResponseIssuer({
+            iss: answer.iss,
+            expectedIssuer: metadata.issuer,
+            issParameterSupported: metadata.authorization_response_iss_parameter_supported === true,
+          })
+        } catch (err) {
+          if (err instanceof IssuerMismatchError) throw new Reason(failure(err))
+          throw err
+        }
+      }
+    }
     if (!answer.ok) {
       io.print(`login to ${key} failed: ${hide(answer.why)}`)
       return 1
     }
     code = answer.code
     authFetch = within(plain, limitMs, 'the token exchange did not end')
-    await first.transport.finishAuth(code)
+    await first.transport.finishAuth(code, answer.iss)
     exchanged = true
     client = (await connect()).client
     if (client === undefined) throw new Error(STILL_ASKS)

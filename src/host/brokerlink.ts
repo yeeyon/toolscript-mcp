@@ -9,7 +9,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { deserializeMessage, getDefaultEnvironment } from './sdk/transport.ts'
+import { deserializeMessage } from './sdk/transport.ts'
+import { defaultEnvironment } from '../core/childenv.ts'
 import type { JSONRPCMessage, Transport } from './sdk/transport.ts'
 import {
   BROKER_START_MS,
@@ -52,7 +53,7 @@ export const entryOf = (server: StdioServer, class_: Keyed, at: Place): Entry =>
   command: server.command,
   args: server.args,
   env: resolveEnvPath(
-    { ...getDefaultEnvironment(), ...childEnv(server) },
+    { ...defaultEnvironment(process.platform, process.env), ...childEnv(server) },
     path.delimiter,
     realPath,
     process.platform === 'win32',

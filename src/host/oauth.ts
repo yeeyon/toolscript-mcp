@@ -13,10 +13,13 @@ import {
   OAuthClientInformationFullSchema,
   OAuthClientInformationSchema,
   OAuthError,
+  OAuthErrorCode,
   OAuthTokensSchema,
-  type OAuthClientInformationMixed,
   type OAuthClientProvider,
-  type OAuthTokens,
+  type OAuthDiscoveryState,
+  // What the store holds is what the SDK stamped: the client and the tokens, each with the `issuer` of its authorization server.
+  type StoredOAuthClientInformation as OAuthClientInformationMixed,
+  type StoredOAuthTokens as OAuthTokens,
 } from './sdk/auth.ts'
 import type { FetchLike } from './sdk/transport.ts'
 import {
@@ -32,14 +35,47 @@ import { errorText } from '../core/protocol.ts'
 import { silentReason } from '../core/lock.ts'
 import { dropLock, takeLock, type LockFs } from './oauthlock.ts'
 
-// Both are OAuthErrors: the SDK passes on an OAuthError from a refresh, and starts a login after any other error.
+// All three are OAuthErrors: the SDK passes on an OAuthError from a refresh, and starts a login after any other error.
+// Their code is one that makes the SDK neither retry nor start a login (it does that for `invalid_client`,
+// `unauthorized_client`, `invalid_grant`, `invalid_dpop_proof` and `server_error`), so the message is the whole reason.
 /** The provider of the running server throws this where a person must log in. Its message is the reason. */
-export class LoginNeeded extends OAuthError {}
+export class LoginNeeded extends OAuthError {
+  constructor(reason: string) {
+    super(OAuthErrorCode.InvalidRequest, reason)
+  }
+}
 /**
  * The provider of the running server throws this when a refresh failed but was not refused, as when the
  * authorization server is down: the tokens can still work, so the next use tries again. Its message is the reason.
  */
-export class RefreshFailed extends OAuthError {}
+export class RefreshFailed extends OAuthError {
+  constructor(reason: string) {
+    super(OAuthErrorCode.InvalidRequest, reason)
+  }
+}
+/** The link throws this when the metadata of the authorization server names another issuer. Its message is the reason. */
+export class IssuerRefused extends OAuthError {
+  constructor(reason: string) {
+    super(OAuthErrorCode.InvalidRequest, reason)
+  }
+}
+
+/** The text that the SDK prints after `Cause:`, which is the error text of the authorization server. */
+const SDK_CAUSE = /^(\[mcp-sdk\][\s\S]*? Cause: )[\s\S]*$/u
+let guarded = false
+
+/**
+ * The SDK warns on stderr through `console.warn` when it falls back or retries after an error of the authorization
+ * server, and it ends the line with that error text, which can echo a code, a token or a client secret. The text is
+ * left out of each such line, once for the process; any other line goes through as it is.
+ */
+const guardSdkWarnings = (): void => {
+  if (guarded) return
+  guarded = true
+  const warn = console.warn.bind(console)
+  console.warn = (...args: unknown[]) =>
+    warn(...args.map(arg => (typeof arg === 'string' ? arg.replace(SDK_CAUSE, '$1(its text is not shown)') : arg)))
+}
 
 /** The refresh token that a refresh request of the SDK sends, or undefined for any other request. */
 const refreshTokenOf = (init: RequestInit | undefined): string | undefined =>
@@ -67,6 +103,10 @@ export const isLoopbackHttp = (url: URL): boolean =>
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
+/** The `issuer` stamp of a stored value, when it is a string: the schemas of the SDK leave it out. */
+const stampOf = (value: unknown): { issuer?: string } =>
+  isObject(value) && typeof value.issuer === 'string' ? { issuer: value.issuer } : {}
+
 /** The store in `text`. A part that does not parse is left out, so a broken file asks for a login again. */
 const parseStored = (text: string): Stored => {
   const json = parseJson(text)
@@ -80,8 +120,8 @@ const parseStored = (text: string): Stored => {
   // Login listens on the port of this URL, on this machine.
   const loopback = typeof redirectUrl === 'string' && URL.canParse(redirectUrl) && isLoopbackHttp(new URL(redirectUrl))
   return {
-    ...(info !== undefined && loopback && { client: { info, redirectUrl } }),
-    ...(tokens !== undefined && { tokens }),
+    ...(info !== undefined && loopback && { client: { info: { ...info, ...stampOf(client.info) }, redirectUrl } }),
+    ...(tokens !== undefined && { tokens: { ...tokens, ...stampOf(raw.tokens) } }),
   }
 }
 
@@ -187,6 +227,8 @@ export type Provider = OAuthClientProvider & {
   readonly secrets: () => readonly string[]
   readonly clientSecret: () => ClientSecret | undefined
   readonly fetch: (base: FetchLike) => FetchLike
+  /** The discovery of the authorization server that this login did. Only the provider of `login` keeps it. */
+  readonly discovery: () => OAuthDiscoveryState | undefined
 }
 
 /**
@@ -194,6 +236,7 @@ export type Provider = OAuthClientProvider & {
  * this login, so the old tokens stay in the store until the new ones come, and a person can switch accounts.
  */
 export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | ServeMode, lockFs?: LockFs): Provider => {
+  guardSdkWarnings()
   const login = mode.kind === 'login' ? mode : undefined
   const needLogin = (): never => {
     throw new LoginNeeded(mode.kind === 'serve' ? mode.reason : 'no login in progress')
@@ -205,6 +248,9 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     ...(oauth.client.secret !== undefined && { client_secret: oauth.client.secret }),
   }
   let verifier: string | undefined
+  // The discovery of this login, kept in memory so the callback leg is bound to the authorization server that the
+  // first leg used (SEP-2352). The running server starts no login, so it keeps none.
+  let discovered: OAuthDiscoveryState | undefined
   let fresh: OAuthTokens | undefined
   // The client that this login registered. It goes into the store only with the tokens: the old tokens refresh only
   // with the old client, so a login that ends early leaves both.
@@ -355,6 +401,11 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
   return {
     secrets: () => [...known],
     clientSecret: () => secretClient,
+    discovery: () => discovered,
+    ...(login && {
+      discoveryState: () => discovered,
+      saveDiscoveryState: (state: OAuthDiscoveryState) => void (discovered = state),
+    }),
     fetch: base =>
       mode.kind === 'login'
         ? base
@@ -409,7 +460,8 @@ export const oauthProvider = (file: string, oauth: OAuth, mode: LoginMode | Serv
     // refusals of a refresh never reach the SDK.
     invalidateCredentials: async scope => {
       if (!login) needLogin()
-      if (scope === 'all' || scope === 'tokens') fresh = undefined
+      // The SDK calls `client` and then `tokens`, where the first one called `all`, and the `client` branch ends the login.
+      if (scope === 'all' || scope === 'tokens' || scope === 'client') fresh = undefined
       if (scope === 'all' || scope === 'client') {
         if (fixed) throw new Error('the authorization server refused the OAuth client ID and secret of the config')
         // The code works only with the client it was issued to. A stored client goes, so the next login registers.
