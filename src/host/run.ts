@@ -441,6 +441,9 @@ const execute = async (
   known: ReadonlySet<string>,
 ): Promise<Ran> => {
   const { config, downstream, kept } = ctx
+  // The Workspace is listed for this run: readFile may name its read tool.
+  const workspaceOn =
+    config.servers.get(WORKSPACE_KEY as ServerKey)?.kind === 'workspace' && ctx.workspaceRoot !== undefined
   const limitSeconds = config.sandbox.timeoutSeconds
   const timeoutMs = limitSeconds * 1000
   const callSeconds = config.sandbox.callTimeoutSeconds
@@ -804,8 +807,6 @@ const execute = async (
       case 'read':
         answer(
           answerLocal(m.id, async () => {
-            const workspaceOn =
-              config.servers.get(WORKSPACE_KEY as ServerKey)?.kind === 'workspace' && ctx.workspaceRoot !== undefined
             const read = await readFile(ctx.filesDir, m.path, ctx.untrustedFiles, workspaceOn)
             if (read.untrusted) untrusted = true
             return read.reply

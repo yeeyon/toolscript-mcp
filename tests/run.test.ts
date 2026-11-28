@@ -292,6 +292,10 @@ type Options = {
 
 const filesDir = path.join(ROOT, 'files', 'session')
 
+/** The refusal of `readFile` with the Workspace off, with the asked path replaced by X. */
+const NO_WORKSPACE_REFUSAL =
+  'readFile: X is not a file from saveFile in this session. Put the text in the program as a string literal'
+
 const setup = (o: Options = {}) => {
   const fake = fakeDownstream(o.others, o.servers)
   const asked: string[][] = []
@@ -605,9 +609,7 @@ describe('files', () => {
     assert.equal(msgs.length, paths.length, r.text)
     assert.equal(new Set(msgs).size, 1, r.text)
     const [text] = msgs as [string]
-    assert.ok(text.startsWith('readFile: X is not a file from saveFile in this session'), text)
-    assert.match(text, /string literal/)
-    assert.doesNotMatch(text, /workspace/i)
+    assert.equal(text, NO_WORKSPACE_REFUSAL)
     assert.ok(text.replace('X', '').length <= 110, text)
   })
 
@@ -3248,25 +3250,20 @@ describe('workspace', () => {
       ].join('\n'),
     )
     assert.equal(out.isError, false, out.text)
-    const refusal = (JSON.parse(hostMark(out.text)?.inside ?? 'null') as { refusal: string; file: string }).refusal
+    const got = JSON.parse(hostMark(out.text)?.inside ?? 'null') as { refusal: string; file: string }
+    const refusal = got.refusal
     assert.equal(WORKSPACE_TOOLS.read.class, 'read')
     assert.ok(refusal.includes(`mcp__${WORKSPACE_KEY}__read`), refusal)
     assert.match(refusal, /string literal/)
     const bare = refusal.split(asked).join('')
     assert.ok(bare.length <= 180, bare)
     assert.ok(!bare.includes(r.root), bare)
-    assert.ok(out.text.includes('maxAttempts'), out.text)
+    assert.ok(got.file.includes('maxAttempts'), got.file)
 
     const none = await setup({ servers: entry, workspace: true }).run(
       'try { await readFile("/nope/x") } catch (e) { return e.message.replace("/nope/x", "X") }',
     )
-    assert.ok(
-      none.text.includes(
-        'X is not a file from saveFile in this session. Put the text in the program as a string literal',
-      ),
-      none.text,
-    )
-    assert.doesNotMatch(none.text, /workspace/i)
+    assert.equal(JSON.parse(none.text.split('\n\n')[0] ?? ''), NO_WORKSPACE_REFUSAL)
   })
 
   test('a cut search or list shows in the footer, with counts, and an uncut run adds no line', async t => {
