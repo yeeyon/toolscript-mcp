@@ -146,6 +146,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     (issue #94): the permission-mode matrix (`matrix`, `cell`, `print`) and G10 of issue #63 (`g10`, two sessions on one
     broker, Windows only). It spends money on Haiku and stops at `--max-spend` (default 3 USD). Temp HOME and fixture for each cell.
   - `walks.mjs`: N parallel Workspace `search` calls on one tree, in Docker with `--cpus 1` only. Results in `RESULTS-walks.md`.
+  - `workspace-bridge.mjs`: the same four questions about one temp repository through hosts with the built-in Workspace or the
+    Claude Code bridge (`claude mcp serve`), driven as `run_code` calls: time, result characters, processes and private memory
+    (Windows) for 1 and 6 sessions. No model, no spend. Results in `RESULTS-workspace-bridge.md`.
   - `CODEX.md`: the test plan for the same arms in Codex, and the result of the Codex smoke test. `check.mjs`
     judges an answer of another agent.
   - `data.mjs` holds the tasks and their checks, `fake-server.mjs` the fake MCP server, and `forget.mjs` removes the
