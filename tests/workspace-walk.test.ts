@@ -511,4 +511,32 @@ describe('the walk slots (issue #160)', () => {
       assert.equal(readdirs, 2, `N = ${searchInFlight}: the root and a, never b`)
     }
   })
+
+  test('the visits before a folder are taken before the folder is opened: a cut file, then a folder that cannot be read', async t => {
+    const deep = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`b/${'d/'.repeat(i + 1)}f.txt`, 'nothing\n']))
+    for (const [name, extra] of [
+      ['unreadable', { 'b/f.txt': 'nothing\n' }],
+      ['deep', deep],
+    ] as const) {
+      const root = tree(t)
+      write(root, { 'a.txt': 'hit\n'.repeat(10), ...extra })
+      for (const searchInFlight of [1, 4]) {
+        let readdirs = 0
+        const rig = await rigOf(t, root, {
+          limits: { searchInFlight },
+          hook: lookup => {
+            if (lookup !== 'readdir') return
+            // The root is the first listing: a second one is a folder of the walk, and it cannot be read.
+            if (++readdirs > 1) throw new Error('unreadable folder')
+          },
+        })
+        if (rig === undefined) return
+        readdirs = 0
+        const found = await rig.call('search', { query: 'hit', maxMatches: 2 })
+        assert.equal(found.matches.length, 2, `${name}, N = ${searchInFlight}`)
+        assert.equal(found.truncated, true)
+        assert.equal(readdirs, 1, `${name}, N = ${searchInFlight}: no folder after the cut`)
+      }
+    }
+  })
 })

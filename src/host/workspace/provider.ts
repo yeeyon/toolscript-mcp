@@ -290,6 +290,8 @@ export const createProvider = (options: ProviderOptions): Provider => {
         if (hides?.(parts, entry.kind === 'folder') === true) continue
         if (!(await visit({ parts, kind: entry.kind, size: entry.size }, dir, name))) return false
         if (entry.kind !== 'folder' || levels <= 1 || read.more || skip.has(fold(name))) continue
+        // The visits of the files before this folder are taken first: if they stopped the search, the folder is not opened.
+        if (pool !== undefined && !(await pool.take())) return false
         // No glob of `include` reaches below this folder: its entry was visited, its names are not read.
         if (reach?.(parts) === false) continue
         const child = await dir.openDir(name).catch((err: unknown) => {
