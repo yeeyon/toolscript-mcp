@@ -147,5 +147,8 @@
       "timeout": 1200,
       "note": "fixture mode"
     }
-  ]
+  ],
+  "baseline": {
+    "differs": []
+  }
 }
