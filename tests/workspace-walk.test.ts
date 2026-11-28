@@ -5,7 +5,6 @@ import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { LIMITS } from '../src/core/workspace.ts'
 import { open, rm, tempDir, write, type Rig, type RigOptions } from './workspace-rig.ts'
 
 const mac = process.platform === 'darwin'
@@ -508,26 +507,6 @@ describe('the walk slots (issue #160)', () => {
     const [, , third] = await Promise.all(walks)
     assert.equal(third.truncated, false, 'the walk that waited was cut')
     assert.equal(third.matches.length, 1)
-  })
-
-  test('a provider that sees 1 CPU holds the second walk, one that sees 2 runs as many as the limit (issue #180)', async t => {
-    const root = tree(t)
-    write(root, { 'a.txt': 'hit\n' })
-    for (const [parallelism, running] of [
-      [1, 1],
-      [2, LIMITS.walkSlots],
-    ] as const) {
-      const h = holding()
-      const rig = await rigOf(t, root, { hook: h.hook, limits: { parallelism } })
-      if (rig === undefined) return
-      const walks = [1, 2].map(() => rig.call('search', { query: 'hit' }))
-      await until(() => h.held() === running)
-      await pause(150)
-      assert.equal(h.held(), running, `${parallelism} CPUs`)
-      h.release()
-      await Promise.all(walks)
-      await rig.close()
-    }
   })
 
   test('a search that took its last match walks no sibling folder, at any number in flight', async t => {

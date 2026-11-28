@@ -23,6 +23,8 @@ export const LIMITS = {
    * Walks of `list` and `search` that run at one time in a provider at most (issue #160). Two were measured against one
    * (issue #180, `bench/RESULTS-walks.md`): they cut batch time on trees that fit the budget, but on a tree where a search
    * alone takes 55 to 75 % of `searchMs` two walks slow each other to the 10 s edge and cut calls that one slot did not.
+   * A later raise needs a one-CPU floor (a count from the cores cut 7 of 8 searches on a multi-core laptop, issue #160) and a
+   * bench near the budget: see `bench/RESULTS-walks.md`.
    */
   walkSlots: 1,
   /** Files of one `search` walk that are opened, proven and read at the same time. Each is proven by its own open. */
@@ -62,13 +64,6 @@ export const LIMITS = {
   ignoreLineChars: 200,
   ignoreWildcards: 6,
 } as const
-
-/**
- * The walks of `list` and `search` that run at one time (issue #180): `max`, or 1 on a machine with fewer than 2 CPUs. It is a
- * floor for one CPU, not a count that follows the cores: a walk is one chain of awaited calls, so more than `max` helps no
- * walk, and a count taken from the cores cut 7 of 8 searches on a multi-core Windows laptop (issue #160).
- */
-export const walkSlotsFor = (max: number, parallelism: number): number => (parallelism < 2 ? 1 : max)
 
 /** The folders that `list` and `search` do not enter. It is not access control: `path` can name one. */
 export const DEFAULT_SKIP: readonly string[] = [

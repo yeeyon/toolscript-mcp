@@ -9,7 +9,6 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { createHash } from 'node:crypto'
-import os from 'node:os'
 import {
   LIMITS,
   WORKSPACE_TOOLS,
@@ -34,7 +33,6 @@ import {
   planEdits,
   showPath,
   unifiedDiff,
-  walkSlotsFor,
   type Change,
   type DiffInput,
   type EditInput,
@@ -79,8 +77,6 @@ export type ProviderOptions = {
     readonly listEntries?: number
     readonly searchMs?: number
     readonly walkSlots?: number
-    /** The CPU count that the default of `walkSlots` follows, in place of `os.availableParallelism()`. */
-    readonly parallelism?: number
     readonly searchInFlight?: number
   }
   /** Tests only: shorter lock times. */
@@ -146,15 +142,13 @@ export const createProvider = (options: ProviderOptions): Provider => {
     update: parts => unalias(options.confined.update(parts)),
     create: (parts, bytes, guard) => unalias(options.confined.create(parts, bytes, guard)),
   }
-  const { parallelism = os.availableParallelism(), ...given } = options.limits ?? {}
   const limits = {
     searchFiles: LIMITS.searchFiles,
     listEntries: LIMITS.listEntries,
     searchMs: LIMITS.searchMs,
-    // One slot on a machine with one CPU, else LIMITS.walkSlots. Not a count from the cores (issue #180).
-    walkSlots: walkSlotsFor(LIMITS.walkSlots, parallelism),
+    walkSlots: LIMITS.walkSlots,
     searchInFlight: LIMITS.searchInFlight,
-    ...given,
+    ...options.limits,
   }
   const skip = new Set(options.skip.map(fold))
   const servers = new Set<Server>()
@@ -178,7 +172,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   /**
-   * At most `limits.walkSlots` walks of `list` and `search` run at one time (`LIMITS.walkSlots`, 1 on one CPU). Parallel walks share the file threads and
+   * At most `limits.walkSlots` walks of `list` and `search` run at one time (`LIMITS.walkSlots`). Parallel walks share the file threads and
    * the CPU, and each would run to `searchMs` (issue #160). The others wait in order, and the budget of a walk starts
    * when it runs. A call that is cancelled while it waits fails at once and takes no slot. A slot passes on when a walk
    * ends for any reason.
