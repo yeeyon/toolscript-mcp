@@ -2998,6 +2998,41 @@ describe('the guarded folders', () => {
     assert.deepEqual(s.called, [])
   })
 
+  test('a multi-line text is refused with the lines of the match, and never with the text or its neighbours', async () => {
+    const mark = '.toolscript-mcp/hints'
+    const home = dir('home-')
+    const put = {
+      type: 'object',
+      properties: { edits: { type: 'array', items: { type: 'object', properties: { new: {} } } } },
+    }
+    const s = setup({
+      home,
+      others: [{ key: 'g' as ServerKey, status: 'connected', tools: [{ name: 'put', inputSchema: put }] }],
+    })
+    const refusal = async (value: string) => {
+      const r = await s.run(
+        `try { await call("mcp__g__put", ${JSON.stringify({ edits: [{ new: value }] })}) } catch (e) { return e.message }`,
+      )
+      assert.ok(!r.text.includes('zz-before') && !r.text.includes('zz-after') && !r.text.includes('zz-mid'), r.text)
+      return JSON.parse(/^("[^"]*")/.exec(r.text)![1]!) as string
+    }
+    const one = await refusal(`zz-before\nzz-mid\nsee ~/${mark} here\r\nzz-after`)
+    assert.equal(one, guardedText('mcp__g__put', `~/${mark}`, 'edits[0].new', [3]))
+    assert.match(one, /guards \(in edits\[0\]\.new, line 3\)\. A mention in text counts too\./)
+    const many = await refusal(`zz-before\n~/${mark}\nzz-mid\n~/${mark}\nzz-after`)
+    assert.equal(many, guardedText('mcp__g__put', `~/${mark}`, 'edits[0].new', [2, 4]))
+    assert.match(many, /guards \(in edits\[0\]\.new, lines 2, 4: each names a guarded folder\)\. A mention/)
+    const lots = await refusal(Array.from({ length: 14 }, (_, i) => `zz-before ~/${mark} ${i}`).join('\n'))
+    assert.match(
+      lots,
+      /\(in edits\[0\]\.new, lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and more: each names a guarded folder\)/,
+    )
+    assert.ok(many.length <= 420 && lots.length <= 420, String(lots.length))
+    const log = fs.readFileSync(runLogFile(home), 'utf8')
+    assert.equal(log.includes('zz-before') || log.includes('zz-after') || log.includes('zz-mid'), false)
+    assert.deepEqual(s.called, [])
+  })
+
   test('a program that catches the refusal ends done, and one that does not ends error', async () => {
     const home = dir('home-')
     const bad = `{ path: ${JSON.stringify(`${fwd(home)}/.toolscript-mcp/hints/x.md`)} }`

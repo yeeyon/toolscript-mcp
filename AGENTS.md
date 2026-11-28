@@ -29,7 +29,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   `policy.ts`). `policy.ts` takes one `Guards` value: the bridges, and whether the built-in Workspace is on, so that
   its read tools run with no rule and its change and exec tools ask. `runlog.ts` also holds the applied changes of a
   run and their text. `doctor.ts` holds the line shape of `toolscript-mcp doctor` and the pure parts of its
-  checks, such as `hiddenBy` (one glob covers another).
+  checks, such as `hiddenBy` (one glob covers another). `skills.ts` (issue #92, S1) is the pure mapping from hint files and saved
+  functions to skill entries (`skillsOf`): which hint files apply, the name, the fixed description and the `SKILL.md` text of each
+  skill, and the caps (8 skills, 1,000 characters of names and descriptions, `more-hints`). It reads no file and serves nothing.
   `guard.ts` holds the guard of the folders in `guardedDirs` at each nested call: the walk of the arguments, the
   markers, the path candidates and the compare. It takes `realpath` as a parameter. `toml.ts` (the strict reader of the `[mcp_servers]` tables of a Codex `config.toml`, for `init`) and `codex.ts` (the map of a Codex server to an entry, policy rules and notes) hold the Codex import of `init`, which `src/host/codex.ts` reads for (the Codex CLI first, then `config.toml`, cwd the home folder). `commands.ts` holds the commands
   that the CLI prints for a person or an agent to run: the allowlist of names and paths (`PLAIN_NAME`, `PLAIN_PATH`),
@@ -95,6 +97,9 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
     functions in print order. It reuses the connect path of `tools`, the run-log reader of `runs` and the launch of
     `run_code` for a run of `return 1`.
   - `start.ts`: how the process started, the config read and the login command, shared by the server and the CLI.
+  - `skills.ts`: the reader for `src/core/skills.ts` (issue #92, S1): the bundled hints whose SHA-256 `hints/sha256.json` lists, the
+    `*.md` files directly in the person's hint folder and function folder (never `pending/`, a project folder or a link; 64 files,
+    65,536 bytes, UTF-8), one stderr line for a skipped file. Nothing imports it yet but `tests/skills-fs.test.ts`.
   - `workspace/`: the built-in Workspace (issue #144, `docs/adr/0144-workspace-provider.md`). `confined.ts`: the
     confined file system, with a proof of each open for each OS, the first-use test of the method, the identity of the
     root and a `Hook` that runs before each lookup of a name, so a test swaps a folder between two lookups. `provider.ts`:
@@ -159,8 +164,14 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
   Windows), from the Actions tab, from a push to `stress/**`, and every Sunday on main (flakes and baseline). Its profiles are
   `tests/stress.json`. `scripts/stress.mjs` (Node built-ins only; `tests/stress.test.ts`) repeats one target with the junit
   reporter and writes the summary of each test that failed (runs, fails, rate, first failing run and seed), the budgets of
-  `baseline`, and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
+  `baseline` (with the SHA-256 rows of the upgrade gate: a row that may differ on purpose is named in `baseline.differs` of
+  `tests/stress.json`, with a reason and a PR number), and the jobs of a run (`plan`). `.github/actions/test-volumes` holds the vfat, casefold and APFS setup that
   `test.yml` and `stress.yml` share. `stress/**` branches are deleted by the session that pushed them, when the run is read.
+- `tests/modern-server.mjs`, `modern-http.mjs`, `modern-client.mjs` and `modern-core.mjs` are the raw JSON-RPC peers of the 2026-07-28 revision (issue #154, C0), plain `.mjs`
+  with no SDK: a stdio fake (kinds `modern`, `dual` and the old-server kinds, by argument), an HTTP fake (`startHttp(kind)`, with a record of every
+  request), a raw client with the openings as data (`OPENINGS`, `replay`, Claude Code's two among them), and the engine they share.
+  `tests/modern-peers.test.ts` checks the peers. `tests/conformance.json` is the matrix, one row for each (side, kind, link, flag), `pending` with
+  its PR or `covered` with a test; `tests/conformance.test.ts` keeps a row from being dropped or marked covered with no test.
 - `tests/*.test.ts` run with `node:test`. `tests/run.test.ts` runs `src/host/run.ts` with the real sandbox and fake
   servers. `tests/*.check.mjs` and `tests/runner.integration.mjs` are plain Node.
 
@@ -171,6 +182,10 @@ claude-code-mode (see `NOTICE`). The server lists `run_code` and `search_tools`.
 - `node tests/bridge.e2e.mjs` runs one program through the real `claude mcp serve` bridge (Grep, Read, Edit, a shell test run)
   and the missing-binary case. It needs `claude` on PATH, else it prints one line and exits 0. It is not in `npm test`.
 - `node tests/workspace.e2e.mjs` runs the built server with the built-in Workspace and no Claude. Run `npm run build` first.
+- `node tests/upgrade.e2e.mjs --base <built 1.0.5 dir> --head <built dir>` runs both builds on one HOME with raw JSON-RPC:
+  an OAuth store refreshed both ways, a 1.0.5 host and a head host on one broker or two, and the rollback read (doctor,
+  `tools/list`, `run_code`, `search_tools` of one build on the files of the other). With no `--base` it prints one line and
+  exits 0. It is not in `npm test`: the `baseline` job of `stress.yml` runs it, beside the SHA-256 rows of the baseline.
 - After a change to a bundled hint, run `node scripts/bundled-hints.mjs`.
 - `node scripts/start-time.mjs` measures the start, from the spawn to the `tools/list` reply. Run `npm run build` first.
 

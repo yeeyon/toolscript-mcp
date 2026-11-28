@@ -14,13 +14,19 @@
 // target that never ran because of it is a failed result, so a green run never hides a target that did not run.
 // profile: the entries of one profile of tests/stress.json, one after the other. An entry with "optional": true that is not
 // in the checkout is skipped with a line. "kind": "script" runs `node <target> <args>` and passes on exit code 0.
-// baseline: the budgets of v2 phase 1 for the build in --head against the build in --base (both built), measured in turns.
+// baseline: the budgets of v2 phase 1 for the build in --head against the build in --base (both built), measured in turns. It also
+// judges the upgrade rows on SHA-256, never on length: what a 1.0.5 client reads (the masked `initialize` result, `tools/list`, the
+// instructions and the empty `search_tools` result, for the empty, the demo and the bench config, with TOOLSCRIPT_PROTOCOL=legacy
+// and unset), the answer to a `server/discover` probe, and dist/host/broker.js. A row that may differ on purpose is named in
+// `baseline.differs` of tests/stress.json, with a reason and a PR number: it prints `differs (expected: ...)` and passes, and a
+// named row that is in fact equal fails. tests/upgrade.e2e.mjs runs both builds on one HOME (stress.yml runs it after this).
 //
 // The summary goes to stdout and to $GITHUB_STEP_SUMMARY, a profile writes the block of each target when the target ends, so a job
 // that is killed still shows the targets that finished. The junit file, the stdout and the stderr of each failed repeat go
 // to --out (default stress-out). The exit code is 1 when any repeat failed.
 
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -469,7 +475,8 @@ export const judge = (base, head, { memory = true } = {}) => {
 }
 
 export const renderBaseline = rows => {
-  const show = (v, unit) => (v === null ? 'n/a' : unit === 'bytes' ? String(Math.round(v)) : v.toFixed(1))
+  const show = (v, unit) =>
+    v === null ? 'n/a' : unit === 'hash' ? v.slice(0, 12) : unit === 'bytes' ? String(Math.round(v)) : v.toFixed(1)
   return [
     '### baseline: head against base',
     '',
@@ -487,7 +494,11 @@ export const renderBaseline = rows => {
             ? r.skipped
             : r.na
               ? 'FAIL (not measured)'
-              : (r.ok ? 'pass' : 'FAIL') + (r.note ? ' (' + r.note + ')' : ''),
+              : r.stale
+                ? 'FAIL (listed in baseline.differs but equal: the list is stale)'
+                : r.differs !== undefined
+                  ? 'differs (expected: ' + r.differs + ')'
+                  : (r.ok ? (r.unit === 'hash' ? 'equal' : 'pass') : 'FAIL') + (r.note ? ' (' + r.note + ')' : ''),
         ].join(' | ') +
         ' |',
     ),
@@ -592,17 +603,27 @@ export const checkedBytes = (init, list, search) => {
 }
 
 /** The bytes the model pays for: the instructions, tools/list and a search_tools result, on the bench fake server. */
-export const textBytes = async dir => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stress-bytes-'))
-  const config = path.join(tmp, 'config.json')
-  fs.writeFileSync(
-    config,
-    JSON.stringify({
-      mcpServers: { bench1: { command: process.execPath, args: [path.join(dir, 'bench', 'fake-server.mjs')] } },
-    }),
+export const textBytes = async dir =>
+  withHost(
+    dir,
+    { mcpServers: { bench1: { command: process.execPath, args: [path.join(dir, 'bench', 'fake-server.mjs')] } } },
+    {},
+    async (ask, _raw, notify) => checkedBytes(...(await openSession(ask, notify))),
   )
-  const child = spawn(process.execPath, [path.join(dir, 'dist', 'host', 'main.js'), '--config', config], {
-    env: { ...process.env, HOME: tmp, USERPROFILE: tmp },
+
+/**
+ * One host of the build in `dir` over stdio with a temp HOME, USERPROFILE and APPDATA (never the real ones), the config
+ * `config` (an object) and `extra` added to the environment. `use(ask, askRaw)` talks to it: `ask` rejects on an RPC error,
+ * `askRaw` gives the message whatever it holds. The host and the temp folder go in a `finally`.
+ */
+const withHost = async (dir, config, extra, use) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stress-host-'))
+  const file = path.join(tmp, 'config.json')
+  fs.writeFileSync(file, JSON.stringify(config))
+  const env = { ...process.env }
+  for (const name of Object.keys(env)) if (name.startsWith('TOOLSCRIPT_')) delete env[name]
+  const child = spawn(process.execPath, [path.join(dir, 'dist', 'host', 'main.js'), '--config', file], {
+    env: { ...env, HOME: tmp, USERPROFILE: tmp, APPDATA: path.join(tmp, 'AppData', 'Roaming'), ...extra },
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
   })
@@ -620,32 +641,186 @@ export const textBytes = async dir => {
     }
   })
   let id = 0
-  const ask = (method, params) =>
+  const askRaw = (method, params) =>
     new Promise((resolve, reject) => {
       const mine = ++id
       const timer = setTimeout(() => reject(new Error(method + ' timed out')), 60_000)
       waiting.set(mine, msg => {
         clearTimeout(timer)
-        if (msg.error) reject(new Error(method + ' returned an error'))
-        else resolve(msg)
+        resolve(msg)
       })
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: mine, method, params }) + '\n')
     })
+  const ask = async (method, params) => {
+    const msg = await askRaw(method, params)
+    if (msg.error) throw new Error(method + ' returned an error')
+    return msg
+  }
+  const notify = method => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method }) + '\n')
   try {
-    const init = await ask('initialize', {
-      protocolVersion: '2025-06-18',
-      capabilities: {},
-      clientInfo: { name: 'stress', version: '0' },
-    })
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
-    const list = await ask('tools/list', {})
-    const search = await ask('tools/call', { name: 'search_tools', arguments: { query: '' } })
-    return checkedBytes(init, list, search)
+    return await use(ask, askRaw, notify)
   } finally {
     child.stdin.end()
     await endTree(child)
     fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
   }
+}
+
+/** The opening of a session as a client of 2025-06-18 makes it: initialize, initialized, tools/list, an empty search_tools. */
+const openSession = async (ask, notify = () => {}) => {
+  const init = await ask('initialize', {
+    protocolVersion: '2025-06-18',
+    capabilities: {},
+    clientInfo: { name: 'stress', version: '0' },
+  })
+  // `ask` has no notify of its own: the host reads the line from the same pipe.
+  notify('notifications/initialized')
+  const list = await ask('tools/list', {})
+  const search = await ask('tools/call', { name: 'search_tools', arguments: { query: '' } })
+  return [init, list, search]
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The upgrade gate (R1): the SHA-256 of what a client reads, equal for base and head
+
+export const sha256 = text => createHash('sha256').update(text).digest('hex')
+
+/** The `initialize` result with the version of the toolscript server masked. It hides nothing else. */
+export const maskVersion = result =>
+  result !== null && typeof result === 'object' && result.serverInfo !== null && typeof result.serverInfo === 'object'
+    ? { ...result, serverInfo: { ...result.serverInfo, version: '<version>' } }
+    : result
+
+export const HASH_WHAT = ['initialize', 'tools/list', 'instructions', 'search_tools']
+export const HASH_CONFIGS = ['empty', 'demo', 'bench']
+/** `legacy`: TOOLSCRIPT_PROTOCOL=legacy in the environment of both builds. `unset`: the variable is not set. */
+export const HASH_MODES = ['legacy', 'unset']
+export const hashMetric = (what, config, mode) => `${what} sha256 (${config} config, protocol ${mode})`
+export const PROBE_METRICS = ['probe server/discover answer sha256 (legacy)', 'probe session after it works (legacy)']
+export const BROKER_METRIC = 'dist/host/broker.js sha256'
+/** Every row of the hash part of the baseline, in print order. A row that was not measured fails. */
+export const HASH_METRICS = [
+  ...HASH_CONFIGS.flatMap(config => HASH_MODES.flatMap(mode => HASH_WHAT.map(what => hashMetric(what, config, mode)))),
+  ...PROBE_METRICS,
+  BROKER_METRIC,
+]
+
+/**
+ * The four hashes of one session: the masked `initialize` result, the `tools/list` result, the instructions string and the
+ * empty-query `search_tools` result. Each is null when its reply is not a real one (an RPC error, an isError result, no text,
+ * no tool), so a broken reply is a failed row and never an equal pair of nulls.
+ */
+export const replyHashes = (init, list, search) => {
+  const searchOk =
+    !search?.error && search?.result?.isError !== true && typeof search?.result?.content?.[0]?.text === 'string'
+  const initOk = !init?.error && init?.result?.serverInfo !== undefined
+  return {
+    initialize: initOk ? sha256(JSON.stringify(maskVersion(init.result))) : null,
+    'tools/list':
+      !list?.error && Array.isArray(list?.result?.tools) && list.result.tools.length > 0
+        ? sha256(JSON.stringify(list.result))
+        : null,
+    instructions:
+      !init?.error && typeof init?.result?.instructions === 'string' ? sha256(init.result.instructions) : null,
+    search_tools: searchOk ? sha256(JSON.stringify(search.result)) : null,
+  }
+}
+
+/**
+ * The rows of the hash metrics. `base` and `head` map a metric to a hash or null. `differs` is the list of rows that may
+ * differ on purpose: a differing row in it passes and says why, an equal row in it fails (the list is stale), and any other
+ * row passes only when equal. A null is a failed row.
+ */
+export const judgeHashes = (base, head, differs = []) => {
+  const listed = new Map(differs.map(d => [d.row, d]))
+  return HASH_METRICS.map(metric => {
+    const b = base?.[metric] ?? null
+    const h = head?.[metric] ?? null
+    const row = { metric, base: b, head: h, budget: 'equal', unit: 'hash', na: b === null || h === null }
+    if (row.na) return { ...row, ok: false }
+    const entry = listed.get(metric)
+    if (entry === undefined) return { ...row, ok: b === h }
+    if (b === h) return { ...row, ok: false, stale: true }
+    return { ...row, ok: true, differs: `${entry.reason}, PR ${entry.pr}` }
+  })
+}
+
+/** The `baseline.differs` list of the targets file, checked: each row names a known metric, a reason and a PR number. */
+export const parseDiffers = config => {
+  const list = config?.baseline?.differs ?? []
+  if (!Array.isArray(list)) throw new Error('baseline.differs must be a list')
+  for (const d of list) {
+    if (!HASH_METRICS.includes(d?.row)) throw new Error('baseline.differs names no row: ' + JSON.stringify(d?.row))
+    if (typeof d.reason !== 'string' || d.reason.trim() === '')
+      throw new Error('baseline.differs needs a reason: ' + d.row)
+    if (!Number.isInteger(d.pr) || d.pr < 1) throw new Error('baseline.differs needs a PR number: ' + d.row)
+  }
+  return list
+}
+
+/** The configs of the hash rows. Both builds get the same server files, those of the head. */
+const hashConfig = (name, harness) =>
+  name === 'empty'
+    ? { mcpServers: {} }
+    : name === 'demo'
+      ? { mcpServers: { demo: { command: process.execPath, args: [path.join(harness, 'demo', 'server.mjs')] } } }
+      : {
+          mcpServers: { bench1: { command: process.execPath, args: [path.join(harness, 'bench', 'fake-server.mjs')] } },
+        }
+
+/**
+ * The probe of a build with TOOLSCRIPT_PROTOCOL=legacy: `server/discover` as the first message, then `initialize` and
+ * `tools/list`. The hash of the code and message of the answer to the probe, and whether the session after it works.
+ */
+const probe = (dir, harness) =>
+  withHost(dir, hashConfig('empty', harness), { TOOLSCRIPT_PROTOCOL: 'legacy' }, async (_ask, askRaw, notify) => {
+    const first = await askRaw('server/discover', {})
+    const init = await askRaw('initialize', {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'stress', version: '0' },
+    })
+    notify('notifications/initialized')
+    const list = await askRaw('tools/list', {})
+    const works = !init.error && init.result?.serverInfo !== undefined && Array.isArray(list.result?.tools)
+    return {
+      [PROBE_METRICS[0]]: sha256(
+        first.error
+          ? JSON.stringify({ code: first.error.code, message: first.error.message })
+          : 'result ' + JSON.stringify(first.result),
+      ),
+      [PROBE_METRICS[1]]: works && list.result.tools.length > 0 ? sha256('works') : null,
+    }
+  })
+
+/** The hash of one file, or null. */
+const fileHash = file => {
+  try {
+    return sha256(fs.readFileSync(file))
+  } catch {
+    return null
+  }
+}
+
+/** Every hash metric of the build in `dir`. A session that fails or comes after the deadline leaves its rows null. */
+export const collectHashes = async (dir, harness) => {
+  const out = {}
+  const left = () => baselineEnd - performance.now() > 0
+  for (const config of HASH_CONFIGS)
+    for (const mode of HASH_MODES) {
+      const got = left()
+        ? await withHost(
+            dir,
+            hashConfig(config, harness),
+            mode === 'legacy' ? { TOOLSCRIPT_PROTOCOL: 'legacy' } : {},
+            async (ask, _raw, notify) => replyHashes(...(await openSession(ask, notify))),
+          ).catch(() => ({}))
+        : {}
+      for (const what of HASH_WHAT) out[hashMetric(what, config, mode)] = got[what] ?? null
+    }
+  if (left()) Object.assign(out, await probe(dir, harness).catch(() => ({})))
+  out[BROKER_METRIC] = fileHash(path.join(dir, 'dist', 'host', 'broker.js'))
+  return out
 }
 
 const packBytes = dir => {
@@ -676,7 +851,7 @@ const gather = (samples, dir, tmp) => ({
 })
 
 /** `deadline`: a performance.now() time after which no measurement starts. What it leaves out is n/a, so the row fails. */
-export const baseline = async (baseDir, headDir, out, deadline = Infinity) => {
+export const baseline = async (baseDir, headDir, out, deadline = Infinity, differs = []) => {
   baselineEnd = deadline
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stress-baseline-'))
   const samples = { base: { mem: [], shared: [] }, head: { mem: [], shared: [] } }
@@ -701,13 +876,17 @@ export const baseline = async (baseDir, headDir, out, deadline = Infinity) => {
     const g = gather(samples[key], dirs[key], tmp)
     result[key] = { ...g, ...(await textBytes(dirs[key]).catch(() => NO_TEXT)) }
     result[key].startMs = key === 'base' ? start.startMs : start.headStartMs
+    result[key].hashes = await collectHashes(dirs[key], dirs.head)
   }
   result.head.startDiffMs = start.startDiffMs
   result.head.startPairs = start.startPairs
   result.startPairs = startPairs
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
   baselineEnd = Infinity
-  const rows = judge(result.base, result.head, { memory: measuresMemory(process.platform) })
+  const rows = [
+    ...judge(result.base, result.head, { memory: measuresMemory(process.platform) }),
+    ...judgeHashes(result.base.hashes, result.head.hashes, differs),
+  ]
   fs.mkdirSync(out, { recursive: true })
   fs.writeFileSync(path.join(out, 'baseline.json'), JSON.stringify({ result, rows }, null, 2))
   return rows
@@ -887,7 +1066,14 @@ const main = async () => {
   }
   if (command === 'baseline') {
     if (!values.base || !values.head) throw new Error('baseline needs --base and --head')
-    const rows = await baseline(path.resolve(values.base), path.resolve(values.head), values.out, options.deadline)
+    const differs = parseDiffers(JSON.parse(fs.readFileSync(values.config, 'utf8')))
+    const rows = await baseline(
+      path.resolve(values.base),
+      path.resolve(values.head),
+      values.out,
+      options.deadline,
+      differs,
+    )
     publish(renderBaseline(rows))
     process.exit(rows.some(r => !r.ok) ? 1 : 0)
   }
