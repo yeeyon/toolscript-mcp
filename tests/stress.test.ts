@@ -579,7 +579,11 @@ describe('the baseline budgets', () => {
     assert.equal(start(rounds(() => 0, 40)).ok, true, '+40 ms is inside the budget')
     assert.equal(start(rounds(i => (i >= 10 && i < 25 ? 120 : 0), 70)).ok, false, '+70 ms inside a slow stretch')
     const row = start(rounds(() => 0, 70))
-    assert.match(row.budget, /median of 30 paired differences: 7\d\.\d ms/)
+    assert.match(row.budget, /judged on the median of 30 paired differences/)
+    // The columns show the medians, the result cell shows the paired median that decided.
+    assert.match(renderBaseline([row]), /\| FAIL \(paired \+7\d\.\d ms\) \|$/m)
+    const calm = start(rounds(i => (i >= 10 && i < 25 ? 120 : 0), 0))
+    assert.match(renderBaseline([calm]), /\| pass \(paired [+-]?\d+\.\d ms\) \|$/m)
     // Fewer than 10 rounds, or lost starts, is not measured: the row fails.
     const few = start(rounds(() => 0, 0).slice(0, 9))
     assert.equal(few.ok, false)

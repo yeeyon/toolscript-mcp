@@ -437,11 +437,13 @@ export const judge = (base, head, { memory = true } = {}) => {
     'start: tools/list ms (median)',
     base.startMs,
     head.startMs,
-    '+10% or +50 ms' +
-      (paired ? ', median of ' + head.startPairs + ' paired differences: ' + head.startDiffMs.toFixed(1) + ' ms' : ''),
+    '+10% or +50 ms' + (paired ? ', judged on the median of ' + head.startPairs + ' paired differences' : ''),
     (b, h) => (paired ? head.startDiffMs : h - b) <= Math.max(b * 0.1, 50),
     'ms',
   )
+  // The columns show the medians of each build, the verdict is on the paired median: say so in the result cell.
+  if (paired && head.startDiffMs !== null)
+    rows.at(-1).note = 'paired ' + (head.startDiffMs >= 0 ? '+' : '') + head.startDiffMs.toFixed(1) + ' ms'
   memoryRow(
     'host memory MB (6 hosts, private memory a host)',
     base.hostMb,
@@ -481,7 +483,11 @@ export const renderBaseline = rows => {
           show(r.base, r.unit),
           show(r.head, r.unit),
           r.budget,
-          r.skipped ? r.skipped : r.na ? 'FAIL (not measured)' : r.ok ? 'pass' : 'FAIL',
+          r.skipped
+            ? r.skipped
+            : r.na
+              ? 'FAIL (not measured)'
+              : (r.ok ? 'pass' : 'FAIL') + (r.note ? ' (' + r.note + ')' : ''),
         ].join(' | ') +
         ' |',
     ),
@@ -531,9 +537,21 @@ export const pairedStart = pairs => {
   }
 }
 
-/** The median tools/list time of `runs` starts, from the output of scripts/start-time.mjs. */
-const startMs = (dir, runs) => {
-  const r = runNode([path.join(dir, 'scripts', 'start-time.mjs'), '--runs', String(runs)], dir)
+/**
+ * The median tools/list time of `runs` starts of the build in `dir`, from the output of scripts/start-time.mjs. Both builds run
+ * the script of `harness` (head), with `--main` for the build, so a change of the script is never read as a change of the product.
+ */
+const startMs = (dir, runs, harness) => {
+  const r = runNode(
+    [
+      path.join(harness, 'scripts', 'start-time.mjs'),
+      '--runs',
+      String(runs),
+      '--main',
+      path.join(dir, 'dist', 'host', 'main.js'),
+    ],
+    harness,
+  )
   const m = /tools\/list: median (\d+) ms/.exec(r.stdout ?? '')
   return m === null ? null : Number(m[1])
 }
@@ -668,7 +686,7 @@ export const baseline = async (baseDir, headDir, out, deadline = Infinity) => {
   for (let i = 0; i < START_PAIRS; i++) {
     const order = i % 2 === 0 ? ['base', 'head'] : ['head', 'base']
     const got = {}
-    for (const turn of order) got[turn] = startMs(dirs[turn], 1)
+    for (const turn of order) got[turn] = startMs(dirs[turn], 1, dirs.head)
     startPairs.push([got.base, got.head])
   }
   // A, B, A, B for the memory.
