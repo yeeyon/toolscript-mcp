@@ -204,11 +204,15 @@ A later PR measures with base REF and head the PR, both in one job. For start ti
 `.github/workflows/stress.yml`: it builds head and base on the same runner and measures them in turns. A budget is judged on that
 pair, never on a number of another day. Laptop numbers are a second reference only.
 
+Open point for the start budget on macOS. The same product code measured 156.0 ms against 214.0 ms for base in one run and 258.5 ms
+against 189.5 ms in another, and the second one fails the budget of +50 ms. One median of one run is too noisy there, so the
+start budget needs a sturdier measure on macOS (the stress script gets a fix for it). The budget itself stays as accepted.
+
 | Metric | Value at REF | Unit | Source (command or run) | Date | Spread | Budget |
 |---|---|---|---|---|---|---|
-| Start, `tools/list` reply, median, head at REF (base `v1.0.4` in brackets), Node 24 | Windows 150.5 (154.0); Ubuntu 158.5 (154.5); macOS 156.0 (214.0) | ms | `baseline` profile, run 46130315779 (https://github.com/yeeyon/toolscript-mcp/actions/runs/46130315779), jobs 140933837726, 140933837802, 140933837708; head at REF, base at the tag `v1.0.4`, built and measured in turns on one runner | 2026-11-28 | the job summary prints one median for each side, not a range | +10% or +50 ms |
-| Host private bytes, head, each OS | pending a new run: not measured in run 46130315779 (Windows and Ubuntu: "FAIL (not measured)", a bug of the stress script, which is fixed apart; macOS: the system has no private memory number for a process) | MB | same run | | | +10 MB a host |
-| Sharing saving | pending the same new run, same reason | MB | same run | | | modern child: the same saving as legacy |
+| Start, `tools/list` reply, median, head at REF (base `v1.0.4` in brackets), Node 24 | Run 1 (46130315779): Windows 150.5 (154.0); Ubuntu 158.5 (154.5); macOS 156.0 (214.0). Run 2 (46131176322): Windows 134.0 (142.0); Ubuntu 147.0 (141.0); macOS 258.5 (189.5) | ms | `baseline` profile, run 46130315779 (https://github.com/yeeyon/toolscript-mcp/actions/runs/46130315779), jobs 140933837726, 140933837802, 140933837708; head at REF, base at the tag `v1.0.4`, built and measured in turns on one runner | 2026-11-28 | two runs, one median for each side in each: Windows 134.0 to 150.5, Ubuntu 147.0 to 158.5, macOS 156.0 to 258.5 | +10% or +50 ms |
+| Host private bytes, head (base `v1.0.4`), 6 hosts, Node 24 | Ubuntu 74.7 (73.6); Windows 159.5 (159.8); macOS not judged: the system has no private memory number for a process | MB a host | `baseline` profile, run 46131176322 (https://github.com/yeeyon/toolscript-mcp/actions/runs/46131176322). Same product code as REF: only `scripts/stress.mjs` differs, with the fix of the memory check. Run 46130315779 did not measure memory (a bug of the stress script) | 2026-11-28 | one value for each side in one run | +10 MB a host |
+| Sharing saving, head (base) | Ubuntu 26.6 (26.5); Windows 57.9 (58.2); macOS not judged, same reason | MB saved a host | same run | 2026-11-28 | one value for each side in one run | modern child: the same saving as legacy |
 | Bytes of the `baseline` profile, head (base in brackets), same run | `tools/list` 2849 (2862); instructions 296 (296); `search_tools` 233 (790) | bytes | same run, all three OS print the same | 2026-11-28 | exact | 0 on legacy |
 | Start, "laptop" second reference | no number recorded | | `node scripts/start-time.mjs` was not run in PR 1 | | | |
 | Host private bytes, "laptop" | 61.1 (60.7 to 61.3), fixture, commit 028435a; 66.7, owner config, commit 726eab2 | MB a host | `bench/RESULTS-memory.md` (2026-11-21, 2026-11-22) | 2026-11-21, 2026-11-22 | as listed | |
