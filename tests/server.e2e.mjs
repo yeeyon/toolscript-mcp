@@ -6,9 +6,7 @@
 //
 //   node tests/server.e2e.mjs
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Client, StdioClientTransport, ElicitRequestSchema } from './sdk.mjs'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'

@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { Client, LATEST_PROTOCOL_VERSION } from './sdk.mjs'
 import {
   brokerSide,
   endpointOf,
@@ -27,7 +27,6 @@ import {
   type Entry,
 } from '../src/core/broker.ts'
 import { brokerFolder } from '../src/core/paths.ts'
-import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js'
 import { PROBE_VERSION, startBroker, takeLock, type Broker, type BrokerOptions } from '../src/host/broker.ts'
 import { BrokerError, BrokerTransport, idOf, openLink } from '../src/host/brokerlink.ts'
 import { alive, serverEntry, staleSocket, text, until } from './broker-rig.ts'

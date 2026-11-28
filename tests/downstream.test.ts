@@ -12,11 +12,13 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import {
+  Server,
+  McpServer,
+  StreamableHTTPClientTransport,
+  StreamableHTTPServerTransport,
+  ListToolsRequestSchema,
+} from './sdk.mjs'
 import { getEventListeners } from 'node:events'
 import type { ServerConfig, ServerKey } from '../src/core/config.ts'
 import { connectAll, serverFetch, startLists, type Downstream } from '../src/host/downstream.ts'

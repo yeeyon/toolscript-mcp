@@ -3,7 +3,7 @@
 // and approval tests that apply to a standalone server. tests/server.e2e.mjs
 // runs the same path through the built server over stdio.
 
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { ErrorCode, McpError } from './sdk.mjs'
 import { after, describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import childProcess, { type ChildProcess } from 'node:child_process'

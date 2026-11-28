@@ -1,6 +1,6 @@
 // Helpers of the Workspace tests: a temp tree, a bound provider and a client of it. Temp folders only, with a fake HOME.
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { Client } from './sdk.mjs'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'

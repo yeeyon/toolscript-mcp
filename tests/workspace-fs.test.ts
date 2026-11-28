@@ -2,7 +2,7 @@
 // result holds, never a success text. A fixture is refused when the call fails with its code, no byte or name from
 // outside the root is in any result, and no file on disk changed.
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { Client } from './sdk.mjs'
 import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -686,7 +686,7 @@ describe('exclusions', () => {
       return
     }
     t.after(() => binding.bound.provider.close())
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+    const { Client } = await import('./sdk.mjs')
     const client = new Client({ name: 't', version: '0' })
     await client.connect(await binding.bound.provider.serve())
     t.after(() => client.close())

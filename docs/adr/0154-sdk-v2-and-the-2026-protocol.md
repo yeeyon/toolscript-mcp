@@ -364,7 +364,7 @@ What waits, each with its PR. Items that PR 1 already found are noted, and the P
    hands them a v1-shaped `extra` built from the v2 ctx.
 3. Own line codec in `src/core` for childtransport.ts and brokerlink.ts. No behaviour change. Done, narrower than the title: the
    framing of `childtransport.ts` only (`src/core/codec.ts`), the SDK check passed in, `lineSplitter` untouched. See section 3.
-4. Test seam: the tests take the SDK through one helper file.
+4. Test seam: the tests take the SDK through one helper file. Done: `tests/sdk.mjs` re-exports the SDK v1 names that the tests use (and `ReadBuffer`, `deserializeMessage` and `serializeMessage` for `tests/codec.test.ts`), imports the package and never `src/host/sdk/`, so from PR 5 to PR 7 the test peers stay on v1 while the host moves. PR 8 moves them by a change to that file. The raw-text check covers `tests/`, `bench/`, `demo/`, `scripts/` and `plugin/` too, with two named exceptions (`tests/code.check.mjs`, and the reference servers `@modelcontextprotocol/server-*` that tests name as sample config data), and fails when `src/`, `runtime/` or `demo/` import from `tests/`.
 5. v2 packages beside v1 (lockfile and pack review); the downstream client side on `@modelcontextprotocol/client`, legacy only; the
    error mapping and the unknown-tool text. Done, with a narrower cut: the `Client` of the stdio, shared and Workspace links, the
    transport types of those links, their `deserializeMessage` and the in-memory pair. The HTTP link, the OAuth provider, `auth`,

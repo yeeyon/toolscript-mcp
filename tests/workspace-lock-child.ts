@@ -6,7 +6,7 @@
 //   { exit: true }
 // It answers on stdout, one JSON line each: `{ ready: true }` first. Arguments: the root and the HOME.
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { Client } from './sdk.mjs'
 import path from 'node:path'
 import readline from 'node:readline'
 import { bindWorkspace } from '../src/host/workspace/bind.ts'

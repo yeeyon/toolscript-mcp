@@ -14,8 +14,7 @@
 // home of the person who runs it. The binary is found by a PATH search for claude.exe (Windows) or
 // claude, never the claude.ps1 shim.
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { Client, StdioClientTransport } from './sdk.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'

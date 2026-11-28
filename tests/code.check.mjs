@@ -8,8 +8,8 @@
 // server. Only src/core/hints.ts types out the `bundled:` prefix of a hint
 // ref. No file in src/host writes to stdout, which carries only MCP JSON-RPC.
 // The .mjs tests are not scanned. Only scripts/format.sh names a Prettier
-// version, so the hook and CI format alike. Only src/host/sdk/ names the MCP SDK, only the `sdk` package, and
-// the broker and src/core never import that folder (see sdkProblems).
+// version, so the hook and CI format alike. Only src/host/sdk/ and tests/sdk.* name the MCP SDK, only the `sdk` package,
+// the broker and src/core never import that folder, and no shipped folder imports from tests/ (see sdkProblems).
 //
 //   node tests/code.check.mjs
 
@@ -83,11 +83,21 @@ const codeProblems = (rel, text) => {
   })
 }
 
-// The SDK seam (#154): only src/host/sdk/ holds the text @modelcontextprotocol/, and only of the `sdk` and `client` packages.
-// src/ and runtime/ are scanned as raw text, so no import form can hide: import(variable), createRequire(...)(), a string
-// with // or /* before the import. A comment that names the package outside the folder fails too.
-// tests/, bench/, demo/ and scripts/ are out of the check.
+// The SDK seam (#154): only src/host/sdk/ and the test helper tests/sdk.* hold the text @modelcontextprotocol/, and only
+// of the `sdk` and `client` packages. src/, runtime/, tests/, bench/, demo/, scripts/ and plugin/ are scanned as raw text, so no import
+// form can hide: import(variable), createRequire(...)(), a string with // or /* before the import. A comment that names
+// the package outside the two places fails too. The tests take the SDK through tests/sdk.mjs, which imports the package
+// itself and never src/host/sdk/: from PR 5 to PR 7 the host moves to SDK v2 while the test peers stay on v1.
+// Named exceptions:
+//  - this file: its patterns and self-test lines hold the text;
+//  - a name `@modelcontextprotocol/server-<x>` outside src/ and runtime/: the reference MCP servers that a test names as
+//    sample config data (`npx -y @modelcontextprotocol/server-filesystem`). No SDK package starts with `server-`.
+// The package ships no test file: nothing in src/, runtime/ or demo/ imports from tests/.
 const SDK_DIR = 'src/host/sdk/'
+const TOPS = ['src', 'runtime', 'tests', 'bench', 'demo', 'scripts', 'plugin']
+const SEAM_EXCEPTION = 'tests/code.check.mjs'
+const isHelper = rel => /^tests\/sdk\.[\w.]+$/.test(rel)
+const SHIPS_NO_TEST = ['src/', 'runtime/', 'demo/']
 const SDK_SOURCE = /\.(?:[cm]?[jt]s)$/
 const MODULE = /\b(?:from|import|require)\s*\(?\s*(['"`])([^'"`\n]*)\1/g
 const NO_SDK_IMPORT = new Set(['src/host/broker.ts', 'src/host/brokermain.ts'])
@@ -96,7 +106,7 @@ const sourcesIn = (root, dir) =>
   fs.existsSync(path.join(root, dir))
     ? fs.readdirSync(path.join(root, dir), { withFileTypes: true }).flatMap(entry => {
         const rel = `${dir}/${entry.name}`
-        if (entry.isDirectory()) return sourcesIn(root, rel)
+        if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : sourcesIn(root, rel)
         return entry.isFile() && SDK_SOURCE.test(entry.name) ? [rel] : []
       })
     : []
@@ -106,22 +116,32 @@ const lineOf = (text, index) => text.slice(0, index).split('\n').length
 
 // The problems of the SDK seam in the tree under `root`, as "file:line: message".
 const sdkProblems = root =>
-  ['src', 'runtime'].flatMap(top =>
+  TOPS.flatMap(top =>
     sourcesIn(root, top).flatMap(rel => {
+      if (rel === SEAM_EXCEPTION) return []
       const text = fs.readFileSync(path.join(root, rel), 'utf8')
+      const sealedTop = rel.startsWith('src/') || rel.startsWith('runtime/')
       const named = [...text.matchAll(PACKAGE)].flatMap(m => {
         const at = `${rel}:${lineOf(text, m.index)}: `
-        if (!rel.startsWith(SDK_DIR)) return [`${at}names ${m[0]} outside src/host/sdk/: use that folder`]
+        if (!sealedTop && /^server-/.test(m[1])) return []
+        if (!rel.startsWith(SDK_DIR) && !isHelper(rel))
+          return [`${at}names ${m[0]} outside src/host/sdk/ and tests/sdk.*: use src/host/sdk/ (tests: tests/sdk.mjs)`]
         return m[1] === 'sdk' || m[1] === 'client'
           ? []
-          : [`${at}names ${m[0]}: src/host/sdk/ names only the sdk and client packages`]
+          : [`${at}names ${m[0]}: this place names only the sdk and client packages`]
       })
       const sealed = NO_SDK_IMPORT.has(rel) || rel.startsWith('src/core/')
-      const loaded = [...text.matchAll(MODULE)].flatMap(m =>
-        sealed && m[2].startsWith('.') && /(^|\/)sdk\//.test(m[2])
-          ? [`${rel}:${lineOf(text, m.index)}: imports ${m[2]}: the broker and src/core never load the SDK folder`]
-          : [],
-      )
+      const shipped = SHIPS_NO_TEST.some(p => rel.startsWith(p))
+      const loaded = [...text.matchAll(MODULE)].flatMap(m => {
+        const at = `${rel}:${lineOf(text, m.index)}: `
+        if (sealed && m[2].startsWith('.') && /(^|\/)sdk\//.test(m[2]))
+          return [`${at}imports ${m[2]}: the broker and src/core never load the SDK folder`]
+        if (shipped && m[2].startsWith('.') && /(^|\/)tests\//.test(m[2]))
+          return [`${at}imports ${m[2]}: the package ships no test file`]
+        if (isHelper(rel) && m[2].startsWith('.') && /(^|\/)src\/host\/sdk(\/|$)/.test(m[2]))
+          return [`${at}imports ${m[2]}: the test helper takes the SDK package, never the adapter`]
+        return []
+      })
       return [...named, ...loaded]
     }),
   )
@@ -219,7 +239,7 @@ const tests = {
     const pinned = files.filter(rel => /prettier@\d/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')))
     assert.deepEqual(pinned, ['scripts/format.sh'], 'call Prettier through scripts/format.sh')
   },
-  'only src/host/sdk/ imports the SDK': () => {
+  'only src/host/sdk/ and tests/sdk.* import the SDK': () => {
     const problems = sdkProblems(ROOT)
     assert.deepEqual(problems, [], `${problems.join('\n')}\n\nThe rule is in CODING_STANDARDS.md, "SDK seam".`)
   },
@@ -250,7 +270,18 @@ const tests = {
         `const g = 'src/*'\nimport { X } from '${sdk}'\n/* end */`,
       ]
       for (const [i, line] of outside.entries()) {
-        for (const rel of ['src/host/x.ts', 'src/host/workspace/y.ts', 'src/core/z.ts', 'runtime/r.mjs']) {
+        for (const rel of [
+          'src/host/x.ts',
+          'src/host/workspace/y.ts',
+          'src/core/z.ts',
+          'runtime/r.mjs',
+          'tests/t.ts',
+          'tests/e2e.mjs',
+          'bench/b.mjs',
+          'demo/d.mjs',
+          'scripts/s.mjs',
+          'plugin/p.mjs',
+        ]) {
           put(rel, `${line}\n`)
           const found = sdkProblems(root)
           assert.equal(found.length, 1, `form ${i} in ${rel}: ${found.join('|')}`)
@@ -287,10 +318,58 @@ const tests = {
       // Another host file may use the folder.
       put('src/host/downstream.ts', "import { X } from './sdk/client.ts'\n")
       assert.deepEqual(sdkProblems(root), [])
-      // Out of the check: tests, bench, demo and scripts.
-      for (const rel of ['tests/t.ts', 'bench/b.mjs', 'demo/d.mjs', 'scripts/s.mjs'])
-        put(rel, `import { X } from '${sdk}'\n`)
-      assert.deepEqual(sdkProblems(root), [])
+      // The test helper names the sdk package, and no other. Its own folder-relative imports are fine, the adapter is not.
+      put('tests/sdk.mjs', `export { X } from '${sdk}'\n`)
+      put('tests/sdk.d.mts', `export { X } from '${sdk}'\n`)
+      assert.deepEqual(sdkProblems(root), [], 'the test helper names the sdk package')
+      for (const bad of ["'../src/host/sdk/client.ts'", "'../src/host/sdk'"]) {
+        put('tests/sdk.mjs', `export { X } from ${bad}\n`)
+        assert.equal(sdkProblems(root).length, 1, `the test helper imports ${bad}`)
+      }
+      put('tests/sdk.mjs', "export { X } from '@modelcontextprotocol/client'\n")
+      assert.deepEqual(sdkProblems(root), [], 'the test helper names the client package')
+      for (const other of ['server', 'core']) {
+        put('tests/sdk.mjs', `export { X } from '@modelcontextprotocol/${other}'\n`)
+        assert.equal(sdkProblems(root).length, 1, `the test helper names no @modelcontextprotocol/${other}`)
+      }
+      drop('tests/sdk.mjs')
+      drop('tests/sdk.d.mts')
+      // The one named file, and the reference servers that a test names as sample data.
+      put('tests/code.check.mjs', `const a = '${sdk}'; const b = '@modelcontextprotocol/client'\n`)
+      assert.deepEqual(sdkProblems(root), [], 'the check file names the package')
+      drop('tests/code.check.mjs')
+      put('tests/other.check.mjs', `const a = '${sdk}'\n`)
+      assert.equal(sdkProblems(root).length, 1, 'no other check file is an exception')
+      drop('tests/other.check.mjs')
+      for (const rel of ['tests/share.test.ts', 'bench/b.mjs', 'scripts/s.mjs', 'plugin/p.mjs']) {
+        put(rel, "const c = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] }\n")
+        assert.deepEqual(sdkProblems(root), [], `${rel} names a reference server`)
+        drop(rel)
+      }
+      for (const rel of ['src/host/x.ts', 'runtime/r.mjs']) {
+        put(rel, "const c = '@modelcontextprotocol/server-filesystem'\n")
+        assert.equal(sdkProblems(root).length, 1, `${rel} names a reference server`)
+        drop(rel)
+      }
+      put('tests/t.ts', "const c = '@modelcontextprotocol/server'\n")
+      assert.equal(sdkProblems(root).length, 1, 'a v2 package name is not a reference server')
+      drop('tests/t.ts')
+      // The package ships no test file: src/, runtime/ and demo/ never import from tests/.
+      for (const rel of ['src/host/x.ts', 'src/core/y.ts', 'runtime/r.mjs', 'demo/d.mjs']) {
+        for (const bad of ["'../tests/rig.ts'", "'../../tests/sdk.mjs'", "'./tests/a.mjs'"]) {
+          put(rel, `import { X } from ${bad}\n`)
+          assert.equal(sdkProblems(root).length, 1, `${rel} imports ${bad}`)
+        }
+        put(rel, "import { X } from './testsuite.ts'\n")
+        assert.deepEqual(sdkProblems(root), [], `${rel} with a name that only starts with tests`)
+        drop(rel)
+      }
+      // Other folders may import from tests/ (bench takes the helper).
+      for (const rel of ['bench/b.mjs', 'tests/t.ts', 'scripts/s.mjs']) {
+        put(rel, "import { X } from '../tests/sdk.mjs'\n")
+        assert.deepEqual(sdkProblems(root), [], `${rel} imports tests/`)
+        drop(rel)
+      }
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

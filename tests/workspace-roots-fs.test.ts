@@ -2,10 +2,7 @@
 // check what a call lists and what the log says, with fake client answers for `bindWorkspace` and a real SDK client and
 // server pair for `createRoots`.
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Client, InMemoryTransport, Server, ListRootsRequestSchema } from './sdk.mjs'
 import { describe, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'

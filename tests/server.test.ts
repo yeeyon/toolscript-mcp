@@ -18,8 +18,7 @@ import {
 } from '../src/core/config.ts'
 import { argsText, catalogOf, searchResult, toolName, type ServerState } from '../src/core/catalog.ts'
 import { splitToolName } from '../src/core/protocol.ts'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { Client, InMemoryTransport } from './sdk.mjs'
 import { connectAll } from '../src/host/downstream.ts'
 import { createServer } from '../src/host/server.ts'
 

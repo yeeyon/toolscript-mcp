@@ -2,8 +2,7 @@
 // error names and texts, in the same order. A new SDK is compared with the codec by this file (issue #154).
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ReadBuffer, deserializeMessage, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
-import { deserializeMessage as deserializeMessageV2 } from '@modelcontextprotocol/client'
+import { ReadBuffer, deserializeMessage, deserializeMessageV2, serializeMessage } from './sdk.mjs'
 import { FRAME_MAX, FrameReader, frameOf } from '../src/core/codec.ts'
 
 type Outcome = { message: unknown } | { error: string; text: string }
@@ -246,7 +245,7 @@ describe('500 seeded streams cut at random places', () => {
     })
 })
 
-// v2's deserializeMessage (@modelcontextprotocol/client 2.4.0) on the same rows, through the codec: the rows where its
+// v2's deserializeMessage (client package 2.4.0) on the same rows, through the codec: the rows where its
 // outcome differs from v1's are listed here, so a difference that changes what happens to a real server's line is seen.
 describe('the codec with the deserializeMessage of v2', () => {
   const theirs = (chunks: readonly Chunk[]) => run(sdk(), chunks)
