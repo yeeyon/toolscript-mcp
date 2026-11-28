@@ -1,6 +1,44 @@
 # Bench results: direct MCP tools against toolscript-mcp
 
-## Setup
+## Rerun for issue #89 (2026-11-27)
+
+The numbers in this section replace the ones in the earlier run below. The earlier run is kept as it was, with its commit.
+
+- Date: 2026-11-27. Windows 11, Node v22.23.3, Claude Code 2.1.332.
+- Model: `--model haiku`, which ran as `claude-haiku-5-5` in every run.
+- toolscript-mcp at main `ed604f6` plus the bench-only lean arms of this change, built with `npm run build`.
+- Command: `node bench/run.mjs --model haiku --reps 5 --parallel 1 --max-spend 3 --arms direct,toolscript,both,direct-lean,toolscript-lean`.
+  6 tasks, 5 reps, 5 arms: 150 runs, one at a time. Spend: $0.4673. Raw rows and the printed tables:
+  `bench/rerun-2026-11-27/headless-results.jsonl` and `headless-report.txt`.
+- The arms `both`, `direct-lean` and `toolscript-lean` did not exist in the earlier run. `-lean` starts Claude Code with
+  `--tools ""`, so it lists none of its built-in tools.
+
+All 30 answers of `direct`, `toolscript`, `both` and `toolscript-lean` were correct. `direct-lean` was correct in 25 of 30:
+the 5 wrong answers are all the `deploys` task, whose result is about 70,000 characters. Claude Code saves it to a file,
+and the lean model has no tool to read that file.
+
+| mean per run | direct | toolscript | both | direct-lean | toolscript-lean |
+|---|---:|---:|---:|---:|---:|
+| correct | 30/30 | 30/30 | 30/30 | 25/30 | 30/30 |
+| cost USD | 0.0058 | 0.0024 | 0.0024 | 0.0039 | 0.0011 |
+| turns | 4.6 | 3.8 | 3.8 | 2.8 | 3.9 |
+| tool result chars in context | 39,213 | 3,022 | 3,295 | 35,896 | 2,583 |
+| search_tools calls | 0 | 1.1 | 0.8 | 0 | 1.1 |
+| seconds | 12.8 | 10.8 | 11.2 | 10.3 | 10.3 |
+
+Mean cost per task, direct against toolscript (USD): messages 0.0069 / 0.0026, issues 0.0066 / 0.0021, deploys
+0.0060 / 0.0021, cross 0.0122 / 0.0039, logs 0.0018 / 0.0020, ticket 0.0015 / 0.0016. The toolscript arm costs
+63% to 68% less on the 4 tasks with large results, and 10% (logs) and 4% (ticket) more on the 2 tasks with small ones.
+In the `both` arm (the 5 direct tools and `run_code` listed together) the model used `run_code` in 28 of 30 runs: all
+runs of 5 tasks, and 3 of 5 on `ticket`.
+
+Before against after (Haiku, headless): at `cce6ea0` (Claude Code 2.1.322, 60 runs) mean cost per task was $0.0060
+direct and $0.0033 toolscript, tool result characters in context 41,595 and 8,133, and `search_tools` calls 1.2 per
+run. Now it is $0.0058 and $0.0024, 39,213 and 3,022, and 1.1.
+
+## Earlier run (2026-11-12, `cce6ea0`, Claude Code 2.1.322)
+
+### Setup
 
 - Date: 2026-11-12. Windows 11, Node v22.23.3, Claude Code 2.1.322.
 - Model: `--model haiku`, which ran as `claude-haiku-5-5` in every run.
@@ -21,7 +59,7 @@ plugins load. It removes Bash. The read-only file tools (Read, Grep, Glob) stay,
 only Claude Code's built-in plugins (`cc-plugin-*@builtin`) and had 0 hook events. A control run with a hook passed in
 `--settings` did show hook events, so the stream reports hooks when they run.
 
-## Result
+### Result
 
 All 60 answers were correct (30/30 per arm). The toolscript arm cost less on the 4 tasks with large tool results and
 more on the 2 tasks with small ones.
@@ -31,7 +69,7 @@ more on the 2 tasks with small ones.
 - Total input tokens were about the same: median 94,324 direct, 92,063 toolscript.
 - Wall time was the same: mean 14.4 s direct, 14.7 s toolscript.
 
-### Per arm
+#### Per arm
 
 | metric | direct mean | direct median | direct min to max | toolscript mean | toolscript median | toolscript min to max |
 |---|---:|---:|---:|---:|---:|---:|
@@ -57,7 +95,7 @@ more on the 2 tasks with small ones.
 | direct mcp__bench__ calls | 1.8 | 1 | 1 to 4 | 0 | 0 | 0 |
 | ToolSearch calls | 1 | 1 | 1 | 1.1 | 1 | 1 to 3 |
 
-### Per task, cost and tokens
+#### Per task, cost and tokens
 
 Median (min to max) of 5 runs per arm. "Change" is the toolscript median against the direct median.
 
@@ -74,7 +112,7 @@ Median (min to max) of 5 runs per arm. "Change" is the toolscript median against
 For issues, messages, cross, logs and ticket, the 5 costs of one arm do not overlap the 5 costs of the other. For
 deploys the ranges overlap (rank-sum U = 21.5 of 25, two-sided p about 0.08), so 5 reps do not settle that task.
 
-### Per task, behavior
+#### Per task, behavior
 
 Median per run, direct / toolscript. "Server chars" is what the fake server returned (BENCH_LOG). "Chars in context"
 is the text of all tool results the model received.
@@ -89,7 +127,7 @@ is the text of all tool results the model received.
 | cross | 6 / 7 | 4 / 8 | 0 / 2 | 0 / 3 | 0 / 0 | 1 / 1 | 89,722 / 179,444 | 105,677 / 4,903 |
 | all | 4 / 6 | 1 / 2 | 0 / 1 | 0 / 2 | 0 / 0 | 1 / 1 | 44,861 / 89,722 | 48,033 / 4,464 |
 
-## What the number is made of
+### What the number is made of
 
 The prices in `total_cost_usd` fit these rates exactly over all 60 runs (least squares, largest error below
 $1e-16): $0.10 per million fresh input tokens, $0.01 per million cache reads, $0.20 per million cache writes (1-hour
@@ -122,7 +160,7 @@ called the same tool again and computed the answer. It did not use `recall(n)`, 
 new call. On deploys, the first program returned the whole result in 4 of 5 runs, and toolscript cut it to about
 23,000 characters.
 
-## Tool definitions
+### Tool definitions
 
 The bench server lists 5 tools: 1,390 characters of tool JSON and no instructions. toolscript-mcp lists `run_code` and
 `search_tools`: 2,095 characters of tool JSON and 177 characters of server instructions. The toolscript definitions are
@@ -133,7 +171,7 @@ definition enters the context when the model loads the tool with ToolSearch, whi
 measured first-call difference is 61 tokens more for the toolscript arm (15,788 against 15,727). At about 5 API calls
 per run that is about 300 cache-read tokens, under $0.00001 per run.
 
-## Fairness and limits
+### Fairness and limits
 
 - **Large results in the direct arm.** Claude Code saves an MCP result that is over its token limit to a file and
   gives the model the path. This happened on all 5 direct deploys runs (70,872 characters). The model then read the

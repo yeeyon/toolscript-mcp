@@ -190,6 +190,214 @@ describe('the prune by include', () => {
   })
 })
 
+// Several files of one \`search\` walk are read at the same time (the option `searchInFlight` of the limits). Each visit
+// proves its own open as before, and the matches are taken in the order of the walk, so the answer is the same for any N.
+describe('search with several files in flight', () => {
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  /** A tree with matches, a binary file, an excluded file and a folder in a folder, so the order and the counts matter. */
+  const mixed = (t: TestContext) => {
+    const root = tree(t)
+    const text = (i: number) => Array.from({ length: 6 }, (_, k) => `line ${k} hit ${i}`).join('\n') + '\n'
+    write(root, {
+      ...Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`a/f${String(i).padStart(2, '0')}.txt`, text(i)])),
+      ...Object.fromEntries(
+        Array.from({ length: 12 }, (_, i) => [`a/b/g${String(i).padStart(2, '0')}.txt`, text(100 + i)]),
+      ),
+      'a/bin.dat': 'hit\u0000hit',
+      'a/skip.sqlite': 'hit\n',
+      'c.txt': 'hit\n',
+    })
+    return root
+  }
+
+  test('the answer is the same for 1, 2, 4 and 8 files in flight, also when it is cut at maxMatches', async t => {
+    const root = mixed(t)
+    for (const args of [
+      { query: 'hit' },
+      { query: 'hit', maxMatches: 7 },
+      { query: ['hit', 'line 3'], maxMatches: 11 },
+    ]) {
+      const answers: string[] = []
+      for (const searchInFlight of [1, 2, 4, 8]) {
+        const rig = await rigOf(t, root, { exclude: ['*.sqlite'], limits: { searchInFlight } })
+        if (rig === undefined) return
+        answers.push(JSON.stringify(await rig.call('search', args)))
+      }
+      assert.equal(
+        new Set(answers).size,
+        1,
+        JSON.stringify(args) + ' differs: ' + answers.map(a => a.slice(0, 120)).join(' | '),
+      )
+    }
+  })
+
+  test('up to N opens are at the same time, never more, and one at a time for N = 1', async t => {
+    const root = mixed(t)
+    for (const [searchInFlight, most] of [
+      [1, 1],
+      [4, 4],
+    ] as const) {
+      let now = 0
+      let top = 0
+      const rig = await rigOf(t, root, {
+        limits: { searchInFlight },
+        hook: async lookup => {
+          if (lookup !== 'open') return
+          top = Math.max(top, ++now)
+          await sleep(15)
+          now--
+        },
+      })
+      if (rig === undefined) return
+      const r = await rig.call('search', { query: 'hit', maxMatches: 2000 })
+      assert.equal(r.filesScanned, 44)
+      // The first call of a rig can pay a one-time open, so the bound is checked on the counted peak.
+      assert.ok(top <= most, `N = ${searchInFlight}: ${top} opens at the same time`)
+      if (searchInFlight > 1) assert.ok(top >= 2, `N = ${searchInFlight}: no overlap, peak ${top}`)
+    }
+  })
+
+  test('with no kind from the listing, the lstat of up to N entries of a folder are at the same time for a search, and one at a time for N = 1 and for a list', async t => {
+    // No file matches the include, so no file is opened: the lookups of `lstat` are those of the entries and of their brackets.
+    const root = tree(t)
+    write(root, files('e', 24))
+    for (const [tool, searchInFlight, most, least] of [
+      ['search', 1, 1, 1],
+      ['search', 4, 4, 2],
+      ['list', 4, 1, 1],
+    ] as const) {
+      let now = 0
+      let top = 0
+      const rig = await rigOf(t, root, {
+        limits: { searchInFlight },
+        listedKinds: false,
+        hook: async lookup => {
+          if (lookup !== 'lstat') return
+          top = Math.max(top, ++now)
+          await sleep(10)
+          now--
+        },
+      })
+      if (rig === undefined) return
+      const args = tool === 'search' ? { query: 'hit', include: ['**/*.nomatch'] } : { include: ['**/*.nomatch'] }
+      const r = await rig.call(tool, args)
+      assert.equal(r.truncated, false)
+      assert.ok(top <= most, `${tool} N = ${searchInFlight}: ${top} lstat at the same time`)
+      assert.ok(top >= least, `${tool} N = ${searchInFlight}: peak ${top}`)
+    }
+  })
+
+  test('a search takes the kind of each entry from the listing: no lstat of an entry, the same answer, and a list still looks at each', async t => {
+    const root = mixed(t)
+    const counted = async (listedKinds: boolean, tool: string, args: Record<string, unknown>) => {
+      let lstats = 0
+      const rig = await rigOf(t, root, {
+        listedKinds,
+        hook: lookup => void (lookup === 'lstat' && lstats++),
+      })
+      if (rig === undefined) return undefined
+      await rig.call(tool, args) // the first call of a rig can pay a one-time lookup
+      lstats = 0
+      const answer = await rig.call(tool, args)
+      return { lstats, answer: JSON.stringify(answer) }
+    }
+    const withKinds = await counted(true, 'search', { query: 'hit', maxMatches: 2000 })
+    const without = await counted(false, 'search', { query: 'hit', maxMatches: 2000 })
+    if (withKinds === undefined || without === undefined) return
+    assert.equal(withKinds.answer, without.answer)
+    // The tree has 46 names: each had one lstat without the kind, with the proofs of the folder around it on Windows and macOS.
+    assert.ok(
+      without.lstats - withKinds.lstats >= 46,
+      `lstat: ${without.lstats} without the kind, ${withKinds.lstats} with it`,
+    )
+    const listA = await counted(true, 'list', { depth: 3 })
+    const listB = await counted(false, 'list', { depth: 3 })
+    if (listA === undefined || listB === undefined) return
+    assert.equal(listA.lstats, listB.lstats, 'a list does not use the kinds of the listing')
+    assert.ok(listA.lstats >= 46)
+  })
+
+  test('an error of one visit ends the call after every running visit has ended: none opens a name later', async t => {
+    const root = tree(t)
+    write(root, { 'd/a0': 'hit\n', 'd/a1': 'hit\n', 'd/a2': 'hit\n', 'd/a3': 'hit\n', 'd/a4': 'hit\n' })
+    let listed = false
+    let opens = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => (release = resolve))
+    let afterReturn = 0
+    let returned = false
+    const rig = await rigOf(t, root, {
+      limits: { searchInFlight: 4 },
+      hook: async lookup => {
+        if (returned && lookup !== 'readdir') afterReturn++
+        if (lookup === 'readdir') listed = true
+        if (lookup !== 'open' || !listed) return
+        const n = ++opens
+        // The first open of a file of d fails, the second fails too, the third is held, the others go on.
+        if (n === 2 || n === 3) throw new Error('stop ' + n)
+        if (n === 4) await gate
+      },
+    })
+    if (rig === undefined) return
+    const call = rig.client.callTool({ name: 'search', arguments: { query: 'hit' } }).then(r => {
+      returned = true
+      return r
+    })
+    for (let i = 0; i < 200 && opens < 4; i++) await sleep(5)
+    assert.ok(opens >= 4, 'the 4 opens of the files are in flight')
+    await sleep(60)
+    assert.equal(returned, false, 'the call waits for the held visit before it ends')
+    release()
+    const r = await call
+    assert.equal(r.isError, true)
+    await sleep(80)
+    assert.equal(afterReturn, 0, 'a lookup ran after the call ended')
+    assert.equal(rig.bound.provider.inFlight(), 0)
+    // The next call works: no handle or folder is left half closed.
+    opens = 100
+    assert.equal((await rig.call('search', { query: 'hit' })).filesScanned, 5)
+  })
+
+  test('a cancel while the opens are held ends the call, and the slot and the handles are free for the next call', async t => {
+    const root = tree(t)
+    write(root, files('h', 12))
+    let hold = true
+    let listed = false
+    let held = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => (release = resolve))
+    const rig = await rigOf(t, root, {
+      limits: { searchInFlight: 4 },
+      hook: async lookup => {
+        // The opens after the first listing are the files of the walk: they are held.
+        if (lookup === 'readdir') listed = true
+        if (lookup === 'open' && hold && listed) {
+          held++
+          await gate
+        }
+      },
+    })
+    if (rig === undefined) return
+    const quit = new AbortController()
+    const call = rig.call('search', { query: 'hit' }, quit.signal)
+    const outcome = call.then(
+      () => 'done',
+      () => 'cancelled',
+    )
+    for (let i = 0; i < 400 && held < 2; i++) await sleep(5)
+    assert.ok(held >= 2, 'at least 2 opens were in flight')
+    quit.abort()
+    hold = false
+    release()
+    assert.equal(await outcome, 'cancelled')
+    for (let i = 0; i < 400 && rig.bound.provider.inFlight() > 0; i++) await sleep(5)
+    assert.equal(rig.bound.provider.inFlight(), 0)
+    const again = await rig.call('search', { query: 'hit' })
+    assert.equal(again.filesScanned, 12)
+  })
+})
+
 describe('the walk slots (issue #160)', () => {
   /** A hook that holds each `readdir` (the first lookup of a walk) until `release`. `read` never does a `readdir`. */
   const holding = () => {
@@ -318,6 +526,56 @@ describe('the walk slots (issue #160)', () => {
       h.release()
       await Promise.all(walks)
       await rig.close()
+    }
+  })
+
+  test('a search that took its last match walks no sibling folder, at any number in flight', async t => {
+    const root = tree(t)
+    const sub = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`b/s${i}/f.dat`, 'nothing\n']))
+    write(root, {
+      ...Object.fromEntries(Object.keys(files('a/x', 4)).map(k => [`${k}.txt`, 'hit\n'])),
+      ...Object.fromEntries(Object.keys(files('b/y', 400)).map(k => [`${k}.dat`, 'nothing\n'])),
+      ...sub,
+    })
+    for (const searchInFlight of [1, 4]) {
+      let readdirs = 0
+      const rig = await rigOf(t, root, {
+        limits: { searchInFlight },
+        hook: lookup => void (lookup === 'readdir' && readdirs++),
+      })
+      if (rig === undefined) return
+      readdirs = 0
+      const found = await rig.call('search', { query: 'hit', include: ['**/*.txt'], maxMatches: 2 })
+      assert.equal(found.matches.length, 2)
+      assert.equal(readdirs, 2, `N = ${searchInFlight}: the root and a, never b`)
+    }
+  })
+
+  test('the visits before a folder are taken before the folder is opened: a cut file, then a folder that cannot be read', async t => {
+    const deep = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`b/${'d/'.repeat(i + 1)}f.txt`, 'nothing\n']))
+    for (const [name, extra] of [
+      ['unreadable', { 'b/f.txt': 'nothing\n' }],
+      ['deep', deep],
+    ] as const) {
+      const root = tree(t)
+      write(root, { 'a.txt': 'hit\n'.repeat(10), ...extra })
+      for (const searchInFlight of [1, 4]) {
+        let readdirs = 0
+        const rig = await rigOf(t, root, {
+          limits: { searchInFlight },
+          hook: lookup => {
+            if (lookup !== 'readdir') return
+            // The root is the first listing: a second one is a folder of the walk, and it cannot be read.
+            if (++readdirs > 1) throw new Error('unreadable folder')
+          },
+        })
+        if (rig === undefined) return
+        readdirs = 0
+        const found = await rig.call('search', { query: 'hit', maxMatches: 2 })
+        assert.equal(found.matches.length, 2, `${name}, N = ${searchInFlight}`)
+        assert.equal(found.truncated, true)
+        assert.equal(readdirs, 1, `${name}, N = ${searchInFlight}: no folder after the cut`)
+      }
     }
   })
 })

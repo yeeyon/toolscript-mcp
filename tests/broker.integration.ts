@@ -80,7 +80,7 @@ describe('a real broker', () => {
 
   test(
     'six starts at once against a stale socket file give one broker and one child',
-    { skip: process.platform === 'win32' },
+    { skip: process.platform === 'win32' && 'pipes vanish with their process' },
     async () => {
       const home = newHome()
       const id = crypto.createHash('sha256').update(fs.readFileSync(BROKER)).digest('hex')
@@ -90,6 +90,28 @@ describe('a real broker', () => {
       const pids = await Promise.all(six.map(c => text(c, 'pid')))
       assert.equal(new Set(pids).size, 1, 'one child')
       assert.equal(listens(home), 1, 'one broker')
+    },
+  )
+
+  test(
+    'a broker that ends while it takes one last connection: the link dials again and a new broker answers',
+    { skip: process.platform === 'win32' && 'pipes vanish with their process' },
+    async () => {
+      const home = newHome()
+      const id = crypto.createHash('sha256').update(fs.readFileSync(BROKER)).digest('hex')
+      const endpoint = endpointFor(home, loadKey(home), id)
+      // What a kill leaves: the first connection is accepted and closed, then the process dies and its file stays.
+      const code =
+        "const s = require('net').createServer(c => { c.destroy(); process.kill(process.pid, 'SIGKILL') });" +
+        "s.listen(process.argv[1], () => process.stdout.write('ready'))"
+      const dying = spawn(process.execPath, ['-e', code, endpoint], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      })
+      await new Promise(resolve => dying.stdout.once('data', resolve))
+      const client = await connect(home)
+      assert.ok(Number(await text(client, 'pid')) > 0, 'the new broker answers')
+      assert.equal(brokerPids(home).length, 1, 'one broker was started')
     },
   )
 
@@ -229,15 +251,19 @@ describe('a real broker', () => {
   })
 
   // Windows has no SIGTERM handler for a process: there the broker ends by its idle time, tested above.
-  test('SIGTERM stops every child first, then the broker ends', { skip: process.platform === 'win32' }, async () => {
-    const home = newHome()
-    const client = await connect(home)
-    const child = Number(await text(client, 'pid'))
-    const [broker] = brokerPids(home)
-    process.kill(broker!, 'SIGTERM')
-    await until('the child ends', () => !alive(child), 8000)
-    await until('the broker ends', () => !alive(broker!), 8000)
-  })
+  test(
+    'SIGTERM stops every child first, then the broker ends',
+    { skip: process.platform === 'win32' && 'pipes vanish with their process' },
+    async () => {
+      const home = newHome()
+      const client = await connect(home)
+      const child = Number(await text(client, 'pid'))
+      const [broker] = brokerPids(home)
+      process.kill(broker!, 'SIGTERM')
+      await until('the child ends', () => !alive(child), 8000)
+      await until('the broker ends', () => !alive(broker!), 8000)
+    },
+  )
 
   test('a crash writes a line with the class and code of the error, never its message, and the broker exits 1', async () => {
     const home = newHome()

@@ -103,10 +103,12 @@ const startDetached = (file: string): void => {
   broker.unref()
 }
 
-/** Connects to the broker, starts it when none listens, and polls up to BROKER_START_MS. */
-const dial = async (endpoint: string, file: string, id: string): Promise<net.Socket> => {
-  const end = performance.now() + BROKER_START_MS
-  let started = false
+/** The clock and the one start of an `openLink`: a redial after a peer that closed shares them with the first dial. */
+type Dialing = { readonly end: number; started: boolean }
+
+/** Connects to the broker, starts it when none listens, and polls up to BROKER_START_MS from the first dial. */
+const dial = async (endpoint: string, file: string, id: string, state: Dialing): Promise<net.Socket> => {
+  const { end } = state
   let redialed = false
   for (;;) {
     try {
@@ -116,19 +118,19 @@ const dial = async (endpoint: string, file: string, id: string): Promise<net.Soc
       if (!['ENOENT', 'ECONNREFUSED', 'EBUSY', 'EAGAIN'].includes(code))
         throw new BrokerError(unusable(`could not connect to it (${code})`))
       // A broker that closes while another one's socket sits at the path unlinks it for a moment: dial once more.
-      if (!started && code === 'ENOENT' && !redialed) {
+      if (!state.started && code === 'ENOENT' && !redialed) {
         redialed = true
         await pause(30)
         continue
       }
-      if (!started) {
+      if (!state.started) {
         // The broker that would start is the file as it is now, and the endpoint is the file as this process read it.
         // After a rebuild in place they differ and no link could ever meet: say so.
         if (buildId(file) !== id)
           throw new BrokerError(unusable('toolscript-mcp was rebuilt after this session started. Restart the session'))
         startDetached(file)
       }
-      started = true
+      state.started = true
       if (performance.now() >= end) throw new BrokerError(unusable(`none listened within ${BROKER_START_MS / 1000} s`))
       await pause(50)
     }
@@ -170,6 +172,8 @@ const reader = (socket: net.Socket) => {
   })
   socket.on('error', () => {})
   return {
+    /** True when the socket has closed (after any lines that came before it). */
+    closed: (): boolean => closed,
     /** True when the peer sent a line over the limit, and the socket was ended for it. */
     tooLong: (): boolean => tooLong,
     /** After the proof the cap is the one of the SDK reader. */
@@ -255,27 +259,51 @@ export const openLink = async ({
         : 'its short socket folder in /tmp, named tsm- and your user id,'
     throw new BrokerError(unusable(`${where} ${problem}`))
   }
-  const socket = await dial(endpoint, brokerFile, id)
-  const lines = reader(socket)
-  try {
+  // A broker that was killed can still take a connection for a moment while its process ends, and then closes it. A peer
+  // that closed before it sent one line is such a broker, not a wrong peer: dial again, on the clock of the first dial,
+  // which starts a broker once. A silent peer, a wrong proof, a long line or a close after a line stay failures.
+  const state: Dialing = { end: performance.now() + BROKER_START_MS, started: false }
+  let socket: net.Socket
+  let lines: ReturnType<typeof reader>
+  for (;;) {
+    socket = await dial(endpoint, brokerFile, id, state)
+    lines = reader(socket)
     const side = hostSide(wire)
     socket.write(side.start())
     const until = performance.now() + PROOF_MS
-    for (let done = false; !done; ) {
+    let heard = false
+    let step: ReturnType<typeof side.step> | undefined
+    while (step?.done !== true) {
       const line = await lines.next(Math.max(0, until - performance.now()))
-      if (line === undefined)
+      if (line === undefined) {
+        if (lines.closed() && !lines.tooLong() && !heard && performance.now() < state.end) {
+          step = undefined
+          break
+        }
+        socket.destroy()
         throw new BrokerError(
           unusable(
             lines.tooLong()
               ? 'the peer sent more than 4 KB in a line before it proved the key'
-              : `the peer did not answer the handshake in ${PROOF_MS / 1000} s`,
+              : lines.closed()
+                ? 'the peer closed the connection before it answered the handshake'
+                : `the peer did not answer the handshake in ${PROOF_MS / 1000} s`,
           ),
         )
-      const step = side.step(line)
-      if (step.fail !== undefined) throw new BrokerError(unusable(step.fail))
+      }
+      heard = true
+      step = side.step(line)
+      if (step.fail !== undefined) {
+        socket.destroy()
+        throw new BrokerError(unusable(step.fail))
+      }
       if (step.send !== undefined) socket.write(step.send)
-      done = step.done === true
     }
+    if (step?.done === true) break
+    socket.destroy()
+    await pause(50)
+  }
+  try {
     lines.proven()
     if (entry !== undefined) {
       socket.write(entryFrame(entry))

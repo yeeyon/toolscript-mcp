@@ -1,0 +1,337 @@
+direct: search_messages, list_issues, query_logs, create_ticket, get_deploys: 1390 chars of tool JSON, 0 of instructions
+toolscript: run_code, search_tools: 2850 chars of tool JSON, 293 of instructions
+both: search_messages, list_issues, query_logs, create_ticket, get_deploys, run_code, search_tools: 4240 chars of tool JSON, 293 of instructions
+direct-lean: search_messages, list_issues, query_logs, create_ticket, get_deploys: 1390 chars of tool JSON, 0 of instructions
+toolscript-lean: run_code, search_tools: 2850 chars of tool JSON, 293 of instructions
+150 runs, 1 at a time, stop after $3, into <tmp>\bench-89\headless
+  1/150 messages-direct-1 ok    calls=3 run_code=0 direct=3 turns=5 in=127490 $0.0078 total $0.0078
+  2/150 messages-toolscript-1 ok    calls=3 run_code=1 direct=0 turns=3 in=55806 $0.0047 total $0.0125
+  3/150 messages-both-1 ok    calls=3 run_code=1 direct=0 turns=3 in=56258 $0.0021 total $0.0146
+  4/150 messages-direct-lean-1 ok    calls=3 run_code=0 direct=3 turns=4 in=56381 $0.0059 total $0.0205
+  5/150 messages-toolscript-lean-1 ok    calls=3 run_code=1 direct=0 turns=3 in=16077 $0.0011 total $0.0215
+  6/150 issues-direct-1 ok    calls=1 run_code=0 direct=1 turns=3 in=74559 $0.0067 total $0.0282
+  7/150 issues-toolscript-1 ok    calls=1 run_code=1 direct=0 turns=3 in=55686 $0.0019 total $0.0301
+  8/150 issues-both-1 ok    calls=3 run_code=3 direct=0 turns=5 in=97657 $0.0030 total $0.0331
+  9/150 issues-direct-lean-1 ok    calls=1 run_code=0 direct=1 turns=2 in=31484 $0.0055 total $0.0385
+ 10/150 issues-toolscript-lean-1 ok    calls=2 run_code=2 direct=0 turns=4 in=21906 $0.0010 total $0.0395
+ 11/150 logs-direct-1 ok    calls=1 run_code=0 direct=1 turns=3 in=52528 $0.0019 total $0.0414
+ 12/150 logs-toolscript-1 ok    calls=1 run_code=1 direct=0 turns=3 in=57044 $0.0021 total $0.0435
+ 13/150 logs-both-1 ok    calls=1 run_code=1 direct=0 turns=3 in=57381 $0.0021 total $0.0456
+ 14/150 logs-direct-lean-1 ok    calls=1 run_code=0 direct=1 turns=2 in=9399 $0.0006 total $0.0462
+ 15/150 logs-toolscript-lean-1 ok    calls=1 run_code=1 direct=0 turns=3 in=16969 $0.0010 total $0.0472
+ 16/150 ticket-direct-1 ok    calls=1 run_code=0 direct=1 turns=3 in=51364 $0.0015 total $0.0487
+ 17/150 ticket-toolscript-1 ok    calls=1 run_code=1 direct=0 turns=3 in=54865 $0.0016 total $0.0503
+ 18/150 ticket-both-1 ok    calls=1 run_code=1 direct=0 turns=3 in=55047 $0.0016 total $0.0519
+ 19/150 ticket-direct-lean-1 ok    calls=1 run_code=0 direct=1 turns=2 in=8420 $0.0003 total $0.0522
+ 20/150 ticket-toolscript-lean-1 ok    calls=1 run_code=1 direct=0 turns=3 in=14865 $0.0005 total $0.0527
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-1-cwd
+ 21/150 deploys-direct-1 ok    calls=1 run_code=0 direct=1 turns=7 in=131435 $0.0042 total $0.0569
+ 22/150 deploys-toolscript-1 ok    calls=1 run_code=1 direct=0 turns=3 in=55284 $0.0019 total $0.0587
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-both-1-cwd
+ 23/150 deploys-both-1 ok    calls=3 run_code=2 direct=1 turns=5 in=96578 $0.0029 total $0.0617
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-lean-1-cwd
+ 24/150 deploys-direct-lean-1 WRONG calls=1 run_code=0 direct=1 turns=2 in=8941 $0.0007 total $0.0624
+ 25/150 deploys-toolscript-lean-1 ok    calls=1 run_code=2 direct=0 turns=4 in=20973 $0.0009 total $0.0633
+ 26/150 cross-direct-1 ok    calls=4 run_code=0 direct=4 turns=6 in=198630 $0.0121 total $0.0755
+ 27/150 cross-toolscript-1 ok    calls=9 run_code=4 direct=0 turns=7 in=120847 $0.0039 total $0.0794
+ 28/150 cross-both-1 ok    calls=8 run_code=3 direct=0 turns=5 in=108721 $0.0042 total $0.0836
+ 29/150 cross-direct-lean-1 ok    calls=4 run_code=0 direct=4 turns=5 in=127722 $0.0104 total $0.0939
+ 30/150 cross-toolscript-lean-1 ok    calls=9 run_code=4 direct=0 turns=6 in=38372 $0.0024 total $0.0963
+ 31/150 messages-toolscript-lean-2 ok    calls=3 run_code=1 direct=0 turns=3 in=15820 $0.0010 total $0.0973
+ 32/150 messages-direct-lean-2 ok    calls=3 run_code=0 direct=3 turns=4 in=57378 $0.0053 total $0.1027
+ 33/150 messages-both-2 ok    calls=3 run_code=1 direct=0 turns=3 in=56098 $0.0021 total $0.1047
+ 34/150 messages-toolscript-2 ok    calls=3 run_code=1 direct=0 turns=3 in=55916 $0.0020 total $0.1068
+ 35/150 messages-direct-2 ok    calls=3 run_code=0 direct=3 turns=5 in=126924 $0.0065 total $0.1133
+ 36/150 issues-toolscript-lean-2 ok    calls=2 run_code=2 direct=0 turns=4 in=22255 $0.0009 total $0.1142
+ 37/150 issues-direct-lean-2 ok    calls=1 run_code=0 direct=1 turns=2 in=31484 $0.0054 total $0.1196
+ 38/150 issues-both-2 ok    calls=2 run_code=2 direct=0 turns=4 in=75105 $0.0021 total $0.1217
+ 39/150 issues-toolscript-2 ok    calls=1 run_code=2 direct=0 turns=4 in=75599 $0.0022 total $0.1240
+ 40/150 issues-direct-2 ok    calls=1 run_code=0 direct=1 turns=3 in=74573 $0.0066 total $0.1306
+ 41/150 logs-toolscript-lean-2 ok    calls=1 run_code=1 direct=0 turns=3 in=17001 $0.0010 total $0.1315
+ 42/150 logs-direct-lean-2 ok    calls=1 run_code=0 direct=1 turns=2 in=9399 $0.0006 total $0.1321
+ 43/150 logs-both-2 ok    calls=1 run_code=1 direct=0 turns=3 in=57145 $0.0020 total $0.1341
+ 44/150 logs-toolscript-2 ok    calls=1 run_code=1 direct=0 turns=3 in=56382 $0.0019 total $0.1360
+ 45/150 logs-direct-2 ok    calls=1 run_code=0 direct=1 turns=3 in=52544 $0.0018 total $0.1379
+ 46/150 ticket-toolscript-lean-2 ok    calls=1 run_code=1 direct=0 turns=3 in=14865 $0.0005 total $0.1384
+ 47/150 ticket-direct-lean-2 ok    calls=1 run_code=0 direct=1 turns=2 in=8420 $0.0003 total $0.1387
+ 48/150 ticket-both-2 ok    calls=1 run_code=1 direct=0 turns=3 in=55047 $0.0016 total $0.1402
+ 49/150 ticket-toolscript-2 ok    calls=1 run_code=1 direct=0 turns=3 in=54870 $0.0016 total $0.1418
+ 50/150 ticket-direct-2 ok    calls=1 run_code=0 direct=1 turns=3 in=51374 $0.0015 total $0.1433
+ 51/150 deploys-toolscript-lean-2 ok    calls=2 run_code=2 direct=0 turns=4 in=21187 $0.0010 total $0.1443
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-lean-2-cwd
+ 52/150 deploys-direct-lean-2 WRONG calls=1 run_code=0 direct=1 turns=2 in=8951 $0.0007 total $0.1449
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-both-2-cwd
+ 53/150 deploys-both-2 ok    calls=3 run_code=2 direct=1 turns=5 in=98060 $0.0030 total $0.1479
+ 54/150 deploys-toolscript-2 ok    calls=2 run_code=2 direct=0 turns=4 in=75458 $0.0022 total $0.1501
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-2-cwd
+ 55/150 deploys-direct-2 ok    calls=1 run_code=0 direct=1 turns=11 in=196100 $0.0057 total $0.1558
+ 56/150 cross-toolscript-lean-2 ok    calls=8 run_code=2 direct=0 turns=5 in=26169 $0.0022 total $0.1580
+ 57/150 cross-direct-lean-2 ok    calls=4 run_code=0 direct=4 turns=5 in=128259 $0.0106 total $0.1685
+ 58/150 cross-both-2 ok    calls=10 run_code=3 direct=0 turns=5 in=98425 $0.0036 total $0.1721
+ 59/150 cross-toolscript-2 ok    calls=8 run_code=4 direct=0 turns=7 in=119737 $0.0037 total $0.1758
+ 60/150 cross-direct-2 ok    calls=4 run_code=0 direct=4 turns=6 in=198272 $0.0123 total $0.1881
+ 61/150 messages-direct-3 ok    calls=3 run_code=0 direct=3 turns=5 in=126948 $0.0066 total $0.1947
+ 62/150 messages-toolscript-3 ok    calls=3 run_code=1 direct=0 turns=3 in=55796 $0.0020 total $0.1967
+ 63/150 messages-both-3 ok    calls=3 run_code=1 direct=0 turns=3 in=56357 $0.0021 total $0.1988
+ 64/150 messages-direct-lean-3 ok    calls=3 run_code=0 direct=3 turns=4 in=56324 $0.0061 total $0.2049
+ 65/150 messages-toolscript-lean-3 ok    calls=3 run_code=2 direct=0 turns=4 in=22892 $0.0013 total $0.2062
+ 66/150 issues-direct-3 ok    calls=1 run_code=0 direct=1 turns=3 in=74565 $0.0065 total $0.2127
+ 67/150 issues-toolscript-3 ok    calls=2 run_code=2 direct=0 turns=4 in=75040 $0.0021 total $0.2148
+ 68/150 issues-both-3 ok    calls=2 run_code=2 direct=0 turns=4 in=75634 $0.0022 total $0.2170
+ 69/150 issues-direct-lean-3 ok    calls=1 run_code=0 direct=1 turns=2 in=31484 $0.0054 total $0.2224
+ 70/150 issues-toolscript-lean-3 ok    calls=2 run_code=2 direct=0 turns=4 in=21748 $0.0009 total $0.2233
+ 71/150 logs-direct-3 ok    calls=1 run_code=0 direct=1 turns=3 in=52574 $0.0019 total $0.2252
+ 72/150 logs-toolscript-3 ok    calls=1 run_code=1 direct=0 turns=3 in=56972 $0.0020 total $0.2272
+ 73/150 logs-both-3 ok    calls=1 run_code=1 direct=0 turns=3 in=57145 $0.0020 total $0.2292
+ 74/150 logs-direct-lean-3 ok    calls=1 run_code=0 direct=1 turns=2 in=9399 $0.0006 total $0.2298
+ 75/150 logs-toolscript-lean-3 ok    calls=1 run_code=1 direct=0 turns=3 in=16965 $0.0009 total $0.2307
+ 76/150 ticket-direct-3 ok    calls=1 run_code=0 direct=1 turns=3 in=51380 $0.0015 total $0.2322
+ 77/150 ticket-toolscript-3 ok    calls=1 run_code=1 direct=0 turns=3 in=54870 $0.0015 total $0.2337
+ 78/150 ticket-both-3 ok    calls=1 run_code=0 direct=1 turns=3 in=55202 $0.0016 total $0.2353
+ 79/150 ticket-direct-lean-3 ok    calls=1 run_code=0 direct=1 turns=2 in=8418 $0.0003 total $0.2356
+ 80/150 ticket-toolscript-lean-3 ok    calls=1 run_code=1 direct=0 turns=3 in=14865 $0.0005 total $0.2361
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-3-cwd
+ 81/150 deploys-direct-3 ok    calls=1 run_code=0 direct=1 turns=7 in=136451 $0.0055 total $0.2416
+ 82/150 deploys-toolscript-3 ok    calls=1 run_code=1 direct=0 turns=3 in=55603 $0.0019 total $0.2434
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-both-3-cwd
+ 83/150 deploys-both-3 ok    calls=4 run_code=3 direct=1 turns=6 in=117639 $0.0033 total $0.2468
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-lean-3-cwd
+ 84/150 deploys-direct-lean-3 WRONG calls=1 run_code=0 direct=1 turns=2 in=8941 $0.0007 total $0.2475
+ 85/150 deploys-toolscript-lean-3 ok    calls=2 run_code=2 direct=0 turns=4 in=21146 $0.0010 total $0.2484
+ 86/150 cross-direct-3 ok    calls=4 run_code=0 direct=4 turns=6 in=198247 $0.0120 total $0.2605
+ 87/150 cross-toolscript-3 ok    calls=9 run_code=4 direct=0 turns=7 in=122328 $0.0042 total $0.2646
+ 88/150 cross-both-3 ok    calls=7 run_code=3 direct=0 turns=5 in=98967 $0.0035 total $0.2681
+ 89/150 cross-direct-lean-3 ok    calls=4 run_code=0 direct=4 turns=5 in=127988 $0.0104 total $0.2785
+ 90/150 cross-toolscript-lean-3 ok    calls=6 run_code=4 direct=0 turns=7 in=39691 $0.0021 total $0.2806
+ 91/150 messages-toolscript-lean-4 ok    calls=3 run_code=1 direct=0 turns=3 in=15759 $0.0009 total $0.2815
+ 92/150 messages-direct-lean-4 ok    calls=3 run_code=0 direct=3 turns=4 in=56422 $0.0058 total $0.2873
+ 93/150 messages-both-4 ok    calls=3 run_code=1 direct=0 turns=3 in=56293 $0.0021 total $0.2893
+ 94/150 messages-toolscript-4 ok    calls=3 run_code=1 direct=0 turns=3 in=55825 $0.0021 total $0.2914
+ 95/150 messages-direct-4 ok    calls=3 run_code=0 direct=3 turns=5 in=125939 $0.0069 total $0.2983
+ 96/150 issues-toolscript-lean-4 ok    calls=2 run_code=2 direct=0 turns=4 in=22087 $0.0010 total $0.2992
+ 97/150 issues-direct-lean-4 ok    calls=1 run_code=0 direct=1 turns=2 in=31484 $0.0053 total $0.3046
+ 98/150 issues-both-4 ok    calls=2 run_code=2 direct=0 turns=4 in=75097 $0.0021 total $0.3067
+ 99/150 issues-toolscript-4 ok    calls=2 run_code=2 direct=0 turns=4 in=75470 $0.0022 total $0.3089
+100/150 issues-direct-4 ok    calls=1 run_code=0 direct=1 turns=3 in=74597 $0.0066 total $0.3154
+101/150 logs-toolscript-lean-4 ok    calls=1 run_code=1 direct=0 turns=3 in=16963 $0.0009 total $0.3164
+102/150 logs-direct-lean-4 ok    calls=1 run_code=0 direct=1 turns=2 in=9399 $0.0006 total $0.3169
+103/150 logs-both-4 ok    calls=1 run_code=1 direct=0 turns=3 in=56629 $0.0020 total $0.3189
+104/150 logs-toolscript-4 ok    calls=1 run_code=1 direct=0 turns=3 in=56972 $0.0020 total $0.3209
+105/150 logs-direct-4 ok    calls=1 run_code=0 direct=1 turns=3 in=52540 $0.0019 total $0.3228
+106/150 ticket-toolscript-lean-4 ok    calls=1 run_code=1 direct=0 turns=3 in=14865 $0.0005 total $0.3233
+107/150 ticket-direct-lean-4 ok    calls=1 run_code=0 direct=1 turns=2 in=8420 $0.0003 total $0.3236
+108/150 ticket-both-4 ok    calls=1 run_code=0 direct=1 turns=2 in=36432 $0.0013 total $0.3248
+109/150 ticket-toolscript-4 ok    calls=1 run_code=1 direct=0 turns=3 in=54870 $0.0016 total $0.3264
+110/150 ticket-direct-4 ok    calls=1 run_code=0 direct=1 turns=3 in=51376 $0.0015 total $0.3279
+111/150 deploys-toolscript-lean-4 ok    calls=2 run_code=2 direct=0 turns=4 in=21120 $0.0009 total $0.3288
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-lean-4-cwd
+112/150 deploys-direct-lean-4 WRONG calls=1 run_code=0 direct=1 turns=2 in=8943 $0.0006 total $0.3295
+113/150 deploys-both-4 ok    calls=2 run_code=2 direct=0 turns=4 in=75033 $0.0022 total $0.3317
+114/150 deploys-toolscript-4 ok    calls=2 run_code=2 direct=0 turns=4 in=74863 $0.0023 total $0.3340
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-4-cwd
+115/150 deploys-direct-4 ok    calls=1 run_code=0 direct=1 turns=9 in=174285 $0.0054 total $0.3393
+116/150 cross-toolscript-lean-4 ok    calls=9 run_code=4 direct=0 turns=7 in=40448 $0.0026 total $0.3419
+117/150 cross-direct-lean-4 ok    calls=4 run_code=0 direct=4 turns=5 in=128882 $0.0109 total $0.3528
+118/150 cross-both-4 ok    calls=8 run_code=3 direct=0 turns=5 in=101639 $0.0035 total $0.3563
+119/150 cross-toolscript-4 ok    calls=7 run_code=3 direct=0 turns=5 in=98846 $0.0036 total $0.3599
+120/150 cross-direct-4 ok    calls=4 run_code=0 direct=4 turns=6 in=239307 $0.0123 total $0.3722
+121/150 messages-direct-5 ok    calls=3 run_code=0 direct=3 turns=5 in=125910 $0.0067 total $0.3789
+122/150 messages-toolscript-5 ok    calls=3 run_code=1 direct=0 turns=3 in=55926 $0.0021 total $0.3810
+123/150 messages-both-5 ok    calls=3 run_code=1 direct=0 turns=3 in=56164 $0.0021 total $0.3831
+124/150 messages-direct-lean-5 ok    calls=3 run_code=0 direct=3 turns=4 in=56378 $0.0057 total $0.3888
+125/150 messages-toolscript-lean-5 ok    calls=3 run_code=1 direct=0 turns=3 in=15813 $0.0009 total $0.3897
+126/150 issues-direct-5 ok    calls=1 run_code=0 direct=1 turns=3 in=74537 $0.0066 total $0.3964
+127/150 issues-toolscript-5 ok    calls=1 run_code=2 direct=0 turns=4 in=75901 $0.0022 total $0.3985
+128/150 issues-both-5 ok    calls=2 run_code=2 direct=0 turns=4 in=76322 $0.0023 total $0.4008
+129/150 issues-direct-lean-5 ok    calls=1 run_code=0 direct=1 turns=2 in=31484 $0.0054 total $0.4062
+130/150 issues-toolscript-lean-5 ok    calls=2 run_code=2 direct=0 turns=4 in=21774 $0.0009 total $0.4071
+131/150 logs-direct-5 ok    calls=1 run_code=0 direct=1 turns=3 in=52524 $0.0018 total $0.4089
+132/150 logs-toolscript-5 ok    calls=1 run_code=1 direct=0 turns=3 in=57016 $0.0021 total $0.4111
+133/150 logs-both-5 ok    calls=1 run_code=1 direct=0 turns=3 in=57151 $0.0020 total $0.4131
+134/150 logs-direct-lean-5 ok    calls=1 run_code=0 direct=1 turns=2 in=9399 $0.0006 total $0.4137
+135/150 logs-toolscript-lean-5 ok    calls=1 run_code=1 direct=0 turns=3 in=16963 $0.0009 total $0.4146
+136/150 ticket-direct-5 ok    calls=1 run_code=0 direct=1 turns=3 in=51460 $0.0015 total $0.4161
+137/150 ticket-toolscript-5 ok    calls=1 run_code=1 direct=0 turns=3 in=54870 $0.0016 total $0.4176
+138/150 ticket-both-5 ok    calls=1 run_code=1 direct=0 turns=3 in=55047 $0.0016 total $0.4192
+139/150 ticket-direct-lean-5 ok    calls=1 run_code=0 direct=1 turns=2 in=8420 $0.0003 total $0.4195
+140/150 ticket-toolscript-lean-5 ok    calls=1 run_code=1 direct=0 turns=3 in=14867 $0.0005 total $0.4200
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-5-cwd
+141/150 deploys-direct-5 ok    calls=1 run_code=0 direct=1 turns=4 in=104344 $0.0093 total $0.4293
+142/150 deploys-toolscript-5 ok    calls=2 run_code=2 direct=0 turns=4 in=75645 $0.0024 total $0.4316
+143/150 deploys-both-5 ok    calls=2 run_code=2 direct=0 turns=4 in=74709 $0.0022 total $0.4339
+removed ~\.claude\projects\tmp-bench-89-headless-deploys-direct-lean-5-cwd
+144/150 deploys-direct-lean-5 WRONG calls=1 run_code=0 direct=1 turns=2 in=8951 $0.0008 total $0.4346
+145/150 deploys-toolscript-lean-5 ok    calls=2 run_code=2 direct=0 turns=4 in=21176 $0.0010 total $0.4356
+146/150 cross-direct-5 ok    calls=4 run_code=0 direct=4 turns=6 in=239451 $0.0124 total $0.4480
+147/150 cross-toolscript-5 ok    calls=8 run_code=4 direct=0 turns=6 in=121817 $0.0043 total $0.4523
+148/150 cross-both-5 ok    calls=5 run_code=2 direct=0 turns=4 in=77348 $0.0029 total $0.4552
+149/150 cross-direct-lean-5 ok    calls=4 run_code=0 direct=4 turns=5 in=127534 $0.0102 total $0.4655
+150/150 cross-toolscript-lean-5 ok    calls=8 run_code=3 direct=0 turns=6 in=31722 $0.0019 total $0.4673
+runs: direct 30, toolscript 30, both 30, direct-lean 30, toolscript-lean 30
+total spend: $0.4673
+models: claude-haiku-5-5
+
+### direct (30 runs, 30 correct)
+
+| metric | mean | median | min | max |
+|---|---:|---:|---:|---:|
+| cost USD | 0.0058 | 0.0065 | 0.0015 | 0.0124 |
+| input tokens (all) | 111408 | 89471 | 51364 | 239451 |
+| fresh input | 9 | 7 | 6 | 20 |
+| cache read | 90603 | 55993 | 46645 | 192625 |
+| cache creation | 20796 | 22577 | 4418 | 47513 |
+| first-call input | 16898 | 16898 | 16883 | 16909 |
+| fixed input (first call x API calls) | 75470 | 59130 | 50673 | 168830 |
+| added input (all minus fixed) | 35938 | 23835 | 676 | 138009 |
+| output tokens | 1562 | 1437 | 243 | 3506 |
+| of which thinking | 947 | 1039 | 0 | 2492 |
+| turns | 4.6 | 3.5 | 3 | 11 |
+| API calls | 4.5 | 3.5 | 3 | 10 |
+| seconds | 12.8 | 12.9 | 5.3 | 26.0 |
+| MCP calls (BENCH_LOG) | 1.8 | 1 | 1 | 4 |
+| server result chars (BENCH_LOG) | 42111 | 44861 | 123 | 89722 |
+| tool result chars in context | 39213 | 48033 | 237 | 105677 |
+| run_code calls | 0 | 0 | 0 | 0 |
+| failed run_code calls | 0 | 0 | 0 | 0 |
+| search_tools calls | 0 | 0 | 0 | 0 |
+| direct mcp__bench__ calls | 1.8 | 1 | 1 | 4 |
+| ToolSearch calls | 1 | 1 | 1 | 1 |
+| built-in tool calls (ToolSearch too) | 1.8 | 1 | 1 | 9 |
+| permission denials | 0 | 0 | 0 | 0 |
+
+### toolscript (30 runs, 30 correct)
+
+| metric | mean | median | min | max |
+|---|---:|---:|---:|---:|
+| cost USD | 0.0024 | 0.0021 | 0.0015 | 0.0047 |
+| input tokens (all) | 70537 | 56972 | 54865 | 122328 |
+| fresh input | 7 | 6 | 6 | 12 |
+| cache read | 63957 | 50553 | 36461 | 113083 |
+| cache creation | 6573 | 5749 | 4552 | 19339 |
+| first-call input | 18052 | 18052 | 18037 | 18063 |
+| fixed input (first call x API calls) | 66796 | 54162 | 54111 | 108366 |
+| added input (all minus fixed) | 3742 | 2752 | 715 | 13962 |
+| output tokens | 873 | 686 | 248 | 2419 |
+| of which thinking | 167 | 148 | 0 | 510 |
+| turns | 3.8 | 3 | 3 | 7 |
+| API calls | 3.7 | 3 | 3 | 6 |
+| seconds | 10.8 | 9.1 | 5.8 | 24.9 |
+| MCP calls (BENCH_LOG) | 2.7 | 1.5 | 1 | 9 |
+| server result chars (BENCH_LOG) | 69083 | 44861 | 123 | 228751 |
+| tool result chars in context | 3022 | 2222 | 594 | 11789 |
+| run_code calls | 1.7 | 1 | 1 | 4 |
+| failed run_code calls | 0 | 0 | 0 | 0 |
+| search_tools calls | 1.1 | 1 | 1 | 2 |
+| direct mcp__bench__ calls | 0 | 0 | 0 | 0 |
+| ToolSearch calls | 0 | 0 | 0 | 0 |
+| built-in tool calls (ToolSearch too) | 0 | 0 | 0 | 0 |
+| permission denials | 0 | 0 | 0 | 0 |
+
+### both (30 runs, 30 correct)
+
+| metric | mean | median | min | max |
+|---|---:|---:|---:|---:|
+| cost USD | 0.0024 | 0.0021 | 0.0013 | 0.0042 |
+| input tokens (all) | 72344 | 66045 | 36432 | 117639 |
+| fresh input | 8 | 7 | 4 | 12 |
+| cache read | 66045 | 60062 | 32118 | 110256 |
+| cache creation | 6292 | 5886 | 4310 | 11208 |
+| first-call input | 18111 | 18111 | 18096 | 18122 |
+| fixed input (first call x API calls) | 68218 | 63362 | 36218 | 108576 |
+| added input (all minus fixed) | 4127 | 2741 | 214 | 18121 |
+| output tokens | 903 | 861 | 161 | 2101 |
+| of which thinking | 196 | 168 | 0 | 455 |
+| turns | 3.8 | 3.5 | 2 | 6 |
+| API calls | 3.8 | 3.5 | 2 | 6 |
+| seconds | 11.2 | 9.7 | 6.0 | 19.2 |
+| MCP calls (BENCH_LOG) | 2.9 | 2 | 1 | 10 |
+| server result chars (BENCH_LOG) | 86850 | 69515 | 123 | 283488 |
+| tool result chars in context | 3295 | 2724 | 170 | 14566 |
+| run_code calls | 1.6 | 1.5 | 0 | 3 |
+| failed run_code calls | 0 | 0 | 0 | 0 |
+| search_tools calls | 0.8 | 1 | 0 | 1 |
+| direct mcp__bench__ calls | 0.2 | 0 | 0 | 1 |
+| ToolSearch calls | 0.2 | 0 | 0 | 1 |
+| built-in tool calls (ToolSearch too) | 0.2 | 0 | 0 | 1 |
+| permission denials | 0 | 0 | 0 | 0 |
+
+### direct-lean (30 runs, 25 correct)
+
+| metric | mean | median | min | max |
+|---|---:|---:|---:|---:|
+| cost USD | 0.0039 | 0.0030 | 0.0003 | 0.0109 |
+| input tokens (all) | 40484 | 20442 | 8418 | 128882 |
+| fresh input | 5 | 4 | 4 | 8 |
+| cache read | 25581 | 7753 | 7439 | 85502 |
+| cache creation | 14898 | 10307 | 661 | 43372 |
+| first-call input | 4105 | 4105 | 4090 | 4116 |
+| fixed input (first call x API calls) | 10950 | 8219 | 8180 | 16456 |
+| added input (all minus fixed) | 29534 | 12228 | 212 | 112426 |
+| output tokens | 1265 | 957 | 151 | 3941 |
+| of which thinking | 911 | 645 | 0 | 3586 |
+| turns | 2.8 | 2 | 2 | 5 |
+| API calls | 2.7 | 2 | 2 | 4 |
+| seconds | 10.3 | 9.1 | 4.4 | 22.0 |
+| MCP calls (BENCH_LOG) | 1.8 | 1 | 1 | 4 |
+| server result chars (BENCH_LOG) | 42111 | 44861 | 123 | 89722 |
+| tool result chars in context | 35896 | 25258 | 170 | 105544 |
+| run_code calls | 0 | 0 | 0 | 0 |
+| failed run_code calls | 0 | 0 | 0 | 0 |
+| search_tools calls | 0 | 0 | 0 | 0 |
+| direct mcp__bench__ calls | 1.8 | 1 | 1 | 4 |
+| ToolSearch calls | 0 | 0 | 0 | 0 |
+| built-in tool calls (ToolSearch too) | 0 | 0 | 0 | 0 |
+| permission denials | 0 | 0 | 0 | 0 |
+
+### toolscript-lean (30 runs, 30 correct)
+
+| metric | mean | median | min | max |
+|---|---:|---:|---:|---:|
+| cost USD | 0.0011 | 0.0010 | 0.0005 | 0.0026 |
+| input tokens (all) | 21244 | 21047 | 14865 | 40448 |
+| fresh input | 8 | 8 | 6 | 12 |
+| cache read | 18734 | 19039 | 13606 | 35294 |
+| cache creation | 2503 | 2127 | 1095 | 5183 |
+| first-call input | 4717 | 4717 | 4702 | 4728 |
+| fixed input (first call x API calls) | 17769 | 18808 | 14130 | 28356 |
+| added input (all minus fixed) | 3475 | 2833 | 720 | 12092 |
+| output tokens | 822 | 664 | 242 | 2370 |
+| of which thinking | 112 | 83 | 0 | 477 |
+| turns | 3.9 | 4 | 3 | 7 |
+| API calls | 3.8 | 4 | 3 | 6 |
+| seconds | 10.3 | 10.0 | 5.6 | 19.7 |
+| MCP calls (BENCH_LOG) | 2.8 | 2 | 1 | 9 |
+| server result chars (BENCH_LOG) | 78316 | 55644 | 123 | 228751 |
+| tool result chars in context | 2583 | 2184 | 594 | 6019 |
+| run_code calls | 1.8 | 2 | 1 | 4 |
+| failed run_code calls | 0 | 0 | 0 | 0 |
+| search_tools calls | 1.1 | 1 | 1 | 2 |
+| direct mcp__bench__ calls | 0 | 0 | 0 | 0 |
+| ToolSearch calls | 0 | 0 | 0 | 0 |
+| built-in tool calls (ToolSearch too) | 0 | 0 | 0 | 0 |
+| permission denials | 0 | 0 | 0 | 0 |
+
+### both: the path the model picked
+
+| task | runs with run_code | runs with direct calls | run_code calls | direct calls |
+|---|---:|---:|---:|---:|
+| messages | 5/5 | 0/5 | 5 | 0 |
+| issues | 5/5 | 0/5 | 11 | 0 |
+| logs | 5/5 | 0/5 | 5 | 0 |
+| ticket | 3/5 | 2/5 | 3 | 2 |
+| deploys | 5/5 | 3/5 | 11 | 3 |
+| cross | 5/5 | 0/5 | 14 | 0 |
+| all | 28/30 | 5/30 | 49 | 5 |
+
+### wrong answers
+
+- deploys-direct-lean-1: The deploy list for 2026-10-09 is too large to return directly. The tool saved it to a file instead, and I don't have a tool in this session that can read files. I can't get the failed-deploy counts from that output, so I can't answer the question yet. Here's what would unblock it: - **Option 1:** You open the saved file (`~\.claude\projects\~-tmp
+- deploys-direct-lean-2: I couldn't get the answer. The deploy list for 2026-10-09 is about 70,872 characters on one line, which is over the tool's output limit, so the tool saved it to a file instead of returning it. My available tools can't open that file: I have no file-read or shell tool, and the bench tools only return results inline. I haven't guessed a count. The file is at: `~\.claude\projects\
+- deploys-direct-lean-3: I couldn't get the answer. The deploy list for 2026-10-09 is about 70,900 characters, which is over the tool's output limit, so the result was saved to a file instead: `~\.claude\projects\tmp-bench-89-headless-deploys-direct-lean-3-cwd\11baf6af-23cd-42dc-9f1c-88904e94c807\tool-results\mcp-bench-get_deploys-1795770737916-68cdds.txt` The file 
+- deploys-direct-lean-4: I couldn't get the answer. The deploy list for 2026-10-09 came back at about 70,000 characters, too large to return inline, and it was saved to a file instead. I don't have a file-reading or shell tool in this session, so I can't open that file and count the failed production deploys. Options to get the answer: 1. **Give me a file-reading tool or shell access.** I can then read the saved file in
+- deploys-direct-lean-5: I couldn't get the answer. The deploy list for 2026-10-09 is about 70,900 characters on one line, too large for the tool to return. It was saved to a file, but my tools here can't read files. I have only the bench tools (deploys, issues, logs, Slack, tickets), and none of them reads a local file or filters the deploy list. To get the answer, one of these would work: - **Paste or export the deplo
+
+built-in tools called: ToolSearch 35, Bash 3, Grep 18, Read 2
+plugins: cc-plugin-sec-default, cc-plugin-agents-md, cc-plugin-telemetry, cc-plugin-privacy, cc-plugin-plugin-authoring
+
+rows: <tmp>\bench-89\headless\results.jsonl

@@ -60,6 +60,8 @@ export type BindInput = {
   readonly limits?: ProviderOptions['limits']
   /** Tests only: `false` turns the prune of `list` and `search` off. */
   readonly prune?: boolean
+  /** Tests only: `false` makes `search` take no kind from the listing. */
+  readonly listedKinds?: boolean
   /** The environment of the server: its `PATH` finds the command of a task, and a short list of it reaches the task. */
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly locks?: ProviderOptions['locks']
@@ -206,6 +208,7 @@ export const bindWorkspace = async ({
   hook,
   limits,
   prune,
+  listedKinds,
   env = process.env,
   locks,
   callSeconds,
@@ -273,6 +276,7 @@ export const bindWorkspace = async ({
       log,
       ...(limits !== undefined && { limits }),
       ...(prune === false && { prune: false }),
+      ...(listedKinds === false && { listedKinds: false }),
       ...(tasks !== undefined && { tasks }),
       ...(locks !== undefined && { locks }),
     })

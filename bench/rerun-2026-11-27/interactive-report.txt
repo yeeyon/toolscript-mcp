@@ -1,0 +1,150 @@
+runs: direct 18, codemode 18, toolscript 18, direct-lean 18, toolscript-lean 18; cold: 4; failed: 0
+total spend: $6.2517
+models: claude-sonnet-5-5
+
+### Warm runs per arm: mean / median / min-max
+
+| metric | direct | codemode | toolscript | direct-lean | toolscript-lean |
+|---|---:|---:|---:|---:|---:|
+| correct | 17/17 | 17/17 | 18/18 | 13/17 | 17/17 |
+| cost USD | 0.1244 / 0.1352 / 0.0426-0.2341 | 0.0613 / 0.0598 / 0.0383-0.0916 | 0.0513 / 0.0510 / 0.0430-0.0614 | 0.0719 / 0.0262 / 0.0085-0.1940 | 0.0186 / 0.0186 / 0.0124-0.0263 |
+|   of which cache reads | 0.0194 / 0.0112 / 0.0112-0.0534 | 0.0098 / 0.0110 / 0.0060-0.0132 | 0.0132 / 0.0116 / 0.0115-0.0158 | 0.0066 / 0.0034 / 0.0033-0.0136 | 0.0056 / 0.0053 / 0.0052-0.0071 |
+|   of which cache writes and fresh input | 0.0950 / 0.1021 / 0.0290-0.1967 | 0.0461 / 0.0441 / 0.0298-0.0698 | 0.0332 / 0.0330 / 0.0294-0.0373 | 0.0592 / 0.0089 / 0.0033-0.1703 | 0.0083 / 0.0078 / 0.0048-0.0125 |
+|   of which output | 0.0100 / 0.0065 / 0.0023-0.0411 | 0.0053 / 0.0051 / 0.0021-0.0105 | 0.0049 / 0.0043 / 0.0021-0.0087 | 0.0062 / 0.0061 / 0.0018-0.0104 | 0.0047 / 0.0038 / 0.0023-0.0085 |
+| API calls | 5 / 3 / 3-13 | 4 / 5 / 3-5 | 3 / 3 / 3-4 | 3 / 2 / 2-5 | 3 / 3 / 3-4 |
+| first-call input tokens | 39,630 / 39,628 / 39,615-39,643 | 21,687 / 21,687 / 21,670-21,702 | 40,747 / 40,748 / 40,728-40,758 | 17,150 / 17,151 / 17,130-17,162 | 17,764 / 17,763 / 17,747-17,779 |
+| cache read tokens | 194,491 / 112,192 / 111,841-534,197 | 97,605 / 110,189 / 59,905-132,219 | 131,676 / 115,644 / 115,143-158,237 | 65,598 / 33,648 / 33,317-136,288 | 55,911 / 52,779 / 52,323-70,989 |
+| cache write tokens | 23,740 / 25,531 / 7,252-49,164 | 11,533 / 11,012 / 7,449-17,452 | 8,290 / 8,234 / 7,340-9,311 | 14,791 / 2,225 / 832-42,569 | 2,080 / 1,949 / 1,202-3,134 |
+| output tokens | 996 / 646 / 234-4,115 | 535 / 511 / 208-1,054 | 494 / 434 / 206-871 | 617 / 607 / 177-1,037 | 466 / 383 / 227-850 |
+| tool calls (model) | 4 / 2 / 2-12 | 3 / 4 / 2-4 | 2 / 2 / 2-3 | 2 / 1 / 1-4 | 2 / 2 / 2-3 |
+| calls inside a program | 0 / 0 / 0-0 | 3 / 2 / 2-6 | 0 / 0 / 0-0 | 0 / 0 / 0-0 | 0 / 0 / 0-0 |
+| failed tool calls | 0 / 0 / 0-3 | 0 / 0 / 0-0 | 0 / 0 / 0-0 | 0 / 0 / 0-2 | 0 / 0 / 0-0 |
+| MCP calls (server log) | 2 / 1 / 1-4 | 2 / 1 / 1-4 | 2 / 1 / 1-5 | 2 / 1 / 1-4 | 2 / 1 / 1-4 |
+| repeated MCP calls | 0 / 0 / 0-0 | 0 / 0 / 0-0 | 0 / 0 / 0-1 | 0 / 0 / 0-0 | 0 / 0 / 0-0 |
+| server result chars | 42,211 / 49,307 / 123-89,722 | 42,211 / 49,307 / 123-89,722 | 44,850 / 44,861 / 123-139,029 | 42,211 / 49,307 / 123-89,722 | 42,211 / 49,307 / 123-89,722 |
+| tool result chars in context | 34,636 / 40,482 / 188-89,852 | 13,916 / 12,913 / 3,624-28,638 | 1,812 / 1,475 / 498-3,894 | 30,145 / 2,809 / 123-89,722 | 1,711 / 1,447 / 498-3,070 |
+| seconds | 11.6 / 8.8 / 3.8-45.1 | 8.1 / 7.5 / 3.8-13.9 | 7.0 / 7.3 / 4.1-11.0 | 7.1 / 5.7 / 3.2-12.5 | 7.1 / 7.8 / 4.2-9.2 |
+
+### Warm runs per task: median cost USD (min-max), correct
+
+| task | direct | codemode | toolscript | direct-lean | toolscript-lean |
+|---|---:|---:|---:|---:|---:|
+| messages | 0.1349 (0.1347-0.1352) 2/2 | 0.0672 (0.0639-0.0705) 2/2 | 0.0491 (0.0484-0.0506) 3/3 | 0.0928 (0.0927-0.0929) 1/2 | 0.0180 (0.0178-0.0183) 2/2 |
+| issues | 0.1389 (0.1373-0.1401) 3/3 | 0.0629 (0.0598-0.0655) 3/3 | 0.0514 (0.0464-0.0527) 3/3 | 0.1046 (0.1041-0.1049) 3/3 | 0.0157 (0.0157-0.0171) 3/3 |
+| logs | 0.0482 (0.0475-0.0495) 3/3 | 0.0396 (0.0383-0.0465) 3/3 | 0.0500 (0.0498-0.0519) 3/3 | 0.0139 (0.0138-0.0150) 3/3 | 0.0194 (0.0186-0.0210) 3/3 |
+| ticket | 0.0426 (0.0426-0.0438) 3/3 | 0.0507 (0.0507-0.0525) 3/3 | 0.0430 (0.0430-0.0432) 3/3 | 0.0086 (0.0085-0.0097) 3/3 | 0.0127 (0.0124-0.0135) 3/3 |
+| deploys | 0.1486 (0.1083-0.1992) 3/3 | 0.0554 (0.0507-0.0624) 3/3 | 0.0550 (0.0548-0.0551) 3/3 | 0.0237 (0.0235-0.0262) 0/3 | 0.0199 (0.0195-0.0210) 3/3 |
+| cross | 0.2325 (0.2317-0.2341) 3/3 | 0.0914 (0.0890-0.0916) 3/3 | 0.0614 (0.0559-0.0614) 3/3 | 0.1932 (0.1929-0.1940) 3/3 | 0.0241 (0.0228-0.0263) 3/3 |
+
+### Warm runs per task: median API calls / tool result chars in context / output tokens
+
+| task | direct | codemode | toolscript | direct-lean | toolscript-lean |
+|---|---:|---:|---:|---:|---:|
+| messages | 5 / 40,482 / 1,118 | 5 / 16,913 / 664 | 3 / 1,531 / 467 | 4 / 40,415 / 903 | 3 / 1,610 / 506 |
+| issues | 3 / 49,370 / 641 | 5 / 14,032 / 511 | 4 / 1,423 / 404 | 2 / 49,307 / 570 | 3 / 1,447 / 369 |
+| logs | 3 / 2,289 / 385 | 3 / 3,624 / 376 | 3 / 2,905 / 308 | 2 / 2,227 / 320 | 3 / 2,905 / 339 |
+| ticket | 3 / 188 / 234 | 3 / 12,913 / 225 | 3 / 498 / 207 | 2 / 123 / 183 | 3 / 498 / 236 |
+| deploys | 9 / 5,795 / 2,626 | 5 / 8,225 / 532 | 4 / 975 / 733 | 4 / 2,345 / 864 | 4 / 821 / 592 |
+| cross | 5 / 89,852 / 1,073 | 5 / 28,314 / 1,012 | 4 / 3,509 / 836 | 4 / 89,722 / 1,032 | 3 / 2,940 / 793 |
+
+### Every run
+
+| run | ok | cold | USD | API | write | read | out | ctx chars | tools (model) | inside programs | failed | s |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---:|
+| messages-direct-1 | yes | cold | 0.2632 | 5 | 58,498 | 181,202 | 1,104 | 40,482 | ToolSearch 1, search_messages 3 |  |  | 11 |
+| messages-codemode-1 | yes | cold | 0.1302 | 4 | 29,085 | 77,535 | 613 | 18,147 | REPL 3 | searchTools 1, search_messages 3 |  | 8 |
+| messages-toolscript-1 | yes |  | 0.0506 | 3 | 8,334 | 115,283 | 576 | 1,526 | search_tools 1, run_code 1 |  |  | 8 |
+| messages-direct-lean-1 | yes | cold | 0.1574 | 4 | 35,184 | 72,960 | 938 | 40,415 | search_messages 3 |  |  | 12 |
+| messages-toolscript-lean-1 | yes | cold | 0.0836 | 3 | 18,918 | 35,815 | 432 | 1,690 | search_tools 1, run_code 1 |  |  | 6 |
+| issues-direct-1 | yes |  | 0.1401 | 3 | 30,619 | 111,881 | 646 | 49,370 | ToolSearch 1, list_issues 1 |  |  | 9 |
+| issues-codemode-1 | yes |  | 0.0655 | 5 | 12,164 | 116,151 | 518 | 14,212 | REPL 4 | searchTools 1, list_issues 1 |  | 7 |
+| issues-toolscript-1 | yes |  | 0.0527 | 4 | 8,226 | 156,859 | 412 | 1,423 | search_tools 1, run_code 2 |  |  | 7 |
+| issues-direct-lean-1 | yes |  | 0.1041 | 2 | 24,186 | 33,332 | 403 | 49,307 | list_issues 1 |  |  | 6 |
+| issues-toolscript-lean-1 | yes |  | 0.0171 | 3 | 2,034 | 52,584 | 372 | 1,447 | search_tools 1, run_code 1 |  |  | 9 |
+| logs-direct-1 | yes |  | 0.0495 | 3 | 8,578 | 111,868 | 396 | 2,289 | ToolSearch 1, query_logs 1 |  |  | 6 |
+| logs-codemode-1 | yes |  | 0.0465 | 3 | 9,140 | 60,576 | 390 | 6,589 | REPL 2 | searchTools 1, query_logs 1 |  | 8 |
+| logs-toolscript-1 | yes |  | 0.0519 | 3 | 9,128 | 115,143 | 389 | 2,905 | search_tools 1, run_code 1 |  |  | 8 |
+| logs-direct-lean-1 | yes |  | 0.0150 | 2 | 2,122 | 33,317 | 320 | 2,227 | query_logs 1 |  |  | 5 |
+| logs-toolscript-lean-1 | yes |  | 0.0210 | 3 | 2,987 | 52,332 | 383 | 2,905 | search_tools 1, run_code 1 |  |  | 7 |
+| ticket-direct-1 | yes |  | 0.0438 | 3 | 7,556 | 111,841 | 234 | 188 | ToolSearch 1, create_ticket 1 |  |  | 5 |
+| ticket-codemode-1 | yes |  | 0.0525 | 3 | 11,012 | 63,510 | 208 | 12,913 | REPL 2 | searchTools 1, create_ticket 1 |  | 7 |
+| ticket-toolscript-1 | yes |  | 0.0430 | 3 | 7,340 | 115,433 | 207 | 498 | search_tools 1, run_code 1 |  |  | 4 |
+| ticket-direct-lean-1 | yes |  | 0.0097 | 2 | 1,142 | 33,322 | 183 | 123 | create_ticket 1 |  |  | 3 |
+| ticket-toolscript-lean-1 | yes |  | 0.0135 | 3 | 1,501 | 52,323 | 227 | 498 | search_tools 1, run_code 1 |  |  | 4 |
+| deploys-direct-1 | yes |  | 0.1486 | 13 | 13,506 | 534,197 | 4,115 | 5,795 | ToolSearch 1, get_deploys 1, Bash 1, PowerShell 1, Grep 8 |  | Bash 1, PowerShell 1, Grep 1 | 45 |
+| deploys-codemode-1 | yes |  | 0.0624 | 5 | 11,490 | 111,146 | 532 | 11,211 | REPL 4 | searchTools 1, get_deploys 1 |  | 10 |
+| deploys-toolscript-1 | yes |  | 0.0551 | 4 | 8,242 | 156,447 | 645 | 975 | search_tools 1, run_code 2 |  |  | 8 |
+| deploys-direct-lean-1 | NO |  | 0.0235 | 4 | 2,225 | 69,063 | 764 | 2,345 | get_deploys 1, Bash 1, mcp__claude-in-chrome__tabs_context_mcp 1 |  | Bash 1, mcp__claude-in-chrome__tabs_context_mcp 1 | 10 |
+| deploys-toolscript-lean-1 | yes |  | 0.0210 | 4 | 1,992 | 70,695 | 592 | 821 | search_tools 1, run_code 2 |  |  | 8 |
+| cross-direct-1 | yes |  | 0.2341 | 5 | 49,164 | 260,361 | 1,134 | 89,852 | ToolSearch 1, list_issues 1, search_messages 3 |  |  | 14 |
+| cross-codemode-1 | yes |  | 0.0916 | 5 | 17,452 | 131,395 | 862 | 28,638 | REPL 4 | searchTools 2, list_issues 1, search_messages 3 |  | 10 |
+| cross-toolscript-1 | yes |  | 0.0559 | 3 | 9,145 | 115,727 | 772 | 2,832 | search_tools 2, run_code 1 |  |  | 8 |
+| cross-direct-lean-1 | yes |  | 0.1940 | 4 | 42,569 | 135,921 | 1,016 | 89,722 | list_issues 1, search_messages 3 |  |  | 11 |
+| cross-toolscript-lean-1 | yes |  | 0.0263 | 3 | 3,134 | 52,916 | 850 | 2,940 | search_tools 2, run_code 1 |  |  | 8 |
+| messages-toolscript-lean-2 | yes |  | 0.0178 | 3 | 1,896 | 52,779 | 491 | 1,529 | search_tools 1, run_code 1 |  |  | 9 |
+| messages-direct-lean-2 | yes |  | 0.0929 | 4 | 18,699 | 89,421 | 915 | 40,415 | search_messages 3 |  |  | 9 |
+| messages-toolscript-2 | yes |  | 0.0484 | 3 | 8,029 | 115,589 | 467 | 1,531 | search_tools 1, run_code 1 |  |  | 7 |
+| messages-codemode-2 | yes |  | 0.0639 | 4 | 12,276 | 93,133 | 545 | 16,626 | REPL 3 | searchTools 1, search_messages 3 |  | 7 |
+| messages-direct-2 | yes |  | 0.1347 | 5 | 25,653 | 213,572 | 1,068 | 40,482 | ToolSearch 1, search_messages 3 |  |  | 13 |
+| issues-toolscript-lean-2 | yes |  | 0.0157 | 3 | 1,705 | 52,885 | 356 | 1,447 | search_tools 1, run_code 1 |  |  | 7 |
+| issues-direct-lean-2 | yes |  | 0.1046 | 2 | 23,871 | 33,647 | 570 | 49,307 | list_issues 1 |  |  | 5 |
+| issues-toolscript-2 | yes |  | 0.0514 | 4 | 7,910 | 157,174 | 404 | 1,423 | search_tools 1, run_code 2 |  |  | 7 |
+| issues-codemode-2 | yes |  | 0.0598 | 5 | 10,865 | 115,922 | 475 | 12,683 | REPL 4 | searchTools 1, list_issues 1 |  | 8 |
+| issues-direct-2 | yes |  | 0.1373 | 3 | 30,300 | 112,188 | 488 | 49,370 | ToolSearch 1, list_issues 1 |  |  | 6 |
+| logs-toolscript-lean-2 | yes |  | 0.0194 | 3 | 2,693 | 52,635 | 339 | 2,905 | search_tools 1, run_code 1 |  |  | 6 |
+| logs-direct-lean-2 | yes |  | 0.0139 | 2 | 1,823 | 33,612 | 327 | 2,227 | query_logs 1 |  |  | 5 |
+| logs-toolscript-2 | yes |  | 0.0500 | 3 | 8,833 | 115,444 | 308 | 2,905 | search_tools 1, run_code 1 |  |  | 5 |
+| logs-codemode-2 | yes |  | 0.0396 | 3 | 7,449 | 59,905 | 376 | 3,624 | REPL 2 | searchTools 1, query_logs 1 |  | 5 |
+| logs-direct-2 | yes |  | 0.0475 | 3 | 8,287 | 112,177 | 314 | 2,289 | ToolSearch 1, query_logs 1 |  |  | 4 |
+| ticket-toolscript-lean-2 | yes |  | 0.0127 | 3 | 1,213 | 52,632 | 254 | 498 | search_tools 1, run_code 1 |  |  | 5 |
+| ticket-direct-lean-2 | yes |  | 0.0086 | 2 | 839 | 33,621 | 183 | 123 | create_ticket 1 |  |  | 4 |
+| ticket-toolscript-2 | yes |  | 0.0430 | 3 | 7,341 | 115,435 | 206 | 498 | search_tools 1, run_code 1 |  |  | 4 |
+| ticket-codemode-2 | yes |  | 0.0507 | 3 | 10,491 | 64,011 | 231 | 12,913 | REPL 2 | searchTools 1, create_ticket 1 |  | 5 |
+| ticket-direct-2 | yes |  | 0.0426 | 3 | 7,256 | 112,144 | 235 | 188 | ToolSearch 1, create_ticket 1 |  |  | 4 |
+| deploys-toolscript-lean-2 | yes |  | 0.0199 | 4 | 1,705 | 70,989 | 596 | 821 | search_tools 1, run_code 2 |  |  | 8 |
+| deploys-direct-lean-2 | NO |  | 0.0237 | 4 | 1,991 | 69,444 | 880 | 2,345 | get_deploys 1, Bash 1, mcp__claude-in-chrome__tabs_context_mcp 1 |  | Bash 1, mcp__claude-in-chrome__tabs_context_mcp 1 | 13 |
+| deploys-toolscript-2 | yes |  | 0.0550 | 4 | 8,004 | 156,756 | 733 | 1,036 | search_tools 1, run_code 2 |  |  | 10 |
+| deploys-codemode-2 | yes |  | 0.0507 | 5 | 8,747 | 107,886 | 493 | 6,046 | REPL 4 | searchTools 1, get_deploys 1 |  | 7 |
+| deploys-direct-2 | yes |  | 0.1083 | 9 | 11,472 | 361,414 | 2,626 | 4,448 | ToolSearch 1, get_deploys 1, Bash 1, Grep 6 |  | Bash 1 | 24 |
+| cross-toolscript-lean-2 | yes |  | 0.0241 | 3 | 2,729 | 52,919 | 793 | 3,070 | search_tools 1, run_code 1 |  |  | 8 |
+| cross-direct-lean-2 | yes |  | 0.1932 | 4 | 42,305 | 136,288 | 1,037 | 89,722 | list_issues 1, search_messages 3 |  |  | 9 |
+| cross-toolscript-2 | yes |  | 0.0614 | 4 | 9,227 | 157,701 | 871 | 3,509 | search_tools 1, run_code 2 |  |  | 11 |
+| cross-codemode-2 | yes |  | 0.0890 | 5 | 16,307 | 131,638 | 1,054 | 26,805 | REPL 4 | searchTools 2, list_issues 1, search_messages 3 |  | 10 |
+| cross-direct-2 | yes |  | 0.2325 | 5 | 48,917 | 260,743 | 1,073 | 89,852 | ToolSearch 1, list_issues 1, search_messages 3 |  |  | 11 |
+| messages-direct-3 | yes |  | 0.1352 | 5 | 25,531 | 213,548 | 1,167 | 40,482 | ToolSearch 1, search_messages 3 |  |  | 11 |
+| messages-codemode-3 | yes |  | 0.0705 | 5 | 12,638 | 121,251 | 782 | 17,200 | REPL 4 | searchTools 1, search_messages 3 |  | 10 |
+| messages-toolscript-3 | yes |  | 0.0491 | 3 | 8,249 | 115,580 | 456 | 2,032 | search_tools 1, run_code 1 |  |  | 5 |
+| messages-direct-lean-3 | NO |  | 0.0927 | 4 | 18,701 | 89,427 | 891 | 40,415 | search_messages 3 |  |  | 8 |
+| messages-toolscript-lean-3 | yes |  | 0.0183 | 3 | 1,949 | 52,772 | 521 | 1,690 | search_tools 1, run_code 1 |  |  | 8 |
+| issues-direct-3 | yes |  | 0.1389 | 3 | 30,302 | 112,192 | 641 | 49,370 | ToolSearch 1, list_issues 1 |  |  | 9 |
+| issues-codemode-3 | yes |  | 0.0629 | 5 | 11,525 | 116,433 | 511 | 14,032 | REPL 4 | searchTools 1, list_issues 1 |  | 11 |
+| issues-toolscript-3 | yes |  | 0.0464 | 3 | 7,790 | 115,698 | 365 | 1,273 | search_tools 1, run_code 1 |  |  | 5 |
+| issues-direct-lean-3 | yes |  | 0.1049 | 2 | 23,872 | 33,648 | 607 | 49,307 | list_issues 1 |  |  | 6 |
+| issues-toolscript-lean-3 | yes |  | 0.0157 | 3 | 1,682 | 52,891 | 369 | 1,359 | search_tools 1, run_code 1 |  |  | 5 |
+| logs-direct-3 | yes |  | 0.0482 | 3 | 8,278 | 112,159 | 385 | 2,289 | ToolSearch 1, query_logs 1 |  |  | 6 |
+| logs-codemode-3 | yes |  | 0.0383 | 3 | 7,450 | 59,907 | 254 | 3,624 | REPL 2 | searchTools 1, query_logs 1 |  | 4 |
+| logs-toolscript-3 | yes |  | 0.0498 | 3 | 8,830 | 115,438 | 291 | 2,905 | search_tools 1, run_code 1 |  |  | 4 |
+| logs-direct-lean-3 | yes |  | 0.0138 | 2 | 1,824 | 33,613 | 312 | 2,227 | query_logs 1 |  |  | 3 |
+| logs-toolscript-lean-3 | yes |  | 0.0186 | 3 | 2,684 | 52,617 | 257 | 2,905 | search_tools 1, run_code 1 |  |  | 5 |
+| ticket-direct-3 | yes |  | 0.0426 | 3 | 7,252 | 112,136 | 234 | 188 | ToolSearch 1, create_ticket 1 |  |  | 6 |
+| ticket-codemode-3 | yes |  | 0.0507 | 3 | 10,498 | 64,015 | 225 | 12,913 | REPL 2 | searchTools 1, create_ticket 1 |  | 5 |
+| ticket-toolscript-3 | yes |  | 0.0432 | 3 | 7,344 | 115,441 | 225 | 498 | search_tools 1, run_code 1 |  |  | 6 |
+| ticket-direct-lean-3 | yes |  | 0.0085 | 2 | 832 | 33,616 | 177 | 123 | create_ticket 1 |  |  | 4 |
+| ticket-toolscript-lean-3 | yes |  | 0.0124 | 3 | 1,202 | 52,628 | 236 | 498 | search_tools 1, run_code 1 |  |  | 5 |
+| deploys-direct-3 | yes |  | 0.1992 | 5 | 42,037 | 193,232 | 1,172 | 72,510 | ToolSearch 1, get_deploys 1, Bash 1, Read 1 |  | Bash 1 | 11 |
+| deploys-codemode-3 | yes |  | 0.0554 | 5 | 9,547 | 110,189 | 620 | 8,225 | REPL 4 | searchTools 1, get_deploys 1 |  | 11 |
+| deploys-toolscript-3 | yes |  | 0.0548 | 4 | 7,929 | 156,786 | 734 | 946 | search_tools 1, run_code 2 |  |  | 8 |
+| deploys-direct-lean-3 | NO |  | 0.0262 | 5 | 2,197 | 87,618 | 864 | 2,809 | get_deploys 1, Bash 1, mcp__claude-in-chrome__tabs_context_mcp 2 |  | Bash 1, mcp__claude-in-chrome__tabs_context_mcp 1 | 12 |
+| deploys-toolscript-lean-3 | yes |  | 0.0195 | 4 | 1,686 | 70,973 | 563 | 821 | search_tools 1, run_code 2 |  |  | 8 |
+| cross-direct-3 | yes |  | 0.2317 | 5 | 48,870 | 260,687 | 1,008 | 89,852 | ToolSearch 1, list_issues 1, search_messages 3 |  |  | 13 |
+| cross-codemode-3 | yes |  | 0.0914 | 5 | 17,014 | 132,219 | 1,012 | 28,314 | REPL 4 | searchTools 2, list_issues 1, search_messages 3 |  | 14 |
+| cross-toolscript-3 | yes |  | 0.0614 | 4 | 9,311 | 158,237 | 836 | 3,894 | search_tools 1, run_code 2 |  |  | 10 |
+| cross-direct-lean-3 | yes |  | 0.1929 | 4 | 42,244 | 136,255 | 1,032 | 89,722 | list_issues 1, search_messages 3 |  |  | 9 |
+| cross-toolscript-lean-3 | yes |  | 0.0228 | 3 | 2,561 | 52,917 | 721 | 2,938 | search_tools 1, run_code 1 |  |  | 9 |
+
+### Wrong answers
+
+- deploys-direct-lean-1: I couldn't answer this. I don't have a way to read the deploy data. The `get_deploys` call for 2026-10-09 worked, but the result was about 70 KB. That was too large to show inline, so it was saved to this file: `~\.claude\projects\C--tsbench-direct-lean-cwd\433870c3-9f78-4c05-a671
+- deploys-direct-lean-2: I couldn't answer this. The deploy data for 2026-10-09 is too large to read directly, and I have no permitted way to open the saved copy. - **What I did:** I called `get_deploys` for 2026-10-09. The result was 70,872 characters, so it was saved to a file instead of being returned. The file is `C:\Us
+- messages-direct-lean-3: **31 messages** in #release contain "rollback" in any case. I read all 250 messages across the 3 pages. - 19 were written by people. - 12 were automatic `deploybot` messages ("Automatic rollback: … health check failed"). **Dana** wrote the most among people, with 9. Alice wrote 5 and Chen wrote 4.
+- deploys-direct-lean-3: I couldn't answer this. The deploy data for 2026-10-09 is too large to read directly, and I have no permitted way to read it. - `get_deploys` returned about 70,000 characters. That was too much to show, so it was saved to `~\.claude\projects\C--tsbench-direct-lean-cwd\4971032f-7a4

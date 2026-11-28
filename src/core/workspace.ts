@@ -24,6 +24,8 @@ export const LIMITS = {
    * one: `walkSlotsFor`. Two walks cut a batch there, because each walk needs the CPU for seconds.
    */
   walkSlots: 2,
+  /** Files of one `search` walk that are opened, proven and read at the same time. Each is proven by its own open. */
+  searchInFlight: 4,
   /** `search` cuts the text of a line at this length. */
   lineChars: 400,
   parts: 64,

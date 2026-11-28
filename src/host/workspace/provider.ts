@@ -68,6 +68,8 @@ export type ProviderOptions = {
   readonly gitignore?: boolean
   /** Tests only: `false` opens each folder, as the walk did before the prune. */
   readonly prune?: boolean
+  /** Tests only: `false` makes `search` take no kind from the listing, so it looks at each entry with `lstat`. */
+  readonly listedKinds?: boolean
   readonly windows: boolean
   /** The stderr log. Never holds a path, a name or file content. */
   readonly log: (line: string) => void
@@ -79,6 +81,7 @@ export type ProviderOptions = {
     readonly walkSlots?: number
     /** The CPU count that the default of `walkSlots` follows, in place of `os.availableParallelism()`. */
     readonly parallelism?: number
+    readonly searchInFlight?: number
   }
   /** Tests only: shorter lock times. */
   readonly locks?: LockerOptions
@@ -150,6 +153,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     searchMs: LIMITS.searchMs,
     // One slot on a machine with one CPU, else LIMITS.walkSlots. Not a count from the cores (issue #180).
     walkSlots: walkSlotsFor(LIMITS.walkSlots, parallelism),
+    searchInFlight: LIMITS.searchInFlight,
     ...given,
   }
   const skip = new Set(options.skip.map(fold))
@@ -214,6 +218,19 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   /**
+   * What a `search` walk adds to `walk`. `take` takes the answers of the visits that ran, in the order of the walk, and
+   * throws the first error; it returns false when the answers stopped the search (the matches are all taken). `settle` waits for every running visit and never throws: it runs before a folder closes, so
+   * no visit is left that opens a name through that folder. `ahead`: the entries of one folder whose `lstat` run at the
+   * same time. `kinds`: take the kind of an entry from the listing.
+   */
+  type Pool = {
+    readonly take: () => Promise<boolean>
+    readonly settle: () => Promise<void>
+    readonly ahead: number
+    readonly kinds: boolean
+  }
+
+  /**
    * Visits each entry below `dir` in sorted order, down to `levels` levels. The names of a folder are read to its end
    * or to the budget before any folder below it is entered. A name from the listing is a candidate: `lstat` and each
    * open prove it. An excluded name is never read into the walk, a link is visited and never entered, and a folder
@@ -228,43 +245,90 @@ export const createProvider = (options: ProviderOptions): Provider => {
     within: ReturnType<typeof budget>,
     hides?: Hides,
     reach?: (folder: readonly string[]) => boolean,
+    pool?: Pool,
   ): Promise<boolean> => {
     const read = await dir.names({
       keep: name => !excluded([...dir.parts, name]),
       room: within.left,
       alive: () => (cancelled(signal), within.timely()),
+      ...(pool?.kinds === true && { kinds: true }),
     })
     within.left -= read.names.length
     if (read.more) within.cut = true
     const names = read.names.sort(byText)
-    for (const name of names) {
-      cancelled(signal)
-      if (!within.timely()) return false
-      const parts = [...dir.parts, name]
-      const entry = await dir.lstat(name)
-      if (entry === undefined) continue
-      // An ignored name still counted as a visited one above. An ignored folder is never entered.
-      if (hides?.(parts, entry.kind === 'folder') === true) continue
-      if (!(await visit({ parts, kind: entry.kind, size: entry.size }, dir, name))) return false
-      if (entry.kind !== 'folder' || levels <= 1 || read.more || skip.has(fold(name))) continue
-      // No glob of `include` reaches below this folder: its entry was visited, its names are not read.
-      if (reach?.(parts) === false) continue
-      const child = await dir.openDir(name).catch((err: unknown) => {
-        if (
-          err instanceof WorkspaceError &&
-          (err.code === 'link' || err.code === 'not-found' || err.code === 'not-folder')
-        )
-          return undefined
-        throw err
-      })
-      if (child === undefined) continue
-      try {
-        if (!(await walk(child, levels - 1, visit, signal, within, hides, reach))) return false
-      } finally {
-        await child.close()
+    // `search` only (`pool.kinds`), and only the kind of an entry: the listing of the folder names it, with no `lstat` and no
+    // proof of the folder around one. The kind decides what the walk does next and nothing else: a file is opened and a
+    // folder is entered (`openDir`), and each open proves its own name, so a kind that is wrong (the entry changed, or the
+    // listing was made in a folder that a swap had changed) ends in a refusal of that open (`not-file`, `not-folder`, a
+    // link) and the name is skipped. No size, no metadata and no name that did not come through a proven handle can come
+    // back: a match shows the path and the text of an opened and proven file. `list` and `stat` show the kind and the size
+    // of an entry, so they keep the proof of the folder right before and right after each `lstat`. A name whose kind the
+    // listing does not give has its `lstat` with both proofs, for up to `ahead` entries of the folder at the same time,
+    // each with its own bracket, and the answers are taken in the order of the listing.
+    const listed = read.kinds
+    const looked = new Map<string, Promise<{ entry: Awaited<ReturnType<Dir['lstat']>> } | { error: unknown }>>()
+    let started = 0
+    try {
+      for (const name of names) {
+        cancelled(signal)
+        if (!within.timely()) return false
+        let entry: { kind: Kind; size: number } | undefined
+        const kind = listed?.get(name)
+        if (kind !== undefined) entry = { kind, size: 0 }
+        else {
+          for (; started < names.length && looked.size < (pool?.ahead ?? 1); started++) {
+            const next = names[started]!
+            if (listed?.has(next) !== true && !looked.has(next))
+              looked.set(
+                next,
+                dir.lstat(next).then(
+                  seen => ({ entry: seen }),
+                  (error: unknown) => ({ error }),
+                ),
+              )
+          }
+          const got = await looked.get(name)!
+          looked.delete(name)
+          if ('error' in got) throw got.error
+          entry = got.entry
+        }
+        const parts = [...dir.parts, name]
+        if (entry === undefined) continue
+        // An ignored name still counted as a visited one above. An ignored folder is never entered.
+        if (hides?.(parts, entry.kind === 'folder') === true) continue
+        if (!(await visit({ parts, kind: entry.kind, size: entry.size }, dir, name))) return false
+        if (entry.kind !== 'folder' || levels <= 1 || read.more || skip.has(fold(name))) continue
+        // The visits of the files before this folder are taken first: if they stopped the search, the folder is not opened.
+        if (pool !== undefined && !(await pool.take())) return false
+        // No glob of `include` reaches below this folder: its entry was visited, its names are not read.
+        if (reach?.(parts) === false) continue
+        const child = await dir.openDir(name).catch((err: unknown) => {
+          if (
+            err instanceof WorkspaceError &&
+            (err.code === 'link' || err.code === 'not-found' || err.code === 'not-folder')
+          )
+            return undefined
+          throw err
+        })
+        if (child === undefined) continue
+        try {
+          const complete = await walk(child, levels - 1, visit, signal, within, hides, reach, pool)
+          // The visits that ran in this folder count, also when the walk ended here.
+          if (!complete || (pool !== undefined && !(await pool.take()))) return false
+        } finally {
+          // A visit that is still running must end before its folder closes: its open goes through that folder.
+          try {
+            await pool?.settle()
+          } finally {
+            await child.close()
+          }
+        }
       }
+      return true
+    } finally {
+      // The `lstat` that a stop left running ends before the caller closes this folder: it goes through that folder.
+      await Promise.all(looked.values())
     }
-    return true
   }
 
   // Names compare with no regard to case on Windows and macOS, as the exclusions do.
@@ -349,66 +413,108 @@ export const createProvider = (options: ProviderOptions): Provider => {
     const dir = await folder(start)
     try {
       const hides = await hidesFor(dir.parts)
-      const complete = await walk(
-        dir,
-        Infinity,
-        async ({ parts, kind }, parent, name) => {
-          if (kind !== 'file' || !inList(parts)) return true
-          const opened = await parent.openFile(name).catch((err: unknown) => {
-            if (err instanceof WorkspaceError && err.code !== 'cancelled' && err.code !== 'root-changed')
-              return undefined
-            throw err
-          })
-          if (opened === undefined) {
-            skipped++
-            return true
+      // The open, the proof and the read of a file run with up to `searchInFlight` others (no match is taken there). The
+      // answers are taken in the order of the walk, so the matches, the counts and the cut do not depend on the timing.
+      type Seen = 'skip' | 'none' | { readonly parts: readonly string[]; readonly text: string }
+      const load = async (parent: Dir, name: string): Promise<Seen> => {
+        const opened = await parent.openFile(name).catch((err: unknown) => {
+          if (err instanceof WorkspaceError && err.code !== 'cancelled' && err.code !== 'root-changed') return undefined
+          throw err
+        })
+        if (opened === undefined) return 'skip'
+        try {
+          if (excluded(opened.parts)) return 'none'
+          const bytes =
+            opened.size > LIMITS.searchFileBytes ? undefined : await readCapped(opened.handle, LIMITS.searchFileBytes)
+          const text = bytes === undefined ? 'binary' : decoded(bytes)
+          return typeof text === 'string' ? 'skip' : { parts: opened.parts, text: text.text }
+        } finally {
+          await opened.handle.close().catch(() => {})
+        }
+      }
+      const pending: Promise<{ seen: Seen } | { error: unknown }>[] = []
+      let stopped = false
+      const drain = async (keep: number): Promise<void> => {
+        while (pending.length > keep) {
+          const done = await pending.shift()!
+          if (stopped) continue
+          if ('error' in done) {
+            // The first error ends the call, and the visits behind it end first: none is left to open a name later.
+            stopped = true
+            await Promise.all(pending.splice(0))
+            throw done.error
           }
-          try {
-            if (excluded(opened.parts)) return true
-            const bytes =
-              opened.size > LIMITS.searchFileBytes ? undefined : await readCapped(opened.handle, LIMITS.searchFileBytes)
-            const text = bytes === undefined ? 'binary' : decoded(bytes)
-            if (typeof text === 'string') {
-              skipped++
-              return true
-            }
-            scanned++
-            const path = showPath(opened.parts)
-            const lines = text.text.split('\n')
-            for (let i = 0; i < lines.length; i++) {
-              const raw = lines[i]!.endsWith('\r') ? lines[i]!.slice(0, -1) : lines[i]!
-              const line = input.ignoreCase ? lowered(raw) : raw
-              for (let t = 0; t < needles.length; t++) {
-                const needle = needles[t]!
-                if (over[t]) continue
-                for (let at = line.indexOf(needle); at >= 0; at = line.indexOf(needle, at + needle.length)) {
-                  if (taken[t]! >= input.maxMatches) {
-                    over[t] = true
-                    truncated = true
-                    break
-                  }
-                  taken[t]!++
-                  const shown = raw.slice(0, LIMITS.lineChars)
-                  matches.push(
-                    typeof input.query === 'string'
-                      ? { path, line: i + 1, column: at + 1, text: shown, term: t }
-                      : { path, line: i + 1, column: at + 1, text: shown, query: written[t]!, term: t },
-                  )
-                }
+          if (!consume(done.seen)) stopped = true
+        }
+      }
+      const consume = (seen: Seen): boolean => {
+        if (seen === 'none') return true
+        if (seen === 'skip') {
+          skipped++
+          return true
+        }
+        scanned++
+        const path = showPath(seen.parts)
+        const lines = seen.text.split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          const raw = lines[i]!.endsWith('\r') ? lines[i]!.slice(0, -1) : lines[i]!
+          const line = input.ignoreCase ? lowered(raw) : raw
+          for (let t = 0; t < needles.length; t++) {
+            const needle = needles[t]!
+            if (over[t]) continue
+            for (let at = line.indexOf(needle); at >= 0; at = line.indexOf(needle, at + needle.length)) {
+              if (taken[t]! >= input.maxMatches) {
+                over[t] = true
+                truncated = true
+                break
               }
-              if (over.every(Boolean)) return false
+              taken[t]!++
+              const shown = raw.slice(0, LIMITS.lineChars)
+              matches.push(
+                typeof input.query === 'string'
+                  ? { path, line: i + 1, column: at + 1, text: shown, term: t }
+                  : { path, line: i + 1, column: at + 1, text: shown, query: written[t]!, term: t },
+              )
             }
-            return true
-          } finally {
-            await opened.handle.close().catch(() => {})
           }
-        },
-        signal,
-        within,
-        hides,
-        reachOf(input.include),
-      )
-      if (!complete || within.cut) truncated = true
+          if (over.every(Boolean)) return false
+        }
+        return true
+      }
+      try {
+        const complete = await walk(
+          dir,
+          Infinity,
+          async ({ parts, kind }, parent, name) => {
+            if (stopped) return false
+            if (kind !== 'file' || !inList(parts)) return true
+            // A load never rejects here: its error is taken in the order of the walk, as the sequential walk met it.
+            pending.push(
+              load(parent, name).then(
+                seen => ({ seen }),
+                (error: unknown) => ({ error }),
+              ),
+            )
+            await drain(limits.searchInFlight - 1)
+            return !stopped
+          },
+          signal,
+          within,
+          hides,
+          reachOf(input.include),
+          {
+            take: async () => (await drain(0), !stopped),
+            settle: async () => void (await Promise.all(pending)),
+            ahead: limits.searchInFlight,
+            kinds: options.listedKinds !== false,
+          },
+        )
+        await drain(0)
+        if (!complete || within.cut) truncated = true
+      } finally {
+        // Visits that a cancel or an error left running end before the folder closes: each closes its own file.
+        await Promise.all(pending.splice(0))
+      }
     } finally {
       await dir.close()
     }
