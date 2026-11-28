@@ -51,7 +51,7 @@ ID in `oauth`:
 - If the server refuses the registered client, login fails and removes the client. Run login again to register a new
   client.
 
-login writes the tokens to `~/.toolscript-mcp@GUARD@/oauth/<server>-<hash>.json`. The hash comes from the URL, so a new URL
+login writes the tokens to `~/.toolscript-mcp/oauth/<server>-<hash>.json`. The hash comes from the URL, so a new URL
 needs a new login. On Linux and macOS, only your user account can read the file.
 
 login opens only an authorization URL with `https`, or with `http` on `127.0.0.1`, `::1` or `localhost`. The `headers`

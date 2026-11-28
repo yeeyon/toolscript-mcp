@@ -303,7 +303,7 @@ toolscript-mcp writes one line to `~/.toolscript-mcp/runs.jsonl` for each `run_c
 ## Learned result shapes
 
 For a tool with no `outputSchema`, `search_tools` shows the shape of its last result as `returned earlier: <shape>`.
-toolscript-mcp keeps these shapes in `~/.toolscript-mcp@GUARD@/learned/shapes.json`, so the next session shows them too. A
+toolscript-mcp keeps these shapes in `~/.toolscript-mcp/learned/shapes.json`, so the next session shows them too. A
 first program then needs no run that only looks at the result.
 
 The files under `~/.toolscript-mcp` include:
@@ -360,7 +360,7 @@ refused call. It covers reads and writes, because `oauth/` holds tokens.
   folder. A word of prose, a version such as `v2.0` and an address such as `user@example.com` cost no file system call.
 - A `file://` URL is read as the path it names. Any other URL is not a path.
 - On Windows, a dot or a space at the end of a name does not hide a folder, because Windows drops it.
-- A text is refused when it holds the name of a folder, such as `.toolscript-mcp@GUARD@/hints`, with `/` or `\`. This
+- A text is refused when it holds the name of a folder, such as `.toolscript-mcp/hints`, with `/` or `\`. This
   catches `~` and `$HOME` in a shell command. The name must not go on in a letter, a digit, `_` or `-`, so
   `.toolscript-mcp/hints-old` and `.toolscript-mcp/files/` pass. A run of dots after the name counts as part of it.
 - A text with `%` is read a second time, with each `%2F`-style code below `%80` decoded one time.
@@ -388,7 +388,7 @@ The guard stops a confused model and a simple injected program. It is not contai
 - On Windows, a UNC path to the same machine, such as `\\localhost\C$\...` with a `..`.
 
 The guard also refuses an argument of any length that only mentions a name. Examples are a search pattern, a file body
-and a sentence that ends in `.toolscript-mcp@GUARD@/hints`. This is a known false positive. Do not name the folder in a call. If a person must change a
+and a sentence that ends in `.toolscript-mcp/hints`. This is a known false positive. Do not name the folder in a call. If a person must change a
 file there, they edit it outside `run_code`.
 
 Treat each file in a guarded folder as written by an attacker, because the guard does not stop every writer. The check

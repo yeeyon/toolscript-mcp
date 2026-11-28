@@ -26,7 +26,7 @@ Policy, approval and the guard still run in each session for every call, for eve
 
 A broker holds the shared copies. It is one process for each user and each build of toolscript-mcp. The first session that needs it starts it, hidden and detached, and nothing starts at login. It holds one copy of each server for all sessions, and it decides no policy and keeps no tool result.
 
-A session proves a secret key to the broker before it sends anything, and the broker proves the key back. The key is in `~/.toolscript-mcp@GUARD@/broker`, which only your user can read. Each session has its own connection, so a result reaches only the session that asked. The endpoint is a named pipe on Windows and a socket file elsewhere. There is no TCP port.
+A session proves a secret key to the broker before it sends anything, and the broker proves the key back. The key is in `~/.toolscript-mcp/broker`, which only your user can read. Each session has its own connection, so a result reaches only the session that asked. The endpoint is a named pipe on Windows and a socket file elsewhere. There is no TCP port.
 
 The broker does not end with the session that started it. On Windows it stayed when that Claude Code session exited and when its `claude` process was ended, and the next session used the same broker. A copy with no session stops after 10 minutes. A broker with no session and no copy ends soon after. A new build of toolscript-mcp starts its own broker, and the old one ends when its last session ends.
 
@@ -50,7 +50,7 @@ A run from source has no broker, so each shared server fails with that reason. R
 
 The `claude mcp serve` bridge costs about 315 MB of private memory in each session. toolscript-mcp starts it on the first call that a program makes to it, and stops it after 10 minutes with no call. A session that never calls it holds no bridge process.
 
-- `search_tools` never starts it, also after a crash or a failed start: only a call that names it does. It lists the tools from the last list that the bridge gave, which toolscript-mcp keeps in `~/.toolscript-mcp@GUARD@/learned/tools.json`. The first session after an install starts it one time at the session start, to get that list. A change to the command, arguments, `env` or `cwd` of its entry does the same. A different `PATH` in the shell does not.
+- `search_tools` never starts it, also after a crash or a failed start: only a call that names it does. It lists the tools from the last list that the bridge gave, which toolscript-mcp keeps in `~/.toolscript-mcp/learned/tools.json`. The first session after an install starts it one time at the session start, to get that list. A change to the command, arguments, `env` or `cwd` of its entry does the same. A different `PATH` in the shell does not.
 - The first call after a start or a stop waits for the start, which takes the time of the start of `claude`. Policy, approval and the argument checks use the live list of the started server, never the kept list.
 - A stop ends the state of the bridge: the files that it read, and the shells that it started in the background. Use `"lazy": false` on its entry, or `TOOLSCRIPT_LAZY=0`, to start it with the session as before.
 - Any other stdio server is lazy only with `"lazy": true`. Do not set it on a server that keeps state between calls, such as a browser or a shell. With sharing on, a server in a broker has no `"lazy"` key.

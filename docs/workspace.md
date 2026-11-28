@@ -200,7 +200,7 @@ nothing. An `old` must occur one time, or `all` must be `true`. Two edits cannot
 order mark or space is changed for you. If `old` matches only with other line ends, the error says so. A changed file
 keeps its byte order mark and its mode. A file over 4 MiB, a binary file and a file that is not UTF-8 are refused.
 
-**The lock.** A change holds a lock in the process and a lock file in the folder `.toolscript-mcp@GUARD@/locks` of your home.
+**The lock.** A change holds a lock in the process and a lock file in the folder `.toolscript-mcp/locks` of your home.
 Two sessions never lose an update. A call waits 2 seconds for a lock, then fails with `busy`. A lock of a dead process, or
 one older than 30 seconds, is taken over. The lock goes after a failed or cancelled call.
 
