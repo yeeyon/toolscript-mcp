@@ -1,0 +1,151 @@
+{
+  "flakes": [
+    {
+      "target": "tests/run.test.ts",
+      "count": 30,
+      "box": 6,
+      "note": "timing under load"
+    },
+    {
+      "target": "tests/workspace-fs.test.ts",
+      "count": 30,
+      "box": 6,
+      "note": "swap loops, a system race"
+    },
+    {
+      "target": "tests/workspace-task.test.ts",
+      "count": 20,
+      "box": 4,
+      "note": "cleanup EPERM on Windows"
+    },
+    {
+      "target": "tests/oauth-lock.test.ts",
+      "count": 10,
+      "box": 2,
+      "note": "6 processes on a busy runner"
+    },
+    {
+      "target": "tests/oauth-lock-stale.test.ts",
+      "count": 10,
+      "box": 2
+    },
+    {
+      "target": "tests/oauthlock.test.ts",
+      "count": 10,
+      "box": 2
+    },
+    {
+      "target": "tests/workspace-lock.test.ts",
+      "count": 10,
+      "box": 2
+    },
+    {
+      "target": "tests/share.e2e.mjs",
+      "count": 30,
+      "box": 4,
+      "note": "6 hosts at once (#133): the real proof is cpu1"
+    },
+    {
+      "target": "tests/lazy.e2e.mjs",
+      "count": 30,
+      "box": 3,
+      "note": "shutdown against the 2 s kill of a client"
+    },
+    {
+      "target": "tests/memory.e2e.mjs",
+      "count": 5,
+      "box": 3,
+      "note": "slow, many processes"
+    },
+    {
+      "target": "tests/childguard.test.ts",
+      "count": 10,
+      "box": 2,
+      "note": "Windows compile, kills"
+    },
+    {
+      "target": "tests/broker.integration.ts",
+      "count": 10,
+      "box": 2
+    }
+  ],
+  "load": [
+    {
+      "target": "tests/*.test.ts",
+      "label": "npm test (files in parallel)",
+      "count": 5,
+      "box": 25,
+      "timeout": 900
+    },
+    {
+      "target": "tests/server.e2e.mjs",
+      "count": 3,
+      "box": 2
+    },
+    {
+      "target": "tests/workspace.e2e.mjs",
+      "count": 3,
+      "box": 2
+    },
+    {
+      "target": "tests/memory.e2e.mjs",
+      "count": 3,
+      "box": 2
+    },
+    {
+      "target": "tests/share.e2e.mjs",
+      "count": 3,
+      "box": 2
+    },
+    {
+      "target": "tests/lazy.e2e.mjs",
+      "count": 3,
+      "box": 2
+    },
+    {
+      "target": "tests/broker.integration.ts",
+      "count": 3,
+      "box": 2
+    }
+  ],
+  "cpu1": [
+    {
+      "target": "tests/run.test.ts",
+      "count": 10,
+      "box": 10,
+      "note": "the timing tests, on one CPU"
+    },
+    {
+      "target": "tests/share.e2e.mjs",
+      "count": 30,
+      "box": 8
+    },
+    {
+      "target": "bench/broker-race.mjs",
+      "kind": "script",
+      "args": ["--contenders", "20", "--rounds", "300"],
+      "count": 1,
+      "timeout": 1200,
+      "optional": true,
+      "note": "#133, 20 contenders for 300 rounds; skipped until the file is on main"
+    }
+  ],
+  "bench": [
+    {
+      "target": "bench/walks.mjs",
+      "kind": "script",
+      "args": ["--tree", "{temp}/walks-tree"],
+      "count": 1,
+      "timeout": 1200,
+      "note": "N = 1, 2, 4, 8 walks on all CPUs (#180)"
+    },
+    {
+      "target": "bench/memory.mjs",
+      "kind": "script",
+      "args": ["--counts", "1,6"],
+      "count": 1,
+      "timeout": 1200,
+      "note": "fixture mode"
+    }
+  ]
+}
