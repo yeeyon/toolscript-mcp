@@ -77,6 +77,7 @@ export type ProviderOptions = {
     readonly searchFiles?: number
     readonly listEntries?: number
     readonly searchMs?: number
+    readonly walkSlots?: number
     readonly searchInFlight?: number
     /** The call limit in ms (`sandbox.callTimeoutSeconds`): a call waits for a walk slot for less than this. Default 60 s. */
     readonly callMs?: number
@@ -148,6 +149,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
     searchFiles: LIMITS.searchFiles,
     listEntries: LIMITS.listEntries,
     searchMs: LIMITS.searchMs,
+    walkSlots: LIMITS.walkSlots,
     searchInFlight: LIMITS.searchInFlight,
     callMs: 60_000,
     ...options.limits,
@@ -174,7 +176,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
   }
 
   /**
-   * At most `LIMITS.walkSlots` walks of `list` and `search` run at one time. Parallel walks share the file threads and
+   * At most `limits.walkSlots` walks of `list` and `search` run at one time (`LIMITS.walkSlots`). Parallel walks share the file threads and
    * the CPU, and each would run to `searchMs` (issue #160). The others wait in order, and the budget of a walk starts
    * when it runs. A call that is cancelled while it waits fails at once and takes no slot. A slot passes on when a walk
    * ends for any reason. A call that still waits after `queueWaitMs` leaves the queue at that moment, by a timer, takes no
@@ -184,7 +186,7 @@ export const createProvider = (options: ProviderOptions): Provider => {
   let walking = 0
   const slotted = async <T>(signal: AbortSignal, task: () => Promise<T>, unstarted: () => T): Promise<T> => {
     cancelled(signal)
-    if (walking < LIMITS.walkSlots) walking++
+    if (walking < limits.walkSlots) walking++
     else {
       const waitMs = queueWaitMs(limits.callMs, limits.searchMs)
       const got =

@@ -87,14 +87,23 @@ if (!binding.ok) throw new Error(`Workspace unavailable: ${binding.reason}`)
 const client = new Client({ name: 'walks-bench', version: '0' })
 await client.connect(await binding.bound.provider.serve())
 
+const failed = { seen: false }
 /** N searches started together, each with its own query. */
 const batch = async (n, include) => {
   const began = performance.now()
   const calls = await Promise.all(
     Array.from({ length: n }, async (_, k) => {
       const start = performance.now()
-      const r = await client.callTool({ name: 'search', arguments: { query: `needle-${k}`, include } })
-      if (r.isError === true) throw new Error(JSON.stringify(r.content))
+      // The client gives a call 60 s. A call that waits longer fails with a timeout, and it counts as a failed call.
+      const r = await client
+        .callTool({ name: 'search', arguments: { query: `needle-${k}`, include } })
+        .catch(e => ({ isError: true, content: String(e?.message ?? e) }))
+      if (r.isError === true) {
+        // An error is counted as a cut call, and its text is printed once, so a limit that binds is named.
+        if (!failed.seen) console.log(`call failed: ${JSON.stringify(r.content).slice(0, 300)}`)
+        failed.seen = true
+        return { s: (performance.now() - start) / 1000, truncated: true, matches: 0 }
+      }
       const { truncated, matches } = r.structuredContent
       return { s: (performance.now() - start) / 1000, truncated, matches: matches.length }
     }),

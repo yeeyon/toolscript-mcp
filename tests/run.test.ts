@@ -25,6 +25,7 @@ import { connectAll, type ConnectOptions, type Downstream } from '../src/host/do
 import { runCode, type Approval, type RunContext } from '../src/host/run.ts'
 import { loadShapes, schemaHash } from '../src/host/shapes.ts'
 import { bindWorkspace, linkOf } from '../src/host/workspace/bind.ts'
+import type { Hook } from '../src/host/workspace/confined.ts'
 
 const PROBE = path.join(import.meta.dirname, 'probe-server.mjs')
 
@@ -3182,6 +3183,7 @@ describe('workspace', () => {
     tasks: readonly TaskConfig[] = [],
     write = false,
     limits?: { searchFiles?: number; listEntries?: number; searchMs?: number; callMs?: number },
+    hook?: Hook,
   ) => {
     const root = fs.realpathSync.native(dir('ws-root-'))
     const outside = fs.realpathSync.native(dir('ws-out-'))
@@ -3204,6 +3206,7 @@ describe('workspace', () => {
       configFile: path.join(home, 'c.json'),
       log: () => {},
       ...(limits !== undefined && { limits }),
+      ...(hook !== undefined && { hook }),
     })
     if (!binding.ok) {
       assert.ok(process.platform === 'darwin', binding.reason)
@@ -3297,7 +3300,14 @@ describe('workspace', () => {
 
   test('a Promise.all of searches where a call did not start returns, is no error, and the footer counts it apart from the cut ones', async t => {
     // A call limit of 1 s gives a queue wait of 0: a search that must queue for the one walk slot answers as not started.
-    const q = await rig(t, { policy: [] }, [], false, { searchMs: 100, callMs: 1000 })
+    // The first walk is held 400 ms at its first listing, so the other 7 calls meet a taken slot.
+    let held = false
+    const hold: Hook = async lookup => {
+      if (lookup !== 'readdir' || held) return
+      held = true
+      await new Promise(resolve => setTimeout(resolve, 400))
+    }
+    const q = await rig(t, { policy: [] }, [], false, { searchMs: 1000, callMs: 1000 }, hold)
     if (q === undefined) return
     const out = await q.run(
       'const all = await Promise.all(Array.from({ length: 8 }, () => call("mcp__workspace__search", { query: "file" })))\nreturn all.map(r => r.notStarted === true)',
@@ -3305,7 +3315,8 @@ describe('workspace', () => {
     assert.equal(out.isError, false, out.text)
     const got = JSON.parse(hostMark(out.text)?.inside ?? 'null') as boolean[]
     const skipped = got.filter(Boolean).length
-    assert.ok(skipped >= 1 && skipped < 8, out.text)
+    assert.equal(skipped, 7, out.text)
+    assert.equal(got[0], false, 'the call that held the slot walked')
     assert.ok(
       out.text
         .split('\n')
