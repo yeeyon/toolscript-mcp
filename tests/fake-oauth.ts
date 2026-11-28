@@ -109,6 +109,14 @@ export const startFake = async () => {
     registeredId: '',
     reuseDetection: false,
     abandon: 0,
+    /** The `iss` of the callback (RFC 9207): none, the issuer of the metadata, or another one. */
+    callbackIss: 'none' as 'none' | 'right' | 'wrong',
+    /** The metadata says that the authorization server always sends `iss`. */
+    issSupported: false,
+    /** The `issuer` of the metadata, when it is not the origin that the metadata was read from. */
+    metadataIssuer: '',
+    /** The token endpoint answers each request with this OAuth error and an error_description that echoes the request. */
+    echoError: '' as '' | 'invalid_client' | 'invalid_grant',
   }
   const held: (() => void)[] = []
   const issue = (clientId: string) => {
@@ -169,6 +177,11 @@ export const startFake = async () => {
   const token = async (text: string, auth: string | undefined, res: http.ServerResponse) => {
     const form = new URLSearchParams(text)
     seen.tokens.push(form)
+    if (change.echoError !== '') {
+      for (const value of [form.get('code'), form.get('code_verifier'), form.get('refresh_token')])
+        if (value) secrets.add(value)
+      return json(res, 400, { error: change.echoError, error_description: `echo ${text} ${auth ?? ''}` })
+    }
     const arrived = seen.tokens.filter(f => f.get('grant_type') === 'refresh_token').length
     if (form.get('grant_type') === 'refresh_token' && change.stallRefreshes) return
     if (form.get('grant_type') === 'refresh_token') await change.gate
@@ -250,7 +263,8 @@ export const startFake = async () => {
     if (url.pathname === '/.well-known/oauth-authorization-server' && change.stallServerMetadata) return
     if (url.pathname === '/.well-known/oauth-authorization-server')
       return json(res, 200, {
-        issuer: auth,
+        issuer: change.metadataIssuer || auth,
+        ...(change.issSupported && { authorization_response_iss_parameter_supported: true }),
         authorization_endpoint: change.authorizationEndpoint || `${auth}/authorize`,
         token_endpoint: `${auth}/token`,
         ...(change.registration && { registration_endpoint: `${auth}/register` }),
@@ -289,6 +303,8 @@ export const startFake = async () => {
       const to = new URL(redirectUri)
       to.searchParams.set('code', code)
       to.searchParams.set('state', q.get('state') ?? '')
+      if (change.callbackIss !== 'none')
+        to.searchParams.set('iss', change.callbackIss === 'right' ? auth : 'https://evil.example')
       return void res.writeHead(302, { location: to.href }).end()
     }
     if (url.pathname === '/token' && change.tokenDown) return void req.socket.destroy()

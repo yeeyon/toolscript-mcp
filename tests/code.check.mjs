@@ -112,6 +112,9 @@ const sourcesIn = (root, dir) =>
     : []
 
 const PACKAGE = /@modelcontextprotocol\/([\w.-]*)/g
+// The client side of the first SDK. Every link, the OAuth flow and `login` are on the v2 client (#154, PR 6), so nothing in
+// src/ names these paths: only the server side (server/index.js, server/mcp.js, server/stdio.js, types.js) is left for PR 7.
+const V1_CLIENT_SIDE = /@modelcontextprotocol\/sdk\/(?:client|shared|server\/auth)\//g
 const lineOf = (text, index) => text.slice(0, index).split('\n').length
 
 // The problems of the SDK seam in the tree under `root`, as "file:line: message".
@@ -126,11 +129,19 @@ const sdkProblems = root =>
         if (!sealedTop && /^server-/.test(m[1])) return []
         if (!rel.startsWith(SDK_DIR) && !isHelper(rel))
           return [`${at}names ${m[0]} outside src/host/sdk/ and tests/sdk.*: use src/host/sdk/ (tests: tests/sdk.mjs)`]
-        return m[1] === 'sdk' || m[1] === 'client'
+        // The folder also names core, whose schemas of the stored OAuth values the client package does not export.
+        return m[1] === 'sdk' || m[1] === 'client' || (m[1] === 'core' && rel.startsWith(SDK_DIR))
           ? []
           : [`${at}names ${m[0]}: this place names only the sdk and client packages`]
       })
+      const v1 = rel.startsWith('src/')
+        ? [...text.matchAll(V1_CLIENT_SIDE)].map(
+            m =>
+              `${rel}:${lineOf(text, m.index)}: names ${m[0]}: the client side of the first SDK is gone from src/, use the client package`,
+          )
+        : []
       const sealed = NO_SDK_IMPORT.has(rel) || rel.startsWith('src/core/')
+      named.push(...v1)
       const shipped = SHIPS_NO_TEST.some(p => rel.startsWith(p))
       const loaded = [...text.matchAll(MODULE)].flatMap(m => {
         const at = `${rel}:${lineOf(text, m.index)}: `
@@ -299,12 +310,27 @@ const tests = {
         "import { X } from '@modelcontextprotocol/client'\nimport { Y } from '@modelcontextprotocol/client/stdio'\n",
       )
       assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the client package')
-      for (const other of ['server', 'core']) {
-        put('src/host/sdk/client.ts', `import { X } from '@modelcontextprotocol/${other}'\n`)
-        assert.equal(sdkProblems(root).length, 1, `the folder names @modelcontextprotocol/${other}`)
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/core'\n")
+      assert.deepEqual(sdkProblems(root), [], 'the sdk folder names the core package')
+      put('src/host/sdk/client.ts', `import { X } from '@modelcontextprotocol/server'\n`)
+      assert.equal(sdkProblems(root).length, 1, 'the folder names @modelcontextprotocol/server')
+      // The client side of the first SDK is gone from src/, in the folder too: one row for each path.
+      for (const sub of [
+        'client/index.js',
+        'client/streamableHttp.js',
+        'shared/auth.js',
+        'shared/transport.js',
+        'server/auth/errors.js',
+      ]) {
+        put('src/host/sdk/client.ts', `import { X } from '@modelcontextprotocol/sdk/${sub}'\n`)
+        assert.equal(sdkProblems(root).length, 1, `src names sdk/${sub}`)
+        put('src/host/x.ts', `import { X } from '@modelcontextprotocol/sdk/${sub}'\n`)
+        // The folder file and the host file each name the path, and the host file names the package outside the folder too.
+        assert.equal(sdkProblems(root).length, 3, `src/host names sdk/${sub}`)
+        drop('src/host/x.ts')
       }
-      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/sdk/client/index.js'\n")
-      assert.deepEqual(sdkProblems(root), [], 'the fix passes')
+      put('src/host/sdk/client.ts', "import { X } from '@modelcontextprotocol/sdk/server/index.js'\n")
+      assert.deepEqual(sdkProblems(root), [], 'the fix passes: the server side stays until PR 7')
       // The broker and src/core never load the folder.
       for (const rel of ['src/host/broker.ts', 'src/host/brokermain.ts', 'src/core/a.ts', 'src/core/sub/b.ts']) {
         for (const bad of ["'./sdk/client.ts'", "'../host/sdk/client.ts'", "'../../host/sdk/errors.ts'"]) {
